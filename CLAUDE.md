@@ -5,7 +5,6 @@ cat > CLAUDE.md << 'EOF'
 Centralized management system for embedded development lab resources. Provides deterministic USB serial access, power control, and resource tracking for multiple SBCs.
 
 ## Key Documentation
-- `docs/ARCHITECTURE.md` - System design and component specs
 - `docs/IMPLEMENTATION.md` - Milestone TODOs (update status here!)
 - `docs/AGENT_RULES.md` - **READ THIS FIRST** - Development process rules
 - `docs/DECISIONS.md` - Design decision log

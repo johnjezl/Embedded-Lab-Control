@@ -16,7 +16,6 @@ Under development. See `docs/IMPLEMENTATION.md` for progress.
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md)
 - [Implementation Plan](docs/IMPLEMENTATION.md)
 - [Agent Rules](docs/AGENT_RULES.md)
 - [Decision Log](docs/DECISIONS.md)

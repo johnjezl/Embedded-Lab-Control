@@ -32,22 +32,22 @@ This document outlines the phased implementation of the Lab Controller System. E
 **Goal**: Establish deterministic serial access with basic CLI for listing and connecting.
 
 ### Prerequisites
-- ☐ Ubuntu development machine with USB ports
-- ☐ At least one powered USB hub
-- ☐ At least one USB-TTL adapter
-- ☐ ser2net installed (`apt install ser2net`)
+- ✅ Ubuntu development machine with USB ports
+- ✅ At least one powered USB hub
+- ✅ At least one USB-TTL adapter
+- ✅ ser2net installed (`apt install ser2net`)
 
 ### TODO List
 
 #### 1.1 Project Setup
-- ☐ Create project directory structure
+- ✅ Create project directory structure
   ```
   mkdir -p labctl/{src/labctl,config/udev,docs,tests,scripts}
   ```
-- ☐ Initialize Python project
-  - ☐ Create `pyproject.toml` with dependencies (click, pyyaml)
-  - ☐ Create virtual environment
-  - ☐ Create `src/labctl/__init__.py`
+- ✅ Initialize Python project
+  - ✅ Create `pyproject.toml` with dependencies (click, pyyaml)
+  - ✅ Create virtual environment
+  - ✅ Create `src/labctl/__init__.py`
 
 #### 1.2 udev Rules System
 - ☐ Create discovery script `scripts/discover-usb-serial.sh`
