@@ -11,20 +11,28 @@ build/
 venv/
 ENV/
 
-# IDE
+# IDE - ignore user settings, keep project settings
 .idea/
-.vscode/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
 *.swp
 *.swo
+
+# Claude Code - ignore local settings, keep project settings
+.claude/settings.local.json
 
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
 
-# Local config
+# Local config (user-specific overrides)
 *.local.yaml
 .env
+.env.local
 
 # Database
 *.db
@@ -32,3 +40,7 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local user notes
+NOTES.local.md
+TODO.local.md
