@@ -112,3 +112,22 @@ def sbc_console(name: str):
         sbc=sbc,
         port=port,
     )
+
+
+@views_bp.route("/sbc/<name>/history")
+def sbc_history(name: str):
+    """SBC status history page."""
+    sbc = g.manager.get_sbc_by_name(name)
+    if not sbc:
+        flash(f"SBC '{name}' not found", "error")
+        return redirect(url_for("views.index"))
+
+    # Get status history
+    history = g.manager.get_status_history(sbc_id=sbc.id, limit=100)
+
+    return render_template(
+        "status_history.html",
+        sbc=sbc,
+        history=history,
+        Status=Status,
+    )

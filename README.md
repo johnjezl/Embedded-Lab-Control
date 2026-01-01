@@ -9,6 +9,7 @@ Centralized management system for embedded development lab resources.
 - Smart plug power control
 - Multi-client serial access
 - Web dashboard and REST API
+- Health monitoring and alerting
 
 ## Status
 

@@ -399,6 +399,104 @@ class ResourceManager:
         )
         return count > 0
 
+    # --- Status Log ---
+
+    def log_status(
+        self,
+        sbc_id: int,
+        status: Status,
+        details: Optional[str] = None,
+    ) -> int:
+        """
+        Log a status change to the status_log table.
+
+        Args:
+            sbc_id: ID of the SBC
+            status: New status value
+            details: Optional details about the status change
+
+        Returns:
+            ID of the inserted log entry
+        """
+        return self.db.execute_insert(
+            """
+            INSERT INTO status_log (sbc_id, status, details)
+            VALUES (?, ?, ?)
+            """,
+            (sbc_id, status.value, details),
+        )
+
+    def get_status_history(
+        self,
+        sbc_id: Optional[int] = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """
+        Get status history for an SBC or all SBCs.
+
+        Args:
+            sbc_id: Optional SBC ID to filter by
+            limit: Maximum number of entries to return
+
+        Returns:
+            List of status log entries as dictionaries
+        """
+        if sbc_id:
+            rows = self.db.execute_query(
+                """
+                SELECT sl.id, sl.sbc_id, s.name as sbc_name, sl.status,
+                       sl.details, sl.logged_at
+                FROM status_log sl
+                JOIN sbcs s ON sl.sbc_id = s.id
+                WHERE sl.sbc_id = ?
+                ORDER BY sl.logged_at DESC
+                LIMIT ?
+                """,
+                (sbc_id, limit),
+            )
+        else:
+            rows = self.db.execute_query(
+                """
+                SELECT sl.id, sl.sbc_id, s.name as sbc_name, sl.status,
+                       sl.details, sl.logged_at
+                FROM status_log sl
+                JOIN sbcs s ON sl.sbc_id = s.id
+                ORDER BY sl.logged_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            )
+
+        return [
+            {
+                "id": row[0],
+                "sbc_id": row[1],
+                "sbc_name": row[2],
+                "status": row[3],
+                "details": row[4],
+                "logged_at": row[5],
+            }
+            for row in rows
+        ]
+
+    def cleanup_old_status_logs(self, retention_days: int) -> int:
+        """
+        Delete status log entries older than retention period.
+
+        Args:
+            retention_days: Number of days to retain status logs
+
+        Returns:
+            Number of deleted entries
+        """
+        return self.db.execute_modify(
+            """
+            DELETE FROM status_log
+            WHERE logged_at < datetime('now', ? || ' days')
+            """,
+            (f"-{retention_days}",),
+        )
+
     # --- Audit Log ---
 
     def _audit_log(

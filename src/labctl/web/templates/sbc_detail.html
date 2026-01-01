@@ -20,6 +20,9 @@
             <tr><th>SSH User</th><td>{{ sbc.ssh_user }}</td></tr>
             <tr><th>Status</th><td>{{ sbc.status.value }}</td></tr>
         </table>
+        <p class="mt-2">
+            <a href="{{ url_for('views.sbc_history', name=sbc.name) }}" class="btn btn-secondary btn-sm">View Status History</a>
+        </p>
     </div>
 
     <!-- Power Control -->

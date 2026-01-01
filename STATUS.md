@@ -2,14 +2,14 @@
 
 ## Current State
 
-- **Milestone**: M6 - Multi-Client Serial Access COMPLETE
-- **Sub-task**: All complete (6.1-6.6)
-- **Status**: Ready for M7
+- **Milestone**: M7 - Monitoring and Health COMPLETE
+- **Sub-task**: All complete (7.1-7.6)
+- **Status**: All milestones complete
 
 ## Last Session
 
 - **Date**: 2026-01-01
-- **Completed**: M6 (multi-client serial access)
+- **Completed**: M7 (monitoring and health)
 - **Commits**: pending
 
 ## Blockers
@@ -18,15 +18,26 @@
 
 ## Notes
 
-- **Milestone 6 Complete!**
-- 143 tests passing
-- Multi-client serial features:
-  - SerialProxy with asyncio fan-out architecture
-  - First-writer-wins write lock policy
-  - Session logging to timestamped files
-  - ProxyConfig with port range and policy settings
-  - CLI: `labctl proxy start/list`, `labctl sessions`
-  - Web: Console page with xterm.js at /sbc/<name>/console
-  - WebSocket bridge for browser console
-- Some features deferred (daemon mode, session API queries)
-- Ready to begin M7 - Monitoring and Health
+- **Milestone 7 Complete!**
+- 171 tests passing
+- Health monitoring features:
+  - HealthChecker with ping, serial, and power checks
+  - AlertManager with pluggable handlers (log, console, email/slack stubs)
+  - MonitorDaemon for periodic background checks
+  - Status tracking with history in status_log table
+  - HealthConfig for check intervals and timeouts
+  - CLI: `labctl health-check`, `labctl monitor`
+  - Web: Status history page at /sbc/<name>/history
+  - API: /api/sbcs/<name>/history, /api/health/check
+
+## Milestones Summary
+
+| Milestone | Description | Status |
+|-----------|-------------|--------|
+| M1 | Foundation (udev, ser2net, CLI) | Complete |
+| M2 | Data Layer (database, manager) | Complete |
+| M3 | Power Control (Tasmota/Shelly/Kasa) | Complete |
+| M4 | CLI Completion | Complete |
+| M5 | Web Interface (Flask, REST API) | Complete |
+| M6 | Multi-Client Serial | Complete |
+| M7 | Monitoring and Health | Complete |

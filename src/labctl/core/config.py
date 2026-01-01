@@ -37,6 +37,9 @@ class Ser2NetConfig:
 # Default log directory for proxy sessions
 DEFAULT_LOG_DIR = Path.home() / ".local" / "share" / "labctl" / "logs"
 
+# Default alert log path
+DEFAULT_ALERT_LOG = Path.home() / ".local" / "share" / "labctl" / "alerts.log"
+
 
 @dataclass
 class ProxyConfig:
@@ -53,12 +56,27 @@ class ProxyConfig:
 
 
 @dataclass
+class HealthConfig:
+    """Health check and monitoring configuration."""
+
+    check_interval: int = 60  # seconds between checks
+    ping_timeout: float = 2.0  # seconds
+    serial_timeout: float = 2.0  # seconds
+    status_retention_days: int = 30  # days to keep status history
+    alert_log_path: Path = field(default_factory=lambda: DEFAULT_ALERT_LOG)
+    alert_on_offline: bool = True
+    alert_on_power_change: bool = True
+    update_status_on_check: bool = True  # auto-update SBC status
+
+
+@dataclass
 class Config:
     """Main configuration for lab controller."""
 
     serial: SerialConfig = field(default_factory=SerialConfig)
     ser2net: Ser2NetConfig = field(default_factory=Ser2NetConfig)
     proxy: ProxyConfig = field(default_factory=ProxyConfig)
+    health: HealthConfig = field(default_factory=HealthConfig)
     database_path: Path = field(
         default_factory=lambda: DEFAULT_CONFIG_DIR / "labctl.db"
     )
@@ -70,6 +88,7 @@ class Config:
         serial_data = data.get("serial", {})
         ser2net_data = data.get("ser2net", {})
         proxy_data = data.get("proxy", {})
+        health_data = data.get("health", {})
 
         serial = SerialConfig(
             dev_dir=Path(serial_data.get("dev_dir", "/dev/lab")),
@@ -93,10 +112,24 @@ class Config:
             idle_timeout=proxy_data.get("idle_timeout", 3600),
         )
 
+        health = HealthConfig(
+            check_interval=health_data.get("check_interval", 60),
+            ping_timeout=health_data.get("ping_timeout", 2.0),
+            serial_timeout=health_data.get("serial_timeout", 2.0),
+            status_retention_days=health_data.get("status_retention_days", 30),
+            alert_log_path=Path(
+                health_data.get("alert_log_path", str(DEFAULT_ALERT_LOG))
+            ),
+            alert_on_offline=health_data.get("alert_on_offline", True),
+            alert_on_power_change=health_data.get("alert_on_power_change", True),
+            update_status_on_check=health_data.get("update_status_on_check", True),
+        )
+
         return cls(
             serial=serial,
             ser2net=ser2net,
             proxy=proxy,
+            health=health,
             database_path=Path(
                 data.get("database_path", str(DEFAULT_CONFIG_DIR / "labctl.db"))
             ),
@@ -124,6 +157,16 @@ class Config:
                 "log_retention_days": self.proxy.log_retention_days,
                 "max_clients": self.proxy.max_clients,
                 "idle_timeout": self.proxy.idle_timeout,
+            },
+            "health": {
+                "check_interval": self.health.check_interval,
+                "ping_timeout": self.health.ping_timeout,
+                "serial_timeout": self.health.serial_timeout,
+                "status_retention_days": self.health.status_retention_days,
+                "alert_log_path": str(self.health.alert_log_path),
+                "alert_on_offline": self.health.alert_on_offline,
+                "alert_on_power_change": self.health.alert_on_power_change,
+                "update_status_on_check": self.health.update_status_on_check,
             },
             "database_path": str(self.database_path),
             "log_level": self.log_level,

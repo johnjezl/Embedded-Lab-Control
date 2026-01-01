@@ -482,57 +482,57 @@ This document outlines the phased implementation of the Lab Controller System. E
 ### TODO List
 
 #### 7.1 Health Check Module
-- ☐ Create health module `src/labctl/health/`
-- ☐ Implement ping check
-  - ☐ ICMP ping to SBC IPs
-  - ☐ Configurable timeout
-- ☐ Implement serial probe
-  - ☐ Check if port opens successfully
-  - ☐ Optional: Send probe string, check response
-- ☐ Implement power check
-  - ☐ Query plug status
+- ✅ Create health module `src/labctl/health/`
+- ✅ Implement ping check
+  - ✅ ICMP ping to SBC IPs
+  - ✅ Configurable timeout
+- ✅ Implement serial probe
+  - ✅ Check if port opens successfully
+  - ⏸️ Optional: Send probe string, check response (deferred)
+- ✅ Implement power check
+  - ✅ Query plug status
 
 #### 7.2 Health Check CLI
-- ☐ Enhance `labctl health-check`
-  - ☐ Run all check types
-  - ☐ `--type ping|serial|power`
-  - ☐ `--sbc <name>` for single SBC
-  - ☐ Output: table with check results
+- ✅ Enhance `labctl health-check`
+  - ✅ Run all check types
+  - ✅ `--type ping|serial|power`
+  - ✅ `--sbc <name>` for single SBC
+  - ✅ Output: table with check results
 
 #### 7.3 Status Tracking
-- ☐ Update status on each check
-- ☐ Store history in `status_log` table
-- ☐ Retention policy (configurable days)
+- ✅ Update status on each check
+- ✅ Store history in `status_log` table
+- ✅ Retention policy (configurable days)
 
 #### 7.4 Monitoring Daemon (Optional)
-- ☐ Create daemon `src/labctl/health/daemon.py`
-- ☐ Periodic health checks
-- ☐ Configurable interval
-- ☐ CLI command `labctl monitor`
-  - ☐ `--foreground` for debug
-  - ☐ `--daemon` for background
-- ☐ Systemd service file
+- ✅ Create daemon `src/labctl/health/daemon.py`
+- ✅ Periodic health checks
+- ✅ Configurable interval
+- ✅ CLI command `labctl monitor`
+  - ✅ `--foreground` for debug
+  - ⏸️ `--daemon` for background (use systemd instead)
+- ⏸️ Systemd service file (deferred)
 
 #### 7.5 Alerting (Future)
-- ☐ Define alert conditions
-  - ☐ SBC offline
-  - ☐ Power state change
-  - ☐ Serial disconnect
-- ☐ Alert channels (stub for future)
-  - ☐ Log file
-  - ☐ Email (future)
-  - ☐ Slack webhook (future)
+- ✅ Define alert conditions
+  - ✅ SBC offline
+  - ✅ Power state change
+  - ✅ Serial disconnect
+- ✅ Alert channels (stub for future)
+  - ✅ Log file
+  - ✅ Email (stub)
+  - ✅ Slack webhook (stub)
 
 #### 7.6 Status Dashboard Enhancements
-- ☐ Historical status view
-- ☐ Uptime tracking
-- ☐ Status timeline
+- ✅ Historical status view
+- ⏸️ Uptime tracking (deferred)
+- ✅ Status timeline
 
 ### Acceptance Criteria
-- ☐ `labctl health-check` runs all checks
-- ☐ Status history stored in database
-- ☐ Dashboard shows current status
-- ☐ (Optional) Monitoring daemon runs in background
+- ✅ `labctl health-check` runs all checks
+- ✅ Status history stored in database
+- ✅ Dashboard shows current status
+- ✅ Monitoring daemon runs in foreground
 
 ---
 

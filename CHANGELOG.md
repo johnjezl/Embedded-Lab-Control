@@ -140,6 +140,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     - Full terminal emulator in browser
   - Added 26 proxy tests (143 total)
   - **Milestone 6 Complete!**
+- M7 Monitoring and Health (2026-01-01)
+  - Created health check module `src/labctl/health/`
+    - HealthChecker class with ping, serial, and power checks
+    - CheckResult and HealthCheckSummary dataclasses
+    - Automatic status determination based on check results
+  - Added alerting framework
+    - Alert and AlertLevel for structured notifications
+    - AlertHandler ABC with pluggable handlers
+    - LogAlertHandler for file-based alerts
+    - ConsoleAlertHandler for terminal output
+    - EmailAlertHandler and SlackAlertHandler stubs for future
+    - AlertManager for dispatching to multiple handlers
+  - Created monitoring daemon
+    - MonitorDaemon class for periodic health checks
+    - Configurable check interval
+    - Automatic status updates on check results
+    - Alert triggering on status/power changes
+  - Added status tracking
+    - log_status() method writes to status_log table
+    - get_status_history() for retrieving history
+    - cleanup_old_status_logs() for retention management
+  - Added HealthConfig to configuration
+    - check_interval, ping_timeout, serial_timeout
+    - status_retention_days, alert_log_path
+    - alert_on_offline, alert_on_power_change options
+  - Added CLI commands
+    - `labctl health-check` - run health checks on SBCs
+      - --type ping|serial|power|all filter
+      - --sbc to check single SBC
+      - --update to update status in database
+    - `labctl monitor` - start monitoring daemon
+      - --interval to override check frequency
+      - --no-update, --no-alerts options
+  - Added web endpoints
+    - GET /api/sbcs/<name>/history - status history
+    - GET /api/health/check - run health checks via API
+    - Status history page at /sbc/<name>/history
+  - Added 28 health module tests (171 total)
+  - **Milestone 7 Complete!**
 
 ### Changed
 - Moved documentation files to docs/ folder (AGENT_RULES.md, IMPLEMENTATION.md, DECISIONS.md)

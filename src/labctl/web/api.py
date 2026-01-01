@@ -348,3 +348,108 @@ def get_status():
             "count": len(status_list),
         }
     )
+
+
+@api_bp.route("/sbcs/<name>/history", methods=["GET"])
+def get_sbc_history(name: str):
+    """Get status history for an SBC."""
+    sbc = g.manager.get_sbc_by_name(name)
+    if not sbc:
+        return jsonify({"error": f"SBC '{name}' not found"}), 404
+
+    limit = request.args.get("limit", 100, type=int)
+    history = g.manager.get_status_history(sbc_id=sbc.id, limit=limit)
+
+    return jsonify(
+        {
+            "sbc_name": name,
+            "history": history,
+            "count": len(history),
+        }
+    )
+
+
+@api_bp.route("/health/check", methods=["GET", "POST"])
+def run_health_check():
+    """Run health checks on SBCs.
+
+    GET: Returns cached/last check results
+    POST: Runs a new health check and returns results
+    """
+    from flask import current_app
+
+    from labctl.health import CheckType, HealthChecker
+
+    # Get config from app
+    config = current_app.config.get("LABCTL_CONFIG")
+
+    # Create checker
+    checker = HealthChecker(
+        ping_timeout=config.health.ping_timeout if config else 2.0,
+        serial_timeout=config.health.serial_timeout if config else 2.0,
+    )
+
+    # Get optional SBC filter
+    sbc_name = request.args.get("sbc")
+
+    # Get check types
+    check_type = request.args.get("type", "all")
+    if check_type == "all":
+        types = [CheckType.PING, CheckType.SERIAL, CheckType.POWER]
+    else:
+        try:
+            types = [CheckType(check_type)]
+        except ValueError:
+            return jsonify({"error": f"Invalid check type: {check_type}"}), 400
+
+    # Get SBCs to check
+    if sbc_name:
+        sbc = g.manager.get_sbc_by_name(sbc_name)
+        if not sbc:
+            return jsonify({"error": f"SBC '{sbc_name}' not found"}), 404
+        sbcs = [sbc]
+    else:
+        sbcs = g.manager.list_sbcs()
+
+    # Run checks
+    results = checker.check_all(sbcs, types)
+
+    # Format results for JSON
+    output = {}
+    for name, summary in results.items():
+        sbc_result = {
+            "recommended_status": (
+                summary.recommended_status.value if summary.recommended_status else None
+            ),
+        }
+
+        if summary.ping_result:
+            sbc_result["ping"] = {
+                "success": summary.ping_result.success,
+                "message": summary.ping_result.message,
+                "duration_ms": summary.ping_result.duration_ms,
+            }
+
+        if summary.serial_result:
+            sbc_result["serial"] = {
+                "success": summary.serial_result.success,
+                "message": summary.serial_result.message,
+                "duration_ms": summary.serial_result.duration_ms,
+            }
+
+        if summary.power_result:
+            sbc_result["power"] = {
+                "success": summary.power_result.success,
+                "message": summary.power_result.message,
+                "duration_ms": summary.power_result.duration_ms,
+                "state": summary.power_state.value if summary.power_state else None,
+            }
+
+        output[name] = sbc_result
+
+    return jsonify(
+        {
+            "results": output,
+            "count": len(output),
+        }
+    )

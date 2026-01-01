@@ -1375,6 +1375,190 @@ def web_cmd(ctx: click.Context, host: str, port: int, debug: bool) -> None:
     app.run(host=host, port=port, debug=debug)
 
 
+# --- Health Check Commands ---
+
+
+@main.command("health-check")
+@click.option(
+    "--type",
+    "-t",
+    "check_type",
+    type=click.Choice(["ping", "serial", "power", "all"]),
+    default="all",
+    help="Type of health check to run (default: all)",
+)
+@click.option("--sbc", "-s", "sbc_name", help="Check only this SBC")
+@click.option("--update", "-u", is_flag=True, help="Update SBC status in database")
+@click.option("--verbose", "-v", is_flag=True, help="Show detailed check results")
+@click.pass_context
+def health_check_cmd(
+    ctx: click.Context,
+    check_type: str,
+    sbc_name: str | None,
+    update: bool,
+    verbose: bool,
+) -> None:
+    """Run health checks on SBCs.
+
+    Performs ping, serial, and power checks to verify SBC health.
+    Results are displayed in a table format.
+
+    \b
+    Examples:
+      labctl health-check              # Check all SBCs
+      labctl health-check --sbc pi4    # Check single SBC
+      labctl health-check -t ping      # Ping check only
+      labctl health-check -u           # Update status in database
+    """
+    from labctl.health import CheckType, HealthChecker, format_check_table
+
+    manager = _get_manager(ctx)
+    config: Config = ctx.obj["config"]
+
+    # Create health checker
+    checker = HealthChecker(
+        ping_timeout=config.health.ping_timeout,
+        serial_timeout=config.health.serial_timeout,
+    )
+
+    # Determine which checks to run
+    if check_type == "all":
+        types = [CheckType.PING, CheckType.SERIAL, CheckType.POWER]
+    else:
+        types = [CheckType(check_type)]
+
+    # Get SBCs to check
+    if sbc_name:
+        sbc = manager.get_sbc_by_name(sbc_name)
+        if not sbc:
+            click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
+            sys.exit(1)
+        sbcs = [sbc]
+    else:
+        sbcs = manager.list_sbcs()
+
+    if not sbcs:
+        click.echo("No SBCs found.")
+        return
+
+    click.echo(f"Running health checks on {len(sbcs)} SBC(s)...\n")
+
+    # Run checks
+    results = checker.check_all(sbcs, types)
+
+    # Display results
+    click.echo(format_check_table(results, show_details=verbose))
+
+    # Update status if requested
+    if update:
+        updated = 0
+        for sbc_name_key, summary in results.items():
+            if summary.recommended_status:
+                sbc = manager.get_sbc_by_name(sbc_name_key)
+                if sbc and sbc.status != summary.recommended_status:
+                    manager.update_sbc(sbc.id, status=summary.recommended_status)
+                    # Build details
+                    details_parts = []
+                    if summary.ping_result:
+                        details_parts.append(summary.ping_result.message)
+                    if summary.serial_result:
+                        details_parts.append(summary.serial_result.message)
+                    details = "; ".join(details_parts) if details_parts else None
+                    manager.log_status(sbc.id, summary.recommended_status, details)
+                    updated += 1
+        if updated > 0:
+            click.echo(f"\nUpdated status for {updated} SBC(s)")
+
+
+@main.command("monitor")
+@click.option(
+    "--interval",
+    "-i",
+    type=int,
+    default=None,
+    help="Check interval in seconds (default: from config)",
+)
+@click.option(
+    "--no-update",
+    is_flag=True,
+    help="Don't update SBC status in database",
+)
+@click.option(
+    "--no-alerts",
+    is_flag=True,
+    help="Don't trigger alerts on status changes",
+)
+@click.pass_context
+def monitor_cmd(
+    ctx: click.Context,
+    interval: int | None,
+    no_update: bool,
+    no_alerts: bool,
+) -> None:
+    """Start the monitoring daemon.
+
+    Runs periodic health checks on all SBCs and triggers alerts
+    when status changes occur.
+
+    Press Ctrl+C to stop.
+
+    \b
+    Examples:
+      labctl monitor                   # Start with default interval
+      labctl monitor -i 30             # Check every 30 seconds
+      labctl monitor --no-alerts       # Disable alerting
+    """
+    from labctl.health import (
+        AlertManager,
+        ConsoleAlertHandler,
+        HealthChecker,
+        LogAlertHandler,
+        MonitorDaemon,
+    )
+
+    manager = _get_manager(ctx)
+    config: Config = ctx.obj["config"]
+
+    # Use interval from args or config
+    check_interval = interval or config.health.check_interval
+
+    # Create health checker
+    checker = HealthChecker(
+        ping_timeout=config.health.ping_timeout,
+        serial_timeout=config.health.serial_timeout,
+    )
+
+    # Create alert manager
+    alert_manager = AlertManager()
+    if not no_alerts:
+        # Add console handler for immediate feedback
+        alert_manager.add_handler(ConsoleAlertHandler())
+        # Add log file handler
+        alert_manager.add_handler(LogAlertHandler(config.health.alert_log_path))
+
+    # Create and start daemon
+    daemon = MonitorDaemon(
+        manager=manager,
+        checker=checker,
+        alert_manager=alert_manager,
+        interval=check_interval,
+        update_status=not no_update,
+        alert_on_offline=config.health.alert_on_offline,
+        alert_on_power_change=config.health.alert_on_power_change,
+    )
+
+    click.echo(f"Starting monitor daemon (interval: {check_interval}s)")
+    click.echo("Press Ctrl+C to stop\n")
+
+    try:
+        daemon.start()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        alert_manager.close()
+        click.echo("\nMonitor stopped")
+
+
 # --- Shell Completion ---
 
 

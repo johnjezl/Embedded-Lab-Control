@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+
+{% block title %}{{ sbc.name }} History - Lab Controller{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <a href="{{ url_for('views.sbc_detail', name=sbc.name) }}" class="back-link">← Back to {{ sbc.name }}</a>
+    <h1>Status History: {{ sbc.name }}</h1>
+    <span class="status-badge status-{{ sbc.status.value }}">Current: {{ sbc.status.value }}</span>
+</div>
+
+<div class="detail-card">
+    <h3>Status Timeline</h3>
+
+    {% if history %}
+    <table class="detail-table history-table">
+        <thead>
+            <tr>
+                <th>Timestamp</th>
+                <th>Status</th>
+                <th>Details</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for entry in history %}
+            <tr>
+                <td class="timestamp">{{ entry.logged_at }}</td>
+                <td>
+                    <span class="status-badge status-{{ entry.status }}">{{ entry.status }}</span>
+                </td>
+                <td class="details">{{ entry.details or '-' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="text-muted">No status history recorded yet.</p>
+    <p>Run <code>labctl health-check --update</code> or <code>labctl monitor</code> to start tracking status changes.</p>
+    {% endif %}
+</div>
+
+<style>
+.history-table {
+    width: 100%;
+}
+.history-table th {
+    text-align: left;
+    padding: 0.5rem;
+    border-bottom: 2px solid #ddd;
+}
+.history-table td {
+    padding: 0.5rem;
+    border-bottom: 1px solid #eee;
+}
+.history-table .timestamp {
+    white-space: nowrap;
+    font-family: monospace;
+    color: #666;
+}
+.history-table .details {
+    font-size: 0.9em;
+    color: #555;
+}
+</style>
+{% endblock %}
