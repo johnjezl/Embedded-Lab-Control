@@ -81,7 +81,7 @@ This document outlines the phased implementation of the Lab Controller System. E
   ```
 - ✅ Verify TCP access works
   - ✅ Test with `nc localhost <port>`
-  - ⏸️ Test with `picocom` or `minicom` (deferred to CLI implementation)
+  - ✅ Test with `labctl console` (replaces picocom/minicom)
 
 #### 1.4 Basic CLI Structure
 - ✅ Create CLI entry point `src/labctl/cli.py`
@@ -561,35 +561,38 @@ picocom or minicom (for direct serial access)
 
 ## Appendix B: Testing Strategy
 
-### Unit Tests
-- ☐ Database operations
-- ☐ Model serialization
-- ☐ Config loading
-- ☐ Power controller (mocked)
+### Unit Tests (171 total)
+- ✅ Database operations (test_database.py - 8 tests)
+- ✅ Model serialization (test_manager.py - 19 tests)
+- ✅ Config loading (test_config.py - 17 tests)
+- ✅ Power controller mocked (test_power.py - 19 tests)
+- ✅ Serial proxy (test_proxy.py - 26 tests)
+- ✅ Health checks (test_health.py - 28 tests)
+- ✅ ser2net config (test_ser2net.py - 10 tests)
 
 ### Integration Tests
-- ☐ CLI commands (with test database)
-- ☐ REST API endpoints
-- ☐ ser2net config generation
+- ✅ CLI commands (test_cli.py - 8 tests)
+- ✅ REST API endpoints (test_web.py - 36 tests)
 
 ### Manual Tests
-- ☐ Full workflow with real hardware
-- ☐ Power control with actual plugs
-- ☐ Serial console with real SBC
+- ⏸️ Full workflow with real hardware (pending hardware)
+- ⏸️ Power control with actual plugs (pending hardware)
+- ⏸️ Serial console with real SBC (pending hardware)
 
 ## Appendix C: Documentation
 
 ### User Documentation
-- ☐ README.md - Quick start
+- ✅ README.md - Basic overview
 - ☐ Installation guide
 - ☐ Configuration reference
-- ☐ CLI command reference
-- ☐ Hardware setup guide
+- ☐ CLI command reference (`labctl --help` available)
+- ✅ Hardware setup guide (HARDWARE_MAP.md)
 
 ### Developer Documentation
-- ☐ Architecture overview (this document)
-- ☐ API documentation
-- ☐ Contributing guide
+- ✅ Architecture overview (IMPLEMENTATION.md, ARCHITECTURE.md)
+- ☐ API documentation (endpoints work, docs not written)
+- ✅ Development rules (AGENT_RULES.md)
+- ✅ Decision log (DECISIONS.md)
 
 ## Appendix D: Version History
 
