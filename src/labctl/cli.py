@@ -14,7 +14,8 @@ import click
 from labctl import __version__
 from labctl.core.config import Config, load_config
 from labctl.core.manager import get_manager, ResourceManager
-from labctl.core.models import Status, PortType
+from labctl.core.models import Status, PortType, AddressType
+from labctl.serial.ser2net import Ser2NetPort, generate_ser2net_config
 
 
 def _get_manager(ctx: click.Context) -> ResourceManager:
@@ -454,6 +455,148 @@ def port_list_cmd(ctx: click.Context) -> None:
         sbc_name = sbc_names.get(port.sbc_id, f"#{port.sbc_id}")
         tcp = str(port.tcp_port) if port.tcp_port else "-"
         click.echo(f"{sbc_name:<15} {port.port_type.value:<10} {port.device_path:<25} {tcp:<8} {port.baud_rate:<10}")
+
+
+# --- Network Address Commands ---
+
+@main.group("network")
+def network_group() -> None:
+    """Manage network address assignments."""
+    pass
+
+
+@network_group.command("set")
+@click.argument("sbc_name")
+@click.argument("address_type", type=click.Choice([t.value for t in AddressType]))
+@click.argument("ip_address")
+@click.option("--mac", "-m", help="MAC address")
+@click.option("--hostname", "-h", help="Hostname")
+@click.pass_context
+def network_set_cmd(
+    ctx: click.Context,
+    sbc_name: str,
+    address_type: str,
+    ip_address: str,
+    mac: str | None,
+    hostname: str | None,
+) -> None:
+    """Set a network address for an SBC."""
+    manager = _get_manager(ctx)
+
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
+        sys.exit(1)
+
+    addr = manager.set_network_address(
+        sbc_id=sbc.id,
+        address_type=AddressType(address_type),
+        ip_address=ip_address,
+        mac_address=mac,
+        hostname=hostname,
+    )
+    click.echo(f"Set {address_type} address for {sbc_name}: {ip_address}")
+
+
+@network_group.command("remove")
+@click.argument("sbc_name")
+@click.argument("address_type", type=click.Choice([t.value for t in AddressType]))
+@click.pass_context
+def network_remove_cmd(ctx: click.Context, sbc_name: str, address_type: str) -> None:
+    """Remove a network address from an SBC."""
+    manager = _get_manager(ctx)
+
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
+        sys.exit(1)
+
+    if manager.remove_network_address(sbc.id, AddressType(address_type)):
+        click.echo(f"Removed {address_type} address from {sbc_name}")
+    else:
+        click.echo(f"No {address_type} address assigned to {sbc_name}")
+
+
+# --- ser2net Commands ---
+
+@main.group("ser2net")
+def ser2net_group() -> None:
+    """Manage ser2net configuration."""
+    pass
+
+
+@ser2net_group.command("generate")
+@click.option("--output", "-o", type=click.Path(path_type=Path), help="Output file (default: stdout)")
+@click.option("--install", is_flag=True, help="Install to /etc/ser2net.yaml")
+@click.pass_context
+def ser2net_generate_cmd(ctx: click.Context, output: Path | None, install: bool) -> None:
+    """Generate ser2net configuration from database."""
+    manager = _get_manager(ctx)
+    config: Config = ctx.obj["config"]
+
+    # Get all serial ports from database
+    db_ports = manager.list_serial_ports()
+
+    if not db_ports:
+        click.echo("No serial ports configured. Use 'labctl port assign' first.")
+        return
+
+    # Get SBC names for connection naming
+    sbc_names = {}
+    for sbc in manager.list_sbcs():
+        sbc_names[sbc.id] = sbc.name
+
+    # Convert to Ser2NetPort objects
+    ports = []
+    for db_port in db_ports:
+        sbc_name = sbc_names.get(db_port.sbc_id, f"sbc{db_port.sbc_id}")
+        port_name = f"{sbc_name}-{db_port.port_type.value}"
+
+        ports.append(Ser2NetPort(
+            name=port_name,
+            device=db_port.device_path,
+            tcp_port=db_port.tcp_port or 4000,
+            baud=db_port.baud_rate,
+        ))
+
+    # Generate config
+    config_content = generate_ser2net_config(ports)
+
+    if install:
+        # Write to /etc/ser2net.yaml
+        ser2net_path = Path("/etc/ser2net.yaml")
+        try:
+            ser2net_path.write_text(config_content)
+            click.echo(f"Installed ser2net config to {ser2net_path}")
+            click.echo("Run 'labctl ser2net reload' to apply changes")
+        except PermissionError:
+            click.echo("Error: Permission denied. Try with sudo.", err=True)
+            sys.exit(1)
+    elif output:
+        output.write_text(config_content)
+        click.echo(f"Wrote ser2net config to {output}")
+    else:
+        click.echo(config_content)
+
+
+@ser2net_group.command("reload")
+@click.pass_context
+def ser2net_reload_cmd(ctx: click.Context) -> None:
+    """Reload ser2net service."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "restart", "ser2net"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            click.echo("ser2net service restarted successfully")
+        else:
+            click.echo(f"Error restarting ser2net: {result.stderr}", err=True)
+            sys.exit(1)
+    except FileNotFoundError:
+        click.echo("Error: systemctl not found", err=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

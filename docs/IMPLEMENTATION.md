@@ -185,26 +185,26 @@ This document outlines the phased implementation of the Lab Controller System. E
   - ⏸️ Show unassigned `/dev/lab/*` devices
 
 #### 2.6 CLI Network Commands
-- ☐ Implement `labctl network set <sbc> <type> <ip>`
-  - ☐ Types: ethernet, wifi
-  - ☐ Options: `--mac`, `--hostname`
-- ☐ Implement `labctl network remove <sbc> <type>`
+- ✅ Implement `labctl network set <sbc> <type> <ip>`
+  - ✅ Types: ethernet, wifi
+  - ✅ Options: `--mac`, `--hostname`
+- ✅ Implement `labctl network remove <sbc> <type>`
 
 #### 2.7 ser2net Integration
-- ☐ Update ser2net config generator
-  - ☐ Read assignments from database
-  - ☐ Generate complete config
-- ☐ Implement `labctl ser2net generate`
-  - ☐ Output to stdout or file
-  - ☐ `--install` flag to copy to `/etc/ser2net.yaml`
-- ☐ Implement `labctl ser2net reload`
-  - ☐ Restart ser2net service
+- ✅ Update ser2net config generator
+  - ✅ Read assignments from database
+  - ✅ Generate complete config
+- ✅ Implement `labctl ser2net generate`
+  - ✅ Output to stdout or file
+  - ✅ `--install` flag to copy to `/etc/ser2net.yaml`
+- ✅ Implement `labctl ser2net reload`
+  - ✅ Restart ser2net service
 
 ### Acceptance Criteria
-- ☐ SBC records persist across restarts
-- ☐ `labctl add/remove/list/info` work correctly
-- ☐ Port assignments update ser2net config
-- ☐ `labctl connect <sbc>` works with named SBCs
+- ✅ SBC records persist across restarts
+- ✅ `labctl add/remove/list/info` work correctly
+- ✅ Port assignments update ser2net config
+- ⏸️ `labctl connect <sbc>` works with named SBCs (deferred to M4)
 
 ---
 

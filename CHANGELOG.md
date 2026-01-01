@@ -66,6 +66,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     - `labctl port list` - all port assignments
   - Added 27 new tests (8 database, 19 manager)
   - Total: 62 tests passing
+- M2.6-2.7 Network and ser2net Commands (2025-12-31)
+  - Added `labctl network set <sbc> <type> <ip>` with --mac, --hostname options
+  - Added `labctl network remove <sbc> <type>`
+  - Added `labctl ser2net generate` - generates config from database
+    - Supports --output file and --install flag
+  - Added `labctl ser2net reload` - restarts ser2net service
+  - **Milestone 2 Complete!**
 
 ### Changed
 - Moved documentation files to docs/ folder (AGENT_RULES.md, IMPLEMENTATION.md, DECISIONS.md)
