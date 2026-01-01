@@ -50,22 +50,22 @@ This document outlines the phased implementation of the Lab Controller System. E
   - ✅ Create `src/labctl/__init__.py`
 
 #### 1.2 udev Rules System
-- ☐ Create discovery script `scripts/discover-usb-serial.sh`
-  - ☐ Enumerate all connected ttyUSB/ttyACM devices
-  - ☐ Extract KERNELS path for each
-  - ☐ Output in format suitable for rule generation
-- ☐ Create udev rule template generator `scripts/generate-udev-rules.py`
-  - ☐ Input: mapping of physical port to logical name
-  - ☐ Output: `/etc/udev/rules.d/99-lab-serial.rules`
-- ☐ Document physical hub layout
-  - ☐ Create `docs/HARDWARE_MAP.md`
-  - ☐ Diagram of hub topology
-  - ☐ Port assignment table
-- ☐ Create installation script `scripts/install-udev.sh`
-  - ☐ Copy rules to `/etc/udev/rules.d/`
-  - ☐ Reload udev rules
-  - ☐ Trigger udev to create symlinks
-- ☐ Verify symlinks created under `/dev/lab/`
+- ✅ Create discovery script `scripts/discover-usb-serial.sh`
+  - ✅ Enumerate all connected ttyUSB/ttyACM devices
+  - ✅ Extract KERNELS path for each
+  - ✅ Output in format suitable for rule generation (table and JSON)
+- ✅ Create udev rule template generator `scripts/generate-udev-rules.py`
+  - ✅ Input: mapping of physical port to logical name (YAML)
+  - ✅ Output: `/etc/udev/rules.d/99-lab-serial.rules`
+- ✅ Document physical hub layout
+  - ✅ Create `docs/HARDWARE_MAP.md`
+  - ✅ Diagram of hub topology
+  - ✅ Port assignment table
+- ✅ Create installation script `scripts/install-udev.sh`
+  - ✅ Copy rules to `/etc/udev/rules.d/`
+  - ✅ Reload udev rules
+  - ✅ Trigger udev to create symlinks
+- ✅ Verify symlinks created under `/dev/lab/`
 
 #### 1.3 ser2net Configuration
 - ☐ Create ser2net config generator `src/labctl/serial/ser2net.py`

@@ -1,0 +1,35 @@
+# Example port mapping for udev rule generation
+#
+# This file maps physical USB paths to logical device names.
+# USB paths can be discovered using: ./scripts/discover-usb-serial.sh
+#
+# Copy this file to port-mapping.yaml and customize for your setup.
+
+ports:
+  # ST-Link debugger on hub port 1-10.1.2
+  - usb_path: "1-10.1.2"
+    name: "stlink-debug"
+    vendor: "STMicroelectronics"
+    model: "STM32_STLink"
+
+  # Console ports for SBCs
+  - usb_path: "1-10.1.3"
+    name: "sbc1-console"
+    vendor: "Silicon_Labs"
+    model: "CP2102"
+
+  - usb_path: "1-10.1.4"
+    name: "sbc2-console"
+    vendor: "Silicon_Labs"
+    model: "CP2102"
+
+  # Additional serial adapters
+  - usb_path: "1-10.3"
+    name: "dev-serial1"
+    vendor: "QinHeng"
+    model: "CH340"
+
+  - usb_path: "1-10.4"
+    name: "dev-serial2"
+    vendor: "QinHeng"
+    model: "CH340"
