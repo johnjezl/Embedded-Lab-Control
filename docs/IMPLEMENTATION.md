@@ -182,7 +182,7 @@ This document outlines the phased implementation of the Lab Controller System. E
 - ✅ Implement `labctl port remove <sbc> <type>`
 - ✅ Implement `labctl port list`
   - ✅ Show all port assignments
-  - ⏸️ Show unassigned `/dev/lab/*` devices
+  - ✅ Show unassigned `/dev/lab/*` devices (`--unassigned` flag)
 
 #### 2.6 CLI Network Commands
 - ✅ Implement `labctl network set <sbc> <type> <ip>`
@@ -204,7 +204,7 @@ This document outlines the phased implementation of the Lab Controller System. E
 - ✅ SBC records persist across restarts
 - ✅ `labctl add/remove/list/info` work correctly
 - ✅ Port assignments update ser2net config
-- ⏸️ `labctl connect <sbc>` works with named SBCs (deferred to M4)
+- ✅ `labctl console <sbc>` works with named SBCs (implemented in M4)
 
 ---
 
@@ -279,22 +279,22 @@ This document outlines the phased implementation of the Lab Controller System. E
   - ✅ Auto-detect port type (prefer console)
   - ✅ `--type` option for jtag/debug
   - ✅ Better error messages
-- ⏸️ Implement `labctl log <sbc>` (deferred to M7)
-  - ⏸️ Connect and log to file
-  - ⏸️ `--follow` for continuous output
-  - ⏸️ `--lines` to capture N lines then exit
-  - ⏸️ Timestamped output
+- ✅ Implement `labctl log <sbc>`
+  - ✅ Connect and log to file
+  - ✅ `--follow` for continuous output
+  - ✅ `--lines` to capture N lines then exit
+  - ✅ Timestamped output
 
 #### 4.2 Status Commands
 - ✅ Implement `labctl status`
   - ✅ Overview of all SBCs
   - ✅ Color-coded status (green/red/yellow)
-  - ⏸️ `--watch` for continuous update (deferred)
-- ⏸️ Implement `labctl health-check` (deferred to M7)
-  - ⏸️ Ping all SBCs
-  - ⏸️ Check serial port availability
-  - ⏸️ Check power plug connectivity
-  - ⏸️ Summary report
+  - ✅ `--watch` for continuous update
+- ✅ Implement `labctl health-check` (implemented in M7)
+  - ✅ Ping all SBCs
+  - ✅ Check serial port availability
+  - ✅ Check power plug connectivity
+  - ✅ Summary report
 
 #### 4.3 SSH Integration
 - ✅ Implement `labctl ssh <sbc>`
@@ -313,9 +313,9 @@ This document outlines the phased implementation of the Lab Controller System. E
 
 #### 4.5 CLI Polish
 - ✅ Add `--verbose` global flag (already exists)
-- ⏸️ Add `--quiet` global flag (deferred)
+- ✅ Add `--quiet` global flag
 - ✅ Improve help text for all commands
-- ⏸️ Add command aliases where sensible (deferred)
+- ✅ Add command aliases (ls=list, rm=remove, show=info, on/off=power)
 - ✅ Add shell completion support
   - ✅ Bash completion
   - ✅ Zsh completion
@@ -369,7 +369,7 @@ This document outlines the phased implementation of the Lab Controller System. E
 - ✅ `GET /api/sbcs/<name>/power` - Power status
 
 #### 5.4 REST API - Serial Endpoints
-- ⏸️ `GET /api/sbcs/<name>/console/info` - Console connection info (deferred)
+- ✅ `GET /api/sbcs/<name>/console/info` - Console connection info
 - ✅ `GET /api/ports` - List available serial ports
 
 #### 5.5 REST API - Status Endpoints
@@ -384,9 +384,9 @@ This document outlines the phased implementation of the Lab Controller System. E
   - ✅ Quick action buttons
 - ✅ Create SBC detail page `templates/sbc_detail.html`
   - ✅ All SBC information
-  - ⏸️ Edit form (deferred)
-  - ⏸️ Port/network/plug assignment forms (deferred)
-- ⏸️ Create settings page `templates/settings.html` (deferred)
+  - ✅ Edit form
+  - ✅ Port/network/plug assignment forms
+- ✅ Create settings page `templates/settings.html`
 
 #### 5.7 Web Dashboard - Styling
 - ✅ Create CSS `static/css/style.css`
@@ -403,18 +403,18 @@ This document outlines the phased implementation of the Lab Controller System. E
 - ⏸️ Update dashboard without refresh
 
 #### 5.9 Web Console (xterm.js)
-- ⏸️ Add xterm.js to static assets (deferred to M6)
-- ⏸️ Create console page `templates/console.html`
-- ⏸️ Implement WebSocket bridge to ser2net
-- ⏸️ Bidirectional data flow
+- ✅ Add xterm.js to static assets (implemented in M6)
+- ✅ Create console page `templates/console.html`
+- ✅ Implement WebSocket bridge to ser2net
+- ✅ Bidirectional data flow
 - ⏸️ Multiple console tabs
 
 ### Acceptance Criteria
 - ✅ REST API fully functional
 - ✅ Dashboard shows all SBCs with status
 - ✅ Can control power from web interface
-- ⏸️ Web-based serial console works (deferred to M6)
-- ⏸️ Real-time status updates (deferred to M6)
+- ✅ Web-based serial console works (implemented in M6)
+- ⏸️ Real-time WebSocket status updates (would need Flask-SocketIO)
 
 ---
 
@@ -465,7 +465,7 @@ This document outlines the phased implementation of the Lab Controller System. E
 #### 6.6 Session Logging (Optional)
 - ✅ Log all serial traffic to files
 - ✅ Configurable log directory
-- ⏸️ Log rotation - deferred to M7
+- ✅ Log rotation with compression and cleanup
 
 ### Acceptance Criteria
 - ✅ Multiple CLI clients can view same console
@@ -488,7 +488,7 @@ This document outlines the phased implementation of the Lab Controller System. E
   - ✅ Configurable timeout
 - ✅ Implement serial probe
   - ✅ Check if port opens successfully
-  - ⏸️ Optional: Send probe string, check response (deferred)
+  - ✅ Optional: Send probe string, check response
 - ✅ Implement power check
   - ✅ Query plug status
 
@@ -511,7 +511,7 @@ This document outlines the phased implementation of the Lab Controller System. E
 - ✅ CLI command `labctl monitor`
   - ✅ `--foreground` for debug
   - ⏸️ `--daemon` for background (use systemd instead)
-- ⏸️ Systemd service file (deferred)
+- ✅ Systemd service file
 
 #### 7.5 Alerting (Future)
 - ✅ Define alert conditions
@@ -525,7 +525,7 @@ This document outlines the phased implementation of the Lab Controller System. E
 
 #### 7.6 Status Dashboard Enhancements
 - ✅ Historical status view
-- ⏸️ Uptime tracking (deferred)
+- ✅ Uptime tracking
 - ✅ Status timeline
 
 ### Acceptance Criteria

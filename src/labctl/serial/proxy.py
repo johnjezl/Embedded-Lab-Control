@@ -44,20 +44,136 @@ class ProxyClient:
         return "unknown"
 
 
-class SessionLogger:
-    """Logs all serial traffic to timestamped files."""
+class LogRotator:
+    """Manages log rotation for session logs.
 
-    def __init__(self, log_dir: Path, session_name: str):
+    Rotates logs based on:
+    - Size (max_size_mb)
+    - Age (max_age_days)
+    """
+
+    def __init__(
+        self,
+        log_dir: Path,
+        max_size_mb: float = 10.0,
+        max_age_days: int = 30,
+        compress: bool = True,
+    ):
+        self.log_dir = log_dir
+        self.max_size_bytes = int(max_size_mb * 1024 * 1024)
+        self.max_age_days = max_age_days
+        self.compress = compress
+
+    def should_rotate(self, log_file: Path) -> bool:
+        """Check if log file should be rotated based on size."""
+        if not log_file.exists():
+            return False
+        return log_file.stat().st_size >= self.max_size_bytes
+
+    def rotate(self, log_file: Path) -> Optional[Path]:
+        """Rotate a log file.
+
+        Renames current log to .1, compresses old rotated logs.
+        Returns path to rotated file or None if no rotation needed.
+        """
+        import gzip
+        import shutil
+
+        if not log_file.exists():
+            return None
+
+        # Find next rotation number
+        base = log_file.stem
+        suffix = log_file.suffix
+
+        for i in range(99, 0, -1):
+            old_path = self.log_dir / f"{base}.{i}{suffix}"
+            new_path = self.log_dir / f"{base}.{i + 1}{suffix}"
+            old_gz = self.log_dir / f"{base}.{i}{suffix}.gz"
+            new_gz = self.log_dir / f"{base}.{i + 1}{suffix}.gz"
+
+            if old_gz.exists():
+                if i + 1 <= 99:
+                    shutil.move(old_gz, new_gz)
+            elif old_path.exists():
+                if i + 1 <= 99:
+                    shutil.move(old_path, new_path)
+
+        # Rotate current to .1
+        rotated = self.log_dir / f"{base}.1{suffix}"
+        shutil.move(log_file, rotated)
+
+        # Compress rotated log
+        if self.compress:
+            with open(rotated, "rb") as f_in:
+                with gzip.open(f"{rotated}.gz", "wb") as f_out:
+                    shutil.copyfileobj(f_in, f_out)
+            rotated.unlink()
+            rotated = Path(f"{rotated}.gz")
+
+        return rotated
+
+    def cleanup_old_logs(self) -> int:
+        """Remove logs older than max_age_days.
+
+        Returns number of files deleted.
+        """
+        import time
+
+        if not self.log_dir.exists():
+            return 0
+
+        cutoff_time = time.time() - (self.max_age_days * 24 * 60 * 60)
+        deleted = 0
+
+        for log_file in self.log_dir.glob("*.log*"):
+            try:
+                if log_file.stat().st_mtime < cutoff_time:
+                    log_file.unlink()
+                    deleted += 1
+                    logger.debug(f"Deleted old log: {log_file}")
+            except Exception as e:
+                logger.warning(f"Failed to delete {log_file}: {e}")
+
+        return deleted
+
+
+class SessionLogger:
+    """Logs all serial traffic to timestamped files.
+
+    Supports log rotation based on size and cleanup of old logs.
+    """
+
+    def __init__(
+        self,
+        log_dir: Path,
+        session_name: str,
+        max_size_mb: float = 10.0,
+        max_age_days: int = 30,
+    ):
         self.log_dir = log_dir
         self.session_name = session_name
         self.log_file: Optional[Path] = None
         self._file_handle = None
+        self._rotator = LogRotator(
+            log_dir,
+            max_size_mb=max_size_mb,
+            max_age_days=max_age_days,
+        )
+        self._bytes_written = 0
 
     def start(self) -> Path:
         """Start logging session, returns log file path."""
         self.log_dir.mkdir(parents=True, exist_ok=True)
+
+        # Cleanup old logs on start
+        deleted = self._rotator.cleanup_old_logs()
+        if deleted > 0:
+            logger.info(f"Cleaned up {deleted} old log files")
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.log_file = self.log_dir / f"{self.session_name}_{timestamp}.log"
+        self._bytes_written = 0
 
         self._file_handle = open(self.log_file, "a", buffering=1)  # Line buffered
         self._write_header()
@@ -72,22 +188,44 @@ class SessionLogger:
             self._file_handle.write("# Direction: >> = from device, << = to device\n")
             self._file_handle.write("#" + "=" * 60 + "\n")
 
+    def _check_rotation(self) -> None:
+        """Check if rotation is needed and perform if so."""
+        if self.log_file and self._rotator.should_rotate(self.log_file):
+            # Close current file
+            if self._file_handle:
+                self._file_handle.close()
+
+            # Rotate
+            rotated = self._rotator.rotate(self.log_file)
+            logger.info(f"Rotated log to {rotated}")
+
+            # Start new file
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.log_file = self.log_dir / f"{self.session_name}_{timestamp}.log"
+            self._file_handle = open(self.log_file, "a", buffering=1)
+            self._write_header()
+            self._bytes_written = 0
+
     def log_output(self, data: bytes) -> None:
         """Log data received from device (output)."""
         if self._file_handle:
             timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
             # Escape non-printable bytes for readability
             text = data.decode("utf-8", errors="replace")
-            self._file_handle.write(f"[{timestamp}] >> {repr(text)}\n")
+            line = f"[{timestamp}] >> {repr(text)}\n"
+            self._file_handle.write(line)
+            self._bytes_written += len(line.encode())
+            self._check_rotation()
 
     def log_input(self, data: bytes, client_id: str) -> None:
         """Log data sent to device (input)."""
         if self._file_handle:
             timestamp = datetime.now().strftime("%H:%M:%S.%f")[:-3]
             text = data.decode("utf-8", errors="replace")
-            self._file_handle.write(
-                f"[{timestamp}] << [{client_id[:8]}] {repr(text)}\n"
-            )
+            line = f"[{timestamp}] << [{client_id[:8]}] {repr(text)}\n"
+            self._file_handle.write(line)
+            self._bytes_written += len(line.encode())
+            self._check_rotation()
 
     def stop(self) -> None:
         """Stop logging session."""

@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+
+{% block title %}Settings - Lab Controller{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <a href="{{ url_for('views.index') }}" class="back-link">&larr; Back to Dashboard</a>
+    <h1>Settings</h1>
+</div>
+
+<div class="detail-grid">
+    <!-- Database Settings -->
+    <div class="detail-card">
+        <h3>Database</h3>
+        <table class="detail-table">
+            <tr><th>Path</th><td><code>{{ config.database_path if config else 'Not configured' }}</code></td></tr>
+        </table>
+    </div>
+
+    <!-- Serial Settings -->
+    <div class="detail-card">
+        <h3>Serial</h3>
+        <table class="detail-table">
+            <tr><th>Device Directory</th><td><code>{{ config.serial.dev_dir if config else '/dev/lab' }}</code></td></tr>
+            <tr><th>Default Baud</th><td>{{ config.serial.default_baud if config else '115200' }}</td></tr>
+        </table>
+    </div>
+
+    <!-- ser2net Settings -->
+    <div class="detail-card">
+        <h3>ser2net</h3>
+        <table class="detail-table">
+            <tr><th>Enabled</th><td>{{ 'Yes' if (config and config.ser2net.enabled) else 'No' }}</td></tr>
+            <tr><th>Config File</th><td><code>{{ config.ser2net.config_file if config else '/etc/ser2net.yaml' }}</code></td></tr>
+            <tr><th>Base TCP Port</th><td>{{ config.ser2net.base_tcp_port if config else '4000' }}</td></tr>
+        </table>
+    </div>
+
+    <!-- Proxy Settings -->
+    <div class="detail-card">
+        <h3>Proxy</h3>
+        <table class="detail-table">
+            <tr><th>Port Base</th><td>{{ config.proxy.port_base if config else '5000' }}</td></tr>
+            <tr><th>Port Range</th><td>{{ config.proxy.port_range if config else '100' }}</td></tr>
+            <tr><th>Write Policy</th><td>{{ config.proxy.write_policy if config else 'first' }}</td></tr>
+            <tr><th>Max Clients</th><td>{{ config.proxy.max_clients if config else '10' }}</td></tr>
+            <tr><th>Log Directory</th><td><code>{{ config.proxy.log_dir if config else '~/.local/share/labctl/logs' }}</code></td></tr>
+        </table>
+    </div>
+
+    <!-- Health Settings -->
+    <div class="detail-card">
+        <h3>Health Monitoring</h3>
+        <table class="detail-table">
+            <tr><th>Check Interval</th><td>{{ config.health.check_interval if config else '60' }}s</td></tr>
+            <tr><th>Ping Timeout</th><td>{{ config.health.ping_timeout if config else '2.0' }}s</td></tr>
+            <tr><th>Serial Timeout</th><td>{{ config.health.serial_timeout if config else '2.0' }}s</td></tr>
+            <tr><th>Status Retention</th><td>{{ config.health.status_retention_days if config else '30' }} days</td></tr>
+            <tr><th>Alert on Offline</th><td>{{ 'Yes' if (config and config.health.alert_on_offline) else 'No' }}</td></tr>
+            <tr><th>Alert on Power Change</th><td>{{ 'Yes' if (config and config.health.alert_on_power_change) else 'No' }}</td></tr>
+            <tr><th>Alert Log</th><td><code>{{ config.health.alert_log_path if config else '~/.local/share/labctl/alerts.log' }}</code></td></tr>
+        </table>
+    </div>
+
+    <!-- Configuration File -->
+    <div class="detail-card">
+        <h3>Configuration File</h3>
+        <p class="text-muted">Settings are loaded from <code>~/.config/labctl/config.yaml</code></p>
+        <p class="text-muted">Environment variables can override settings:</p>
+        <ul class="text-muted">
+            <li><code>LABCTL_DEV_DIR</code> - Device directory</li>
+            <li><code>LABCTL_BASE_TCP_PORT</code> - Base TCP port</li>
+            <li><code>LABCTL_DATABASE</code> - Database path</li>
+        </ul>
+    </div>
+</div>
+{% endblock %}

@@ -18,6 +18,55 @@ from labctl.core.models import AddressType, PlugType, PortType, Status
 from labctl.power import PowerController, PowerState
 from labctl.serial.ser2net import Ser2NetPort, generate_ser2net_config
 
+# Command aliases mapping
+ALIASES = {
+    "ls": "list",
+    "rm": "remove",
+    "delete": "remove",
+    "show": "info",
+    "on": "power on",
+    "off": "power off",
+}
+
+
+class AliasedGroup(click.Group):
+    """Custom Click group that supports command aliases."""
+
+    def get_command(self, ctx: click.Context, cmd_name: str) -> click.Command | None:
+        # First try the actual command
+        cmd = click.Group.get_command(self, ctx, cmd_name)
+        if cmd is not None:
+            return cmd
+
+        # Check for alias
+        if cmd_name in ALIASES:
+            actual_cmd = ALIASES[cmd_name]
+            # Handle multi-word aliases (like "power on")
+            if " " in actual_cmd:
+                # For multi-word, we need to get the subcommand
+                parts = actual_cmd.split()
+                cmd = click.Group.get_command(self, ctx, parts[0])
+                if cmd and isinstance(cmd, click.Group):
+                    return cmd.get_command(ctx, parts[1])
+            else:
+                return click.Group.get_command(self, ctx, actual_cmd)
+
+        return None
+
+    def resolve_command(
+        self, ctx: click.Context, args: list[str]
+    ) -> tuple[str | None, click.Command | None, list[str]]:
+        # Handle multi-word aliases before resolution
+        if args and args[0] in ALIASES:
+            alias = args[0]
+            actual_cmd = ALIASES[alias]
+            if " " in actual_cmd:
+                # Replace alias with the actual command words
+                parts = actual_cmd.split()
+                args = parts + args[1:]
+
+        return super().resolve_command(ctx, args)
+
 
 def _get_manager(ctx: click.Context) -> ResourceManager:
     """Get or create resource manager from context."""
@@ -27,9 +76,10 @@ def _get_manager(ctx: click.Context) -> ResourceManager:
     return ctx.obj["manager"]
 
 
-@click.group()
+@click.group(cls=AliasedGroup)
 @click.version_option(version=__version__, prog_name="labctl")
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose output")
+@click.option("-q", "--quiet", is_flag=True, help="Suppress non-essential output")
 @click.option(
     "-c",
     "--config",
@@ -38,10 +88,23 @@ def _get_manager(ctx: click.Context) -> ResourceManager:
     help="Path to config file",
 )
 @click.pass_context
-def main(ctx: click.Context, verbose: bool, config_path: Path | None) -> None:
-    """Lab Controller - Manage embedded development lab resources."""
+def main(
+    ctx: click.Context, verbose: bool, quiet: bool, config_path: Path | None
+) -> None:
+    """Lab Controller - Manage embedded development lab resources.
+
+    \b
+    Aliases:
+      ls     -> list
+      rm     -> remove
+      delete -> remove
+      show   -> info
+      on     -> power on
+      off    -> power off
+    """
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
+    ctx.obj["quiet"] = quiet
     ctx.obj["config"] = load_config(config_path)
 
 
@@ -465,33 +528,69 @@ def port_remove_cmd(ctx: click.Context, sbc_name: str, port_type: str) -> None:
 
 
 @port_group.command("list")
+@click.option(
+    "--unassigned",
+    "-u",
+    is_flag=True,
+    help="Also show unassigned /dev/lab/* devices",
+)
 @click.pass_context
-def port_list_cmd(ctx: click.Context) -> None:
+def port_list_cmd(ctx: click.Context, unassigned: bool) -> None:
     """List all serial port assignments."""
     manager = _get_manager(ctx)
+    config: Config = ctx.obj["config"]
 
     ports = manager.list_serial_ports()
-
-    if not ports:
-        click.echo(
-            "No serial ports assigned. Use 'labctl port assign' to assign ports."
-        )
-        return
 
     # Get SBC names for display
     sbc_names = {}
     for sbc in manager.list_sbcs():
         sbc_names[sbc.id] = sbc.name
 
-    click.echo(f"{'SBC':<15} {'TYPE':<10} {'DEVICE':<25} {'TCP':<8} {'BAUD':<10}")
-    click.echo("-" * 68)
+    # Get assigned device paths
+    assigned_devices = {p.device_path for p in ports}
 
-    for port in ports:
-        sbc_name = sbc_names.get(port.sbc_id, f"#{port.sbc_id}")
-        tcp = str(port.tcp_port) if port.tcp_port else "-"
-        line = f"{sbc_name:<15} {port.port_type.value:<10} {port.device_path:<25} "
-        line += f"{tcp:<8} {port.baud_rate:<10}"
-        click.echo(line)
+    if ports:
+        click.echo(f"{'SBC':<15} {'TYPE':<10} {'DEVICE':<25} {'TCP':<8} {'BAUD':<10}")
+        click.echo("-" * 68)
+
+        for port in ports:
+            sbc_name = sbc_names.get(port.sbc_id, f"#{port.sbc_id}")
+            tcp = str(port.tcp_port) if port.tcp_port else "-"
+            line = f"{sbc_name:<15} {port.port_type.value:<10} {port.device_path:<25} "
+            line += f"{tcp:<8} {port.baud_rate:<10}"
+            click.echo(line)
+    else:
+        click.echo(
+            "No serial ports assigned. Use 'labctl port assign' to assign ports."
+        )
+
+    # Show unassigned devices
+    if unassigned:
+        dev_dir = config.serial.dev_dir
+        unassigned_devices = []
+
+        if dev_dir.exists():
+            for entry in sorted(dev_dir.iterdir()):
+                if entry.is_symlink():
+                    device_path = str(entry)
+                    if device_path not in assigned_devices:
+                        # Get target for display
+                        target = os.readlink(entry)
+                        if not target.startswith("/"):
+                            target = str((entry.parent / target).resolve())
+                        unassigned_devices.append(
+                            {"name": entry.name, "path": device_path, "target": target}
+                        )
+
+        if unassigned_devices:
+            click.echo(f"\nUnassigned devices in {dev_dir}/:")
+            click.echo(f"{'NAME':<25} {'TARGET':<20}")
+            click.echo("-" * 45)
+            for dev in unassigned_devices:
+                click.echo(f"{dev['name']:<25} {dev['target']:<20}")
+        else:
+            click.echo(f"\nNo unassigned devices in {dev_dir}/")
 
 
 # --- Network Address Commands ---
@@ -868,6 +967,166 @@ def power_all_cmd(
 # --- Console and SSH Commands ---
 
 
+@main.command("log")
+@click.argument("sbc_name")
+@click.option(
+    "--type",
+    "-t",
+    "port_type",
+    type=click.Choice([t.value for t in PortType]),
+    default="console",
+    help="Port type (default: console)",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(path_type=Path),
+    help="Output log file (default: <sbc>-<timestamp>.log)",
+)
+@click.option(
+    "--follow",
+    "-f",
+    is_flag=True,
+    help="Continuous output (like tail -f)",
+)
+@click.option(
+    "--lines",
+    "-n",
+    type=int,
+    help="Capture N lines then exit",
+)
+@click.option(
+    "--timestamp/--no-timestamp",
+    default=True,
+    help="Add timestamps to output (default: on)",
+)
+@click.pass_context
+def log_cmd(
+    ctx: click.Context,
+    sbc_name: str,
+    port_type: str,
+    output: Path | None,
+    follow: bool,
+    lines: int | None,
+    timestamp: bool,
+) -> None:
+    """Capture serial output to a log file.
+
+    Connects to an SBC's serial port and logs all output to a file.
+    By default, creates a timestamped log file in the current directory.
+
+    \b
+    Examples:
+      labctl log pi4                     # Log to pi4-<timestamp>.log
+      labctl log pi4 -o serial.log       # Log to specific file
+      labctl log pi4 -f                  # Follow mode (continuous)
+      labctl log pi4 -n 100              # Capture 100 lines then exit
+    """
+    import select
+    import socket
+    from datetime import datetime
+
+    manager = _get_manager(ctx)
+
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
+        sys.exit(1)
+
+    # Find the requested port type
+    target_type = PortType(port_type)
+    port = None
+    for p in sbc.serial_ports:
+        if p.port_type == target_type:
+            port = p
+            break
+
+    if not port:
+        click.echo(f"Error: No {port_type} port assigned to '{sbc_name}'", err=True)
+        sys.exit(1)
+
+    if not port.tcp_port:
+        click.echo("Error: Port has no TCP port configured for logging", err=True)
+        sys.exit(1)
+
+    # Determine output file
+    if output is None:
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+        output = Path(f"{sbc_name}-{ts}.log")
+
+    click.echo(f"Logging {sbc_name} to {output}")
+    click.echo(f"Connecting to localhost:{port.tcp_port}...")
+    if lines:
+        click.echo(f"Will capture {lines} lines then exit")
+    else:
+        click.echo("Press Ctrl+C to stop")
+
+    line_count = 0
+    buffer = b""
+
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect(("localhost", port.tcp_port))
+        sock.setblocking(False)
+
+        with open(output, "a") as f:
+            while True:
+                # Use select for non-blocking read
+                readable, _, _ = select.select([sock], [], [], 1.0)
+                if readable:
+                    try:
+                        data = sock.recv(4096)
+                        if not data:
+                            click.echo("\nConnection closed by remote")
+                            break
+
+                        buffer += data
+
+                        # Process complete lines
+                        while b"\n" in buffer:
+                            line, buffer = buffer.split(b"\n", 1)
+                            try:
+                                line_str = line.decode(
+                                    "utf-8", errors="replace"
+                                ).rstrip()
+                            except Exception:
+                                line_str = line.decode("latin-1").rstrip()
+
+                            if timestamp:
+                                ts_str = datetime.now().strftime(
+                                    "%Y-%m-%d %H:%M:%S.%f"
+                                )[:-3]
+                                log_line = f"[{ts_str}] {line_str}\n"
+                            else:
+                                log_line = f"{line_str}\n"
+
+                            f.write(log_line)
+                            f.flush()
+
+                            if follow:
+                                click.echo(log_line, nl=False)
+
+                            line_count += 1
+
+                            if lines and line_count >= lines:
+                                click.echo(f"\nCaptured {line_count} lines")
+                                return
+
+                    except BlockingIOError:
+                        pass
+
+    except ConnectionRefusedError:
+        click.echo(f"Error: Connection refused to localhost:{port.tcp_port}", err=True)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        click.echo(f"\nLogged {line_count} lines to {output}")
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
 @main.command("console")
 @click.argument("sbc_name")
 @click.option(
@@ -949,55 +1208,104 @@ def ssh_cmd(ctx: click.Context, sbc_name: str, user: str | None) -> None:
 
 @main.command("status")
 @click.option("--project", "-p", help="Filter by project name")
+@click.option(
+    "--watch",
+    "-w",
+    is_flag=True,
+    help="Continuously update status display",
+)
+@click.option(
+    "--interval",
+    "-i",
+    type=int,
+    default=5,
+    help="Watch interval in seconds (default: 5)",
+)
 @click.pass_context
-def status_cmd(ctx: click.Context, project: str | None) -> None:
-    """Show status overview of all SBCs."""
-    manager = _get_manager(ctx)
+def status_cmd(
+    ctx: click.Context,
+    project: str | None,
+    watch: bool,
+    interval: int,
+) -> None:
+    """Show status overview of all SBCs.
 
-    sbcs = manager.list_sbcs(project=project)
+    \b
+    Examples:
+      labctl status              # Show status once
+      labctl status -w           # Watch mode (updates every 5s)
+      labctl status -w -i 10     # Watch mode with 10s interval
+    """
+    import time
 
-    if not sbcs:
-        filter_msg = f" in project '{project}'" if project else ""
-        click.echo(f"No SBCs configured{filter_msg}.")
-        return
+    def display_status():
+        manager = _get_manager(ctx)
+        sbcs = manager.list_sbcs(project=project)
 
-    # Status colors (ANSI)
-    colors = {
-        Status.ONLINE: "\033[32m",  # Green
-        Status.OFFLINE: "\033[31m",  # Red
-        Status.BOOTING: "\033[33m",  # Yellow
-        Status.ERROR: "\033[31m",  # Red
-        Status.UNKNOWN: "\033[90m",  # Gray
-    }
-    reset = "\033[0m"
+        if not sbcs:
+            filter_msg = f" in project '{project}'" if project else ""
+            click.echo(f"No SBCs configured{filter_msg}.")
+            return False
 
-    click.echo(f"{'NAME':<15} {'PROJECT':<12} {'STATUS':<12} {'IP':<15} {'POWER':<10}")
-    click.echo("-" * 64)
-
-    for sbc in sbcs:
-        color = colors.get(sbc.status, "")
-        status_str = f"{color}{sbc.status.value:<12}{reset}"
-        ip = sbc.primary_ip or "-"
-        project_name = sbc.project or "-"
-
-        # Get power state if plug assigned
-        power = "-"
-        if sbc.power_plug:
-            try:
-                controller = PowerController.from_plug(sbc.power_plug)
-                state = controller.get_state()
-                if state == PowerState.ON:
-                    power = f"\033[32mON{reset}"
-                elif state == PowerState.OFF:
-                    power = f"\033[31mOFF{reset}"
-                else:
-                    power = "?"
-            except Exception:
-                power = "err"
+        # Status colors (ANSI)
+        colors = {
+            Status.ONLINE: "\033[32m",  # Green
+            Status.OFFLINE: "\033[31m",  # Red
+            Status.BOOTING: "\033[33m",  # Yellow
+            Status.ERROR: "\033[31m",  # Red
+            Status.UNKNOWN: "\033[90m",  # Gray
+        }
+        reset = "\033[0m"
 
         click.echo(
-            f"{sbc.name:<15} {project_name:<12} {status_str} {ip:<15} {power:<10}"
+            f"{'NAME':<15} {'PROJECT':<12} {'STATUS':<12} {'IP':<15} {'POWER':<10}"
         )
+        click.echo("-" * 64)
+
+        for sbc in sbcs:
+            color = colors.get(sbc.status, "")
+            status_str = f"{color}{sbc.status.value:<12}{reset}"
+            ip = sbc.primary_ip or "-"
+            project_name = sbc.project or "-"
+
+            # Get power state if plug assigned
+            power = "-"
+            if sbc.power_plug:
+                try:
+                    controller = PowerController.from_plug(sbc.power_plug)
+                    state = controller.get_state()
+                    if state == PowerState.ON:
+                        power = f"\033[32mON{reset}"
+                    elif state == PowerState.OFF:
+                        power = f"\033[31mOFF{reset}"
+                    else:
+                        power = "?"
+                except Exception:
+                    power = "err"
+
+            click.echo(
+                f"{sbc.name:<15} {project_name:<12} {status_str} {ip:<15} {power:<10}"
+            )
+
+        return True
+
+    if watch:
+        from datetime import datetime
+
+        click.echo("Watching status (Ctrl+C to stop)...\n")
+        try:
+            while True:
+                # Clear screen (ANSI escape)
+                click.echo("\033[2J\033[H", nl=False)
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                click.echo(f"Lab Status (updated: {ts})\n")
+                display_status()
+                click.echo(f"\nRefreshing every {interval}s... (Ctrl+C to stop)")
+                time.sleep(interval)
+        except KeyboardInterrupt:
+            click.echo("\nStopped watching")
+    else:
+        display_status()
 
 
 # --- Export/Import Commands ---

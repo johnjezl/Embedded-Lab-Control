@@ -4,25 +4,57 @@
 
 {% block content %}
 <div class="page-header">
-    <a href="{{ url_for('views.index') }}" class="back-link">← Back to Dashboard</a>
+    <a href="{{ url_for('views.index') }}" class="back-link">&larr; Back to Dashboard</a>
     <h1>{{ sbc.name }}</h1>
     <span class="status-badge status-{{ sbc.status.value }}">{{ sbc.status.value }}</span>
 </div>
 
 <div class="detail-grid">
-    <!-- Basic Info -->
+    <!-- Basic Info with Edit Form -->
     <div class="detail-card">
-        <h3>Basic Information</h3>
-        <table class="detail-table">
-            <tr><th>Name</th><td>{{ sbc.name }}</td></tr>
-            <tr><th>Project</th><td>{{ sbc.project or '-' }}</td></tr>
-            <tr><th>Description</th><td>{{ sbc.description or '-' }}</td></tr>
-            <tr><th>SSH User</th><td>{{ sbc.ssh_user }}</td></tr>
-            <tr><th>Status</th><td>{{ sbc.status.value }}</td></tr>
-        </table>
-        <p class="mt-2">
-            <a href="{{ url_for('views.sbc_history', name=sbc.name) }}" class="btn btn-secondary btn-sm">View Status History</a>
-        </p>
+        <h3>Basic Information
+            <button class="btn btn-sm btn-secondary" onclick="toggleEdit('basic')" style="float: right;">Edit</button>
+        </h3>
+
+        <!-- Display view -->
+        <div id="basic-display">
+            <table class="detail-table">
+                <tr><th>Name</th><td>{{ sbc.name }}</td></tr>
+                <tr><th>Project</th><td>{{ sbc.project or '-' }}</td></tr>
+                <tr><th>Description</th><td>{{ sbc.description or '-' }}</td></tr>
+                <tr><th>SSH User</th><td>{{ sbc.ssh_user }}</td></tr>
+                <tr><th>Status</th><td>{{ sbc.status.value }}</td></tr>
+            </table>
+            <p class="mt-2">
+                <a href="{{ url_for('views.sbc_history', name=sbc.name) }}" class="btn btn-secondary btn-sm">View Status History</a>
+            </p>
+        </div>
+
+        <!-- Edit form (hidden by default) -->
+        <form id="basic-edit" action="{{ url_for('views.sbc_edit', name=sbc.name) }}" method="post" style="display: none;">
+            <div class="form-group">
+                <label>Project</label>
+                <input type="text" name="project" value="{{ sbc.project or '' }}" class="form-control">
+            </div>
+            <div class="form-group">
+                <label>Description</label>
+                <input type="text" name="description" value="{{ sbc.description or '' }}" class="form-control">
+            </div>
+            <div class="form-group">
+                <label>SSH User</label>
+                <input type="text" name="ssh_user" value="{{ sbc.ssh_user }}" class="form-control">
+            </div>
+            <div class="form-group">
+                <label>Status</label>
+                <select name="status" class="form-control">
+                    {% for s in Status %}
+                    <option value="{{ s.value }}" {% if s == sbc.status %}selected{% endif %}>{{ s.value }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <button type="submit" class="btn btn-primary">Save</button>
+            <button type="button" class="btn btn-secondary" onclick="toggleEdit('basic')">Cancel</button>
+        </form>
     </div>
 
     <!-- Power Control -->
@@ -52,24 +84,54 @@
                 <button type="submit" class="btn btn-warning">Power Cycle</button>
             </form>
         </div>
+        <form action="{{ url_for('views.sbc_plug_remove', name=sbc.name) }}" method="post" class="mt-2">
+            <button type="submit" class="btn btn-sm btn-secondary" onclick="return confirm('Remove power plug?')">Remove Plug</button>
+        </form>
         {% else %}
         <p class="text-muted">No power plug assigned.</p>
-        <p><code>labctl plug assign {{ sbc.name }} tasmota &lt;ip&gt;</code></p>
+        <button class="btn btn-sm btn-primary" onclick="toggleEdit('plug')">Assign Power Plug</button>
+        <form id="plug-edit" action="{{ url_for('views.sbc_plug_assign', name=sbc.name) }}" method="post" style="display: none; margin-top: 1rem;">
+            <div class="form-group">
+                <label>Plug Type</label>
+                <select name="plug_type" class="form-control" required>
+                    {% for pt in PlugType %}
+                    <option value="{{ pt.value }}">{{ pt.value }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Address (IP)</label>
+                <input type="text" name="address" placeholder="192.168.1.100" class="form-control" required>
+            </div>
+            <div class="form-group">
+                <label>Outlet Index</label>
+                <input type="number" name="plug_index" value="1" min="1" class="form-control">
+            </div>
+            <button type="submit" class="btn btn-primary">Assign</button>
+            <button type="button" class="btn btn-secondary" onclick="toggleEdit('plug')">Cancel</button>
+        </form>
         {% endif %}
     </div>
 
     <!-- Serial Ports -->
     <div class="detail-card">
-        <h3>Serial Ports</h3>
+        <h3>Serial Ports
+            <button class="btn btn-sm btn-primary" onclick="toggleEdit('port')" style="float: right;">Add Port</button>
+        </h3>
         {% if sbc.serial_ports %}
         <table class="detail-table">
-            <tr><th>Type</th><th>Device</th><th>TCP Port</th><th>Baud</th></tr>
+            <tr><th>Type</th><th>Device</th><th>TCP Port</th><th>Baud</th><th></th></tr>
             {% for port in sbc.serial_ports %}
             <tr>
                 <td>{{ port.port_type.value }}</td>
                 <td><code>{{ port.device_path }}</code></td>
                 <td>{{ port.tcp_port or '-' }}</td>
                 <td>{{ port.baud_rate }}</td>
+                <td>
+                    <form action="{{ url_for('views.sbc_port_remove', name=sbc.name, port_type=port.port_type.value) }}" method="post" class="inline-form">
+                        <button type="submit" class="btn btn-xs btn-danger" onclick="return confirm('Remove this port?')">X</button>
+                    </form>
+                </td>
             </tr>
             {% endfor %}
         </table>
@@ -81,21 +143,53 @@
         {% endif %}
         {% else %}
         <p class="text-muted">No serial ports assigned.</p>
-        <p><code>labctl port assign {{ sbc.name }} console &lt;device&gt;</code></p>
         {% endif %}
+
+        <!-- Add port form (hidden by default) -->
+        <form id="port-edit" action="{{ url_for('views.sbc_port_assign', name=sbc.name) }}" method="post" style="display: none; margin-top: 1rem;">
+            <div class="form-group">
+                <label>Port Type</label>
+                <select name="port_type" class="form-control" required>
+                    {% for pt in PortType %}
+                    <option value="{{ pt.value }}">{{ pt.value }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Device Path</label>
+                <input type="text" name="device" placeholder="/dev/lab/sbc1-console" class="form-control" required>
+            </div>
+            <div class="form-group">
+                <label>TCP Port (optional)</label>
+                <input type="number" name="tcp_port" placeholder="Auto-assign" class="form-control">
+            </div>
+            <div class="form-group">
+                <label>Baud Rate</label>
+                <input type="number" name="baud_rate" value="115200" class="form-control">
+            </div>
+            <button type="submit" class="btn btn-primary">Add Port</button>
+            <button type="button" class="btn btn-secondary" onclick="toggleEdit('port')">Cancel</button>
+        </form>
     </div>
 
     <!-- Network Addresses -->
     <div class="detail-card">
-        <h3>Network Addresses</h3>
+        <h3>Network Addresses
+            <button class="btn btn-sm btn-primary" onclick="toggleEdit('network')" style="float: right;">Add Address</button>
+        </h3>
         {% if sbc.network_addresses %}
         <table class="detail-table">
-            <tr><th>Type</th><th>IP Address</th><th>MAC</th></tr>
+            <tr><th>Type</th><th>IP Address</th><th>MAC</th><th></th></tr>
             {% for addr in sbc.network_addresses %}
             <tr>
                 <td>{{ addr.address_type.value }}</td>
                 <td>{{ addr.ip_address }}</td>
                 <td>{{ addr.mac_address or '-' }}</td>
+                <td>
+                    <form action="{{ url_for('views.sbc_network_remove', name=sbc.name, address_type=addr.address_type.value) }}" method="post" class="inline-form">
+                        <button type="submit" class="btn btn-xs btn-danger" onclick="return confirm('Remove this address?')">X</button>
+                    </form>
+                </td>
             </tr>
             {% endfor %}
         </table>
@@ -106,8 +200,47 @@
         {% endif %}
         {% else %}
         <p class="text-muted">No network addresses configured.</p>
-        <p><code>labctl network set {{ sbc.name }} ethernet &lt;ip&gt;</code></p>
         {% endif %}
+
+        <!-- Add network form (hidden by default) -->
+        <form id="network-edit" action="{{ url_for('views.sbc_network_set', name=sbc.name) }}" method="post" style="display: none; margin-top: 1rem;">
+            <div class="form-group">
+                <label>Address Type</label>
+                <select name="address_type" class="form-control" required>
+                    {% for at in AddressType %}
+                    <option value="{{ at.value }}">{{ at.value }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="form-group">
+                <label>IP Address</label>
+                <input type="text" name="ip_address" placeholder="192.168.1.100" class="form-control" required>
+            </div>
+            <div class="form-group">
+                <label>MAC Address (optional)</label>
+                <input type="text" name="mac_address" placeholder="aa:bb:cc:dd:ee:ff" class="form-control">
+            </div>
+            <div class="form-group">
+                <label>Hostname (optional)</label>
+                <input type="text" name="hostname" placeholder="sbc1.local" class="form-control">
+            </div>
+            <button type="submit" class="btn btn-primary">Add Address</button>
+            <button type="button" class="btn btn-secondary" onclick="toggleEdit('network')">Cancel</button>
+        </form>
     </div>
 </div>
+
+<script>
+function toggleEdit(section) {
+    var display = document.getElementById(section + '-display');
+    var edit = document.getElementById(section + '-edit');
+
+    if (display) {
+        display.style.display = display.style.display === 'none' ? 'block' : 'none';
+    }
+    if (edit) {
+        edit.style.display = edit.style.display === 'none' ? 'block' : 'none';
+    }
+}
+</script>
 {% endblock %}

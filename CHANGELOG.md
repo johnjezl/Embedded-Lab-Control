@@ -179,6 +179,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     - Status history page at /sbc/<name>/history
   - Added 28 health module tests (171 total)
   - **Milestone 7 Complete!**
+- Deferred Items Implementation (2026-01-01)
+  - CLI Enhancements:
+    - `labctl log <sbc>` - capture serial output to timestamped file
+      - `--follow/-f` for continuous output
+      - `--lines/-n` to capture N lines then exit
+      - `--timestamp/--no-timestamp` for timestamp prefixes
+    - `labctl status --watch` - continuous status update display
+    - `labctl port list --unassigned` - show unassigned /dev/lab/* devices
+    - `-q/--quiet` global flag for suppressed output
+    - Command aliases: ls=list, rm=remove, delete=remove, show=info
+  - Web Interface:
+    - SBC edit form on detail page
+    - Port/network/plug assignment forms
+    - Settings page with configuration display
+    - Settings link in navigation
+    - GET /api/sbcs/<name>/console/info endpoint
+    - GET /api/sbcs/<name>/uptime endpoint
+  - Infrastructure:
+    - Systemd service files (labctl-monitor.service, labctl-web.service)
+    - Service installation script (scripts/install-services.sh)
+    - Session log rotation with size-based rotation and compression
+    - Old log cleanup based on retention period
+  - Health Monitoring:
+    - Uptime tracking with current uptime and 24h percentage
+    - Serial probe with string/response verification
+    - `serial_probe()` method for active serial testing
 
 ### Changed
 - Moved documentation files to docs/ folder (AGENT_RULES.md, IMPLEMENTATION.md, DECISIONS.md)

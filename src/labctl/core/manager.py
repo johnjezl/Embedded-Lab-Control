@@ -497,6 +497,136 @@ class ResourceManager:
             (f"-{retention_days}",),
         )
 
+    def get_uptime(self, sbc_id: int) -> Optional[dict]:
+        """
+        Calculate uptime statistics for an SBC.
+
+        Calculates the current uptime (time since last transition to online)
+        and total uptime over the last 24 hours.
+
+        Args:
+            sbc_id: ID of the SBC
+
+        Returns:
+            Dictionary with uptime statistics, or None if no history
+        """
+        from datetime import datetime, timedelta
+
+        # Get last online transition
+        last_online_row = self.db.execute_one(
+            """
+            SELECT logged_at FROM status_log
+            WHERE sbc_id = ? AND status = 'online'
+            ORDER BY logged_at DESC
+            LIMIT 1
+            """,
+            (sbc_id,),
+        )
+
+        # Get last offline transition
+        last_offline_row = self.db.execute_one(
+            """
+            SELECT logged_at FROM status_log
+            WHERE sbc_id = ? AND status IN ('offline', 'error')
+            ORDER BY logged_at DESC
+            LIMIT 1
+            """,
+            (sbc_id,),
+        )
+
+        # Get current SBC status
+        sbc = self.get_sbc(sbc_id)
+        if not sbc:
+            return None
+
+        result = {
+            "sbc_id": sbc_id,
+            "sbc_name": sbc.name,
+            "current_status": sbc.status.value,
+            "current_uptime_seconds": 0,
+            "current_uptime_formatted": "0s",
+            "uptime_24h_percent": 0.0,
+        }
+
+        now = datetime.now()
+
+        # Calculate current uptime if online
+        if sbc.status == Status.ONLINE and last_online_row:
+            last_online = datetime.fromisoformat(last_online_row[0])
+            # Check if we went offline after going online
+            if last_offline_row:
+                last_offline = datetime.fromisoformat(last_offline_row[0])
+                if last_offline > last_online:
+                    # We're currently offline
+                    result["current_uptime_seconds"] = 0
+                else:
+                    # We're online since last_online
+                    uptime = (now - last_online).total_seconds()
+                    result["current_uptime_seconds"] = int(uptime)
+            else:
+                # Never went offline
+                uptime = (now - last_online).total_seconds()
+                result["current_uptime_seconds"] = int(uptime)
+
+            result["current_uptime_formatted"] = self._format_duration(
+                result["current_uptime_seconds"]
+            )
+
+        # Calculate 24h uptime percentage
+        day_ago = now - timedelta(hours=24)
+        rows = self.db.execute_query(
+            """
+            SELECT status, logged_at FROM status_log
+            WHERE sbc_id = ? AND logged_at >= ?
+            ORDER BY logged_at ASC
+            """,
+            (sbc_id, day_ago.isoformat()),
+        )
+
+        if rows:
+            online_seconds = 0
+            prev_status = None
+            prev_time = day_ago
+
+            for row in rows:
+                status = row[0]
+                time_str = row[1]
+                log_time = datetime.fromisoformat(time_str)
+
+                if prev_status == "online":
+                    online_seconds += (log_time - prev_time).total_seconds()
+
+                prev_status = status
+                prev_time = log_time
+
+            # Account for current status until now
+            if prev_status == "online":
+                online_seconds += (now - prev_time).total_seconds()
+
+            total_seconds = 24 * 60 * 60
+            result["uptime_24h_percent"] = round(
+                (online_seconds / total_seconds) * 100, 2
+            )
+
+        return result
+
+    def _format_duration(self, seconds: int) -> str:
+        """Format duration in seconds to human-readable string."""
+        if seconds < 60:
+            return f"{seconds}s"
+        elif seconds < 3600:
+            m = seconds // 60
+            s = seconds % 60
+            return f"{m}m {s}s"
+        elif seconds < 86400:
+            h = seconds // 3600
+            m = (seconds % 3600) // 60
+            return f"{h}h {m}m"
+        else:
+            d = seconds // 86400
+            h = (seconds % 86400) // 3600
+            return f"{d}d {h}h"
+
     # --- Audit Log ---
 
     def _audit_log(

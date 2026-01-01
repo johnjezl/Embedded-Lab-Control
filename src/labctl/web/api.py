@@ -273,6 +273,57 @@ def assign_port(name: str):
     )
 
 
+@api_bp.route("/sbcs/<name>/console/info", methods=["GET"])
+def get_console_info(name: str):
+    """Get console connection info for an SBC.
+
+    Returns the information needed to connect to the SBC's serial console,
+    including TCP port, baud rate, and proxy port if available.
+    """
+    from flask import current_app
+
+    sbc = g.manager.get_sbc_by_name(name)
+    if not sbc:
+        return jsonify({"error": f"SBC '{name}' not found"}), 404
+
+    console_port = sbc.console_port
+    if not console_port:
+        return jsonify({"error": "No console port assigned"}), 400
+
+    config = current_app.config.get("LABCTL_CONFIG")
+
+    response = {
+        "name": name,
+        "device_path": console_port.device_path,
+        "baud_rate": console_port.baud_rate,
+        "tcp_port": console_port.tcp_port,
+        "tcp_host": "localhost",
+    }
+
+    # Add proxy info if available
+    if config and config.proxy:
+        response["proxy"] = {
+            "port_base": config.proxy.port_base,
+            "write_policy": config.proxy.write_policy,
+            "max_clients": config.proxy.max_clients,
+        }
+
+    # Add connection commands
+    if console_port.tcp_port:
+        response["connect_commands"] = {
+            "netcat": f"nc localhost {console_port.tcp_port}",
+            "telnet": f"telnet localhost {console_port.tcp_port}",
+        }
+    else:
+        baud = console_port.baud_rate
+        dev = console_port.device_path
+        response["connect_commands"] = {
+            "picocom": f"picocom -b {baud} {dev}",
+        }
+
+    return jsonify(response)
+
+
 @api_bp.route("/ports", methods=["GET"])
 def list_ports():
     """List all serial port assignments."""
@@ -367,6 +418,20 @@ def get_sbc_history(name: str):
             "count": len(history),
         }
     )
+
+
+@api_bp.route("/sbcs/<name>/uptime", methods=["GET"])
+def get_sbc_uptime(name: str):
+    """Get uptime statistics for an SBC."""
+    sbc = g.manager.get_sbc_by_name(name)
+    if not sbc:
+        return jsonify({"error": f"SBC '{name}' not found"}), 404
+
+    uptime = g.manager.get_uptime(sbc.id)
+    if uptime is None:
+        return jsonify({"error": "No uptime data available"}), 404
+
+    return jsonify(uptime)
 
 
 @api_bp.route("/health/check", methods=["GET", "POST"])

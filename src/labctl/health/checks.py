@@ -212,6 +212,176 @@ class HealthChecker:
                 duration_ms=duration_ms,
             )
 
+    def serial_probe(
+        self,
+        host: str,
+        port: int,
+        probe_string: str = "\r\n",
+        expect_pattern: Optional[str] = None,
+        sbc_name: str = "",
+    ) -> CheckResult:
+        """
+        Send a probe string to serial port and optionally check for response.
+
+        This is a more active check than serial_check - it actually sends
+        data and optionally verifies the response matches a pattern.
+
+        Common use cases:
+        - Send Enter key, expect login prompt
+        - Send "echo test", expect "test" back
+        - Send newline, expect any response
+
+        Args:
+            host: Host address (usually localhost for ser2net)
+            port: TCP port number
+            probe_string: String to send to the serial port
+            expect_pattern: Optional pattern to look for in response (substring match)
+            sbc_name: Name of SBC for result tracking
+
+        Returns:
+            CheckResult with success/failure status
+        """
+        import select
+
+        start_time = time.time()
+
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(self.serial_timeout)
+            sock.connect((host, port))
+
+            # Clear any buffered data first
+            sock.setblocking(False)
+            try:
+                while True:
+                    ready, _, _ = select.select([sock], [], [], 0.1)
+                    if not ready:
+                        break
+                    data = sock.recv(4096)
+                    if not data:
+                        break
+            except BlockingIOError:
+                pass
+
+            # Send probe string
+            sock.setblocking(True)
+            sock.settimeout(self.serial_timeout)
+            sock.sendall(probe_string.encode("utf-8"))
+
+            # Wait for response if pattern expected
+            if expect_pattern:
+                sock.setblocking(False)
+                response = b""
+                deadline = time.time() + self.serial_timeout
+
+                while time.time() < deadline:
+                    try:
+                        ready, _, _ = select.select(
+                            [sock], [], [], min(0.1, deadline - time.time())
+                        )
+                        if ready:
+                            data = sock.recv(4096)
+                            if not data:
+                                break
+                            response += data
+
+                            # Check if pattern found
+                            if expect_pattern in response.decode(
+                                "utf-8", errors="replace"
+                            ):
+                                sock.close()
+                                duration_ms = (time.time() - start_time) * 1000
+                                msg = f"Probe OK, found '{expect_pattern}'"
+                                return CheckResult(
+                                    sbc_name=sbc_name,
+                                    check_type=CheckType.SERIAL,
+                                    success=True,
+                                    message=msg,
+                                    duration_ms=duration_ms,
+                                )
+                    except BlockingIOError:
+                        pass
+
+                # Pattern not found
+                sock.close()
+                duration_ms = (time.time() - start_time) * 1000
+                preview = response[:100].decode("utf-8", errors="replace")
+                msg = f"Pattern '{expect_pattern}' not found. Got: {repr(preview)}"
+                return CheckResult(
+                    sbc_name=sbc_name,
+                    check_type=CheckType.SERIAL,
+                    success=False,
+                    message=msg,
+                    duration_ms=duration_ms,
+                )
+            else:
+                # No pattern expected, just check for any response
+                sock.setblocking(False)
+                response = b""
+                deadline = time.time() + self.serial_timeout
+
+                while time.time() < deadline:
+                    try:
+                        ready, _, _ = select.select(
+                            [sock], [], [], min(0.1, deadline - time.time())
+                        )
+                        if ready:
+                            data = sock.recv(4096)
+                            if data:
+                                response += data
+                                break
+                    except BlockingIOError:
+                        pass
+
+                sock.close()
+                duration_ms = (time.time() - start_time) * 1000
+
+                if response:
+                    msg = f"Serial probe successful, received {len(response)} bytes"
+                    return CheckResult(
+                        sbc_name=sbc_name,
+                        check_type=CheckType.SERIAL,
+                        success=True,
+                        message=msg,
+                        duration_ms=duration_ms,
+                    )
+                else:
+                    return CheckResult(
+                        sbc_name=sbc_name,
+                        check_type=CheckType.SERIAL,
+                        success=True,
+                        message="Serial probe sent, no response (may be normal)",
+                        duration_ms=duration_ms,
+                    )
+
+        except socket.timeout:
+            duration_ms = (time.time() - start_time) * 1000
+            return CheckResult(
+                sbc_name=sbc_name,
+                check_type=CheckType.SERIAL,
+                success=False,
+                message=f"Serial probe to {host}:{port} timed out",
+                duration_ms=duration_ms,
+            )
+        except ConnectionRefusedError:
+            duration_ms = (time.time() - start_time) * 1000
+            return CheckResult(
+                sbc_name=sbc_name,
+                check_type=CheckType.SERIAL,
+                success=False,
+                message=f"Connection to {host}:{port} refused",
+                duration_ms=duration_ms,
+            )
+        except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
+            return CheckResult(
+                sbc_name=sbc_name,
+                check_type=CheckType.SERIAL,
+                success=False,
+                message=f"Serial probe error: {e}",
+                duration_ms=duration_ms,
+            )
+
     def power_check(
         self, controller: PowerController, sbc_name: str = ""
     ) -> tuple[CheckResult, PowerState]:

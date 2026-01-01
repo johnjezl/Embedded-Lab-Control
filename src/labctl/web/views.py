@@ -131,3 +131,193 @@ def sbc_history(name: str):
         history=history,
         Status=Status,
     )
+
+
+@views_bp.route("/sbc/<name>/edit", methods=["POST"])
+def sbc_edit(name: str):
+    """Handle SBC edit form."""
+    from flask import request
+
+    sbc = g.manager.get_sbc_by_name(name)
+    if not sbc:
+        flash(f"SBC '{name}' not found", "error")
+        return redirect(url_for("views.index"))
+
+    project = request.form.get("project", "").strip() or None
+    description = request.form.get("description", "").strip() or None
+    ssh_user = request.form.get("ssh_user", "").strip() or "root"
+    status = request.form.get("status", "").strip()
+
+    status_enum = Status(status) if status else None
+
+    g.manager.update_sbc(
+        sbc.id,
+        project=project,
+        description=description,
+        ssh_user=ssh_user,
+        status=status_enum,
+    )
+
+    flash(f"Updated SBC '{name}'", "success")
+    return redirect(url_for("views.sbc_detail", name=name))
+
+
+@views_bp.route("/sbc/<name>/port/assign", methods=["POST"])
+def sbc_port_assign(name: str):
+    """Handle port assignment form."""
+    from flask import request
+
+    sbc = g.manager.get_sbc_by_name(name)
+    if not sbc:
+        flash(f"SBC '{name}' not found", "error")
+        return redirect(url_for("views.index"))
+
+    port_type = request.form.get("port_type", "").strip()
+    device = request.form.get("device", "").strip()
+    tcp_port = request.form.get("tcp_port", "").strip()
+    baud_rate = request.form.get("baud_rate", "115200").strip()
+
+    if not port_type or not device:
+        flash("Port type and device are required", "error")
+        return redirect(url_for("views.sbc_detail", name=name))
+
+    try:
+        g.manager.assign_serial_port(
+            sbc_id=sbc.id,
+            port_type=PortType(port_type),
+            device_path=device,
+            tcp_port=int(tcp_port) if tcp_port else None,
+            baud_rate=int(baud_rate),
+        )
+        flash(f"Assigned {port_type} port", "success")
+    except Exception as e:
+        flash(f"Error: {e}", "error")
+
+    return redirect(url_for("views.sbc_detail", name=name))
+
+
+@views_bp.route("/sbc/<name>/port/remove/<port_type>", methods=["POST"])
+def sbc_port_remove(name: str, port_type: str):
+    """Remove port assignment."""
+    sbc = g.manager.get_sbc_by_name(name)
+    if not sbc:
+        flash(f"SBC '{name}' not found", "error")
+        return redirect(url_for("views.index"))
+
+    if g.manager.remove_serial_port(sbc.id, PortType(port_type)):
+        flash(f"Removed {port_type} port", "success")
+    else:
+        flash(f"No {port_type} port to remove", "error")
+
+    return redirect(url_for("views.sbc_detail", name=name))
+
+
+@views_bp.route("/sbc/<name>/network/set", methods=["POST"])
+def sbc_network_set(name: str):
+    """Handle network address form."""
+    from flask import request
+
+    sbc = g.manager.get_sbc_by_name(name)
+    if not sbc:
+        flash(f"SBC '{name}' not found", "error")
+        return redirect(url_for("views.index"))
+
+    address_type = request.form.get("address_type", "").strip()
+    ip_address = request.form.get("ip_address", "").strip()
+    mac_address = request.form.get("mac_address", "").strip() or None
+    hostname = request.form.get("hostname", "").strip() or None
+
+    if not address_type or not ip_address:
+        flash("Address type and IP are required", "error")
+        return redirect(url_for("views.sbc_detail", name=name))
+
+    try:
+        g.manager.set_network_address(
+            sbc_id=sbc.id,
+            address_type=AddressType(address_type),
+            ip_address=ip_address,
+            mac_address=mac_address,
+            hostname=hostname,
+        )
+        flash(f"Set {address_type} address", "success")
+    except Exception as e:
+        flash(f"Error: {e}", "error")
+
+    return redirect(url_for("views.sbc_detail", name=name))
+
+
+@views_bp.route("/sbc/<name>/network/remove/<address_type>", methods=["POST"])
+def sbc_network_remove(name: str, address_type: str):
+    """Remove network address."""
+    sbc = g.manager.get_sbc_by_name(name)
+    if not sbc:
+        flash(f"SBC '{name}' not found", "error")
+        return redirect(url_for("views.index"))
+
+    if g.manager.remove_network_address(sbc.id, AddressType(address_type)):
+        flash(f"Removed {address_type} address", "success")
+    else:
+        flash(f"No {address_type} address to remove", "error")
+
+    return redirect(url_for("views.sbc_detail", name=name))
+
+
+@views_bp.route("/sbc/<name>/plug/assign", methods=["POST"])
+def sbc_plug_assign(name: str):
+    """Handle power plug assignment form."""
+    from flask import request
+
+    sbc = g.manager.get_sbc_by_name(name)
+    if not sbc:
+        flash(f"SBC '{name}' not found", "error")
+        return redirect(url_for("views.index"))
+
+    plug_type = request.form.get("plug_type", "").strip()
+    address = request.form.get("address", "").strip()
+    plug_index = request.form.get("plug_index", "1").strip()
+
+    if not plug_type or not address:
+        flash("Plug type and address are required", "error")
+        return redirect(url_for("views.sbc_detail", name=name))
+
+    try:
+        g.manager.assign_power_plug(
+            sbc_id=sbc.id,
+            plug_type=PlugType(plug_type),
+            address=address,
+            plug_index=int(plug_index),
+        )
+        flash(f"Assigned {plug_type} plug", "success")
+    except Exception as e:
+        flash(f"Error: {e}", "error")
+
+    return redirect(url_for("views.sbc_detail", name=name))
+
+
+@views_bp.route("/sbc/<name>/plug/remove", methods=["POST"])
+def sbc_plug_remove(name: str):
+    """Remove power plug assignment."""
+    sbc = g.manager.get_sbc_by_name(name)
+    if not sbc:
+        flash(f"SBC '{name}' not found", "error")
+        return redirect(url_for("views.index"))
+
+    if g.manager.remove_power_plug(sbc.id):
+        flash("Removed power plug", "success")
+    else:
+        flash("No power plug to remove", "error")
+
+    return redirect(url_for("views.sbc_detail", name=name))
+
+
+@views_bp.route("/settings")
+def settings():
+    """Settings page."""
+    from flask import current_app
+
+    config = current_app.config.get("LABCTL_CONFIG")
+
+    return render_template(
+        "settings.html",
+        config=config,
+    )

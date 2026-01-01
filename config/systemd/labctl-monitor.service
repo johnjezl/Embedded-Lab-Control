@@ -1,0 +1,33 @@
+[Unit]
+Description=Lab Controller Monitoring Daemon
+Documentation=https://github.com/your-repo/labctl
+After=network.target ser2net.service
+
+[Service]
+Type=simple
+User=labctl
+Group=labctl
+ExecStart=/usr/local/bin/labctl monitor
+Restart=on-failure
+RestartSec=10
+
+# Environment and paths
+Environment="PATH=/usr/local/bin:/usr/bin:/bin"
+Environment="HOME=/var/lib/labctl"
+WorkingDirectory=/var/lib/labctl
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=labctl-monitor
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/labctl
+ReadWritePaths=/home
+
+[Install]
+WantedBy=multi-user.target
