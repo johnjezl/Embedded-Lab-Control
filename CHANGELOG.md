@@ -41,6 +41,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Added `-c/--config` CLI option
   - Added 17 unit tests for config module
   - **Milestone 1 Complete!**
+- M2.1-2.5 Data Layer (2025-12-31)
+  - Created `src/labctl/core/database.py` with SQLite schema
+    - Tables: sbcs, serial_ports, network_addresses, power_plugs, status_log, audit_log
+    - Foreign keys with cascade delete
+    - Schema versioning support
+  - Created `src/labctl/core/models.py` with data models
+    - SBC, SerialPort, NetworkAddress, PowerPlug dataclasses
+    - Status, PortType, AddressType, PlugType enums
+    - from_row() methods for database deserialization
+  - Created `src/labctl/core/manager.py` with ResourceManager
+    - Full CRUD operations for SBCs
+    - Serial port, network address, power plug assignment
+    - Audit logging for all operations
+  - Added CLI SBC management commands
+    - `labctl list` - tabular output with filters (--project, --status)
+    - `labctl add <name>` - create SBC with options
+    - `labctl remove <name>` - delete with confirmation
+    - `labctl info <name>` - detailed SBC view
+    - `labctl edit <name>` - update properties
+  - Added CLI port assignment commands
+    - `labctl port assign <sbc> <type> <device>` - with auto TCP port
+    - `labctl port remove <sbc> <type>`
+    - `labctl port list` - all port assignments
+  - Added 27 new tests (8 database, 19 manager)
+  - Total: 62 tests passing
 
 ### Changed
 - Moved documentation files to docs/ folder (AGENT_RULES.md, IMPLEMENTATION.md, DECISIONS.md)

@@ -125,64 +125,64 @@ This document outlines the phased implementation of the Lab Controller System. E
 ### TODO List
 
 #### 2.1 Database Setup
-- ☐ Create database module `src/labctl/core/database.py`
-  - ☐ SQLite connection management
-  - ☐ Schema initialization
-  - ☐ Migration support (simple version table)
-- ☐ Implement schema from ARCHITECTURE.md
-  - ☐ `sbcs` table
-  - ☐ `serial_ports` table
-  - ☐ `network_addresses` table
-  - ☐ `power_plugs` table
-  - ☐ `status_log` table
-  - ☐ `audit_log` table
-- ☐ Create database initialization on first run
-- ☐ Add database path to config
+- ✅ Create database module `src/labctl/core/database.py`
+  - ✅ SQLite connection management
+  - ✅ Schema initialization
+  - ✅ Migration support (simple version table)
+- ✅ Implement schema from ARCHITECTURE.md
+  - ✅ `sbcs` table
+  - ✅ `serial_ports` table
+  - ✅ `network_addresses` table
+  - ✅ `power_plugs` table
+  - ✅ `status_log` table
+  - ✅ `audit_log` table
+- ✅ Create database initialization on first run
+- ✅ Add database path to config
 
 #### 2.2 Data Models
-- ☐ Create models module `src/labctl/core/models.py`
-  - ☐ `SBC` dataclass
-  - ☐ `SerialPort` dataclass
-  - ☐ `NetworkAddress` dataclass
-  - ☐ `PowerPlug` dataclass
-  - ☐ `Status` enum
-- ☐ Implement model serialization (to/from database)
+- ✅ Create models module `src/labctl/core/models.py`
+  - ✅ `SBC` dataclass
+  - ✅ `SerialPort` dataclass
+  - ✅ `NetworkAddress` dataclass
+  - ✅ `PowerPlug` dataclass
+  - ✅ `Status` enum
+- ✅ Implement model serialization (to/from database)
 
 #### 2.3 Resource Manager
-- ☐ Create manager module `src/labctl/core/manager.py`
-  - ☐ `ResourceManager` class
-  - ☐ CRUD operations for SBCs
-  - ☐ Port assignment operations
-  - ☐ Network address operations
-  - ☐ Query/filter operations
+- ✅ Create manager module `src/labctl/core/manager.py`
+  - ✅ `ResourceManager` class
+  - ✅ CRUD operations for SBCs
+  - ✅ Port assignment operations
+  - ✅ Network address operations
+  - ✅ Query/filter operations
 
 #### 2.4 CLI SBC Management Commands
-- ☐ Implement `labctl list`
-  - ☐ Tabular output of all SBCs
-  - ☐ Columns: name, project, status, console port, IP
-  - ☐ Filter by `--project` and `--status`
-- ☐ Implement `labctl add <name>`
-  - ☐ Options: `--project`, `--description`
-  - ☐ Validate unique name
-- ☐ Implement `labctl remove <name>`
-  - ☐ Confirm before deletion
-  - ☐ Cascade delete related records
-- ☐ Implement `labctl info <name>`
-  - ☐ Detailed view of single SBC
-  - ☐ All ports, addresses, power plug
-- ☐ Implement `labctl edit <name>`
-  - ☐ Update project, description
+- ✅ Implement `labctl list`
+  - ✅ Tabular output of all SBCs
+  - ✅ Columns: name, project, status, console port, IP
+  - ✅ Filter by `--project` and `--status`
+- ✅ Implement `labctl add <name>`
+  - ✅ Options: `--project`, `--description`
+  - ✅ Validate unique name
+- ✅ Implement `labctl remove <name>`
+  - ✅ Confirm before deletion
+  - ✅ Cascade delete related records
+- ✅ Implement `labctl info <name>`
+  - ✅ Detailed view of single SBC
+  - ✅ All ports, addresses, power plug
+- ✅ Implement `labctl edit <name>`
+  - ✅ Update project, description
 
 #### 2.5 CLI Port Assignment Commands
-- ☐ Implement `labctl port assign <sbc> <type> <device>`
-  - ☐ Types: console, jtag, debug
-  - ☐ Auto-assign TCP port from pool
-  - ☐ `--tcp-port` override
-  - ☐ `--baud` option
-- ☐ Implement `labctl port remove <sbc> <type>`
-- ☐ Implement `labctl port list`
-  - ☐ Show all port assignments
-  - ☐ Show unassigned `/dev/lab/*` devices
+- ✅ Implement `labctl port assign <sbc> <type> <device>`
+  - ✅ Types: console, jtag, debug
+  - ✅ Auto-assign TCP port from pool
+  - ✅ `--tcp-port` override
+  - ✅ `--baud` option
+- ✅ Implement `labctl port remove <sbc> <type>`
+- ✅ Implement `labctl port list`
+  - ✅ Show all port assignments
+  - ⏸️ Show unassigned `/dev/lab/*` devices
 
 #### 2.6 CLI Network Commands
 - ☐ Implement `labctl network set <sbc> <type> <ip>`
