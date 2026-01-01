@@ -102,19 +102,19 @@ This document outlines the phased implementation of the Lab Controller System. E
 - ✅ Test CLI installation with `pip install -e .`
 
 #### 1.5 Configuration File
-- ☐ Create config loader `src/labctl/core/config.py`
-  - ☐ Load YAML config from `~/.config/labctl/config.yaml`
-  - ☐ Support environment variable overrides
-  - ☐ Provide sensible defaults
-- ☐ Create default config template `config/labctl.yaml`
-- ☐ Add config initialization to CLI
+- ✅ Create config loader `src/labctl/core/config.py`
+  - ✅ Load YAML config from `~/.config/labctl/config.yaml`
+  - ✅ Support environment variable overrides (LABCTL_DEV_DIR, etc.)
+  - ✅ Provide sensible defaults
+- ✅ Create default config template `config/labctl.yaml.example`
+- ✅ Add config initialization to CLI (`-c/--config` option)
 
 ### Acceptance Criteria
-- ☐ USB-TTL adapters appear as `/dev/lab/<name>` symlinks
-- ☐ Unplugging and replugging maintains same symlink name
-- ☐ `labctl ports` lists all configured serial ports
-- ☐ `labctl connect <port>` opens serial console via TCP
-- ☐ ser2net survives service restart
+- ✅ USB-TTL adapters appear as `/dev/lab/<name>` symlinks
+- ✅ Unplugging and replugging maintains same symlink name
+- ✅ `labctl ports` lists all configured serial ports
+- ✅ `labctl connect <port>` opens serial console via TCP
+- ✅ ser2net survives service restart
 
 ---
 

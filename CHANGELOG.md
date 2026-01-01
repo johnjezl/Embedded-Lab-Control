@@ -34,6 +34,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Implemented `labctl ports` - lists configured serial ports with TCP mappings
   - Implemented `labctl connect <port>` - connects via TCP or direct serial
   - Added 8 CLI integration tests
+- M1.5 Configuration File (2025-12-31)
+  - Created `src/labctl/core/config.py` with Config dataclasses
+  - YAML config loading from ~/.config/labctl/config.yaml
+  - Environment variable overrides (LABCTL_DEV_DIR, LABCTL_BASE_TCP_PORT, etc.)
+  - Added `-c/--config` CLI option
+  - Added 17 unit tests for config module
+  - **Milestone 1 Complete!**
 
 ### Changed
 - Moved documentation files to docs/ folder (AGENT_RULES.md, IMPLEMENTATION.md, DECISIONS.md)

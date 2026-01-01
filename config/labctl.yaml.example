@@ -1,0 +1,29 @@
+# Lab Controller Configuration
+#
+# Copy this file to ~/.config/labctl/config.yaml and customize as needed.
+# Environment variables can override any setting (see documentation).
+
+# Serial port settings
+serial:
+  # Directory where udev creates symlinks for lab devices
+  dev_dir: /dev/lab
+
+  # Base TCP port for ser2net connections (ports assigned sequentially)
+  base_tcp_port: 4000
+
+  # Default baud rate for serial connections
+  default_baud: 115200
+
+# ser2net integration
+ser2net:
+  # Path to ser2net configuration file
+  config_file: /etc/ser2net.yaml
+
+  # Enable ser2net integration (set to false for direct serial only)
+  enabled: true
+
+# Database path for SBC and resource tracking
+database_path: ~/.config/labctl/labctl.db
+
+# Logging level (DEBUG, INFO, WARNING, ERROR)
+log_level: INFO

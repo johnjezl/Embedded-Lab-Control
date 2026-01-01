@@ -12,20 +12,22 @@ from pathlib import Path
 import click
 
 from labctl import __version__
-
-# Default paths
-LAB_DEV_DIR = Path("/dev/lab")
-SER2NET_CONFIG = Path("/etc/ser2net.yaml")
+from labctl.core.config import Config, load_config
 
 
 @click.group()
 @click.version_option(version=__version__, prog_name="labctl")
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose output")
+@click.option(
+    "-c", "--config", "config_path", type=click.Path(exists=True, path_type=Path),
+    help="Path to config file"
+)
 @click.pass_context
-def main(ctx: click.Context, verbose: bool) -> None:
+def main(ctx: click.Context, verbose: bool, config_path: Path | None) -> None:
     """Lab Controller - Manage embedded development lab resources."""
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
+    ctx.obj["config"] = load_config(config_path)
 
 
 @main.command("ports")
@@ -36,11 +38,13 @@ def main(ctx: click.Context, verbose: bool) -> None:
 def ports_cmd(ctx: click.Context, show_all: bool) -> None:
     """List available serial ports."""
     verbose = ctx.obj.get("verbose", False)
+    config: Config = ctx.obj["config"]
+    dev_dir = config.serial.dev_dir
 
     # Get /dev/lab/ symlinks
     lab_ports = []
-    if LAB_DEV_DIR.exists():
-        for entry in sorted(LAB_DEV_DIR.iterdir()):
+    if dev_dir.exists():
+        for entry in sorted(dev_dir.iterdir()):
             if entry.is_symlink():
                 target = os.readlink(entry)
                 # Resolve relative symlinks
@@ -50,11 +54,11 @@ def ports_cmd(ctx: click.Context, show_all: bool) -> None:
                     "name": entry.name,
                     "path": str(entry),
                     "target": target,
-                    "tcp_port": _get_tcp_port(entry.name),
+                    "tcp_port": _get_tcp_port(entry.name, config),
                 })
 
     if not lab_ports:
-        click.echo("No ports configured in /dev/lab/")
+        click.echo(f"No ports configured in {dev_dir}/")
         if verbose:
             click.echo("Run discover-usb-serial.sh to find connected devices")
         return
@@ -71,13 +75,14 @@ def ports_cmd(ctx: click.Context, show_all: bool) -> None:
         click.echo(f"\n{len(lab_ports)} port(s) configured")
 
 
-def _get_tcp_port(port_name: str) -> int | None:
+def _get_tcp_port(port_name: str, config: Config) -> int | None:
     """Look up TCP port for a named port from ser2net config."""
-    if not SER2NET_CONFIG.exists():
+    ser2net_config = config.ser2net.config_file
+    if not ser2net_config.exists():
         return None
 
     try:
-        content = SER2NET_CONFIG.read_text()
+        content = ser2net_config.read_text()
         # Simple parsing: look for connection name and extract port
         # Format: connection: &name ... accepter: tcp,localhost,PORT
         in_connection = False
@@ -111,22 +116,24 @@ def connect_cmd(ctx: click.Context, port_name: str, baud: int | None) -> None:
     path (e.g., '/dev/lab/sbc1-console').
     """
     verbose = ctx.obj.get("verbose", False)
+    config: Config = ctx.obj["config"]
+    dev_dir = config.serial.dev_dir
 
     # Resolve port name to path
     if port_name.startswith("/"):
         port_path = Path(port_name)
         port_name = port_path.name
     else:
-        port_path = LAB_DEV_DIR / port_name
+        port_path = dev_dir / port_name
 
     if not port_path.exists():
         click.echo(f"Error: Port not found: {port_path}", err=True)
         sys.exit(1)
 
     # Look up TCP port
-    tcp_port = _get_tcp_port(port_name)
+    tcp_port = _get_tcp_port(port_name, config)
 
-    if tcp_port:
+    if tcp_port and config.ser2net.enabled:
         # Connect via TCP (preferred - allows multiple clients)
         if verbose:
             click.echo(f"Connecting to {port_name} via TCP port {tcp_port}...")
@@ -135,7 +142,7 @@ def connect_cmd(ctx: click.Context, port_name: str, baud: int | None) -> None:
         # Fall back to direct serial connection
         if verbose:
             click.echo(f"Connecting directly to {port_path}...")
-        _connect_direct(port_path, baud or 115200)
+        _connect_direct(port_path, baud or config.serial.default_baud)
 
 
 def _connect_tcp(host: str, port: int) -> None:
