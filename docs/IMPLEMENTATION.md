@@ -68,20 +68,20 @@ This document outlines the phased implementation of the Lab Controller System. E
 - ✅ Verify symlinks created under `/dev/lab/`
 
 #### 1.3 ser2net Configuration
-- ☐ Create ser2net config generator `src/labctl/serial/ser2net.py`
-  - ☐ Function to generate YAML config from port mapping
-  - ☐ Support for baud rate configuration
-  - ☐ Default options (local, no kickolduser)
-- ☐ Create initial manual config `/etc/ser2net.yaml`
-  - ☐ Configure at least 2 test ports
-- ☐ Enable and start ser2net service
+- ✅ Create ser2net config generator `src/labctl/serial/ser2net.py`
+  - ✅ Function to generate YAML config from port mapping
+  - ✅ Support for baud rate configuration
+  - ✅ Default options (local, no kickolduser)
+- ✅ Create initial config `/etc/ser2net.yaml`
+  - ✅ Configure 5 ports (TCP 4000-4004)
+- ✅ Enable and start ser2net service
   ```
   sudo systemctl enable ser2net
   sudo systemctl start ser2net
   ```
-- ☐ Verify TCP access works
-  - ☐ Test with `nc localhost <port>`
-  - ☐ Test with `picocom` or `minicom`
+- ✅ Verify TCP access works
+  - ✅ Test with `nc localhost <port>`
+  - ⏸️ Test with `picocom` or `minicom` (deferred to CLI implementation)
 
 #### 1.4 Basic CLI Structure
 - ☐ Create CLI entry point `src/labctl/cli.py`

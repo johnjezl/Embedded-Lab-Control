@@ -24,6 +24,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Created `scripts/install-udev.sh` for udev rules installation
   - Created `docs/HARDWARE_MAP.md` with USB topology documentation
   - Symlinks now created under `/dev/lab/` for deterministic device access
+- M1.3 ser2net Configuration (2025-12-31)
+  - Created `src/labctl/serial/ser2net.py` for config generation
+  - Support for baud rate, parity, local-only connections
+  - Generated config for 5 ports on TCP 4000-4004
+  - All ports verified accessible via TCP
 
 ### Changed
 - Moved documentation files to docs/ folder (AGENT_RULES.md, IMPLEMENTATION.md, DECISIONS.md)
