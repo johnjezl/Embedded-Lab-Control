@@ -29,6 +29,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Support for baud rate, parity, local-only connections
   - Generated config for 5 ports on TCP 4000-4004
   - All ports verified accessible via TCP
+- M1.4 Basic CLI Structure (2025-12-31)
+  - Created `src/labctl/cli.py` with Click framework
+  - Implemented `labctl ports` - lists configured serial ports with TCP mappings
+  - Implemented `labctl connect <port>` - connects via TCP or direct serial
+  - Added 8 CLI integration tests
 
 ### Changed
 - Moved documentation files to docs/ folder (AGENT_RULES.md, IMPLEMENTATION.md, DECISIONS.md)

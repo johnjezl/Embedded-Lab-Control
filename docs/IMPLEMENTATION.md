@@ -84,22 +84,22 @@ This document outlines the phased implementation of the Lab Controller System. E
   - ⏸️ Test with `picocom` or `minicom` (deferred to CLI implementation)
 
 #### 1.4 Basic CLI Structure
-- ☐ Create CLI entry point `src/labctl/cli.py`
-  - ☐ Use Click framework
-  - ☐ Implement command groups
-- ☐ Implement `labctl ports` command
-  - ☐ List `/dev/lab/*` symlinks
-  - ☐ Show device path, symlink name
-  - ☐ Show if ser2net port is configured
-- ☐ Implement `labctl connect <port-name>` command
-  - ☐ Open TCP connection to ser2net port
-  - ☐ Use `telnetlib` or spawn `nc`/`picocom`
-- ☐ Create console entry point in `pyproject.toml`
+- ✅ Create CLI entry point `src/labctl/cli.py`
+  - ✅ Use Click framework
+  - ✅ Implement command groups
+- ✅ Implement `labctl ports` command
+  - ✅ List `/dev/lab/*` symlinks
+  - ✅ Show device path, symlink name
+  - ✅ Show if ser2net port is configured
+- ✅ Implement `labctl connect <port-name>` command
+  - ✅ Open TCP connection to ser2net port
+  - ✅ Spawn `nc` or `telnet` for TCP, `picocom` for direct
+- ✅ Create console entry point in `pyproject.toml`
   ```toml
   [project.scripts]
   labctl = "labctl.cli:main"
   ```
-- ☐ Test CLI installation with `pip install -e .`
+- ✅ Test CLI installation with `pip install -e .`
 
 #### 1.5 Configuration File
 - ☐ Create config loader `src/labctl/core/config.py`

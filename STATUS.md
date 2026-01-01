@@ -3,14 +3,14 @@
 ## Current State
 
 - **Milestone**: M1 - Foundation
-- **Sub-task**: 1.4 - Basic CLI Structure
+- **Sub-task**: 1.5 - Configuration File
 - **Status**: Ready to start
 
 ## Last Session
 
 - **Date**: 2025-12-31
-- **Completed**: M1.1, M1.2, M1.3
-- **Commits**: e4cbb3a (M1.1), 3887a75 (M1.2), pending (M1.3)
+- **Completed**: M1.1, M1.2, M1.3, M1.4
+- **Commits**: e4cbb3a, 3887a75, 6e6a5d2, pending (M1.4)
 
 ## Blockers
 
@@ -18,7 +18,6 @@
 
 ## Notes
 
-- udev rules working - symlinks under /dev/lab/
-- ser2net running with 5 ports on TCP 4000-4004
-- Serial ports accessible via: `nc localhost 4001` (for sbc1-console)
-- Ready to begin M1.4 - Basic CLI Structure
+- CLI working: `labctl ports` and `labctl connect <port>`
+- 18 tests passing (10 unit, 8 integration)
+- Ready to begin M1.5 - Configuration File
