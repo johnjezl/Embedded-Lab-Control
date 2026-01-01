@@ -1103,6 +1103,28 @@ def import_cmd(ctx: click.Context, file: Path, update: bool) -> None:
     click.echo(f"\nImport complete: {created} created, {updated} updated, {skipped} skipped")
 
 
+# --- Web Server ---
+
+@main.command("web")
+@click.option("--host", "-h", default="127.0.0.1", help="Host to bind to (default: 127.0.0.1)")
+@click.option("--port", "-p", type=int, default=5000, help="Port to bind to (default: 5000)")
+@click.option("--debug", is_flag=True, help="Enable debug mode")
+@click.pass_context
+def web_cmd(ctx: click.Context, host: str, port: int, debug: bool) -> None:
+    """Start the web dashboard server."""
+    from labctl.web import create_app
+
+    config: Config = ctx.obj["config"]
+    app = create_app(config)
+
+    click.echo(f"Starting Lab Controller web server...")
+    click.echo(f"Dashboard: http://{host}:{port}/")
+    click.echo(f"API:       http://{host}:{port}/api/")
+    click.echo("Press Ctrl+C to stop")
+
+    app.run(host=host, port=port, debug=debug)
+
+
 # --- Shell Completion ---
 
 @main.command("completion")

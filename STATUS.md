@@ -2,15 +2,15 @@
 
 ## Current State
 
-- **Milestone**: M4 - CLI Completion COMPLETE
-- **Sub-task**: All complete (4.1-4.6)
-- **Status**: Ready for M5
+- **Milestone**: M5 - Web Interface COMPLETE
+- **Sub-task**: All complete (5.1-5.5)
+- **Status**: Ready for M6
 
 ## Last Session
 
 - **Date**: 2025-12-31
-- **Completed**: M4 (full CLI)
-- **Commits**: 0226e5e (M3), pending (M4)
+- **Completed**: M5 (web interface)
+- **Commits**: 9a02029 (M4), pending (M5)
 
 ## Blockers
 
@@ -18,16 +18,14 @@
 
 ## Notes
 
-- **Milestone 4 Complete!**
+- **Milestone 5 Complete!**
 - 81 tests passing
-- All core CLI commands implemented:
-  - SBC management: add, remove, list, info, edit
-  - Port management: port assign/remove/list
-  - Network management: network set/remove
-  - Power control: plug assign/remove, power on/off/cycle/status, power-all
-  - Connectivity: console, ssh, connect
-  - Configuration: ser2net generate/reload
-  - Data: export, import, status
-  - Shell: completion (bash/zsh/fish)
-- Some features deferred to M7 (health-check, log command)
-- Ready to begin M5 - Web Interface
+- Web interface features:
+  - Flask application with factory pattern
+  - REST API: /api/sbcs, /api/sbcs/<name>, /api/sbcs/<name>/power, /api/ports
+  - Dashboard with SBC card grid
+  - SBC detail page with power controls
+  - Dark theme CSS
+  - `labctl web` command with --host, --port, --debug
+- WebSocket/xterm.js console deferred to M6
+- Ready to begin M6 - Multi-Client Serial Access

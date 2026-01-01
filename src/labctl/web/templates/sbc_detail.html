@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+
+{% block title %}{{ sbc.name }} - Lab Controller{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <a href="{{ url_for('views.index') }}" class="back-link">← Back to Dashboard</a>
+    <h1>{{ sbc.name }}</h1>
+    <span class="status-badge status-{{ sbc.status.value }}">{{ sbc.status.value }}</span>
+</div>
+
+<div class="detail-grid">
+    <!-- Basic Info -->
+    <div class="detail-card">
+        <h3>Basic Information</h3>
+        <table class="detail-table">
+            <tr><th>Name</th><td>{{ sbc.name }}</td></tr>
+            <tr><th>Project</th><td>{{ sbc.project or '-' }}</td></tr>
+            <tr><th>Description</th><td>{{ sbc.description or '-' }}</td></tr>
+            <tr><th>SSH User</th><td>{{ sbc.ssh_user }}</td></tr>
+            <tr><th>Status</th><td>{{ sbc.status.value }}</td></tr>
+        </table>
+    </div>
+
+    <!-- Power Control -->
+    <div class="detail-card">
+        <h3>Power Control</h3>
+        {% if sbc.power_plug %}
+        <table class="detail-table">
+            <tr><th>Plug Type</th><td>{{ sbc.power_plug.plug_type.value }}</td></tr>
+            <tr><th>Address</th><td>{{ sbc.power_plug.address }}</td></tr>
+            <tr><th>Index</th><td>{{ sbc.power_plug.plug_index }}</td></tr>
+            <tr>
+                <th>State</th>
+                <td>
+                    <span class="power-indicator power-{{ power_state.value if power_state else 'unknown' }}"></span>
+                    {{ power_state.value.upper() if power_state else 'UNKNOWN' }}
+                </td>
+            </tr>
+        </table>
+        <div class="power-actions-large">
+            <form action="{{ url_for('views.sbc_power_action', name=sbc.name, action='on') }}" method="post" class="inline-form">
+                <button type="submit" class="btn btn-success">Power ON</button>
+            </form>
+            <form action="{{ url_for('views.sbc_power_action', name=sbc.name, action='off') }}" method="post" class="inline-form">
+                <button type="submit" class="btn btn-danger">Power OFF</button>
+            </form>
+            <form action="{{ url_for('views.sbc_power_action', name=sbc.name, action='cycle') }}" method="post" class="inline-form">
+                <button type="submit" class="btn btn-warning">Power Cycle</button>
+            </form>
+        </div>
+        {% else %}
+        <p class="text-muted">No power plug assigned.</p>
+        <p><code>labctl plug assign {{ sbc.name }} tasmota &lt;ip&gt;</code></p>
+        {% endif %}
+    </div>
+
+    <!-- Serial Ports -->
+    <div class="detail-card">
+        <h3>Serial Ports</h3>
+        {% if sbc.serial_ports %}
+        <table class="detail-table">
+            <tr><th>Type</th><th>Device</th><th>TCP Port</th><th>Baud</th></tr>
+            {% for port in sbc.serial_ports %}
+            <tr>
+                <td>{{ port.port_type.value }}</td>
+                <td><code>{{ port.device_path }}</code></td>
+                <td>{{ port.tcp_port or '-' }}</td>
+                <td>{{ port.baud_rate }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+        {% if sbc.console_port and sbc.console_port.tcp_port %}
+        <p class="mt-2">
+            Connect: <code>nc localhost {{ sbc.console_port.tcp_port }}</code>
+        </p>
+        {% endif %}
+        {% else %}
+        <p class="text-muted">No serial ports assigned.</p>
+        <p><code>labctl port assign {{ sbc.name }} console &lt;device&gt;</code></p>
+        {% endif %}
+    </div>
+
+    <!-- Network Addresses -->
+    <div class="detail-card">
+        <h3>Network Addresses</h3>
+        {% if sbc.network_addresses %}
+        <table class="detail-table">
+            <tr><th>Type</th><th>IP Address</th><th>MAC</th></tr>
+            {% for addr in sbc.network_addresses %}
+            <tr>
+                <td>{{ addr.address_type.value }}</td>
+                <td>{{ addr.ip_address }}</td>
+                <td>{{ addr.mac_address or '-' }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+        {% if sbc.primary_ip %}
+        <p class="mt-2">
+            SSH: <code>ssh {{ sbc.ssh_user }}@{{ sbc.primary_ip }}</code>
+        </p>
+        {% endif %}
+        {% else %}
+        <p class="text-muted">No network addresses configured.</p>
+        <p><code>labctl network set {{ sbc.name }} ethernet &lt;ip&gt;</code></p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

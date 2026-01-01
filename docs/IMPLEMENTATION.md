@@ -344,78 +344,77 @@ This document outlines the phased implementation of the Lab Controller System. E
 ### TODO List
 
 #### 5.1 Flask Application Setup
-- ☐ Create web module `src/labctl/web/`
-- ☐ Create Flask app `src/labctl/web/app.py`
-  - ☐ Application factory pattern
-  - ☐ Configuration loading
-  - ☐ Database connection
-- ☐ Add Flask dependencies (flask, flask-socketio)
-- ☐ Create CLI command `labctl web`
-  - ☐ Start web server
-  - ☐ `--host` and `--port` options
+- ✅ Create web module `src/labctl/web/`
+- ✅ Create Flask app `src/labctl/web/app.py`
+  - ✅ Application factory pattern
+  - ✅ Configuration loading
+  - ✅ Database connection
+- ✅ Add Flask dependencies (flask, flask-socketio)
+- ✅ Create CLI command `labctl web`
+  - ✅ Start web server
+  - ✅ `--host` and `--port` options
 
 #### 5.2 REST API - SBC Endpoints
-- ☐ `GET /api/sbcs` - List all SBCs
-- ☐ `GET /api/sbcs/<name>` - Get SBC details
-- ☐ `POST /api/sbcs` - Create SBC
-- ☐ `PUT /api/sbcs/<name>` - Update SBC
-- ☐ `DELETE /api/sbcs/<name>` - Delete SBC
-- ☐ Implement JSON serialization for models
-- ☐ Error handling with proper HTTP status codes
+- ✅ `GET /api/sbcs` - List all SBCs
+- ✅ `GET /api/sbcs/<name>` - Get SBC details
+- ✅ `POST /api/sbcs` - Create SBC
+- ✅ `PUT /api/sbcs/<name>` - Update SBC
+- ✅ `DELETE /api/sbcs/<name>` - Delete SBC
+- ✅ Implement JSON serialization for models
+- ✅ Error handling with proper HTTP status codes
 
 #### 5.3 REST API - Power Endpoints
-- ☐ `POST /api/sbcs/<name>/power` - Power control
-  - ☐ Body: `{"action": "on|off|cycle"}`
-- ☐ `GET /api/sbcs/<name>/power` - Power status
+- ✅ `POST /api/sbcs/<name>/power` - Power control
+  - ✅ Body: `{"action": "on|off|cycle"}`
+- ✅ `GET /api/sbcs/<name>/power` - Power status
 
 #### 5.4 REST API - Serial Endpoints
-- ☐ `GET /api/sbcs/<name>/console/info` - Console connection info
-- ☐ `GET /api/ports` - List available serial ports
+- ⏸️ `GET /api/sbcs/<name>/console/info` - Console connection info (deferred)
+- ✅ `GET /api/ports` - List available serial ports
 
 #### 5.5 REST API - Status Endpoints
-- ☐ `GET /api/health` - System health
-- ☐ `GET /api/status` - All SBC statuses
+- ✅ `GET /api/health` - System health
+- ✅ `GET /api/status` - All SBC statuses
 
 #### 5.6 Web Dashboard - Templates
-- ☐ Create base template with navigation
-- ☐ Create dashboard page `templates/dashboard.html`
-  - ☐ Grid of SBC cards
-  - ☐ Status indicators
-  - ☐ Quick action buttons
-- ☐ Create SBC detail page `templates/sbc_detail.html`
-  - ☐ All SBC information
-  - ☐ Edit form
-  - ☐ Port/network/plug assignment forms
-- ☐ Create settings page `templates/settings.html`
+- ✅ Create base template with navigation
+- ✅ Create dashboard page `templates/dashboard.html`
+  - ✅ Grid of SBC cards
+  - ✅ Status indicators
+  - ✅ Quick action buttons
+- ✅ Create SBC detail page `templates/sbc_detail.html`
+  - ✅ All SBC information
+  - ⏸️ Edit form (deferred)
+  - ⏸️ Port/network/plug assignment forms (deferred)
+- ⏸️ Create settings page `templates/settings.html` (deferred)
 
 #### 5.7 Web Dashboard - Styling
-- ☐ Create CSS `static/css/style.css`
-  - ☐ Clean, minimal design
-  - ☐ Status colors (green/red/yellow)
-  - ☐ Responsive layout
-- ☐ Add JavaScript `static/js/app.js`
-  - ☐ AJAX helpers
-  - ☐ Status refresh
+- ✅ Create CSS `static/css/style.css`
+  - ✅ Clean, minimal design
+  - ✅ Status colors (green/red/yellow)
+  - ✅ Responsive layout
+- ✅ Add JavaScript `static/js/app.js`
+  - ✅ AJAX helpers
+  - ⏸️ Status refresh (deferred)
 
 #### 5.8 WebSocket - Real-time Updates
-- ☐ Implement Flask-SocketIO integration
-- ☐ Push status updates to connected clients
-- ☐ Update dashboard without refresh
+- ⏸️ Implement Flask-SocketIO integration (deferred to M6)
+- ⏸️ Push status updates to connected clients
+- ⏸️ Update dashboard without refresh
 
 #### 5.9 Web Console (xterm.js)
-- ☐ Add xterm.js to static assets
-- ☐ Create console page `templates/console.html`
-- ☐ Implement WebSocket bridge to ser2net
-  - ☐ Server-side TCP to WebSocket proxy
-- ☐ Bidirectional data flow
-- ☐ Multiple console tabs
+- ⏸️ Add xterm.js to static assets (deferred to M6)
+- ⏸️ Create console page `templates/console.html`
+- ⏸️ Implement WebSocket bridge to ser2net
+- ⏸️ Bidirectional data flow
+- ⏸️ Multiple console tabs
 
 ### Acceptance Criteria
-- ☐ REST API fully functional
-- ☐ Dashboard shows all SBCs with status
-- ☐ Can control power from web interface
-- ☐ Web-based serial console works
-- ☐ Real-time status updates
+- ✅ REST API fully functional
+- ✅ Dashboard shows all SBCs with status
+- ✅ Can control power from web interface
+- ⏸️ Web-based serial console works (deferred to M6)
+- ⏸️ Real-time status updates (deferred to M6)
 
 ---
 

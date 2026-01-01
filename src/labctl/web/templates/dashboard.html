@@ -1,0 +1,76 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Lab Controller{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>SBC Dashboard</h1>
+    <p>{{ sbcs|length }} device(s) configured</p>
+</div>
+
+{% if sbcs %}
+<div class="sbc-grid">
+    {% for sbc in sbcs %}
+    <div class="sbc-card">
+        <div class="sbc-header">
+            <h2><a href="{{ url_for('views.sbc_detail', name=sbc.name) }}">{{ sbc.name }}</a></h2>
+            <span class="status-badge status-{{ sbc.status.value }}">{{ sbc.status.value }}</span>
+        </div>
+
+        <div class="sbc-body">
+            <div class="sbc-info">
+                <div class="info-row">
+                    <span class="label">Project:</span>
+                    <span class="value">{{ sbc.project or '-' }}</span>
+                </div>
+                <div class="info-row">
+                    <span class="label">IP:</span>
+                    <span class="value">{{ sbc.primary_ip or '-' }}</span>
+                </div>
+                <div class="info-row">
+                    <span class="label">Console:</span>
+                    <span class="value">
+                        {% if sbc.console_port %}
+                            tcp:{{ sbc.console_port.tcp_port }}
+                        {% else %}
+                            -
+                        {% endif %}
+                    </span>
+                </div>
+            </div>
+        </div>
+
+        <div class="sbc-footer">
+            {% if sbc.power_plug %}
+                {% set power = power_states.get(sbc.name) %}
+                <div class="power-status">
+                    <span class="power-indicator power-{{ power.value if power else 'unknown' }}"></span>
+                    <span>{{ power.value.upper() if power else 'UNKNOWN' }}</span>
+                </div>
+                <div class="power-actions">
+                    <form action="{{ url_for('views.sbc_power_action', name=sbc.name, action='on') }}" method="post" class="inline-form">
+                        <button type="submit" class="btn btn-sm btn-success" title="Power On">ON</button>
+                    </form>
+                    <form action="{{ url_for('views.sbc_power_action', name=sbc.name, action='off') }}" method="post" class="inline-form">
+                        <button type="submit" class="btn btn-sm btn-danger" title="Power Off">OFF</button>
+                    </form>
+                    <form action="{{ url_for('views.sbc_power_action', name=sbc.name, action='cycle') }}" method="post" class="inline-form">
+                        <button type="submit" class="btn btn-sm btn-warning" title="Power Cycle">⟳</button>
+                    </form>
+                </div>
+            {% else %}
+                <div class="power-status">
+                    <span class="text-muted">No power plug</span>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+</div>
+{% else %}
+<div class="empty-state">
+    <h2>No SBCs configured</h2>
+    <p>Use <code>labctl add &lt;name&gt;</code> to add an SBC.</p>
+</div>
+{% endif %}
+{% endblock %}

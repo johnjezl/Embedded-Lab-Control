@@ -101,6 +101,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Added `labctl import <file>` - import SBCs with --update option
   - Added `labctl completion` - shell completion for bash/zsh/fish
   - **Milestone 4 Complete!**
+- M5 Web Interface (2025-12-31)
+  - Created Flask web module with application factory pattern
+  - Implemented REST API endpoints:
+    - `GET/POST /api/sbcs` - list and create SBCs
+    - `GET/PUT/DELETE /api/sbcs/<name>` - CRUD operations
+    - `GET/POST /api/sbcs/<name>/power` - power status and control
+    - `GET /api/ports` - list serial ports
+    - `GET /api/health` and `/api/status` - system status
+  - Created web dashboard with dark theme:
+    - Dashboard page with SBC card grid
+    - SBC detail page with all information
+    - Power control buttons (on/off/cycle)
+    - Status indicators and responsive layout
+  - Added `labctl web` command with --host, --port, --debug options
+  - **Milestone 5 Complete!**
 
 ### Changed
 - Moved documentation files to docs/ folder (AGENT_RULES.md, IMPLEMENTATION.md, DECISIONS.md)
