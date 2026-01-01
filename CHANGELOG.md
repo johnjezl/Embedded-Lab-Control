@@ -73,6 +73,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     - Supports --output file and --install flag
   - Added `labctl ser2net reload` - restarts ser2net service
   - **Milestone 2 Complete!**
+- M3 Power Control (2025-12-31)
+  - Created power module `src/labctl/power/` with controller framework
+    - PowerController ABC with power_on, power_off, power_cycle, get_state
+    - PowerState enum (ON, OFF, UNKNOWN)
+    - Factory function get_controller() for plug type dispatch
+  - Implemented TasmotaController for Tasmota smart plugs
+    - HTTP API client with multi-relay support
+  - Implemented ShellyController for Shelly devices
+  - Implemented KasaController stub for TP-Link Kasa (requires python-kasa)
+  - Added CLI plug commands
+    - `labctl plug assign <sbc> <type> <address>` with --index option
+    - `labctl plug remove <sbc>`
+  - Added CLI power commands
+    - `labctl power on/off/cycle/status <sbc>`
+    - `labctl power-all on|off` with --project filter
+  - Added 19 power module tests (81 total)
+  - **Milestone 3 Complete!**
 
 ### Changed
 - Moved documentation files to docs/ folder (AGENT_RULES.md, IMPLEMENTATION.md, DECISIONS.md)

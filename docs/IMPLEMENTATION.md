@@ -215,59 +215,56 @@ This document outlines the phased implementation of the Lab Controller System. E
 ### TODO List
 
 #### 3.1 Power Controller Framework
-- ☐ Create power module `src/labctl/power/`
-- ☐ Define abstract base `src/labctl/power/base.py`
-  - ☐ `PowerController` ABC
-  - ☐ Methods: `power_on`, `power_off`, `power_cycle`, `get_state`
-  - ☐ `PowerState` enum: ON, OFF, UNKNOWN
-- ☐ Create controller factory
-  - ☐ Return correct implementation based on plug type
+- ✅ Create power module `src/labctl/power/`
+- ✅ Define abstract base `src/labctl/power/base.py`
+  - ✅ `PowerController` ABC
+  - ✅ Methods: `power_on`, `power_off`, `power_cycle`, `get_state`
+  - ✅ `PowerState` enum: ON, OFF, UNKNOWN
+- ✅ Create controller factory
+  - ✅ Return correct implementation based on plug type
 
 #### 3.2 Tasmota Implementation
-- ☐ Create `src/labctl/power/tasmota.py`
-  - ☐ HTTP API client
-  - ☐ Implement all `PowerController` methods
-  - ☐ Handle multi-relay devices (index parameter)
-  - ☐ Error handling and timeouts
-- ☐ Test with actual Tasmota device
-  - ☐ `curl "http://<ip>/cm?cmnd=Power%20On"`
-  - ☐ `curl "http://<ip>/cm?cmnd=Power%20Off"`
-  - ☐ `curl "http://<ip>/cm?cmnd=Power%20Status"`
+- ✅ Create `src/labctl/power/tasmota.py`
+  - ✅ HTTP API client
+  - ✅ Implement all `PowerController` methods
+  - ✅ Handle multi-relay devices (index parameter)
+  - ✅ Error handling and timeouts
+- ⏸️ Test with actual Tasmota device (pending hardware)
 
 #### 3.3 Kasa Implementation (Optional)
-- ☐ Add `python-kasa` dependency
-- ☐ Create `src/labctl/power/kasa.py`
-  - ☐ Async wrapper for python-kasa
-  - ☐ Implement all `PowerController` methods
-- ☐ Test with Kasa device if available
+- ✅ Add `python-kasa` dependency (optional)
+- ✅ Create `src/labctl/power/kasa.py`
+  - ✅ Async wrapper for python-kasa
+  - ✅ Implement all `PowerController` methods
+- ⏸️ Test with Kasa device if available
 
 #### 3.4 Shelly Implementation (Optional)
-- ☐ Create `src/labctl/power/shelly.py`
-  - ☐ HTTP API client
-  - ☐ Implement all `PowerController` methods
-- ☐ Test with Shelly device if available
+- ✅ Create `src/labctl/power/shelly.py`
+  - ✅ HTTP API client
+  - ✅ Implement all `PowerController` methods
+- ⏸️ Test with Shelly device if available
 
 #### 3.5 CLI Plug Assignment
-- ☐ Implement `labctl plug assign <sbc> <type> <address>`
-  - ☐ Types: tasmota, kasa, shelly
-  - ☐ `--index` for multi-outlet strips
-- ☐ Implement `labctl plug remove <sbc>`
+- ✅ Implement `labctl plug assign <sbc> <type> <address>`
+  - ✅ Types: tasmota, kasa, shelly
+  - ✅ `--index` for multi-outlet strips
+- ✅ Implement `labctl plug remove <sbc>`
 
 #### 3.6 CLI Power Commands
-- ☐ Implement `labctl power <sbc> on`
-- ☐ Implement `labctl power <sbc> off`
-- ☐ Implement `labctl power <sbc> cycle`
-  - ☐ `--delay` option (default 2s)
-- ☐ Implement `labctl power <sbc> status`
-- ☐ Implement `labctl power-all on|off`
-  - ☐ `--project` filter
-  - ☐ Confirmation prompt
+- ✅ Implement `labctl power <sbc> on`
+- ✅ Implement `labctl power <sbc> off`
+- ✅ Implement `labctl power <sbc> cycle`
+  - ✅ `--delay` option (default 2s)
+- ✅ Implement `labctl power <sbc> status`
+- ✅ Implement `labctl power-all on|off`
+  - ✅ `--project` filter
+  - ✅ Confirmation prompt
 
 ### Acceptance Criteria
-- ☐ Can assign smart plugs to SBCs in database
-- ☐ `labctl power <sbc> on/off/cycle` controls actual hardware
-- ☐ `labctl power <sbc> status` shows current power state
-- ☐ Power operations logged in audit log
+- ✅ Can assign smart plugs to SBCs in database
+- ⏸️ `labctl power <sbc> on/off/cycle` controls actual hardware (pending hardware test)
+- ✅ `labctl power <sbc> status` shows current power state
+- ✅ Power operations logged in audit log
 
 ---
 

@@ -14,8 +14,9 @@ import click
 from labctl import __version__
 from labctl.core.config import Config, load_config
 from labctl.core.manager import get_manager, ResourceManager
-from labctl.core.models import Status, PortType, AddressType
+from labctl.core.models import Status, PortType, AddressType, PlugType
 from labctl.serial.ser2net import Ser2NetPort, generate_ser2net_config
+from labctl.power import PowerController, PowerState, get_controller
 
 
 def _get_manager(ctx: click.Context) -> ResourceManager:
@@ -597,6 +598,204 @@ def ser2net_reload_cmd(ctx: click.Context) -> None:
     except FileNotFoundError:
         click.echo("Error: systemctl not found", err=True)
         sys.exit(1)
+
+
+# --- Plug Assignment Commands ---
+
+@main.group("plug")
+def plug_group() -> None:
+    """Manage power plug assignments."""
+    pass
+
+
+@plug_group.command("assign")
+@click.argument("sbc_name")
+@click.argument("plug_type", type=click.Choice([t.value for t in PlugType]))
+@click.argument("address")
+@click.option("--index", "-i", type=int, default=1, help="Outlet index for multi-relay devices (default: 1)")
+@click.pass_context
+def plug_assign_cmd(
+    ctx: click.Context,
+    sbc_name: str,
+    plug_type: str,
+    address: str,
+    index: int,
+) -> None:
+    """Assign a power plug to an SBC."""
+    manager = _get_manager(ctx)
+
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
+        sys.exit(1)
+
+    plug = manager.assign_power_plug(
+        sbc_id=sbc.id,
+        plug_type=PlugType(plug_type),
+        address=address,
+        plug_index=index,
+    )
+    idx_str = f"[{index}]" if index > 1 else ""
+    click.echo(f"Assigned {plug_type} plug to {sbc_name}: {address}{idx_str}")
+
+
+@plug_group.command("remove")
+@click.argument("sbc_name")
+@click.pass_context
+def plug_remove_cmd(ctx: click.Context, sbc_name: str) -> None:
+    """Remove power plug assignment from an SBC."""
+    manager = _get_manager(ctx)
+
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
+        sys.exit(1)
+
+    if manager.remove_power_plug(sbc.id):
+        click.echo(f"Removed power plug from {sbc_name}")
+    else:
+        click.echo(f"No power plug assigned to {sbc_name}")
+
+
+# --- Power Control Commands ---
+
+@main.group("power")
+def power_group() -> None:
+    """Control power to SBCs."""
+    pass
+
+
+def _get_power_controller(manager: ResourceManager, sbc_name: str) -> tuple:
+    """Get power controller for an SBC. Returns (controller, sbc) or exits on error."""
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
+        sys.exit(1)
+
+    if not sbc.power_plug:
+        click.echo(f"Error: No power plug assigned to '{sbc_name}'", err=True)
+        click.echo("Use 'labctl plug assign' to assign a power plug first.")
+        sys.exit(1)
+
+    try:
+        controller = PowerController.from_plug(sbc.power_plug)
+        return controller, sbc
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@power_group.command("on")
+@click.argument("sbc_name")
+@click.pass_context
+def power_on_cmd(ctx: click.Context, sbc_name: str) -> None:
+    """Turn power on for an SBC."""
+    manager = _get_manager(ctx)
+    controller, sbc = _get_power_controller(manager, sbc_name)
+
+    click.echo(f"Powering on {sbc_name}...")
+    if controller.power_on():
+        click.echo(f"Power ON: {sbc_name}")
+    else:
+        click.echo(f"Error: Failed to power on {sbc_name}", err=True)
+        sys.exit(1)
+
+
+@power_group.command("off")
+@click.argument("sbc_name")
+@click.pass_context
+def power_off_cmd(ctx: click.Context, sbc_name: str) -> None:
+    """Turn power off for an SBC."""
+    manager = _get_manager(ctx)
+    controller, sbc = _get_power_controller(manager, sbc_name)
+
+    click.echo(f"Powering off {sbc_name}...")
+    if controller.power_off():
+        click.echo(f"Power OFF: {sbc_name}")
+    else:
+        click.echo(f"Error: Failed to power off {sbc_name}", err=True)
+        sys.exit(1)
+
+
+@power_group.command("cycle")
+@click.argument("sbc_name")
+@click.option("--delay", "-d", type=float, default=2.0, help="Delay between off and on (default: 2s)")
+@click.pass_context
+def power_cycle_cmd(ctx: click.Context, sbc_name: str, delay: float) -> None:
+    """Power cycle an SBC (off, wait, on)."""
+    manager = _get_manager(ctx)
+    controller, sbc = _get_power_controller(manager, sbc_name)
+
+    click.echo(f"Power cycling {sbc_name} (delay: {delay}s)...")
+    if controller.power_cycle(delay):
+        click.echo(f"Power cycled: {sbc_name}")
+    else:
+        click.echo(f"Error: Failed to power cycle {sbc_name}", err=True)
+        sys.exit(1)
+
+
+@power_group.command("status")
+@click.argument("sbc_name")
+@click.pass_context
+def power_status_cmd(ctx: click.Context, sbc_name: str) -> None:
+    """Show power status for an SBC."""
+    manager = _get_manager(ctx)
+    controller, sbc = _get_power_controller(manager, sbc_name)
+
+    state = controller.get_state()
+    plug = sbc.power_plug
+
+    click.echo(f"SBC:    {sbc_name}")
+    click.echo(f"Plug:   {plug.plug_type.value} @ {plug.address}")
+    if plug.plug_index > 1:
+        click.echo(f"Index:  {plug.plug_index}")
+    click.echo(f"State:  {state.value.upper()}")
+
+
+@main.command("power-all")
+@click.argument("action", type=click.Choice(["on", "off"]))
+@click.option("--project", "-p", help="Filter by project name")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+@click.pass_context
+def power_all_cmd(ctx: click.Context, action: str, project: str | None, yes: bool) -> None:
+    """Turn power on or off for all SBCs."""
+    manager = _get_manager(ctx)
+
+    sbcs = manager.list_sbcs(project=project)
+    sbcs_with_plugs = [s for s in sbcs if s.power_plug is not None]
+
+    if not sbcs_with_plugs:
+        filter_msg = f" in project '{project}'" if project else ""
+        click.echo(f"No SBCs with power plugs assigned{filter_msg}.")
+        return
+
+    # Show what will be affected
+    click.echo(f"SBCs to power {action.upper()}:")
+    for sbc in sbcs_with_plugs:
+        click.echo(f"  - {sbc.name} ({sbc.power_plug.plug_type.value} @ {sbc.power_plug.address})")
+
+    if not yes:
+        click.confirm(f"\nPower {action.upper()} all {len(sbcs_with_plugs)} SBC(s)?", abort=True)
+
+    # Execute power commands
+    success_count = 0
+    for sbc in sbcs_with_plugs:
+        try:
+            controller = PowerController.from_plug(sbc.power_plug)
+            if action == "on":
+                result = controller.power_on()
+            else:
+                result = controller.power_off()
+
+            if result:
+                click.echo(f"  {sbc.name}: {action.upper()} OK")
+                success_count += 1
+            else:
+                click.echo(f"  {sbc.name}: FAILED", err=True)
+        except Exception as e:
+            click.echo(f"  {sbc.name}: ERROR - {e}", err=True)
+
+    click.echo(f"\n{success_count}/{len(sbcs_with_plugs)} SBCs powered {action.upper()}")
 
 
 if __name__ == "__main__":
