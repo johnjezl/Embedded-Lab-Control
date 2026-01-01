@@ -1,0 +1,237 @@
+{% extends "base.html" %}
+
+{% block title %}Console - {{ sbc.name }}{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.min.css">
+<style>
+    .console-container {
+        background: var(--color-surface);
+        border-radius: var(--border-radius);
+        border: 1px solid var(--color-primary);
+        padding: 1rem;
+        margin-bottom: 1rem;
+    }
+
+    .console-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 1rem;
+        padding-bottom: 0.5rem;
+        border-bottom: 1px solid var(--color-primary);
+    }
+
+    .console-status {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+    }
+
+    .status-dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: var(--color-text-muted);
+    }
+
+    .status-dot.connected {
+        background: var(--color-success);
+        box-shadow: 0 0 8px var(--color-success);
+    }
+
+    .status-dot.disconnected {
+        background: var(--color-danger);
+    }
+
+    #terminal {
+        height: 500px;
+    }
+
+    .console-footer {
+        margin-top: 1rem;
+        padding-top: 0.5rem;
+        border-top: 1px solid var(--color-primary);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .console-info {
+        color: var(--color-text-muted);
+        font-size: 0.9rem;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<a href="{{ url_for('views.sbc_detail', name=sbc.name) }}" class="back-link">&larr; Back to {{ sbc.name }}</a>
+
+<div class="page-header">
+    <h1>Console: {{ sbc.name }}</h1>
+    <p>Serial console connection</p>
+</div>
+
+<div class="console-container">
+    <div class="console-header">
+        <div class="console-status">
+            <span class="status-dot" id="status-indicator"></span>
+            <span id="status-text">Disconnected</span>
+        </div>
+        <div>
+            <button class="btn btn-success btn-sm" id="connect-btn" onclick="connectConsole()">Connect</button>
+            <button class="btn btn-danger btn-sm" id="disconnect-btn" onclick="disconnectConsole()" style="display: none;">Disconnect</button>
+        </div>
+    </div>
+
+    <div id="terminal"></div>
+
+    <div class="console-footer">
+        <div class="console-info">
+            {% if port %}
+            Port: {{ port.device_path }} | TCP: {{ port.tcp_port }} | Baud: {{ port.baud_rate }}
+            {% else %}
+            No console port configured
+            {% endif %}
+        </div>
+        <div class="console-info">
+            <span id="write-status">Read-only</span>
+        </div>
+    </div>
+</div>
+
+<div class="detail-card">
+    <h3>Keyboard Shortcuts</h3>
+    <table class="detail-table">
+        <tr><th>Ctrl+C</th><td>Send interrupt signal</td></tr>
+        <tr><th>Ctrl+D</th><td>Send EOF</td></tr>
+        <tr><th>Ctrl+L</th><td>Clear screen</td></tr>
+        <tr><th>Ctrl+A</th><td>Go to beginning of line</td></tr>
+        <tr><th>Ctrl+E</th><td>Go to end of line</td></tr>
+    </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.min.js"></script>
+<script src="https://cdn.socket.io/4.6.0/socket.io.min.js"></script>
+<script>
+    const sbcName = "{{ sbc.name }}";
+    let terminal = null;
+    let fitAddon = null;
+    let socket = null;
+    let connected = false;
+
+    // Initialize terminal
+    function initTerminal() {
+        terminal = new Terminal({
+            cursorBlink: true,
+            fontSize: 14,
+            fontFamily: "'Monaco', 'Consolas', 'Courier New', monospace",
+            theme: {
+                background: '#1a1a2e',
+                foreground: '#eaeaea',
+                cursor: '#e94560',
+                selection: '#0f3460',
+            }
+        });
+
+        fitAddon = new FitAddon.FitAddon();
+        terminal.loadAddon(fitAddon);
+        terminal.loadAddon(new WebLinksAddon.WebLinksAddon());
+
+        terminal.open(document.getElementById('terminal'));
+        fitAddon.fit();
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            fitAddon.fit();
+        });
+
+        // Handle terminal input
+        terminal.onData(data => {
+            if (connected && socket) {
+                socket.emit('console_input', { text: data });
+            }
+        });
+
+        terminal.writeln('Lab Controller Console');
+        terminal.writeln('Click "Connect" to open console connection');
+        terminal.writeln('');
+    }
+
+    function updateStatus(isConnected, message) {
+        const indicator = document.getElementById('status-indicator');
+        const statusText = document.getElementById('status-text');
+        const connectBtn = document.getElementById('connect-btn');
+        const disconnectBtn = document.getElementById('disconnect-btn');
+
+        connected = isConnected;
+
+        if (isConnected) {
+            indicator.className = 'status-dot connected';
+            statusText.textContent = message || 'Connected';
+            connectBtn.style.display = 'none';
+            disconnectBtn.style.display = 'inline-block';
+        } else {
+            indicator.className = 'status-dot disconnected';
+            statusText.textContent = message || 'Disconnected';
+            connectBtn.style.display = 'inline-block';
+            disconnectBtn.style.display = 'none';
+        }
+    }
+
+    function connectConsole() {
+        terminal.writeln('\x1b[33mConnecting...\x1b[0m');
+
+        socket = io('/console', {
+            transports: ['websocket']
+        });
+
+        socket.on('connect', () => {
+            console.log('WebSocket connected');
+            socket.emit('open_console', { sbc_name: sbcName });
+        });
+
+        socket.on('console_opened', (data) => {
+            updateStatus(true, 'Connected');
+            terminal.writeln('\x1b[32m' + data.message + '\x1b[0m');
+            terminal.writeln('');
+        });
+
+        socket.on('console_output', (data) => {
+            terminal.write(data.text);
+        });
+
+        socket.on('error', (data) => {
+            terminal.writeln('\x1b[31mError: ' + data.message + '\x1b[0m');
+            updateStatus(false, 'Error');
+        });
+
+        socket.on('disconnect', () => {
+            terminal.writeln('\x1b[31mDisconnected\x1b[0m');
+            updateStatus(false, 'Disconnected');
+        });
+
+        socket.on('console_closed', () => {
+            terminal.writeln('\x1b[33mConsole closed\x1b[0m');
+            updateStatus(false, 'Closed');
+        });
+    }
+
+    function disconnectConsole() {
+        if (socket) {
+            socket.emit('close_console');
+            socket.disconnect();
+            socket = null;
+        }
+        updateStatus(false, 'Disconnected');
+        terminal.writeln('\x1b[33mDisconnected\x1b[0m');
+    }
+
+    // Initialize on page load
+    document.addEventListener('DOMContentLoaded', initTerminal);
+</script>
+{% endblock %}

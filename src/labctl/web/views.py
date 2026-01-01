@@ -2,9 +2,9 @@
 Web views for lab controller dashboard.
 """
 
-from flask import Blueprint, render_template, g, redirect, url_for, request, flash
+from flask import Blueprint, flash, g, redirect, render_template, url_for
 
-from labctl.core.models import Status, PortType, AddressType, PlugType
+from labctl.core.models import AddressType, PlugType, PortType, Status
 from labctl.power import PowerController, PowerState
 
 views_bp = Blueprint("views", __name__)
@@ -94,3 +94,21 @@ def sbc_power_action(name: str, action: str):
         flash(f"Error: {e}", "error")
 
     return redirect(url_for("views.sbc_detail", name=name))
+
+
+@views_bp.route("/sbc/<name>/console")
+def sbc_console(name: str):
+    """SBC console page with xterm.js terminal."""
+    sbc = g.manager.get_sbc_by_name(name)
+    if not sbc:
+        flash(f"SBC '{name}' not found", "error")
+        return redirect(url_for("views.index"))
+
+    # Find console port
+    port = sbc.console_port
+
+    return render_template(
+        "console.html",
+        sbc=sbc,
+        port=port,
+    )

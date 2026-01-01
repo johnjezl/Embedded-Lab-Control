@@ -9,7 +9,7 @@ from enum import Enum
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from labctl.core.models import PowerPlug, PlugType
+    from labctl.core.models import PlugType, PowerPlug
 
 
 class PowerState(Enum):
@@ -128,14 +128,17 @@ def get_controller(
 
     if plug_type == PlugType.TASMOTA:
         from labctl.power.tasmota import TasmotaController
+
         return TasmotaController(address, plug_index, timeout)
 
     elif plug_type == PlugType.KASA:
         from labctl.power.kasa import KasaController
+
         return KasaController(address, plug_index, timeout)
 
     elif plug_type == PlugType.SHELLY:
         from labctl.power.shelly import ShellyController
+
         return ShellyController(address, plug_index, timeout)
 
     else:

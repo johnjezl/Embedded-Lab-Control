@@ -4,20 +4,19 @@ Resource manager for lab controller.
 Provides CRUD operations for SBCs, serial ports, network addresses, and power plugs.
 """
 
-from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 from labctl.core.database import Database, get_database
 from labctl.core.models import (
     SBC,
-    SerialPort,
-    NetworkAddress,
-    PowerPlug,
-    Status,
-    PortType,
     AddressType,
+    NetworkAddress,
     PlugType,
+    PortType,
+    PowerPlug,
+    SerialPort,
+    Status,
 )
 
 
@@ -97,9 +96,7 @@ class ResourceManager:
     def _load_sbc_relations(self, sbc: SBC) -> None:
         """Load related objects for an SBC."""
         # Load serial ports
-        rows = self.db.execute(
-            "SELECT * FROM serial_ports WHERE sbc_id = ?", (sbc.id,)
-        )
+        rows = self.db.execute("SELECT * FROM serial_ports WHERE sbc_id = ?", (sbc.id,))
         sbc.serial_ports = [SerialPort.from_row(r) for r in rows]
 
         # Load network addresses
@@ -189,7 +186,9 @@ class ResourceManager:
             sql = f"UPDATE sbcs SET {', '.join(updates)} WHERE id = ?"
             params.append(sbc_id)
             self.db.execute_modify(sql, tuple(params))
-            self._audit_log("update", "sbc", sbc_id, sbc.name, f"Updated SBC: {sbc.name}")
+            self._audit_log(
+                "update", "sbc", sbc_id, sbc.name, f"Updated SBC: {sbc.name}"
+            )
 
         return self.get_sbc(sbc_id)
 
@@ -207,7 +206,9 @@ class ResourceManager:
         # Cascade delete handles related records
         count = self.db.execute_modify("DELETE FROM sbcs WHERE id = ?", (sbc_id,))
         if count > 0:
-            self._audit_log("delete", "sbc", sbc_id, sbc.name, f"Deleted SBC: {sbc.name}")
+            self._audit_log(
+                "delete", "sbc", sbc_id, sbc.name, f"Deleted SBC: {sbc.name}"
+            )
             return True
 
         return False
@@ -251,15 +252,19 @@ class ResourceManager:
 
         port_id = self.db.execute_insert(
             """
-            INSERT INTO serial_ports (sbc_id, port_type, device_path, tcp_port, baud_rate)
+            INSERT INTO serial_ports
+                (sbc_id, port_type, device_path, tcp_port, baud_rate)
             VALUES (?, ?, ?, ?, ?)
             """,
             (sbc_id, port_type.value, device_path, tcp_port, baud_rate),
         )
 
         self._audit_log(
-            "assign", "serial_port", port_id, sbc.name,
-            f"Assigned {port_type.value} port {device_path} to {sbc.name}"
+            "assign",
+            "serial_port",
+            port_id,
+            sbc.name,
+            f"Assigned {port_type.value} port {device_path} to {sbc.name}",
         )
 
         row = self.db.execute_one("SELECT * FROM serial_ports WHERE id = ?", (port_id,))
@@ -278,8 +283,11 @@ class ResourceManager:
 
         if count > 0:
             self._audit_log(
-                "remove", "serial_port", None, sbc.name,
-                f"Removed {port_type.value} port from {sbc.name}"
+                "remove",
+                "serial_port",
+                None,
+                sbc.name,
+                f"Removed {port_type.value} port from {sbc.name}",
             )
             return True
 
@@ -292,9 +300,7 @@ class ResourceManager:
 
     def _next_tcp_port(self, base_port: int = 4000) -> int:
         """Get next available TCP port."""
-        row = self.db.execute_one(
-            "SELECT MAX(tcp_port) as max_port FROM serial_ports"
-        )
+        row = self.db.execute_one("SELECT MAX(tcp_port) as max_port FROM serial_ports")
         if row and row["max_port"]:
             return row["max_port"] + 1
         return base_port
@@ -322,18 +328,24 @@ class ResourceManager:
 
         addr_id = self.db.execute_insert(
             """
-            INSERT INTO network_addresses (sbc_id, address_type, ip_address, mac_address, hostname)
+            INSERT INTO network_addresses
+                (sbc_id, address_type, ip_address, mac_address, hostname)
             VALUES (?, ?, ?, ?, ?)
             """,
             (sbc_id, address_type.value, ip_address, mac_address, hostname),
         )
 
         self._audit_log(
-            "set", "network_address", addr_id, sbc.name,
-            f"Set {address_type.value} address {ip_address} for {sbc.name}"
+            "set",
+            "network_address",
+            addr_id,
+            sbc.name,
+            f"Set {address_type.value} address {ip_address} for {sbc.name}",
         )
 
-        row = self.db.execute_one("SELECT * FROM network_addresses WHERE id = ?", (addr_id,))
+        row = self.db.execute_one(
+            "SELECT * FROM network_addresses WHERE id = ?", (addr_id,)
+        )
         return NetworkAddress.from_row(row)
 
     def remove_network_address(self, sbc_id: int, address_type: AddressType) -> bool:
@@ -370,8 +382,11 @@ class ResourceManager:
         )
 
         self._audit_log(
-            "assign", "power_plug", plug_id, sbc.name,
-            f"Assigned {plug_type.value} plug {address} to {sbc.name}"
+            "assign",
+            "power_plug",
+            plug_id,
+            sbc.name,
+            f"Assigned {plug_type.value} plug {address} to {sbc.name}",
         )
 
         row = self.db.execute_one("SELECT * FROM power_plugs WHERE id = ?", (plug_id,))

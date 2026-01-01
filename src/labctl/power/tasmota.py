@@ -4,8 +4,9 @@ Tasmota power controller.
 Controls Tasmota-flashed smart plugs via HTTP API.
 """
 
-import requests
 from typing import Optional
+
+import requests
 
 from labctl.power.base import PowerController, PowerState
 

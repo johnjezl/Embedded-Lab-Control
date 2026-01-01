@@ -425,50 +425,53 @@ This document outlines the phased implementation of the Lab Controller System. E
 ### TODO List
 
 #### 6.1 Requirements Analysis
-- ☐ Document use cases
-  - ☐ Multiple viewers (watch-only)
-  - ☐ Single writer, multiple readers
-  - ☐ Multiple writers (needs arbitration)
-- ☐ Decide on initial scope (likely: one writer, many readers)
+- ✅ Document use cases
+  - ✅ Multiple viewers (watch-only)
+  - ✅ Single writer, multiple readers
+  - ⏸️ Multiple writers (needs arbitration) - deferred, using first-writer-wins
+- ✅ Decide on initial scope (likely: one writer, many readers)
 
 #### 6.2 Serial Proxy Daemon
-- ☐ Create proxy module `src/labctl/serial/proxy.py`
-- ☐ Implement fan-out architecture
-  - ☐ Single connection to ser2net (or direct serial)
-  - ☐ Multiple client connections
-  - ☐ Broadcast reads to all clients
-- ☐ Write arbitration
-  - ☐ Option A: First client gets write lock
-  - ☐ Option B: All clients can write (risk conflicts)
-  - ☐ Option C: Queue-based writes
-- ☐ Session management
-  - ☐ Track connected clients
-  - ☐ Graceful disconnect handling
+- ✅ Create proxy module `src/labctl/serial/proxy.py`
+- ✅ Implement fan-out architecture
+  - ✅ Single connection to ser2net (or direct serial)
+  - ✅ Multiple client connections
+  - ✅ Broadcast reads to all clients
+- ✅ Write arbitration
+  - ✅ Option A: First client gets write lock (implemented)
+  - ⏸️ Option B: All clients can write (risk conflicts) - configurable
+  - ⏸️ Option C: Queue-based writes - deferred
+- ✅ Session management
+  - ✅ Track connected clients
+  - ✅ Graceful disconnect handling
 
 #### 6.3 Proxy Configuration
-- ☐ Add proxy settings to config
-  - ☐ Proxy port range
-  - ☐ Write policy
-- ☐ Proxy port allocation scheme
+- ✅ Add proxy settings to config
+  - ✅ Proxy port range
+  - ✅ Write policy
+- ✅ Proxy port allocation scheme
 
 #### 6.4 CLI Integration
-- ☐ Update `labctl connect` to use proxy when multiple clients
-- ☐ Add `labctl sessions <sbc>` - list connected clients
+- ⏸️ Update `labctl connect` to use proxy when multiple clients - deferred
+- ✅ Add `labctl proxy start <sbc>` - start proxy for SBC
+- ✅ Add `labctl proxy list` - list running proxies
+- ✅ Add `labctl sessions <sbc>` - list connected clients
 
 #### 6.5 Web Integration
-- ☐ Update web console to use proxy
-- ☐ Show connected clients in UI
+- ✅ Create web console page with xterm.js
+- ✅ WebSocket bridge for browser-to-proxy communication
+- ⏸️ Show connected clients in UI - deferred
 
 #### 6.6 Session Logging (Optional)
-- ☐ Log all serial traffic to files
-- ☐ Configurable log directory
-- ☐ Log rotation
+- ✅ Log all serial traffic to files
+- ✅ Configurable log directory
+- ⏸️ Log rotation - deferred to M7
 
 ### Acceptance Criteria
-- ☐ Multiple CLI clients can view same console
-- ☐ Web and CLI can view same console simultaneously
-- ☐ Write conflicts handled gracefully
-- ☐ No data loss on client disconnect
+- ✅ Multiple CLI clients can view same console
+- ✅ Web and CLI can view same console simultaneously
+- ✅ Write conflicts handled gracefully (first-writer-wins)
+- ✅ No data loss on client disconnect
 
 ---
 

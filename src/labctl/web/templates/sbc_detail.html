@@ -73,6 +73,7 @@
         {% if sbc.console_port and sbc.console_port.tcp_port %}
         <p class="mt-2">
             Connect: <code>nc localhost {{ sbc.console_port.tcp_port }}</code>
+            <a href="{{ url_for('views.sbc_console', name=sbc.name) }}" class="btn btn-primary btn-sm" style="margin-left: 1rem;">Open Web Console</a>
         </p>
         {% endif %}
         {% else %}

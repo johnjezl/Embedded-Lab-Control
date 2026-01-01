@@ -3,10 +3,11 @@ Flask application factory for lab controller web interface.
 """
 
 from pathlib import Path
+
 from flask import Flask, g
 
 from labctl.core.config import Config, load_config
-from labctl.core.manager import get_manager, ResourceManager
+from labctl.core.manager import ResourceManager, get_manager
 
 
 def create_app(config: Config | None = None) -> Flask:

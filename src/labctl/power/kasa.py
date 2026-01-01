@@ -21,6 +21,7 @@ class KasaController(PowerController):
         """Turn power on."""
         try:
             import asyncio
+
             from kasa import SmartPlug
 
             async def _on():
@@ -41,6 +42,7 @@ class KasaController(PowerController):
         """Turn power off."""
         try:
             import asyncio
+
             from kasa import SmartPlug
 
             async def _off():
@@ -61,6 +63,7 @@ class KasaController(PowerController):
         """Get current power state."""
         try:
             import asyncio
+
             from kasa import SmartPlug
 
             async def _state():

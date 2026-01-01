@@ -1,15 +1,16 @@
 """Integration tests for Flask web interface and REST API."""
 
 import json
-import pytest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock, patch
 
-from labctl.web.app import create_app
-from labctl.core.config import Config, SerialConfig, Ser2NetConfig
+import pytest
+
+from labctl.core.config import Config, Ser2NetConfig, SerialConfig
 from labctl.core.manager import get_manager
-from labctl.core.models import Status, PortType, PlugType
+from labctl.core.models import PlugType, PortType
 from labctl.power import PowerState
+from labctl.web.app import create_app
 
 
 @pytest.fixture
@@ -43,7 +44,6 @@ def client(app):
 def manager(app):
     """Get resource manager for test database."""
     with app.app_context():
-        from flask import g
         config = app.config["LABCTL_CONFIG"]
         return get_manager(config.database_path)
 
@@ -116,11 +116,13 @@ class TestSBCEndpoints:
         """Test creating an SBC via API."""
         response = client.post(
             "/api/sbcs",
-            data=json.dumps({
-                "name": "api-test-sbc",
-                "project": "api-test",
-                "description": "Created via API",
-            }),
+            data=json.dumps(
+                {
+                    "name": "api-test-sbc",
+                    "project": "api-test",
+                    "description": "Created via API",
+                }
+            ),
             content_type="application/json",
         )
         assert response.status_code == 201
@@ -174,10 +176,12 @@ class TestSBCEndpoints:
         """Test updating an SBC."""
         response = client.put(
             "/api/sbcs/test-pi",
-            data=json.dumps({
-                "project": "updated-project",
-                "description": "Updated description",
-            }),
+            data=json.dumps(
+                {
+                    "project": "updated-project",
+                    "description": "Updated description",
+                }
+            ),
             content_type="application/json",
         )
         assert response.status_code == 200
@@ -268,11 +272,13 @@ class TestPortEndpoints:
         """Test assigning port via API."""
         response = client.post(
             "/api/sbcs/test-pi/ports",
-            data=json.dumps({
-                "type": "console",
-                "device": "/dev/lab/new-device",
-                "baud_rate": 9600,
-            }),
+            data=json.dumps(
+                {
+                    "type": "console",
+                    "device": "/dev/lab/new-device",
+                    "baud_rate": 9600,
+                }
+            ),
             content_type="application/json",
         )
         assert response.status_code == 201
@@ -286,10 +292,12 @@ class TestPortEndpoints:
         """Test assigning port with invalid type fails."""
         response = client.post(
             "/api/sbcs/test-pi/ports",
-            data=json.dumps({
-                "type": "invalid-type",
-                "device": "/dev/lab/test",
-            }),
+            data=json.dumps(
+                {
+                    "type": "invalid-type",
+                    "device": "/dev/lab/test",
+                }
+            ),
             content_type="application/json",
         )
         assert response.status_code == 400

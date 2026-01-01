@@ -1,6 +1,5 @@
 """Unit tests for ser2net configuration generator."""
 
-import pytest
 from labctl.serial.ser2net import Ser2NetPort, generate_ser2net_config
 
 
@@ -139,9 +138,7 @@ class TestGenerateSer2netConfig:
 
     def test_no_header(self):
         """Test config generation without header."""
-        ports = [
-            Ser2NetPort(name="test", device="/dev/lab/test", tcp_port=4000)
-        ]
+        ports = [Ser2NetPort(name="test", device="/dev/lab/test", tcp_port=4000)]
         config = generate_ser2net_config(ports, include_header=False)
 
         assert "%YAML 1.1" not in config

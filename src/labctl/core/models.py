@@ -4,11 +4,11 @@ Data models for lab controller.
 Defines dataclasses for SBCs, serial ports, network addresses, and power plugs.
 """
 
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Optional
-import sqlite3
 
 
 class Status(Enum):

@@ -11,7 +11,6 @@ from typing import Any, Optional
 
 import yaml
 
-
 # Default configuration paths
 DEFAULT_CONFIG_DIR = Path.home() / ".config" / "labctl"
 DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.yaml"
@@ -35,12 +34,31 @@ class Ser2NetConfig:
     enabled: bool = True
 
 
+# Default log directory for proxy sessions
+DEFAULT_LOG_DIR = Path.home() / ".local" / "share" / "labctl" / "logs"
+
+
+@dataclass
+class ProxyConfig:
+    """Multi-client serial proxy configuration."""
+
+    enabled: bool = True
+    port_base: int = 5000
+    port_range: int = 100  # Ports 5000-5099 available
+    write_policy: str = "first"  # first, all, queue
+    log_dir: Path = field(default_factory=lambda: DEFAULT_LOG_DIR)
+    log_retention_days: int = 7
+    max_clients: int = 10
+    idle_timeout: int = 3600  # seconds
+
+
 @dataclass
 class Config:
     """Main configuration for lab controller."""
 
     serial: SerialConfig = field(default_factory=SerialConfig)
     ser2net: Ser2NetConfig = field(default_factory=Ser2NetConfig)
+    proxy: ProxyConfig = field(default_factory=ProxyConfig)
     database_path: Path = field(
         default_factory=lambda: DEFAULT_CONFIG_DIR / "labctl.db"
     )
@@ -51,6 +69,7 @@ class Config:
         """Create Config from dictionary."""
         serial_data = data.get("serial", {})
         ser2net_data = data.get("ser2net", {})
+        proxy_data = data.get("proxy", {})
 
         serial = SerialConfig(
             dev_dir=Path(serial_data.get("dev_dir", "/dev/lab")),
@@ -63,9 +82,21 @@ class Config:
             enabled=ser2net_data.get("enabled", True),
         )
 
+        proxy = ProxyConfig(
+            enabled=proxy_data.get("enabled", True),
+            port_base=proxy_data.get("port_base", 5000),
+            port_range=proxy_data.get("port_range", 100),
+            write_policy=proxy_data.get("write_policy", "first"),
+            log_dir=Path(proxy_data.get("log_dir", str(DEFAULT_LOG_DIR))),
+            log_retention_days=proxy_data.get("log_retention_days", 7),
+            max_clients=proxy_data.get("max_clients", 10),
+            idle_timeout=proxy_data.get("idle_timeout", 3600),
+        )
+
         return cls(
             serial=serial,
             ser2net=ser2net,
+            proxy=proxy,
             database_path=Path(
                 data.get("database_path", str(DEFAULT_CONFIG_DIR / "labctl.db"))
             ),
@@ -83,6 +114,16 @@ class Config:
             "ser2net": {
                 "config_file": str(self.ser2net.config_file),
                 "enabled": self.ser2net.enabled,
+            },
+            "proxy": {
+                "enabled": self.proxy.enabled,
+                "port_base": self.proxy.port_base,
+                "port_range": self.proxy.port_range,
+                "write_policy": self.proxy.write_policy,
+                "log_dir": str(self.proxy.log_dir),
+                "log_retention_days": self.proxy.log_retention_days,
+                "max_clients": self.proxy.max_clients,
+                "idle_timeout": self.proxy.idle_timeout,
             },
             "database_path": str(self.database_path),
             "log_level": self.log_level,
@@ -166,6 +207,28 @@ def _apply_env_overrides(config: Config) -> Config:
 
     if "LABCTL_LOG_LEVEL" in os.environ:
         config.log_level = os.environ["LABCTL_LOG_LEVEL"]
+
+    # Proxy overrides
+    if "LABCTL_PROXY_ENABLED" in os.environ:
+        config.proxy.enabled = os.environ["LABCTL_PROXY_ENABLED"].lower() in (
+            "true",
+            "1",
+            "yes",
+        )
+
+    if "LABCTL_PROXY_PORT_BASE" in os.environ:
+        try:
+            config.proxy.port_base = int(os.environ["LABCTL_PROXY_PORT_BASE"])
+        except ValueError:
+            pass
+
+    if "LABCTL_PROXY_WRITE_POLICY" in os.environ:
+        policy = os.environ["LABCTL_PROXY_WRITE_POLICY"]
+        if policy in ("first", "all", "queue"):
+            config.proxy.write_policy = policy
+
+    if "LABCTL_PROXY_LOG_DIR" in os.environ:
+        config.proxy.log_dir = Path(os.environ["LABCTL_PROXY_LOG_DIR"])
 
     return config
 

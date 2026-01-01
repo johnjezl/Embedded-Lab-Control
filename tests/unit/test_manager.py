@@ -1,11 +1,9 @@
 """Unit tests for resource manager."""
 
 import pytest
-from pathlib import Path
 
-from labctl.core.database import get_database
-from labctl.core.manager import ResourceManager, get_manager
-from labctl.core.models import Status, PortType, AddressType, PlugType
+from labctl.core.manager import get_manager
+from labctl.core.models import AddressType, PlugType, PortType, Status
 
 
 @pytest.fixture

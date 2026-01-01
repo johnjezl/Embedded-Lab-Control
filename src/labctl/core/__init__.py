@@ -9,13 +9,13 @@ from labctl.core.database import Database, get_database
 from labctl.core.manager import ResourceManager, get_manager
 from labctl.core.models import (
     SBC,
-    SerialPort,
-    NetworkAddress,
-    PowerPlug,
-    Status,
-    PortType,
     AddressType,
+    NetworkAddress,
     PlugType,
+    PortType,
+    PowerPlug,
+    SerialPort,
+    Status,
 )
 
 __all__ = [

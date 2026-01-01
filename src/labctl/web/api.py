@@ -2,10 +2,10 @@
 REST API endpoints for lab controller.
 """
 
-from flask import Blueprint, jsonify, request, g
+from flask import Blueprint, g, jsonify, request
 
-from labctl.core.models import Status, PortType, AddressType, PlugType
-from labctl.power import PowerController, PowerState
+from labctl.core.models import PortType, Status
+from labctl.power import PowerController
 
 api_bp = Blueprint("api", __name__)
 
@@ -62,6 +62,7 @@ def sbc_to_dict(sbc) -> dict:
 
 # --- SBC Endpoints ---
 
+
 @api_bp.route("/sbcs", methods=["GET"])
 def list_sbcs():
     """List all SBCs."""
@@ -71,10 +72,12 @@ def list_sbcs():
     status_filter = Status(status) if status else None
     sbcs = g.manager.list_sbcs(project=project, status=status_filter)
 
-    return jsonify({
-        "sbcs": [sbc_to_dict(sbc) for sbc in sbcs],
-        "count": len(sbcs),
-    })
+    return jsonify(
+        {
+            "sbcs": [sbc_to_dict(sbc) for sbc in sbcs],
+            "count": len(sbcs),
+        }
+    )
 
 
 @api_bp.route("/sbcs/<name>", methods=["GET"])
@@ -148,6 +151,7 @@ def delete_sbc(name: str):
 
 # --- Power Endpoints ---
 
+
 @api_bp.route("/sbcs/<name>/power", methods=["GET"])
 def get_power_status(name: str):
     """Get power status for SBC."""
@@ -161,12 +165,14 @@ def get_power_status(name: str):
     try:
         controller = PowerController.from_plug(sbc.power_plug)
         state = controller.get_state()
-        return jsonify({
-            "name": name,
-            "state": state.value,
-            "plug_type": sbc.power_plug.plug_type.value,
-            "plug_address": sbc.power_plug.address,
-        })
+        return jsonify(
+            {
+                "name": name,
+                "state": state.value,
+                "plug_type": sbc.power_plug.plug_type.value,
+                "plug_address": sbc.power_plug.address,
+            }
+        )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -202,24 +208,32 @@ def control_power(name: str):
 
         if success:
             state = controller.get_state()
-            return jsonify({
-                "name": name,
-                "action": action,
-                "success": True,
-                "state": state.value,
-            })
+            return jsonify(
+                {
+                    "name": name,
+                    "action": action,
+                    "success": True,
+                    "state": state.value,
+                }
+            )
         else:
-            return jsonify({
-                "name": name,
-                "action": action,
-                "success": False,
-                "error": "Power operation failed",
-            }), 500
+            return (
+                jsonify(
+                    {
+                        "name": name,
+                        "action": action,
+                        "success": False,
+                        "error": "Power operation failed",
+                    }
+                ),
+                500,
+            )
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 # --- Port Endpoints ---
+
 
 @api_bp.route("/sbcs/<name>/ports", methods=["POST"])
 def assign_port(name: str):
@@ -245,13 +259,18 @@ def assign_port(name: str):
         baud_rate=data.get("baud_rate", 115200),
     )
 
-    return jsonify({
-        "id": port.id,
-        "type": port.port_type.value,
-        "device": port.device_path,
-        "tcp_port": port.tcp_port,
-        "baud_rate": port.baud_rate,
-    }), 201
+    return (
+        jsonify(
+            {
+                "id": port.id,
+                "type": port.port_type.value,
+                "device": port.device_path,
+                "tcp_port": port.tcp_port,
+                "baud_rate": port.baud_rate,
+            }
+        ),
+        201,
+    )
 
 
 @api_bp.route("/ports", methods=["GET"])
@@ -264,32 +283,37 @@ def list_ports():
     for sbc in g.manager.list_sbcs():
         sbc_names[sbc.id] = sbc.name
 
-    return jsonify({
-        "ports": [
-            {
-                "id": p.id,
-                "sbc_id": p.sbc_id,
-                "sbc_name": sbc_names.get(p.sbc_id),
-                "type": p.port_type.value,
-                "device": p.device_path,
-                "tcp_port": p.tcp_port,
-                "baud_rate": p.baud_rate,
-            }
-            for p in ports
-        ],
-        "count": len(ports),
-    })
+    return jsonify(
+        {
+            "ports": [
+                {
+                    "id": p.id,
+                    "sbc_id": p.sbc_id,
+                    "sbc_name": sbc_names.get(p.sbc_id),
+                    "type": p.port_type.value,
+                    "device": p.device_path,
+                    "tcp_port": p.tcp_port,
+                    "baud_rate": p.baud_rate,
+                }
+                for p in ports
+            ],
+            "count": len(ports),
+        }
+    )
 
 
 # --- Status Endpoints ---
 
+
 @api_bp.route("/health", methods=["GET"])
 def health_check():
     """System health check."""
-    return jsonify({
-        "status": "healthy",
-        "version": "0.1.0",
-    })
+    return jsonify(
+        {
+            "status": "healthy",
+            "version": "0.1.0",
+        }
+    )
 
 
 @api_bp.route("/status", methods=["GET"])
@@ -318,7 +342,9 @@ def get_status():
 
         status_list.append(status_data)
 
-    return jsonify({
-        "sbcs": status_list,
-        "count": len(status_list),
-    })
+    return jsonify(
+        {
+            "sbcs": status_list,
+            "count": len(status_list),
+        }
+    )

@@ -13,10 +13,10 @@ import click
 
 from labctl import __version__
 from labctl.core.config import Config, load_config
-from labctl.core.manager import get_manager, ResourceManager
-from labctl.core.models import Status, PortType, AddressType, PlugType
+from labctl.core.manager import ResourceManager, get_manager
+from labctl.core.models import AddressType, PlugType, PortType, Status
+from labctl.power import PowerController, PowerState
 from labctl.serial.ser2net import Ser2NetPort, generate_ser2net_config
-from labctl.power import PowerController, PowerState, get_controller
 
 
 def _get_manager(ctx: click.Context) -> ResourceManager:
@@ -31,8 +31,11 @@ def _get_manager(ctx: click.Context) -> ResourceManager:
 @click.version_option(version=__version__, prog_name="labctl")
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose output")
 @click.option(
-    "-c", "--config", "config_path", type=click.Path(exists=True, path_type=Path),
-    help="Path to config file"
+    "-c",
+    "--config",
+    "config_path",
+    type=click.Path(exists=True, path_type=Path),
+    help="Path to config file",
 )
 @click.pass_context
 def main(ctx: click.Context, verbose: bool, config_path: Path | None) -> None:
@@ -44,7 +47,11 @@ def main(ctx: click.Context, verbose: bool, config_path: Path | None) -> None:
 
 @main.command("ports")
 @click.option(
-    "--all", "-a", "show_all", is_flag=True, help="Show all serial devices, not just /dev/lab/"
+    "--all",
+    "-a",
+    "show_all",
+    is_flag=True,
+    help="Show all serial devices, not just /dev/lab/",
 )
 @click.pass_context
 def ports_cmd(ctx: click.Context, show_all: bool) -> None:
@@ -62,12 +69,14 @@ def ports_cmd(ctx: click.Context, show_all: bool) -> None:
                 # Resolve relative symlinks
                 if not target.startswith("/"):
                     target = str((entry.parent / target).resolve())
-                lab_ports.append({
-                    "name": entry.name,
-                    "path": str(entry),
-                    "target": target,
-                    "tcp_port": _get_tcp_port(entry.name, config),
-                })
+                lab_ports.append(
+                    {
+                        "name": entry.name,
+                        "path": str(entry),
+                        "target": target,
+                        "tcp_port": _get_tcp_port(entry.name, config),
+                    }
+                )
 
     if not lab_ports:
         click.echo(f"No ports configured in {dev_dir}/")
@@ -201,9 +210,15 @@ def _connect_direct(port_path: Path, baud: int) -> None:
 
 # --- SBC Management Commands ---
 
+
 @main.command("list")
 @click.option("--project", "-p", help="Filter by project name")
-@click.option("--status", "-s", type=click.Choice([s.value for s in Status]), help="Filter by status")
+@click.option(
+    "--status",
+    "-s",
+    type=click.Choice([s.value for s in Status]),
+    help="Filter by status",
+)
 @click.pass_context
 def list_cmd(ctx: click.Context, project: str | None, status: str | None) -> None:
     """List all SBCs."""
@@ -217,7 +232,9 @@ def list_cmd(ctx: click.Context, project: str | None, status: str | None) -> Non
         return
 
     # Print table
-    click.echo(f"{'NAME':<15} {'PROJECT':<12} {'STATUS':<10} {'CONSOLE':<20} {'IP':<15}")
+    click.echo(
+        f"{'NAME':<15} {'PROJECT':<12} {'STATUS':<10} {'CONSOLE':<20} {'IP':<15}"
+    )
     click.echo("-" * 72)
 
     for sbc in sbcs:
@@ -229,7 +246,9 @@ def list_cmd(ctx: click.Context, project: str | None, status: str | None) -> Non
         ip = sbc.primary_ip or "-"
         project_name = sbc.project or "-"
 
-        click.echo(f"{sbc.name:<15} {project_name:<12} {sbc.status.value:<10} {console:<20} {ip:<15}")
+        line = f"{sbc.name:<15} {project_name:<12} {sbc.status.value:<10} "
+        line += f"{console:<20} {ip:<15}"
+        click.echo(line)
 
 
 @main.command("add")
@@ -308,7 +327,9 @@ def info_cmd(ctx: click.Context, name: str) -> None:
     if sbc.serial_ports:
         for port in sbc.serial_ports:
             tcp = f" (tcp:{port.tcp_port})" if port.tcp_port else ""
-            click.echo(f"  {port.port_type.value}: {port.device_path}{tcp} @ {port.baud_rate}")
+            click.echo(
+                f"  {port.port_type.value}: {port.device_path}{tcp} @ {port.baud_rate}"
+            )
     else:
         click.echo("  (none)")
 
@@ -336,7 +357,9 @@ def info_cmd(ctx: click.Context, name: str) -> None:
 @click.option("--project", "-p", help="Set project name")
 @click.option("--description", "-d", help="Set description")
 @click.option("--ssh-user", "-u", help="Set SSH username")
-@click.option("--status", "-s", type=click.Choice([s.value for s in Status]), help="Set status")
+@click.option(
+    "--status", "-s", type=click.Choice([s.value for s in Status]), help="Set status"
+)
 @click.pass_context
 def edit_cmd(
     ctx: click.Context,
@@ -356,7 +379,10 @@ def edit_cmd(
 
     # Check if any changes requested
     if all(v is None for v in [project, description, ssh_user, status]):
-        click.echo("No changes specified. Use --project, --description, --ssh-user, or --status.")
+        click.echo(
+            "No changes specified. "
+            "Use --project, --description, --ssh-user, or --status."
+        )
         return
 
     status_enum = Status(status) if status else None
@@ -373,6 +399,7 @@ def edit_cmd(
 
 # --- Port Assignment Commands ---
 
+
 @main.group("port")
 def port_group() -> None:
     """Manage serial port assignments."""
@@ -383,8 +410,12 @@ def port_group() -> None:
 @click.argument("sbc_name")
 @click.argument("port_type", type=click.Choice([t.value for t in PortType]))
 @click.argument("device")
-@click.option("--tcp-port", "-t", type=int, help="TCP port (auto-assigned if not specified)")
-@click.option("--baud", "-b", type=int, default=115200, help="Baud rate (default: 115200)")
+@click.option(
+    "--tcp-port", "-t", type=int, help="TCP port (auto-assigned if not specified)"
+)
+@click.option(
+    "--baud", "-b", type=int, default=115200, help="Baud rate (default: 115200)"
+)
 @click.pass_context
 def port_assign_cmd(
     ctx: click.Context,
@@ -409,7 +440,9 @@ def port_assign_cmd(
         tcp_port=tcp_port,
         baud_rate=baud,
     )
-    click.echo(f"Assigned {port_type} port to {sbc_name}: {device} (tcp:{port.tcp_port})")
+    click.echo(
+        f"Assigned {port_type} port to {sbc_name}: {device} (tcp:{port.tcp_port})"
+    )
 
 
 @port_group.command("remove")
@@ -436,12 +469,13 @@ def port_remove_cmd(ctx: click.Context, sbc_name: str, port_type: str) -> None:
 def port_list_cmd(ctx: click.Context) -> None:
     """List all serial port assignments."""
     manager = _get_manager(ctx)
-    config: Config = ctx.obj["config"]
 
     ports = manager.list_serial_ports()
 
     if not ports:
-        click.echo("No serial ports assigned. Use 'labctl port assign' to assign ports.")
+        click.echo(
+            "No serial ports assigned. Use 'labctl port assign' to assign ports."
+        )
         return
 
     # Get SBC names for display
@@ -455,10 +489,13 @@ def port_list_cmd(ctx: click.Context) -> None:
     for port in ports:
         sbc_name = sbc_names.get(port.sbc_id, f"#{port.sbc_id}")
         tcp = str(port.tcp_port) if port.tcp_port else "-"
-        click.echo(f"{sbc_name:<15} {port.port_type.value:<10} {port.device_path:<25} {tcp:<8} {port.baud_rate:<10}")
+        line = f"{sbc_name:<15} {port.port_type.value:<10} {port.device_path:<25} "
+        line += f"{tcp:<8} {port.baud_rate:<10}"
+        click.echo(line)
 
 
 # --- Network Address Commands ---
+
 
 @main.group("network")
 def network_group() -> None:
@@ -489,7 +526,7 @@ def network_set_cmd(
         click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
         sys.exit(1)
 
-    addr = manager.set_network_address(
+    manager.set_network_address(
         sbc_id=sbc.id,
         address_type=AddressType(address_type),
         ip_address=ip_address,
@@ -520,6 +557,7 @@ def network_remove_cmd(ctx: click.Context, sbc_name: str, address_type: str) -> 
 
 # --- ser2net Commands ---
 
+
 @main.group("ser2net")
 def ser2net_group() -> None:
     """Manage ser2net configuration."""
@@ -527,13 +565,19 @@ def ser2net_group() -> None:
 
 
 @ser2net_group.command("generate")
-@click.option("--output", "-o", type=click.Path(path_type=Path), help="Output file (default: stdout)")
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(path_type=Path),
+    help="Output file (default: stdout)",
+)
 @click.option("--install", is_flag=True, help="Install to /etc/ser2net.yaml")
 @click.pass_context
-def ser2net_generate_cmd(ctx: click.Context, output: Path | None, install: bool) -> None:
+def ser2net_generate_cmd(
+    ctx: click.Context, output: Path | None, install: bool
+) -> None:
     """Generate ser2net configuration from database."""
     manager = _get_manager(ctx)
-    config: Config = ctx.obj["config"]
 
     # Get all serial ports from database
     db_ports = manager.list_serial_ports()
@@ -553,12 +597,14 @@ def ser2net_generate_cmd(ctx: click.Context, output: Path | None, install: bool)
         sbc_name = sbc_names.get(db_port.sbc_id, f"sbc{db_port.sbc_id}")
         port_name = f"{sbc_name}-{db_port.port_type.value}"
 
-        ports.append(Ser2NetPort(
-            name=port_name,
-            device=db_port.device_path,
-            tcp_port=db_port.tcp_port or 4000,
-            baud=db_port.baud_rate,
-        ))
+        ports.append(
+            Ser2NetPort(
+                name=port_name,
+                device=db_port.device_path,
+                tcp_port=db_port.tcp_port or 4000,
+                baud=db_port.baud_rate,
+            )
+        )
 
     # Generate config
     config_content = generate_ser2net_config(ports)
@@ -602,6 +648,7 @@ def ser2net_reload_cmd(ctx: click.Context) -> None:
 
 # --- Plug Assignment Commands ---
 
+
 @main.group("plug")
 def plug_group() -> None:
     """Manage power plug assignments."""
@@ -612,7 +659,13 @@ def plug_group() -> None:
 @click.argument("sbc_name")
 @click.argument("plug_type", type=click.Choice([t.value for t in PlugType]))
 @click.argument("address")
-@click.option("--index", "-i", type=int, default=1, help="Outlet index for multi-relay devices (default: 1)")
+@click.option(
+    "--index",
+    "-i",
+    type=int,
+    default=1,
+    help="Outlet index for multi-relay devices (default: 1)",
+)
 @click.pass_context
 def plug_assign_cmd(
     ctx: click.Context,
@@ -629,7 +682,7 @@ def plug_assign_cmd(
         click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
         sys.exit(1)
 
-    plug = manager.assign_power_plug(
+    manager.assign_power_plug(
         sbc_id=sbc.id,
         plug_type=PlugType(plug_type),
         address=address,
@@ -658,6 +711,7 @@ def plug_remove_cmd(ctx: click.Context, sbc_name: str) -> None:
 
 
 # --- Power Control Commands ---
+
 
 @main.group("power")
 def power_group() -> None:
@@ -719,7 +773,13 @@ def power_off_cmd(ctx: click.Context, sbc_name: str) -> None:
 
 @power_group.command("cycle")
 @click.argument("sbc_name")
-@click.option("--delay", "-d", type=float, default=2.0, help="Delay between off and on (default: 2s)")
+@click.option(
+    "--delay",
+    "-d",
+    type=float,
+    default=2.0,
+    help="Delay between off and on (default: 2s)",
+)
 @click.pass_context
 def power_cycle_cmd(ctx: click.Context, sbc_name: str, delay: float) -> None:
     """Power cycle an SBC (off, wait, on)."""
@@ -757,7 +817,9 @@ def power_status_cmd(ctx: click.Context, sbc_name: str) -> None:
 @click.option("--project", "-p", help="Filter by project name")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
 @click.pass_context
-def power_all_cmd(ctx: click.Context, action: str, project: str | None, yes: bool) -> None:
+def power_all_cmd(
+    ctx: click.Context, action: str, project: str | None, yes: bool
+) -> None:
     """Turn power on or off for all SBCs."""
     manager = _get_manager(ctx)
 
@@ -772,10 +834,13 @@ def power_all_cmd(ctx: click.Context, action: str, project: str | None, yes: boo
     # Show what will be affected
     click.echo(f"SBCs to power {action.upper()}:")
     for sbc in sbcs_with_plugs:
-        click.echo(f"  - {sbc.name} ({sbc.power_plug.plug_type.value} @ {sbc.power_plug.address})")
+        plug_info = f"{sbc.power_plug.plug_type.value} @ {sbc.power_plug.address}"
+        click.echo(f"  - {sbc.name} ({plug_info})")
 
     if not yes:
-        click.confirm(f"\nPower {action.upper()} all {len(sbcs_with_plugs)} SBC(s)?", abort=True)
+        click.confirm(
+            f"\nPower {action.upper()} all {len(sbcs_with_plugs)} SBC(s)?", abort=True
+        )
 
     # Execute power commands
     success_count = 0
@@ -795,15 +860,24 @@ def power_all_cmd(ctx: click.Context, action: str, project: str | None, yes: boo
         except Exception as e:
             click.echo(f"  {sbc.name}: ERROR - {e}", err=True)
 
-    click.echo(f"\n{success_count}/{len(sbcs_with_plugs)} SBCs powered {action.upper()}")
+    click.echo(
+        f"\n{success_count}/{len(sbcs_with_plugs)} SBCs powered {action.upper()}"
+    )
 
 
 # --- Console and SSH Commands ---
 
+
 @main.command("console")
 @click.argument("sbc_name")
-@click.option("--type", "-t", "port_type", type=click.Choice([t.value for t in PortType]),
-              default="console", help="Port type (default: console)")
+@click.option(
+    "--type",
+    "-t",
+    "port_type",
+    type=click.Choice([t.value for t in PortType]),
+    default="console",
+    help="Port type (default: console)",
+)
 @click.pass_context
 def console_cmd(ctx: click.Context, sbc_name: str, port_type: str) -> None:
     """Connect to an SBC's serial console.
@@ -872,6 +946,7 @@ def ssh_cmd(ctx: click.Context, sbc_name: str, user: str | None) -> None:
 
 # --- Status Commands ---
 
+
 @main.command("status")
 @click.option("--project", "-p", help="Filter by project name")
 @click.pass_context
@@ -888,10 +963,10 @@ def status_cmd(ctx: click.Context, project: str | None) -> None:
 
     # Status colors (ANSI)
     colors = {
-        Status.ONLINE: "\033[32m",   # Green
+        Status.ONLINE: "\033[32m",  # Green
         Status.OFFLINE: "\033[31m",  # Red
         Status.BOOTING: "\033[33m",  # Yellow
-        Status.ERROR: "\033[31m",    # Red
+        Status.ERROR: "\033[31m",  # Red
         Status.UNKNOWN: "\033[90m",  # Gray
     }
     reset = "\033[0m"
@@ -920,19 +995,34 @@ def status_cmd(ctx: click.Context, project: str | None) -> None:
             except Exception:
                 power = "err"
 
-        click.echo(f"{sbc.name:<15} {project_name:<12} {status_str} {ip:<15} {power:<10}")
+        click.echo(
+            f"{sbc.name:<15} {project_name:<12} {status_str} {ip:<15} {power:<10}"
+        )
 
 
 # --- Export/Import Commands ---
 
+
 @main.command("export")
-@click.option("--format", "-f", "fmt", type=click.Choice(["yaml", "json"]),
-              default="yaml", help="Output format (default: yaml)")
-@click.option("--output", "-o", type=click.Path(path_type=Path), help="Output file (default: stdout)")
+@click.option(
+    "--format",
+    "-f",
+    "fmt",
+    type=click.Choice(["yaml", "json"]),
+    default="yaml",
+    help="Output format (default: yaml)",
+)
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(path_type=Path),
+    help="Output file (default: stdout)",
+)
 @click.pass_context
 def export_cmd(ctx: click.Context, fmt: str, output: Path | None) -> None:
     """Export all SBC configurations."""
     import json
+
     import yaml
 
     manager = _get_manager(ctx)
@@ -957,12 +1047,14 @@ def export_cmd(ctx: click.Context, fmt: str, output: Path | None) -> None:
         if sbc.serial_ports:
             sbc_data["serial_ports"] = []
             for port in sbc.serial_ports:
-                sbc_data["serial_ports"].append({
-                    "type": port.port_type.value,
-                    "device": port.device_path,
-                    "tcp_port": port.tcp_port,
-                    "baud_rate": port.baud_rate,
-                })
+                sbc_data["serial_ports"].append(
+                    {
+                        "type": port.port_type.value,
+                        "device": port.device_path,
+                        "tcp_port": port.tcp_port,
+                        "baud_rate": port.baud_rate,
+                    }
+                )
 
         # Add network addresses
         if sbc.network_addresses:
@@ -1003,11 +1095,14 @@ def export_cmd(ctx: click.Context, fmt: str, output: Path | None) -> None:
 
 @main.command("import")
 @click.argument("file", type=click.Path(exists=True, path_type=Path))
-@click.option("--update", "-u", is_flag=True, help="Update existing SBCs instead of skipping")
+@click.option(
+    "--update", "-u", is_flag=True, help="Update existing SBCs instead of skipping"
+)
 @click.pass_context
 def import_cmd(ctx: click.Context, file: Path, update: bool) -> None:
     """Import SBC configurations from file."""
     import json
+
     import yaml
 
     manager = _get_manager(ctx)
@@ -1100,14 +1195,169 @@ def import_cmd(ctx: click.Context, file: Path, update: bool) -> None:
                 plug_index=plug_data.get("index", 1),
             )
 
-    click.echo(f"\nImport complete: {created} created, {updated} updated, {skipped} skipped")
+    click.echo(
+        f"\nImport complete: {created} created, {updated} updated, {skipped} skipped"
+    )
+
+
+# --- Proxy Commands ---
+
+# Global proxy manager instance (for CLI session)
+_proxy_manager = None
+
+
+def _get_proxy_manager(ctx: click.Context):
+    """Get or create proxy manager from context."""
+    global _proxy_manager
+    if _proxy_manager is None:
+        config: Config = ctx.obj["config"]
+        from labctl.serial.proxy import ProxyManager
+
+        _proxy_manager = ProxyManager(log_dir=config.proxy.log_dir)
+    return _proxy_manager
+
+
+@main.group("proxy")
+def proxy_group() -> None:
+    """Manage serial proxy for multi-client access."""
+    pass
+
+
+@proxy_group.command("start")
+@click.argument("sbc_name")
+@click.option(
+    "--port", "-p", type=int, help="Proxy port (auto-assigned if not specified)"
+)
+@click.option("--foreground", "-f", is_flag=True, help="Run in foreground (default)")
+@click.pass_context
+def proxy_start_cmd(
+    ctx: click.Context, sbc_name: str, port: int | None, foreground: bool
+) -> None:
+    """Start a serial proxy for an SBC.
+
+    Allows multiple clients to connect to the same serial console.
+    First client to send data gets write access, others are read-only.
+    """
+    import asyncio
+
+    manager = _get_manager(ctx)
+    config: Config = ctx.obj["config"]
+
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
+        sys.exit(1)
+
+    # Find console port
+    console_port = sbc.console_port
+    if not console_port:
+        click.echo(f"Error: No console port assigned to '{sbc_name}'", err=True)
+        click.echo("Use 'labctl port assign' to assign a serial port first.")
+        sys.exit(1)
+
+    if not console_port.tcp_port:
+        click.echo("Error: Console port has no TCP port configured", err=True)
+        sys.exit(1)
+
+    # Determine proxy port
+    if port is None:
+        port = config.proxy.port_base
+        # Find next available port (simple increment)
+        proxy_mgr = _get_proxy_manager(ctx)
+        port = proxy_mgr.get_next_port(config.proxy.port_base, config.proxy.port_range)
+
+    click.echo(f"Starting proxy for {sbc_name}...")
+    click.echo(f"  ser2net port: {console_port.tcp_port}")
+    click.echo(f"  proxy port:   {port}")
+    click.echo(f"  write policy: {config.proxy.write_policy}")
+    if config.proxy.log_dir:
+        click.echo(f"  session logs: {config.proxy.log_dir}")
+    click.echo()
+    click.echo("Press Ctrl+C to stop the proxy")
+    click.echo("-" * 40)
+
+    async def run_proxy():
+        from labctl.serial.proxy import SerialProxy
+
+        proxy = SerialProxy(
+            name=sbc_name,
+            ser2net_host="localhost",
+            ser2net_port=console_port.tcp_port,
+            proxy_port=port,
+            log_dir=config.proxy.log_dir if config.proxy.log_dir else None,
+            write_policy=config.proxy.write_policy,
+            max_clients=config.proxy.max_clients,
+        )
+
+        try:
+            await proxy.start()
+            click.echo(f"Proxy running on port {port}")
+            click.echo("Connect with: nc localhost {port}")
+
+            # Keep running until cancelled
+            while proxy.is_running:
+                await asyncio.sleep(1)
+        except ConnectionError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            await proxy.stop()
+            click.echo("Proxy stopped")
+
+    try:
+        asyncio.run(run_proxy())
+    except KeyboardInterrupt:
+        pass
+
+
+@proxy_group.command("list")
+@click.pass_context
+def proxy_list_cmd(ctx: click.Context) -> None:
+    """List running proxies.
+
+    Note: This only shows proxies started in daemon mode (not implemented yet).
+    For foreground proxies, they run until Ctrl+C.
+    """
+    # In the current implementation, proxies run in foreground
+    # A proper daemon mode would require a separate process or service
+    click.echo("Note: Proxy daemon mode not yet implemented.")
+    click.echo("Use 'labctl proxy start <sbc>' to run a proxy in foreground.")
+    click.echo("Each proxy runs until Ctrl+C.")
+
+
+@main.command("sessions")
+@click.argument("sbc_name", required=False)
+@click.pass_context
+def sessions_cmd(ctx: click.Context, sbc_name: str | None) -> None:
+    """List connected proxy sessions.
+
+    Shows clients connected to each SBC's proxy.
+    If SBC_NAME is provided, shows only that SBC's sessions.
+
+    Note: Currently only works for proxies started with daemon mode.
+    """
+    # This would query a running proxy daemon for session info
+    # For now, just show a placeholder message
+    click.echo(
+        "Note: Session listing requires proxy daemon mode (not yet implemented)."
+    )
+    click.echo()
+    click.echo("When running a proxy in foreground ('labctl proxy start <sbc>'),")
+    click.echo("client connections are logged to the console and session log files.")
 
 
 # --- Web Server ---
 
+
 @main.command("web")
-@click.option("--host", "-h", default="127.0.0.1", help="Host to bind to (default: 127.0.0.1)")
-@click.option("--port", "-p", type=int, default=5000, help="Port to bind to (default: 5000)")
+@click.option(
+    "--host", "-h", default="127.0.0.1", help="Host to bind to (default: 127.0.0.1)"
+)
+@click.option(
+    "--port", "-p", type=int, default=5000, help="Port to bind to (default: 5000)"
+)
 @click.option("--debug", is_flag=True, help="Enable debug mode")
 @click.pass_context
 def web_cmd(ctx: click.Context, host: str, port: int, debug: bool) -> None:
@@ -1117,7 +1367,7 @@ def web_cmd(ctx: click.Context, host: str, port: int, debug: bool) -> None:
     config: Config = ctx.obj["config"]
     app = create_app(config)
 
-    click.echo(f"Starting Lab Controller web server...")
+    click.echo("Starting Lab Controller web server...")
     click.echo(f"Dashboard: http://{host}:{port}/")
     click.echo(f"API:       http://{host}:{port}/api/")
     click.echo("Press Ctrl+C to stop")
@@ -1126,6 +1376,7 @@ def web_cmd(ctx: click.Context, host: str, port: int, debug: bool) -> None:
 
 
 # --- Shell Completion ---
+
 
 @main.command("completion")
 @click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]))

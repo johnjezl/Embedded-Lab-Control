@@ -1,17 +1,14 @@
 """Unit tests for configuration management."""
 
-import os
 from pathlib import Path
-
-import pytest
 
 from labctl.core.config import (
     Config,
-    SerialConfig,
     Ser2NetConfig,
+    SerialConfig,
+    get_default_config,
     load_config,
     save_config,
-    get_default_config,
 )
 
 
@@ -111,11 +108,13 @@ class TestLoadConfig:
     def test_load_from_explicit_path(self, tmp_path):
         """Test loading config from explicit path."""
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("""
+        config_file.write_text(
+            """
 serial:
   base_tcp_port: 6000
 log_level: WARNING
-""")
+"""
+        )
         config = load_config(config_file)
         assert config.serial.base_tcp_port == 6000
         assert config.log_level == "WARNING"

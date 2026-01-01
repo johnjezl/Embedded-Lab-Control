@@ -116,6 +116,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     - Status indicators and responsive layout
   - Added `labctl web` command with --host, --port, --debug options
   - **Milestone 5 Complete!**
+- M6 Multi-Client Serial Access (2026-01-01)
+  - Created serial proxy module `src/labctl/serial/proxy.py`
+    - SerialProxy class with asyncio-based fan-out architecture
+    - First-writer-wins write lock policy
+    - Multiple readers can view console output simultaneously
+    - ProxyManager for managing multiple proxy instances
+  - Added session logging
+    - SessionLogger class for timestamped traffic logs
+    - Logs stored in ~/.local/share/labctl/logs/
+    - Format: [timestamp] [direction] data
+  - Added ProxyConfig to config.py
+    - Configurable port range (default 5000-5099)
+    - Write policy selection (first, all, queue)
+    - Max clients per proxy, idle timeout
+  - Added CLI proxy commands
+    - `labctl proxy start <sbc>` - start proxy for SBC (foreground)
+    - `labctl proxy list` - list running proxies (placeholder)
+    - `labctl sessions [sbc]` - list connected clients (placeholder)
+  - Added web console with xterm.js
+    - WebSocket bridge for browser-to-proxy communication
+    - Console page at /sbc/<name>/console
+    - Full terminal emulator in browser
+  - Added 26 proxy tests (143 total)
+  - **Milestone 6 Complete!**
 
 ### Changed
 - Moved documentation files to docs/ folder (AGENT_RULES.md, IMPLEMENTATION.md, DECISIONS.md)

@@ -120,21 +120,20 @@ class Database:
 
         with self.connect() as conn:
             # Check current schema version
-            cursor = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'"
+            query = (
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name='schema_version'"
             )
+            cursor = conn.execute(query)
             if cursor.fetchone() is None:
                 # Fresh database - apply full schema
                 conn.executescript(SCHEMA_SQL)
                 conn.execute(
-                    "INSERT INTO schema_version (version) VALUES (?)",
-                    (SCHEMA_VERSION,)
+                    "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
                 )
             else:
                 # Check for migrations
-                cursor = conn.execute(
-                    "SELECT MAX(version) FROM schema_version"
-                )
+                cursor = conn.execute("SELECT MAX(version) FROM schema_version")
                 current_version = cursor.fetchone()[0] or 0
                 if current_version < SCHEMA_VERSION:
                     self._apply_migrations(conn, current_version)
@@ -144,8 +143,7 @@ class Database:
         # Future migrations would go here
         # For now, just update version
         conn.execute(
-            "INSERT INTO schema_version (version) VALUES (?)",
-            (SCHEMA_VERSION,)
+            "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
         )
 
     @contextmanager

@@ -2,15 +2,15 @@
 
 ## Current State
 
-- **Milestone**: M5 - Web Interface COMPLETE
-- **Sub-task**: All complete (5.1-5.5)
-- **Status**: Ready for M6
+- **Milestone**: M6 - Multi-Client Serial Access COMPLETE
+- **Sub-task**: All complete (6.1-6.6)
+- **Status**: Ready for M7
 
 ## Last Session
 
-- **Date**: 2025-12-31
-- **Completed**: M5 (web interface)
-- **Commits**: 9a02029 (M4), pending (M5)
+- **Date**: 2026-01-01
+- **Completed**: M6 (multi-client serial access)
+- **Commits**: pending
 
 ## Blockers
 
@@ -18,14 +18,15 @@
 
 ## Notes
 
-- **Milestone 5 Complete!**
-- 81 tests passing
-- Web interface features:
-  - Flask application with factory pattern
-  - REST API: /api/sbcs, /api/sbcs/<name>, /api/sbcs/<name>/power, /api/ports
-  - Dashboard with SBC card grid
-  - SBC detail page with power controls
-  - Dark theme CSS
-  - `labctl web` command with --host, --port, --debug
-- WebSocket/xterm.js console deferred to M6
-- Ready to begin M6 - Multi-Client Serial Access
+- **Milestone 6 Complete!**
+- 143 tests passing
+- Multi-client serial features:
+  - SerialProxy with asyncio fan-out architecture
+  - First-writer-wins write lock policy
+  - Session logging to timestamped files
+  - ProxyConfig with port range and policy settings
+  - CLI: `labctl proxy start/list`, `labctl sessions`
+  - Web: Console page with xterm.js at /sbc/<name>/console
+  - WebSocket bridge for browser console
+- Some features deferred (daemon mode, session API queries)
+- Ready to begin M7 - Monitoring and Health

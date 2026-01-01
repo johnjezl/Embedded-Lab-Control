@@ -4,8 +4,9 @@ Shelly power controller.
 Controls Shelly smart plugs via HTTP API.
 """
 
-import requests
 from typing import Optional
+
+import requests
 
 from labctl.power.base import PowerController, PowerState
 
@@ -49,10 +50,7 @@ class ShellyController(PowerController):
 
     def power_on(self) -> bool:
         """Turn power on."""
-        result = self._request(
-            f"relay/{self._relay_index}",
-            params={"turn": "on"}
-        )
+        result = self._request(f"relay/{self._relay_index}", params={"turn": "on"})
 
         if result is None:
             return False
@@ -62,10 +60,7 @@ class ShellyController(PowerController):
 
     def power_off(self) -> bool:
         """Turn power off."""
-        result = self._request(
-            f"relay/{self._relay_index}",
-            params={"turn": "off"}
-        )
+        result = self._request(f"relay/{self._relay_index}", params={"turn": "off"})
 
         if result is None:
             return False

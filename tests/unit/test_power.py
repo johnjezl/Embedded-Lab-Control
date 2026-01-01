@@ -1,12 +1,11 @@
 """Unit tests for power control module."""
 
-import pytest
 from unittest.mock import Mock, patch
 
-from labctl.power.base import PowerController, PowerState, get_controller
-from labctl.power.tasmota import TasmotaController
-from labctl.power.shelly import ShellyController
 from labctl.core.models import PlugType, PowerPlug
+from labctl.power.base import PowerController, PowerState, get_controller
+from labctl.power.shelly import ShellyController
+from labctl.power.tasmota import TasmotaController
 
 
 class TestPowerState:
