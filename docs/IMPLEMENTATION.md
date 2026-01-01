@@ -582,15 +582,11 @@ picocom or minicom (for direct serial access)
 ## Appendix C: Documentation
 
 ### User Documentation
-- ✅ README.md - Basic overview
-- ☐ Installation guide
-- ☐ Configuration reference
-- ☐ CLI command reference (`labctl --help` available)
+- ✅ README.md - Installation, quick start, CLI reference, API reference
 - ✅ Hardware setup guide (HARDWARE_MAP.md)
 
 ### Developer Documentation
-- ✅ Architecture overview (IMPLEMENTATION.md, ARCHITECTURE.md)
-- ☐ API documentation (endpoints work, docs not written)
+- ✅ Architecture overview (IMPLEMENTATION.md)
 - ✅ Development rules (AGENT_RULES.md)
 - ✅ Decision log (DECISIONS.md)
 
