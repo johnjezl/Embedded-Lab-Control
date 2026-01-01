@@ -798,5 +798,356 @@ def power_all_cmd(ctx: click.Context, action: str, project: str | None, yes: boo
     click.echo(f"\n{success_count}/{len(sbcs_with_plugs)} SBCs powered {action.upper()}")
 
 
+# --- Console and SSH Commands ---
+
+@main.command("console")
+@click.argument("sbc_name")
+@click.option("--type", "-t", "port_type", type=click.Choice([t.value for t in PortType]),
+              default="console", help="Port type (default: console)")
+@click.pass_context
+def console_cmd(ctx: click.Context, sbc_name: str, port_type: str) -> None:
+    """Connect to an SBC's serial console.
+
+    Looks up the SBC by name and connects to its configured serial port.
+    """
+    manager = _get_manager(ctx)
+    config: Config = ctx.obj["config"]
+
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
+        sys.exit(1)
+
+    # Find the requested port type
+    target_type = PortType(port_type)
+    port = None
+    for p in sbc.serial_ports:
+        if p.port_type == target_type:
+            port = p
+            break
+
+    if not port:
+        click.echo(f"Error: No {port_type} port assigned to '{sbc_name}'", err=True)
+        click.echo("Use 'labctl port assign' to assign a serial port first.")
+        sys.exit(1)
+
+    # Connect via TCP if available
+    if port.tcp_port and config.ser2net.enabled:
+        _connect_tcp("localhost", port.tcp_port)
+    else:
+        _connect_direct(Path(port.device_path), port.baud_rate)
+
+
+@main.command("ssh")
+@click.argument("sbc_name")
+@click.option("--user", "-u", help="SSH username (overrides SBC default)")
+@click.pass_context
+def ssh_cmd(ctx: click.Context, sbc_name: str, user: str | None) -> None:
+    """SSH to an SBC.
+
+    Looks up the SBC by name and connects via SSH using its configured IP address.
+    """
+    manager = _get_manager(ctx)
+
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
+        sys.exit(1)
+
+    ip = sbc.primary_ip
+    if not ip:
+        click.echo(f"Error: No IP address configured for '{sbc_name}'", err=True)
+        click.echo("Use 'labctl network set' to configure an IP address first.")
+        sys.exit(1)
+
+    ssh_user = user or sbc.ssh_user
+    click.echo(f"Connecting to {sbc_name} ({ssh_user}@{ip})...")
+
+    try:
+        subprocess.run(["ssh", f"{ssh_user}@{ip}"], check=False)
+    except FileNotFoundError:
+        click.echo("Error: 'ssh' command not found", err=True)
+        sys.exit(1)
+
+
+# --- Status Commands ---
+
+@main.command("status")
+@click.option("--project", "-p", help="Filter by project name")
+@click.pass_context
+def status_cmd(ctx: click.Context, project: str | None) -> None:
+    """Show status overview of all SBCs."""
+    manager = _get_manager(ctx)
+
+    sbcs = manager.list_sbcs(project=project)
+
+    if not sbcs:
+        filter_msg = f" in project '{project}'" if project else ""
+        click.echo(f"No SBCs configured{filter_msg}.")
+        return
+
+    # Status colors (ANSI)
+    colors = {
+        Status.ONLINE: "\033[32m",   # Green
+        Status.OFFLINE: "\033[31m",  # Red
+        Status.BOOTING: "\033[33m",  # Yellow
+        Status.ERROR: "\033[31m",    # Red
+        Status.UNKNOWN: "\033[90m",  # Gray
+    }
+    reset = "\033[0m"
+
+    click.echo(f"{'NAME':<15} {'PROJECT':<12} {'STATUS':<12} {'IP':<15} {'POWER':<10}")
+    click.echo("-" * 64)
+
+    for sbc in sbcs:
+        color = colors.get(sbc.status, "")
+        status_str = f"{color}{sbc.status.value:<12}{reset}"
+        ip = sbc.primary_ip or "-"
+        project_name = sbc.project or "-"
+
+        # Get power state if plug assigned
+        power = "-"
+        if sbc.power_plug:
+            try:
+                controller = PowerController.from_plug(sbc.power_plug)
+                state = controller.get_state()
+                if state == PowerState.ON:
+                    power = f"\033[32mON{reset}"
+                elif state == PowerState.OFF:
+                    power = f"\033[31mOFF{reset}"
+                else:
+                    power = "?"
+            except Exception:
+                power = "err"
+
+        click.echo(f"{sbc.name:<15} {project_name:<12} {status_str} {ip:<15} {power:<10}")
+
+
+# --- Export/Import Commands ---
+
+@main.command("export")
+@click.option("--format", "-f", "fmt", type=click.Choice(["yaml", "json"]),
+              default="yaml", help="Output format (default: yaml)")
+@click.option("--output", "-o", type=click.Path(path_type=Path), help="Output file (default: stdout)")
+@click.pass_context
+def export_cmd(ctx: click.Context, fmt: str, output: Path | None) -> None:
+    """Export all SBC configurations."""
+    import json
+    import yaml
+
+    manager = _get_manager(ctx)
+    sbcs = manager.list_sbcs()
+
+    if not sbcs:
+        click.echo("No SBCs to export.")
+        return
+
+    # Build export data
+    data = {"sbcs": []}
+    for sbc in sbcs:
+        sbc_data = {
+            "name": sbc.name,
+            "project": sbc.project,
+            "description": sbc.description,
+            "ssh_user": sbc.ssh_user,
+            "status": sbc.status.value,
+        }
+
+        # Add serial ports
+        if sbc.serial_ports:
+            sbc_data["serial_ports"] = []
+            for port in sbc.serial_ports:
+                sbc_data["serial_ports"].append({
+                    "type": port.port_type.value,
+                    "device": port.device_path,
+                    "tcp_port": port.tcp_port,
+                    "baud_rate": port.baud_rate,
+                })
+
+        # Add network addresses
+        if sbc.network_addresses:
+            sbc_data["network_addresses"] = []
+            for addr in sbc.network_addresses:
+                addr_data = {
+                    "type": addr.address_type.value,
+                    "ip": addr.ip_address,
+                }
+                if addr.mac_address:
+                    addr_data["mac"] = addr.mac_address
+                if addr.hostname:
+                    addr_data["hostname"] = addr.hostname
+                sbc_data["network_addresses"].append(addr_data)
+
+        # Add power plug
+        if sbc.power_plug:
+            sbc_data["power_plug"] = {
+                "type": sbc.power_plug.plug_type.value,
+                "address": sbc.power_plug.address,
+                "index": sbc.power_plug.plug_index,
+            }
+
+        data["sbcs"].append(sbc_data)
+
+    # Format output
+    if fmt == "yaml":
+        content = yaml.dump(data, default_flow_style=False, sort_keys=False)
+    else:
+        content = json.dumps(data, indent=2)
+
+    if output:
+        output.write_text(content)
+        click.echo(f"Exported {len(sbcs)} SBC(s) to {output}")
+    else:
+        click.echo(content)
+
+
+@main.command("import")
+@click.argument("file", type=click.Path(exists=True, path_type=Path))
+@click.option("--update", "-u", is_flag=True, help="Update existing SBCs instead of skipping")
+@click.pass_context
+def import_cmd(ctx: click.Context, file: Path, update: bool) -> None:
+    """Import SBC configurations from file."""
+    import json
+    import yaml
+
+    manager = _get_manager(ctx)
+
+    # Load file
+    content = file.read_text()
+    if file.suffix in [".yaml", ".yml"]:
+        data = yaml.safe_load(content)
+    elif file.suffix == ".json":
+        data = json.loads(content)
+    else:
+        # Try YAML first, then JSON
+        try:
+            data = yaml.safe_load(content)
+        except Exception:
+            data = json.loads(content)
+
+    sbcs_data = data.get("sbcs", [])
+    if not sbcs_data:
+        click.echo("No SBCs found in import file.")
+        return
+
+    created = 0
+    updated = 0
+    skipped = 0
+
+    for sbc_data in sbcs_data:
+        name = sbc_data.get("name")
+        if not name:
+            click.echo("Warning: Skipping SBC without name", err=True)
+            skipped += 1
+            continue
+
+        existing = manager.get_sbc_by_name(name)
+
+        if existing and not update:
+            click.echo(f"  Skipping existing SBC: {name}")
+            skipped += 1
+            continue
+
+        if existing:
+            # Update existing
+            manager.update_sbc(
+                existing.id,
+                project=sbc_data.get("project"),
+                description=sbc_data.get("description"),
+                ssh_user=sbc_data.get("ssh_user"),
+            )
+            sbc = manager.get_sbc(existing.id)
+            click.echo(f"  Updated: {name}")
+            updated += 1
+        else:
+            # Create new
+            sbc = manager.create_sbc(
+                name=name,
+                project=sbc_data.get("project"),
+                description=sbc_data.get("description"),
+                ssh_user=sbc_data.get("ssh_user", "root"),
+            )
+            click.echo(f"  Created: {name}")
+            created += 1
+
+        # Import serial ports
+        for port_data in sbc_data.get("serial_ports", []):
+            manager.assign_serial_port(
+                sbc_id=sbc.id,
+                port_type=PortType(port_data["type"]),
+                device_path=port_data["device"],
+                tcp_port=port_data.get("tcp_port"),
+                baud_rate=port_data.get("baud_rate", 115200),
+            )
+
+        # Import network addresses
+        for addr_data in sbc_data.get("network_addresses", []):
+            manager.set_network_address(
+                sbc_id=sbc.id,
+                address_type=AddressType(addr_data["type"]),
+                ip_address=addr_data["ip"],
+                mac_address=addr_data.get("mac"),
+                hostname=addr_data.get("hostname"),
+            )
+
+        # Import power plug
+        if "power_plug" in sbc_data:
+            plug_data = sbc_data["power_plug"]
+            manager.assign_power_plug(
+                sbc_id=sbc.id,
+                plug_type=PlugType(plug_data["type"]),
+                address=plug_data["address"],
+                plug_index=plug_data.get("index", 1),
+            )
+
+    click.echo(f"\nImport complete: {created} created, {updated} updated, {skipped} skipped")
+
+
+# --- Shell Completion ---
+
+@main.command("completion")
+@click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]))
+def completion_cmd(shell: str) -> None:
+    """Generate shell completion script.
+
+    To enable completion, add to your shell config:
+
+    \b
+    Bash (~/.bashrc):
+      eval "$(labctl completion bash)"
+
+    \b
+    Zsh (~/.zshrc):
+      eval "$(labctl completion zsh)"
+
+    \b
+    Fish (~/.config/fish/completions/labctl.fish):
+      labctl completion fish > ~/.config/fish/completions/labctl.fish
+    """
+    import os
+
+    # Click uses environment variables for completion
+    shell_complete = {
+        "bash": "_LABCTL_COMPLETE=bash_source",
+        "zsh": "_LABCTL_COMPLETE=zsh_source",
+        "fish": "_LABCTL_COMPLETE=fish_source",
+    }
+
+    env_var = shell_complete[shell]
+    var_name, var_value = env_var.split("=")
+
+    # Generate completion script by running labctl with the completion env var
+    env = os.environ.copy()
+    env[var_name] = var_value
+
+    result = subprocess.run(
+        ["labctl"],
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+    click.echo(result.stdout)
+
+
 if __name__ == "__main__":
     main()

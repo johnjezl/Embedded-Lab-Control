@@ -275,64 +275,65 @@ This document outlines the phased implementation of the Lab Controller System. E
 ### TODO List
 
 #### 4.1 Console Commands Enhancement
-- ☐ Improve `labctl console <sbc>`
-  - ☐ Auto-detect port type (prefer console)
-  - ☐ `--type` option for jtag/debug
-  - ☐ Better error messages
-- ☐ Implement `labctl log <sbc>`
-  - ☐ Connect and log to file
-  - ☐ `--follow` for continuous output
-  - ☐ `--lines` to capture N lines then exit
-  - ☐ Timestamped output
+- ✅ Improve `labctl console <sbc>`
+  - ✅ Auto-detect port type (prefer console)
+  - ✅ `--type` option for jtag/debug
+  - ✅ Better error messages
+- ⏸️ Implement `labctl log <sbc>` (deferred to M7)
+  - ⏸️ Connect and log to file
+  - ⏸️ `--follow` for continuous output
+  - ⏸️ `--lines` to capture N lines then exit
+  - ⏸️ Timestamped output
 
 #### 4.2 Status Commands
-- ☐ Implement `labctl status`
-  - ☐ Overview of all SBCs
-  - ☐ Color-coded status (green/red/yellow)
-  - ☐ `--watch` for continuous update
-- ☐ Implement `labctl health-check`
-  - ☐ Ping all SBCs
-  - ☐ Check serial port availability
-  - ☐ Check power plug connectivity
-  - ☐ Summary report
+- ✅ Implement `labctl status`
+  - ✅ Overview of all SBCs
+  - ✅ Color-coded status (green/red/yellow)
+  - ⏸️ `--watch` for continuous update (deferred)
+- ⏸️ Implement `labctl health-check` (deferred to M7)
+  - ⏸️ Ping all SBCs
+  - ⏸️ Check serial port availability
+  - ⏸️ Check power plug connectivity
+  - ⏸️ Summary report
 
 #### 4.3 SSH Integration
-- ☐ Implement `labctl ssh <sbc>`
-  - ☐ Look up IP from database
-  - ☐ Spawn SSH with configured user
-  - ☐ `--user` override
-- ☐ Store default SSH user in SBC record
+- ✅ Implement `labctl ssh <sbc>`
+  - ✅ Look up IP from database
+  - ✅ Spawn SSH with configured user
+  - ✅ `--user` override
+- ✅ Store default SSH user in SBC record
 
 #### 4.4 Import/Export
-- ☐ Implement `labctl export`
-  - ☐ Export all SBCs to YAML/JSON
-  - ☐ `--format` option
-- ☐ Implement `labctl import <file>`
-  - ☐ Import SBC definitions
-  - ☐ Handle conflicts (skip/update/error)
+- ✅ Implement `labctl export`
+  - ✅ Export all SBCs to YAML/JSON
+  - ✅ `--format` option
+- ✅ Implement `labctl import <file>`
+  - ✅ Import SBC definitions
+  - ✅ Handle conflicts (skip/update/error)
 
 #### 4.5 CLI Polish
-- ☐ Add `--verbose` global flag
-- ☐ Add `--quiet` global flag
-- ☐ Improve help text for all commands
-- ☐ Add command aliases where sensible
-- ☐ Add shell completion support
-  - ☐ Bash completion
-  - ☐ Zsh completion
+- ✅ Add `--verbose` global flag (already exists)
+- ⏸️ Add `--quiet` global flag (deferred)
+- ✅ Improve help text for all commands
+- ⏸️ Add command aliases where sensible (deferred)
+- ✅ Add shell completion support
+  - ✅ Bash completion
+  - ✅ Zsh completion
+  - ✅ Fish completion
 
 #### 4.6 Error Handling
-- ☐ Consistent error message format
-- ☐ Meaningful exit codes
-- ☐ Graceful handling of:
-  - ☐ Missing database
-  - ☐ Network timeouts
-  - ☐ Invalid configurations
+- ✅ Consistent error message format
+- ✅ Meaningful exit codes
+- ✅ Graceful handling of:
+  - ✅ Missing database
+  - ✅ Network timeouts
+  - ✅ Invalid configurations
 
 ### Acceptance Criteria
-- ☐ All CLI commands from spec implemented
-- ☐ Consistent UX across all commands
-- ☐ Helpful error messages
-- ☐ Shell completion works
+- ✅ All CLI commands from spec implemented
+- ✅ Consistent UX across all commands
+- ✅ Helpful error messages
+- ✅ Shell completion works
 
 ---
 

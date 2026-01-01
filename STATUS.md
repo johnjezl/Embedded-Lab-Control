@@ -2,15 +2,15 @@
 
 ## Current State
 
-- **Milestone**: M3 - Power Control COMPLETE
-- **Sub-task**: All complete (3.1-3.6)
-- **Status**: Ready for M4
+- **Milestone**: M4 - CLI Completion COMPLETE
+- **Sub-task**: All complete (4.1-4.6)
+- **Status**: Ready for M5
 
 ## Last Session
 
 - **Date**: 2025-12-31
-- **Completed**: M3 (full power control)
-- **Commits**: ffc1ff2 (M2.6-2.7), pending (M3)
+- **Completed**: M4 (full CLI)
+- **Commits**: 0226e5e (M3), pending (M4)
 
 ## Blockers
 
@@ -18,13 +18,16 @@
 
 ## Notes
 
-- **Milestone 3 Complete!**
+- **Milestone 4 Complete!**
 - 81 tests passing
-- Working features:
-  - Power controller framework (ABC, factory, PowerState)
-  - Tasmota, Shelly, Kasa controller implementations
-  - CLI plug commands: assign, remove
-  - CLI power commands: on, off, cycle, status
-  - CLI power-all command with project filter
-- Hardware testing pending (no smart plugs currently connected)
-- Ready to begin M4 - CLI Completion
+- All core CLI commands implemented:
+  - SBC management: add, remove, list, info, edit
+  - Port management: port assign/remove/list
+  - Network management: network set/remove
+  - Power control: plug assign/remove, power on/off/cycle/status, power-all
+  - Connectivity: console, ssh, connect
+  - Configuration: ser2net generate/reload
+  - Data: export, import, status
+  - Shell: completion (bash/zsh/fish)
+- Some features deferred to M7 (health-check, log command)
+- Ready to begin M5 - Web Interface

@@ -90,6 +90,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     - `labctl power-all on|off` with --project filter
   - Added 19 power module tests (81 total)
   - **Milestone 3 Complete!**
+- M4 CLI Completion (2025-12-31)
+  - Added `labctl console <sbc>` - connect to SBC's serial console by name
+    - Looks up port from database, supports --type for jtag/debug
+  - Added `labctl ssh <sbc>` - SSH to SBC by name
+    - Looks up IP from database, uses configured ssh_user
+    - Supports --user override
+  - Added `labctl status` - overview with color-coded status and power state
+  - Added `labctl export` - export SBCs to YAML/JSON
+  - Added `labctl import <file>` - import SBCs with --update option
+  - Added `labctl completion` - shell completion for bash/zsh/fish
+  - **Milestone 4 Complete!**
 
 ### Changed
 - Moved documentation files to docs/ folder (AGENT_RULES.md, IMPLEMENTATION.md, DECISIONS.md)
