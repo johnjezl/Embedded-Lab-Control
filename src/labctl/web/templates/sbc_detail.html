@@ -32,6 +32,7 @@
 
         <!-- Edit form (hidden by default) -->
         <form id="basic-edit" action="{{ url_for('views.sbc_edit', name=sbc.name) }}" method="post" style="display: none;">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
             <div class="form-group">
                 <label>Project</label>
                 <input type="text" name="project" value="{{ sbc.project or '' }}" class="form-control">
@@ -75,22 +76,27 @@
         </table>
         <div class="power-actions-large">
             <form action="{{ url_for('views.sbc_power_action', name=sbc.name, action='on') }}" method="post" class="inline-form">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="btn btn-success">Power ON</button>
             </form>
             <form action="{{ url_for('views.sbc_power_action', name=sbc.name, action='off') }}" method="post" class="inline-form">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="btn btn-danger">Power OFF</button>
             </form>
             <form action="{{ url_for('views.sbc_power_action', name=sbc.name, action='cycle') }}" method="post" class="inline-form">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="btn btn-warning">Power Cycle</button>
             </form>
         </div>
         <form action="{{ url_for('views.sbc_plug_remove', name=sbc.name) }}" method="post" class="mt-2">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
             <button type="submit" class="btn btn-sm btn-secondary" onclick="return confirm('Remove power plug?')">Remove Plug</button>
         </form>
         {% else %}
         <p class="text-muted">No power plug assigned.</p>
         <button class="btn btn-sm btn-primary" onclick="toggleEdit('plug')">Assign Power Plug</button>
         <form id="plug-edit" action="{{ url_for('views.sbc_plug_assign', name=sbc.name) }}" method="post" style="display: none; margin-top: 1rem;">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
             <div class="form-group">
                 <label>Plug Type</label>
                 <select name="plug_type" class="form-control" required>
@@ -129,6 +135,7 @@
                 <td>{{ port.baud_rate }}</td>
                 <td>
                     <form action="{{ url_for('views.sbc_port_remove', name=sbc.name, port_type=port.port_type.value) }}" method="post" class="inline-form">
+                        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                         <button type="submit" class="btn btn-xs btn-danger" onclick="return confirm('Remove this port?')">X</button>
                     </form>
                 </td>
@@ -147,6 +154,7 @@
 
         <!-- Add port form (hidden by default) -->
         <form id="port-edit" action="{{ url_for('views.sbc_port_assign', name=sbc.name) }}" method="post" style="display: none; margin-top: 1rem;">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
             <div class="form-group">
                 <label>Port Type</label>
                 <select name="port_type" class="form-control" required>
@@ -187,6 +195,7 @@
                 <td>{{ addr.mac_address or '-' }}</td>
                 <td>
                     <form action="{{ url_for('views.sbc_network_remove', name=sbc.name, address_type=addr.address_type.value) }}" method="post" class="inline-form">
+                        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                         <button type="submit" class="btn btn-xs btn-danger" onclick="return confirm('Remove this address?')">X</button>
                     </form>
                 </td>
@@ -204,6 +213,7 @@
 
         <!-- Add network form (hidden by default) -->
         <form id="network-edit" action="{{ url_for('views.sbc_network_set', name=sbc.name) }}" method="post" style="display: none; margin-top: 1rem;">
+            <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
             <div class="form-group">
                 <label>Address Type</label>
                 <select name="address_type" class="form-control" required>

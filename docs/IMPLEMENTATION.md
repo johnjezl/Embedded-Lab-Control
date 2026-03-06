@@ -24,6 +24,7 @@ This document outlines the phased implementation of the Lab Controller System. E
 | M5 | Web Interface | Dashboard and REST API |
 | M6 | Multi-Client Serial | Shared serial access |
 | M7 | Monitoring | Health checks and status tracking |
+| Auth | Authentication | Web login, API keys, CSRF |
 
 ---
 
@@ -536,6 +537,61 @@ This document outlines the phased implementation of the Lab Controller System. E
 
 ---
 
+## Authentication
+
+**Goal**: Protect web UI and API endpoints with optional authentication.
+
+### TODO List
+
+#### Auth Configuration
+- ✅ Add `UserConfig` dataclass (username, password_hash, api_key)
+- ✅ Add `AuthConfig` dataclass (enabled, users, secret_key, session_lifetime_minutes)
+- ✅ Wire auth config into `Config.from_dict()` and `to_dict()`
+- ✅ Auth disabled by default — existing deployments unaffected
+
+#### Web Authentication
+- ✅ Create auth module `src/labctl/web/auth.py`
+  - ✅ User lookup by username and API key (constant-time comparison)
+  - ✅ Password verification with `werkzeug.security`
+  - ✅ Session-based CSRF token generation and validation
+  - ✅ Login/logout routes via `auth_bp` Blueprint
+- ✅ Create login page template `templates/login.html`
+- ✅ Add logout button to navbar in `base.html`
+- ✅ Add CSRF tokens to all POST forms (dashboard and sbc_detail)
+- ✅ Wire auth into app factory (`app.py`)
+  - ✅ `before_request` hook for session/API key enforcement
+  - ✅ `before_request` hook for CSRF validation
+  - ✅ Whitelist: login, logout, static files, `/api/health`
+  - ✅ `csrf_token()` Jinja2 template global
+
+#### API Authentication
+- ✅ `X-API-Key` header authentication for all `/api/*` endpoints
+- ✅ Constant-time key comparison with `hmac.compare_digest`
+- ✅ `/api/health` remains open for monitoring tools
+
+#### CLI User Management
+- ✅ `labctl user hash-password` — generate password hash
+- ✅ `labctl user generate-key` — generate random API key
+- ✅ `labctl user add <username>` — interactive creation with YAML output
+- ✅ `labctl user verify <username>` — verify password against config
+
+#### Packaging Fix
+- ✅ Add `[tool.setuptools.package-data]` to `pyproject.toml` for templates/static
+
+#### Testing
+- ✅ 14 auth integration tests covering login/logout, web redirect, API key, CSRF, health open, auth-disabled default
+- ✅ All 188 tests passing (existing 174 + 14 new)
+
+### Acceptance Criteria
+- ✅ Auth disabled by default — all existing tests pass unchanged
+- ✅ When enabled, web routes redirect to login
+- ✅ When enabled, API routes require `X-API-Key` header
+- ✅ `/api/health` always open
+- ✅ CSRF tokens protect all state-changing web forms
+- ✅ No new pip dependencies
+
+---
+
 ## Appendix A: Dependencies
 
 ### Python Packages
@@ -561,7 +617,7 @@ picocom or minicom (for direct serial access)
 
 ## Appendix B: Testing Strategy
 
-### Unit Tests (171 total)
+### Unit Tests (188 total)
 - ✅ Database operations (test_database.py - 8 tests)
 - ✅ Model serialization (test_manager.py - 19 tests)
 - ✅ Config loading (test_config.py - 17 tests)
@@ -573,6 +629,7 @@ picocom or minicom (for direct serial access)
 ### Integration Tests
 - ✅ CLI commands (test_cli.py - 8 tests)
 - ✅ REST API endpoints (test_web.py - 36 tests)
+- ✅ Authentication (test_auth.py - 14 tests)
 
 ### Manual Tests
 - ⏸️ Full workflow with real hardware (pending hardware)

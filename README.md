@@ -11,6 +11,7 @@ Centralized management system for embedded development lab resources. Provides d
 - **REST API** - Programmatic access to all features
 - **Health Monitoring** - Automated ping, serial, and power checks
 - **Session Logging** - Capture serial output with rotation and compression
+- **Authentication** - Session-based web login and API key auth (optional, disabled by default)
 
 ## Installation
 
@@ -122,6 +123,15 @@ labctl web --port 5000
 | `labctl health-check --sbc <name>` | Check single SBC |
 | `labctl monitor --foreground` | Start monitoring daemon |
 
+### User Management
+
+| Command | Description |
+|---------|-------------|
+| `labctl user hash-password` | Generate password hash for config |
+| `labctl user generate-key` | Generate random API key |
+| `labctl user add <username>` | Interactive user creation with YAML output |
+| `labctl user verify <username>` | Verify password against config |
+
 ### Aliases
 
 For convenience, common aliases are supported:
@@ -145,6 +155,16 @@ ser2net:
   config_file: /etc/ser2net.yaml
   enabled: true
 
+# Authentication (disabled by default)
+auth:
+  enabled: false
+  secret_key: "generate-a-random-string"
+  session_lifetime_minutes: 480
+  users:
+    - username: admin
+      password_hash: "generate with: labctl user hash-password"
+      api_key: "generate with: labctl user generate-key"
+
 database_path: ~/.config/labctl/labctl.db
 log_level: INFO
 ```
@@ -164,10 +184,17 @@ Features:
 - Power control buttons
 - Web-based serial console (xterm.js)
 - Settings and configuration view
+- Optional login authentication (enable `auth.enabled` in config)
 
 ## REST API
 
 Base URL: `http://localhost:5000/api`
+
+When authentication is enabled, API requests require an `X-API-Key` header:
+
+```bash
+curl -H "X-API-Key: your-api-key" http://localhost:5000/api/sbcs
+```
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -178,6 +205,7 @@ Base URL: `http://localhost:5000/api`
 | `/sbcs/<name>/power` | POST | Control power (`{"action": "on/off/cycle"}`) |
 | `/sbcs/<name>/health` | GET | Get health status |
 | `/sbcs/<name>/uptime` | GET | Get uptime statistics |
+| `/health` | GET | System health (always open, no auth required) |
 
 ## Systemd Services
 

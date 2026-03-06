@@ -1,18 +1,17 @@
 [Unit]
 Description=Lab Controller Web Dashboard
-Documentation=https://github.com/your-repo/labctl
+Documentation=https://github.com/johnjezl/Embedded-Lab-Control
 After=network.target ser2net.service
 
 [Service]
 Type=simple
 User=labctl
 Group=labctl
-ExecStart=/usr/local/bin/labctl web --host 0.0.0.0 --port 5000
+ExecStart=/opt/labctl/venv/bin/labctl web --host 0.0.0.0 --port 5000
 Restart=on-failure
 RestartSec=10
 
 # Environment and paths
-Environment="PATH=/usr/local/bin:/usr/bin:/bin"
 Environment="HOME=/var/lib/labctl"
 Environment="FLASK_ENV=production"
 WorkingDirectory=/var/lib/labctl
@@ -28,7 +27,6 @@ PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=/var/lib/labctl
-ReadWritePaths=/home
 
 [Install]
 WantedBy=multi-user.target

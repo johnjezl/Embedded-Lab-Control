@@ -1914,5 +1914,104 @@ def completion_cmd(shell: str) -> None:
     click.echo(result.stdout)
 
 
+# --- User Management ---
+
+
+@main.group("user")
+def user_group():
+    """User management commands for authentication."""
+    pass
+
+
+@user_group.command("hash-password")
+def hash_password_cmd():
+    """Generate a password hash for use in config.
+
+    Prompts for password input and outputs a werkzeug-compatible hash.
+    """
+    import getpass
+
+    from werkzeug.security import generate_password_hash
+
+    password = getpass.getpass("Password: ")
+    if not password:
+        click.echo("Error: empty password", err=True)
+        raise SystemExit(1)
+    confirm = getpass.getpass("Confirm: ")
+    if password != confirm:
+        click.echo("Error: passwords do not match", err=True)
+        raise SystemExit(1)
+    click.echo(generate_password_hash(password))
+
+
+@user_group.command("generate-key")
+def generate_key_cmd():
+    """Generate a random API key."""
+    import secrets
+
+    click.echo(secrets.token_urlsafe(32))
+
+
+@user_group.command("add")
+@click.argument("username")
+def user_add_cmd(username: str):
+    """Print a ready-to-paste YAML snippet for a new user.
+
+    Prompts for password, generates API key, outputs YAML.
+    """
+    import getpass
+    import secrets
+
+    from werkzeug.security import generate_password_hash
+
+    password = getpass.getpass("Password: ")
+    if not password:
+        click.echo("Error: empty password", err=True)
+        raise SystemExit(1)
+    confirm = getpass.getpass("Confirm: ")
+    if password != confirm:
+        click.echo("Error: passwords do not match", err=True)
+        raise SystemExit(1)
+
+    pw_hash = generate_password_hash(password)
+    api_key = secrets.token_urlsafe(32)
+
+    click.echo("\n# Add this to your config.yaml under auth.users:")
+    click.echo(f"    - username: {username}")
+    click.echo(f'      password_hash: "{pw_hash}"')
+    click.echo(f'      api_key: "{api_key}"')
+
+
+@user_group.command("verify")
+@click.argument("username")
+@click.pass_context
+def user_verify_cmd(ctx: click.Context, username: str):
+    """Verify a password against the config for a user."""
+    import getpass
+
+    from werkzeug.security import check_password_hash
+
+    config: Config = ctx.obj["config"]
+    if not config.auth.enabled:
+        click.echo("Warning: auth is not enabled in config", err=True)
+
+    user = None
+    for u in config.auth.users:
+        if u.username == username:
+            user = u
+            break
+
+    if not user:
+        click.echo(f"Error: user '{username}' not found in config", err=True)
+        raise SystemExit(1)
+
+    password = getpass.getpass("Password: ")
+    if check_password_hash(user.password_hash, password):
+        click.echo("Password is correct.")
+    else:
+        click.echo("Password is incorrect.", err=True)
+        raise SystemExit(1)
+
+
 if __name__ == "__main__":
     main()

@@ -49,12 +49,15 @@
                 </div>
                 <div class="power-actions">
                     <form action="{{ url_for('views.sbc_power_action', name=sbc.name, action='on') }}" method="post" class="inline-form">
+                        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                         <button type="submit" class="btn btn-sm btn-success" title="Power On">ON</button>
                     </form>
                     <form action="{{ url_for('views.sbc_power_action', name=sbc.name, action='off') }}" method="post" class="inline-form">
+                        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                         <button type="submit" class="btn btn-sm btn-danger" title="Power Off">OFF</button>
                     </form>
                     <form action="{{ url_for('views.sbc_power_action', name=sbc.name, action='cycle') }}" method="post" class="inline-form">
+                        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
                         <button type="submit" class="btn btn-sm btn-warning" title="Power Cycle">⟳</button>
                     </form>
                 </div>

@@ -54,6 +54,27 @@ This document records significant design decisions made during development.
 
 ---
 
+## D004: Authentication approach for web UI and API
+
+- **Date**: 2026-03-06
+- **Context**: All 29 web endpoints were completely unprotected. Anyone with network access could control power, modify SBCs, and access serial consoles. Need authentication without adding new pip dependencies.
+- **Options Considered**:
+  1. Flask-Login with database-backed users
+  2. Session-based web auth + API key auth using werkzeug.security (already bundled with Flask)
+  3. OAuth2 / external identity provider
+- **Decision**: Session-based web auth + API key auth using werkzeug.security and stdlib secrets/hmac
+- **Rationale**:
+  - No new dependencies — werkzeug.security ships with Flask, secrets/hmac are stdlib
+  - Auth disabled by default — existing deployments and all existing tests continue working unchanged
+  - Secure by default when enabled — `before_request` hook protects all routes; new routes are automatically protected
+  - Web UI uses session cookies with CSRF tokens on all state-changing forms
+  - API uses `X-API-Key` header with constant-time comparison (`hmac.compare_digest`)
+  - `/api/health` remains open for monitoring tools
+  - Users defined in config YAML — simple, no database migration needed
+  - CLI provides user management commands for generating hashes and keys
+
+---
+
 _Template for new decisions:_
 
 ```markdown

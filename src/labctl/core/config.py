@@ -70,6 +70,25 @@ class HealthConfig:
 
 
 @dataclass
+class UserConfig:
+    """User authentication configuration."""
+
+    username: str = ""
+    password_hash: str = ""
+    api_key: str = ""
+
+
+@dataclass
+class AuthConfig:
+    """Authentication configuration."""
+
+    enabled: bool = False
+    users: list[UserConfig] = field(default_factory=list)
+    secret_key: str = ""
+    session_lifetime_minutes: int = 480
+
+
+@dataclass
 class Config:
     """Main configuration for lab controller."""
 
@@ -77,6 +96,7 @@ class Config:
     ser2net: Ser2NetConfig = field(default_factory=Ser2NetConfig)
     proxy: ProxyConfig = field(default_factory=ProxyConfig)
     health: HealthConfig = field(default_factory=HealthConfig)
+    auth: AuthConfig = field(default_factory=AuthConfig)
     database_path: Path = field(
         default_factory=lambda: DEFAULT_CONFIG_DIR / "labctl.db"
     )
@@ -89,6 +109,7 @@ class Config:
         ser2net_data = data.get("ser2net", {})
         proxy_data = data.get("proxy", {})
         health_data = data.get("health", {})
+        auth_data = data.get("auth", {})
 
         serial = SerialConfig(
             dev_dir=Path(serial_data.get("dev_dir", "/dev/lab")),
@@ -125,11 +146,29 @@ class Config:
             update_status_on_check=health_data.get("update_status_on_check", True),
         )
 
+        auth_users = []
+        for u in auth_data.get("users", []):
+            auth_users.append(
+                UserConfig(
+                    username=u.get("username", ""),
+                    password_hash=u.get("password_hash", ""),
+                    api_key=u.get("api_key", ""),
+                )
+            )
+
+        auth = AuthConfig(
+            enabled=auth_data.get("enabled", False),
+            users=auth_users,
+            secret_key=auth_data.get("secret_key", ""),
+            session_lifetime_minutes=auth_data.get("session_lifetime_minutes", 480),
+        )
+
         return cls(
             serial=serial,
             ser2net=ser2net,
             proxy=proxy,
             health=health,
+            auth=auth,
             database_path=Path(
                 data.get("database_path", str(DEFAULT_CONFIG_DIR / "labctl.db"))
             ),
@@ -167,6 +206,19 @@ class Config:
                 "alert_on_offline": self.health.alert_on_offline,
                 "alert_on_power_change": self.health.alert_on_power_change,
                 "update_status_on_check": self.health.update_status_on_check,
+            },
+            "auth": {
+                "enabled": self.auth.enabled,
+                "users": [
+                    {
+                        "username": u.username,
+                        "password_hash": u.password_hash,
+                        "api_key": u.api_key,
+                    }
+                    for u in self.auth.users
+                ],
+                "secret_key": self.auth.secret_key,
+                "session_lifetime_minutes": self.auth.session_lifetime_minutes,
             },
             "database_path": str(self.database_path),
             "log_level": self.log_level,

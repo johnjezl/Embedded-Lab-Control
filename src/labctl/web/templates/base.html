@@ -16,6 +16,13 @@
             <a href="{{ url_for('views.index') }}" class="nav-link">Dashboard</a>
             <a href="{{ url_for('views.settings') }}" class="nav-link">Settings</a>
             <a href="{{ url_for('api.health_check') }}" class="nav-link">API</a>
+            {% if session.get('user') %}
+            <span class="nav-user">{{ session['user'] }}</span>
+            <form action="{{ url_for('auth.logout') }}" method="post" class="inline-form nav-logout">
+                <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+                <button type="submit" class="btn btn-sm btn-secondary">Logout</button>
+            </form>
+            {% endif %}
         </div>
     </nav>
 

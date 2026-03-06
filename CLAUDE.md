@@ -21,7 +21,7 @@ Centralized management system for embedded development lab resources. Provides d
 7. Update `STATUS.md` at session start/end
 
 ## Current State
-Starting Milestone 1: Foundation
+All milestones (M1-M7) complete. Authentication added (session-based web + API key).
 
 ## Tech Stack
 - Python 3.10+

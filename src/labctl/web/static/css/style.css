@@ -315,6 +315,90 @@ code {
     border-top: 1px solid var(--color-primary);
 }
 
+/* Login Page */
+.login-container {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 60vh;
+}
+
+.login-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-primary);
+    border-radius: var(--border-radius);
+    padding: 2.5rem;
+    width: 100%;
+    max-width: 400px;
+    text-align: center;
+}
+
+.login-card h1 {
+    margin-bottom: 0.5rem;
+}
+
+.login-form {
+    margin-top: 1.5rem;
+    text-align: left;
+}
+
+.login-form .form-group {
+    margin-bottom: 1rem;
+}
+
+.login-form label {
+    display: block;
+    margin-bottom: 0.25rem;
+    color: var(--color-text-muted);
+}
+
+.login-form .form-control {
+    width: 100%;
+    padding: 0.5rem;
+    background: var(--color-bg);
+    border: 1px solid var(--color-primary);
+    border-radius: 4px;
+    color: var(--color-text);
+}
+
+.btn-block {
+    display: block;
+    width: 100%;
+}
+
+/* Navbar Auth */
+.nav-user {
+    color: var(--color-text-muted);
+    font-size: 0.9rem;
+}
+
+.nav-logout {
+    display: inline;
+}
+
+.btn-secondary {
+    background: var(--color-primary);
+    color: var(--color-text);
+}
+
+.btn-xs {
+    padding: 0.15rem 0.35rem;
+    font-size: 0.75rem;
+}
+
+/* Form Controls */
+.form-group {
+    margin-bottom: 1rem;
+}
+
+.form-control {
+    padding: 0.5rem;
+    background: var(--color-bg);
+    border: 1px solid var(--color-primary);
+    border-radius: 4px;
+    color: var(--color-text);
+}
+
 /* Responsive */
 @media (max-width: 768px) {
     .container {

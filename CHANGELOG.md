@@ -7,6 +7,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Authentication system (2026-03-06)
+  - Session-based web login with username/password
+  - API key authentication via `X-API-Key` header for REST endpoints
+  - CSRF protection on all web POST/PUT/DELETE forms
+  - Auth disabled by default — existing deployments unaffected
+  - `/api/health` remains open without authentication for monitoring tools
+  - `AuthConfig` and `UserConfig` dataclasses in config module
+  - Login page template with dark theme styling
+  - Logout button in navigation bar when logged in
+  - `labctl user` CLI command group:
+    - `labctl user hash-password` — generate werkzeug password hash
+    - `labctl user generate-key` — generate random API key
+    - `labctl user add <username>` — interactive user creation with YAML output
+    - `labctl user verify <username>` — verify password against config
+  - Auth section in `config/labctl.yaml.example`
+  - 14 authentication integration tests (188 total)
+  - `[tool.setuptools.package-data]` in pyproject.toml for templates and static files
 - Project documentation structure
   - ARCHITECTURE.md - System design and component specifications
   - IMPLEMENTATION.md - Milestone-based TODO lists

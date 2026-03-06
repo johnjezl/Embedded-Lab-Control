@@ -22,6 +22,16 @@ ser2net:
   # Enable ser2net integration (set to false for direct serial only)
   enabled: true
 
+# Authentication (disabled by default)
+# auth:
+#   enabled: true
+#   secret_key: "generate-a-random-string"
+#   session_lifetime_minutes: 480
+#   users:
+#     - username: admin
+#       password_hash: "generate with: labctl user hash-password"
+#       api_key: "generate with: labctl user generate-key"
+
 # Database path for SBC and resource tracking
 database_path: ~/.config/labctl/labctl.db
 

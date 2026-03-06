@@ -2,14 +2,14 @@
 
 ## Current State
 
-- **Milestone**: All milestones complete + deferred items
+- **Milestone**: All milestones complete + deferred items + authentication
 - **Sub-task**: All complete
 - **Status**: Feature complete
 
 ## Last Session
 
-- **Date**: 2026-01-01
-- **Completed**: All deferred items from milestones M1-M7
+- **Date**: 2026-03-06
+- **Completed**: Authentication system (web login, API key auth, CSRF, CLI user commands)
 - **Commits**: Ready for commit
 
 ## Blockers
@@ -19,7 +19,14 @@
 ## Notes
 
 - **All Milestones Complete!**
-- 171 tests passing
+- 188 tests passing
+- Authentication features added:
+  - Session-based web login with CSRF protection
+  - API key authentication for REST endpoints (`X-API-Key` header)
+  - CLI user management commands (`labctl user hash-password/generate-key/add/verify`)
+  - Auth disabled by default for backward compatibility
+  - `/api/health` remains open for monitoring tools
+- Fixed `pyproject.toml` missing `package-data` for templates/static files
 - Deferred items implemented:
   - CLI: log command, status --watch, port list --unassigned, --quiet flag, aliases
   - Web: edit forms, assignment forms, settings page, console info API, uptime API
@@ -38,3 +45,4 @@
 | M6 | Multi-Client Serial | Complete |
 | M7 | Monitoring and Health | Complete |
 | - | Deferred Items | Complete |
+| - | Authentication | Complete |
