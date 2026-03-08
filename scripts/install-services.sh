@@ -59,6 +59,16 @@ if [ ! -x "$LABCTL_VENV/bin/labctl" ]; then
 fi
 echo "[ok] labctl installed at $LABCTL_VENV/bin/labctl"
 
+# Symlink labctl into PATH so any user can run it
+if [ -L /usr/local/bin/labctl ]; then
+    echo "[ok] /usr/local/bin/labctl symlink already exists"
+elif [ -e /usr/local/bin/labctl ]; then
+    echo "[!] /usr/local/bin/labctl exists but is not a symlink, skipping"
+else
+    ln -s "$LABCTL_VENV/bin/labctl" /usr/local/bin/labctl
+    echo "[ok] Symlinked labctl to /usr/local/bin/labctl"
+fi
+
 # 3. Set up config directory
 echo "[+] Setting up config in $LABCTL_CONFIG..."
 mkdir -p "$LABCTL_CONFIG"

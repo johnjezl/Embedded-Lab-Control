@@ -847,10 +847,14 @@ def power_on_cmd(ctx: click.Context, sbc_name: str) -> None:
     controller, sbc = _get_power_controller(manager, sbc_name)
 
     click.echo(f"Powering on {sbc_name}...")
-    if controller.power_on():
-        click.echo(f"Power ON: {sbc_name}")
-    else:
-        click.echo(f"Error: Failed to power on {sbc_name}", err=True)
+    try:
+        if controller.power_on():
+            click.echo(f"Power ON: {sbc_name}")
+        else:
+            click.echo(f"Error: Failed to power on {sbc_name}", err=True)
+            sys.exit(1)
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
 
@@ -863,10 +867,14 @@ def power_off_cmd(ctx: click.Context, sbc_name: str) -> None:
     controller, sbc = _get_power_controller(manager, sbc_name)
 
     click.echo(f"Powering off {sbc_name}...")
-    if controller.power_off():
-        click.echo(f"Power OFF: {sbc_name}")
-    else:
-        click.echo(f"Error: Failed to power off {sbc_name}", err=True)
+    try:
+        if controller.power_off():
+            click.echo(f"Power OFF: {sbc_name}")
+        else:
+            click.echo(f"Error: Failed to power off {sbc_name}", err=True)
+            sys.exit(1)
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
 
@@ -886,10 +894,14 @@ def power_cycle_cmd(ctx: click.Context, sbc_name: str, delay: float) -> None:
     controller, sbc = _get_power_controller(manager, sbc_name)
 
     click.echo(f"Power cycling {sbc_name} (delay: {delay}s)...")
-    if controller.power_cycle(delay):
-        click.echo(f"Power cycled: {sbc_name}")
-    else:
-        click.echo(f"Error: Failed to power cycle {sbc_name}", err=True)
+    try:
+        if controller.power_cycle(delay):
+            click.echo(f"Power cycled: {sbc_name}")
+        else:
+            click.echo(f"Error: Failed to power cycle {sbc_name}", err=True)
+            sys.exit(1)
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
 
@@ -901,7 +913,11 @@ def power_status_cmd(ctx: click.Context, sbc_name: str) -> None:
     manager = _get_manager(ctx)
     controller, sbc = _get_power_controller(manager, sbc_name)
 
-    state = controller.get_state()
+    try:
+        state = controller.get_state()
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
     plug = sbc.power_plug
 
     click.echo(f"SBC:    {sbc_name}")
