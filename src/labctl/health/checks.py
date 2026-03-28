@@ -13,7 +13,7 @@ from enum import Enum
 from typing import Optional
 
 from labctl.core.models import SBC, PortType, Status
-from labctl.power.base import PowerController, PowerState, get_controller
+from labctl.power.base import PowerController, PowerState
 
 
 class CheckType(Enum):
@@ -474,7 +474,7 @@ class HealthChecker:
 
         # Power check - requires power plug
         if CheckType.POWER in check_types and sbc.power_plug:
-            controller = get_controller(sbc.power_plug)
+            controller = PowerController.from_plug(sbc.power_plug)
             result, state = self.power_check(controller, sbc.name)
             summary.power_result = result
             summary.power_state = state

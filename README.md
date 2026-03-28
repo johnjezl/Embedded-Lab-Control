@@ -80,7 +80,7 @@ labctl web --port 5000
 | `labctl remove <name>` | Remove an SBC |
 | `labctl list` | List all SBCs |
 | `labctl info <name>` | Show SBC details |
-| `labctl edit <name>` | Edit SBC properties |
+| `labctl edit <name>` | Edit SBC properties (--rename, --project, etc.) |
 | `labctl status` | Show status overview |
 | `labctl status --watch` | Continuous status monitoring |
 
@@ -99,7 +99,7 @@ labctl web --port 5000
 
 | Command | Description |
 |---------|-------------|
-| `labctl plug assign <sbc> <type> <addr>` | Assign power plug |
+| `labctl plug assign <sbc> <type> <addr>` | Assign power plug (--index for strips) |
 | `labctl power <sbc> on` | Turn on |
 | `labctl power <sbc> off` | Turn off |
 | `labctl power <sbc> cycle` | Power cycle |
@@ -165,8 +165,18 @@ auth:
       password_hash: "generate with: labctl user hash-password"
       api_key: "generate with: labctl user generate-key"
 
+# HTTPS (disabled by default)
+web:
+  cert_file: "/etc/labctl/ssl/cert.pem"
+  key_file: "/etc/labctl/ssl/key.pem"
+
+# TP-Link Kasa credentials (for KLAP-authenticated devices)
+kasa:
+  username: "your-tplink-email@example.com"
+  password: "your-tplink-password"
+
 database_path: ~/.config/labctl/labctl.db
-log_level: INFO
+log_level: WARNING
 ```
 
 ## Web Interface
@@ -185,15 +195,76 @@ Features:
 - Web-based serial console (xterm.js)
 - Settings and configuration view
 - Optional login authentication (enable `auth.enabled` in config)
+- Optional HTTPS with SSL/TLS certificates
+
+### Enabling HTTPS
+
+labctl supports native HTTPS via SSL/TLS certificates. This is recommended when
+authentication is enabled, to protect credentials in transit.
+
+**1. Generate a self-signed certificate:**
+
+```bash
+sudo mkdir -p /etc/labctl/ssl
+sudo openssl req -x509 -newkey rsa:4096 -nodes \
+  -keyout /etc/labctl/ssl/key.pem \
+  -out /etc/labctl/ssl/cert.pem \
+  -days 365 \
+  -subj "/CN=labctl"
+```
+
+To include additional hostnames or IPs (recommended for avoiding browser warnings
+on your local network):
+
+```bash
+sudo openssl req -x509 -newkey rsa:4096 -nodes \
+  -keyout /etc/labctl/ssl/key.pem \
+  -out /etc/labctl/ssl/cert.pem \
+  -days 365 \
+  -subj "/CN=labctl" \
+  -addext "subjectAltName=DNS:labctl,DNS:tarrasque,DNS:tarrasque.local,IP:192.168.1.100"
+```
+
+**2a. Use via CLI flags (ad-hoc):**
+
+```bash
+labctl web --cert /etc/labctl/ssl/cert.pem --key /etc/labctl/ssl/key.pem
+```
+
+**2b. Or configure in config.yaml (persistent, recommended for systemd):**
+
+```yaml
+web:
+  cert_file: "/etc/labctl/ssl/cert.pem"
+  key_file: "/etc/labctl/ssl/key.pem"
+```
+
+**3. Set permissions for the systemd service:**
+
+```bash
+sudo chown root:labctl /etc/labctl/ssl/key.pem
+sudo chmod 640 /etc/labctl/ssl/key.pem
+sudo systemctl restart labctl-web
+```
+
+Access at `https://localhost:5000`. Your browser will warn about the self-signed
+certificate — this is expected for lab use.
 
 ## REST API
 
-Base URL: `http://localhost:5000/api`
+Base URL: `http://localhost:5000/api` (or `https://` when SSL is configured)
 
 When authentication is enabled, API requests require an `X-API-Key` header:
 
 ```bash
-curl -H "X-API-Key: your-api-key" http://localhost:5000/api/sbcs
+curl -H "X-API-Key: your-api-key" https://localhost:5000/api/sbcs
+```
+
+For self-signed certificates, use `curl -k` or `--cacert cert.pem` to bypass
+certificate verification:
+
+```bash
+curl -k -H "X-API-Key: your-api-key" https://localhost:5000/api/sbcs
 ```
 
 | Endpoint | Method | Description |

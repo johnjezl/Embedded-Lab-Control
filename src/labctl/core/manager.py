@@ -152,6 +152,7 @@ class ResourceManager:
     def update_sbc(
         self,
         sbc_id: int,
+        name: Optional[str] = None,
         project: Optional[str] = None,
         description: Optional[str] = None,
         ssh_user: Optional[str] = None,
@@ -164,6 +165,10 @@ class ResourceManager:
 
         updates = []
         params = []
+
+        if name is not None:
+            updates.append("name = ?")
+            params.append(name)
 
         if project is not None:
             updates.append("project = ?")
@@ -186,8 +191,11 @@ class ResourceManager:
             sql = f"UPDATE sbcs SET {', '.join(updates)} WHERE id = ?"
             params.append(sbc_id)
             self.db.execute_modify(sql, tuple(params))
+            old_name = sbc.name
+            new_name = name if name else old_name
             self._audit_log(
-                "update", "sbc", sbc_id, sbc.name, f"Updated SBC: {sbc.name}"
+                "update", "sbc", sbc_id, new_name,
+                f"Updated SBC: {old_name}" + (f" (renamed to {new_name})" if name and name != old_name else ""),
             )
 
         return self.get_sbc(sbc_id)

@@ -41,7 +41,7 @@ class TestConfig:
         config = Config()
         assert isinstance(config.serial, SerialConfig)
         assert isinstance(config.ser2net, Ser2NetConfig)
-        assert config.log_level == "INFO"
+        assert config.log_level == "WARNING"
 
     def test_from_dict_empty(self):
         """Test creating config from empty dict uses defaults."""

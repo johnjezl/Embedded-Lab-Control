@@ -143,6 +143,7 @@ def sbc_edit(name: str):
         flash(f"SBC '{name}' not found", "error")
         return redirect(url_for("views.index"))
 
+    new_name = request.form.get("name", "").strip() or None
     project = request.form.get("project", "").strip() or None
     description = request.form.get("description", "").strip() or None
     ssh_user = request.form.get("ssh_user", "").strip() or "root"
@@ -150,16 +151,21 @@ def sbc_edit(name: str):
 
     status_enum = Status(status) if status else None
 
+    # Only pass new_name if it actually changed
+    rename = new_name if new_name and new_name != name else None
+
     g.manager.update_sbc(
         sbc.id,
+        name=rename,
         project=project,
         description=description,
         ssh_user=ssh_user,
         status=status_enum,
     )
 
-    flash(f"Updated SBC '{name}'", "success")
-    return redirect(url_for("views.sbc_detail", name=name))
+    display_name = rename or name
+    flash(f"Updated SBC '{display_name}'", "success")
+    return redirect(url_for("views.sbc_detail", name=display_name))
 
 
 @views_bp.route("/sbc/<name>/port/assign", methods=["POST"])

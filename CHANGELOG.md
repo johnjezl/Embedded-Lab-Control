@@ -7,6 +7,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Native HTTPS support for web server (2026-03-28)
+  - `--cert` and `--key` CLI flags on `labctl web` command
+  - `web:` config section for persistent SSL configuration (cert_file, key_file)
+  - Documentation for self-signed certificate generation and setup
+  - Systemd service updated with SSL cert read access and port 443 capability
+- Kasa Smart Power Strip support (2026-03-28)
+  - Auto-detects plugs vs strips via `kasa.Discover.discover_single()`
+  - Multi-outlet control using `plug_index` (1-based) for individual outlets
+  - TP-Link cloud credential support via `kasa:` config section (required for KLAP devices)
+  - Proper async cleanup (`device.disconnect()`) to prevent unclosed session warnings
+  - Detailed logging at all levels (DEBUG/INFO/ERROR) for troubleshooting
+- SBC renaming support (2026-03-28)
+  - `labctl edit <name> --rename <new-name>` CLI command
+  - Rename via REST API (`PUT /api/sbcs/<name>` with `{"name": "new-name"}`)
+  - Rename via web UI edit form
+- CLI logging initialization (2026-03-28)
+  - `logging.basicConfig()` wired to config `log_level` in CLI entrypoint
+  - `-v` flag sets DEBUG, `-q` flag sets WARNING
+  - Log output goes to stderr to avoid interfering with command output
+- `scripts/kasa-debug.py` — standalone debug script for Kasa device troubleshooting
+  - Device discovery, status, and power control
+  - `test-auth` action with credential hash diagnostics
+  - Verbose mode includes python-kasa internal debug output
+
+### Changed
+- Default log level changed from INFO to WARNING (2026-03-28)
+
+### Fixed
+- Health check power probe using wrong function signature (2026-03-28)
+  - `get_controller(sbc.power_plug)` → `PowerController.from_plug(sbc.power_plug)`
 - Authentication system (2026-03-06)
   - Session-based web login with username/password
   - API key authentication via `X-API-Key` header for REST endpoints

@@ -75,6 +75,40 @@ This document records significant design decisions made during development.
 
 ---
 
+## D005: Native HTTPS via Flask ssl_context
+
+- **Date**: 2026-03-28
+- **Context**: Web UI transmits credentials (when auth is enabled) over plain HTTP. Need HTTPS without requiring additional infrastructure.
+- **Options Considered**:
+  1. Reverse proxy (nginx/Caddy) in front of Flask
+  2. Native SSL via Flask's `ssl_context` parameter
+  3. Both (native + documented reverse proxy)
+- **Decision**: Native SSL via Flask's `ssl_context` with self-signed certificates
+- **Rationale**:
+  - Zero additional dependencies or services — Flask/Werkzeug supports `ssl_context` natively
+  - Simple for lab environments: generate a self-signed cert, add paths to config
+  - CLI flags (`--cert`/`--key`) for ad-hoc use, config section (`web:`) for systemd
+  - Reverse proxy remains recommended for internet-facing deployments but is not required
+
+---
+
+## D006: Kasa Smart Power Strip support via auto-detection
+
+- **Date**: 2026-03-28
+- **Context**: TP-Link Kasa HS300 power strip added to lab. Existing `KasaController` used `SmartPlug` class and ignored `plug_index`, so multi-outlet strips were not supported.
+- **Options Considered**:
+  1. Separate `KasaStripController` subclass
+  2. Update `KasaController` to auto-detect device type via `Discover.discover_single()`
+- **Decision**: Auto-detection in single `KasaController` class
+- **Rationale**:
+  - `Discover.discover_single()` returns the correct device type automatically
+  - `device.children` provides outlet access for strips; single plugs have no children
+  - No need for users to specify device type — `plug_index` is sufficient
+  - TP-Link cloud credentials added to config (`kasa:` section) for KLAP-authenticated devices
+  - Note: HS300 HW v2.0 firmware 1.1.2+ has known KLAP auth issues; workaround is Tapo app "Third Party Compatibility" toggle
+
+---
+
 _Template for new decisions:_
 
 ```markdown

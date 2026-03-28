@@ -4,6 +4,7 @@ Command-line interface for lab controller.
 Provides commands for managing serial ports, connections, and lab resources.
 """
 
+import logging
 import os
 import subprocess
 import sys
@@ -106,6 +107,19 @@ def main(
     ctx.obj["verbose"] = verbose
     ctx.obj["quiet"] = quiet
     ctx.obj["config"] = load_config(config_path)
+
+    # Initialize logging
+    config = ctx.obj["config"]
+    log_level = config.log_level.upper()
+    if verbose:
+        log_level = "DEBUG"
+    elif quiet:
+        log_level = "WARNING"
+    logging.basicConfig(
+        level=getattr(logging, log_level, logging.INFO),
+        format="%(asctime)s %(name)s [%(levelname)s] %(message)s",
+        stream=sys.stderr,
+    )
 
 
 @main.command("ports")
@@ -417,6 +431,7 @@ def info_cmd(ctx: click.Context, name: str) -> None:
 
 @main.command("edit")
 @click.argument("name")
+@click.option("--rename", "-n", "new_name", help="Rename the SBC")
 @click.option("--project", "-p", help="Set project name")
 @click.option("--description", "-d", help="Set description")
 @click.option("--ssh-user", "-u", help="Set SSH username")
@@ -427,6 +442,7 @@ def info_cmd(ctx: click.Context, name: str) -> None:
 def edit_cmd(
     ctx: click.Context,
     name: str,
+    new_name: str | None,
     project: str | None,
     description: str | None,
     ssh_user: str | None,
@@ -441,10 +457,10 @@ def edit_cmd(
         sys.exit(1)
 
     # Check if any changes requested
-    if all(v is None for v in [project, description, ssh_user, status]):
+    if all(v is None for v in [new_name, project, description, ssh_user, status]):
         click.echo(
             "No changes specified. "
-            "Use --project, --description, --ssh-user, or --status."
+            "Use --rename, --project, --description, --ssh-user, or --status."
         )
         return
 
@@ -452,12 +468,16 @@ def edit_cmd(
 
     manager.update_sbc(
         sbc.id,
+        name=new_name,
         project=project,
         description=description,
         ssh_user=ssh_user,
         status=status_enum,
     )
-    click.echo(f"Updated SBC: {name}")
+    if new_name:
+        click.echo(f"Renamed SBC: {name} -> {new_name}")
+    else:
+        click.echo(f"Updated SBC: {name}")
 
 
 # --- Port Assignment Commands ---
@@ -1683,20 +1703,52 @@ def sessions_cmd(ctx: click.Context, sbc_name: str | None) -> None:
     "--port", "-p", type=int, default=5000, help="Port to bind to (default: 5000)"
 )
 @click.option("--debug", is_flag=True, help="Enable debug mode")
+@click.option(
+    "--cert",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to SSL certificate file (PEM format)",
+)
+@click.option(
+    "--key",
+    type=click.Path(exists=True),
+    default=None,
+    help="Path to SSL private key file (PEM format)",
+)
 @click.pass_context
-def web_cmd(ctx: click.Context, host: str, port: int, debug: bool) -> None:
+def web_cmd(
+    ctx: click.Context,
+    host: str,
+    port: int,
+    debug: bool,
+    cert: str | None,
+    key: str | None,
+) -> None:
     """Start the web dashboard server."""
     from labctl.web import create_app
 
     config: Config = ctx.obj["config"]
     app = create_app(config)
 
+    # Resolve SSL: CLI flags take precedence, then config file
+    ssl_cert = cert or config.web.cert_file or None
+    ssl_key = key or config.web.key_file or None
+
+    if bool(ssl_cert) != bool(ssl_key):
+        click.echo(
+            "Error: Both --cert and --key are required for SSL.", err=True
+        )
+        ctx.exit(1)
+
+    ssl_context = (ssl_cert, ssl_key) if ssl_cert and ssl_key else None
+    scheme = "https" if ssl_context else "http"
+
     click.echo("Starting Lab Controller web server...")
-    click.echo(f"Dashboard: http://{host}:{port}/")
-    click.echo(f"API:       http://{host}:{port}/api/")
+    click.echo(f"Dashboard: {scheme}://{host}:{port}/")
+    click.echo(f"API:       {scheme}://{host}:{port}/api/")
     click.echo("Press Ctrl+C to stop")
 
-    app.run(host=host, port=port, debug=debug)
+    app.run(host=host, port=port, debug=debug, ssl_context=ssl_context)
 
 
 # --- Health Check Commands ---

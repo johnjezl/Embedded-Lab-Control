@@ -32,6 +32,24 @@ ser2net:
 #       password_hash: "generate with: labctl user hash-password"
 #       api_key: "generate with: labctl user generate-key"
 
+# Web server SSL/TLS (disabled by default, serves HTTP)
+# To enable HTTPS, generate a self-signed certificate:
+#   sudo mkdir -p /etc/labctl/ssl
+#   sudo openssl req -x509 -newkey rsa:4096 -nodes \
+#     -keyout /etc/labctl/ssl/key.pem -out /etc/labctl/ssl/cert.pem \
+#     -days 365 -subj "/CN=labctl"
+# Or use --cert and --key CLI flags for ad-hoc usage.
+# web:
+#   cert_file: "/etc/labctl/ssl/cert.pem"
+#   key_file: "/etc/labctl/ssl/key.pem"
+
+# TP-Link Kasa device credentials
+# Required for newer Kasa devices that use KLAP protocol authentication.
+# Use your TP-Link cloud account (same as Kasa app login).
+# kasa:
+#   username: "your-tplink-email@example.com"
+#   password: "your-tplink-password"
+
 # Database path for SBC and resource tracking
 database_path: ~/.config/labctl/labctl.db
 

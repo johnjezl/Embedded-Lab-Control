@@ -127,6 +127,7 @@ def update_sbc(name: str):
 
     updated = g.manager.update_sbc(
         sbc.id,
+        name=data.get("name"),
         project=data.get("project"),
         description=data.get("description"),
         ssh_user=data.get("ssh_user"),

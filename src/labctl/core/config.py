@@ -70,6 +70,26 @@ class HealthConfig:
 
 
 @dataclass
+class WebConfig:
+    """Web server SSL/TLS configuration."""
+
+    cert_file: str = ""
+    key_file: str = ""
+
+
+@dataclass
+class KasaConfig:
+    """TP-Link Kasa device credentials.
+
+    Newer Kasa devices (KLAP protocol) require TP-Link cloud account
+    credentials for local control.
+    """
+
+    username: str = ""
+    password: str = ""
+
+
+@dataclass
 class UserConfig:
     """User authentication configuration."""
 
@@ -97,10 +117,12 @@ class Config:
     proxy: ProxyConfig = field(default_factory=ProxyConfig)
     health: HealthConfig = field(default_factory=HealthConfig)
     auth: AuthConfig = field(default_factory=AuthConfig)
+    web: WebConfig = field(default_factory=WebConfig)
+    kasa: KasaConfig = field(default_factory=KasaConfig)
     database_path: Path = field(
         default_factory=lambda: DEFAULT_CONFIG_DIR / "labctl.db"
     )
-    log_level: str = "INFO"
+    log_level: str = "WARNING"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Config":
@@ -110,6 +132,8 @@ class Config:
         proxy_data = data.get("proxy", {})
         health_data = data.get("health", {})
         auth_data = data.get("auth", {})
+        web_data = data.get("web", {})
+        kasa_data = data.get("kasa", {})
 
         serial = SerialConfig(
             dev_dir=Path(serial_data.get("dev_dir", "/dev/lab")),
@@ -163,16 +187,28 @@ class Config:
             session_lifetime_minutes=auth_data.get("session_lifetime_minutes", 480),
         )
 
+        web = WebConfig(
+            cert_file=web_data.get("cert_file", ""),
+            key_file=web_data.get("key_file", ""),
+        )
+
+        kasa = KasaConfig(
+            username=kasa_data.get("username", ""),
+            password=kasa_data.get("password", ""),
+        )
+
         return cls(
             serial=serial,
             ser2net=ser2net,
             proxy=proxy,
             health=health,
             auth=auth,
+            web=web,
+            kasa=kasa,
             database_path=Path(
                 data.get("database_path", str(DEFAULT_CONFIG_DIR / "labctl.db"))
             ),
-            log_level=data.get("log_level", "INFO"),
+            log_level=data.get("log_level", "WARNING"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -219,6 +255,14 @@ class Config:
                 ],
                 "secret_key": self.auth.secret_key,
                 "session_lifetime_minutes": self.auth.session_lifetime_minutes,
+            },
+            "web": {
+                "cert_file": self.web.cert_file,
+                "key_file": self.web.key_file,
+            },
+            "kasa": {
+                "username": self.kasa.username,
+                "password": self.kasa.password,
             },
             "database_path": str(self.database_path),
             "log_level": self.log_level,

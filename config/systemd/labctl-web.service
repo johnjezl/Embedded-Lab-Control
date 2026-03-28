@@ -11,6 +11,11 @@ ExecStart=/opt/labctl/venv/bin/labctl web --host 0.0.0.0 --port 5000
 Restart=on-failure
 RestartSec=10
 
+# For HTTPS, configure cert_file and key_file in the config.yaml
+# under the 'web:' section. See config/labctl.yaml.example.
+# To bind to port 443, uncomment AmbientCapabilities below.
+# AmbientCapabilities=CAP_NET_BIND_SERVICE
+
 # Environment and paths
 Environment="HOME=/var/lib/labctl"
 Environment="FLASK_ENV=production"
@@ -27,6 +32,7 @@ PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=/var/lib/labctl
+ReadOnlyPaths=/etc/labctl/ssl
 
 [Install]
 WantedBy=multi-user.target
