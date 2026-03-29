@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Generator, Optional
 
 # Current schema version
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # SQL statements for schema creation
 SCHEMA_SQL = """
@@ -32,6 +32,17 @@ CREATE TABLE IF NOT EXISTS sbcs (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Registered USB-serial adapters
+CREATE TABLE IF NOT EXISTS serial_devices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL,
+    usb_path TEXT UNIQUE NOT NULL,
+    vendor TEXT,
+    model TEXT,
+    serial_number TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Serial port assignments
 CREATE TABLE IF NOT EXISTS serial_ports (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -40,8 +51,11 @@ CREATE TABLE IF NOT EXISTS serial_ports (
     device_path TEXT NOT NULL,  -- /dev/lab/sbc1-console
     tcp_port INTEGER,
     baud_rate INTEGER DEFAULT 115200,
+    alias TEXT,  -- human-friendly name for this assignment
+    serial_device_id INTEGER,  -- FK to serial_devices
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (sbc_id) REFERENCES sbcs(id) ON DELETE CASCADE,
+    FOREIGN KEY (serial_device_id) REFERENCES serial_devices(id) ON DELETE SET NULL,
     UNIQUE (sbc_id, port_type)
 );
 
@@ -93,8 +107,10 @@ CREATE TABLE IF NOT EXISTS audit_log (
 -- Indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_sbcs_project ON sbcs(project);
 CREATE INDEX IF NOT EXISTS idx_sbcs_status ON sbcs(status);
+CREATE INDEX IF NOT EXISTS idx_serial_devices_usb_path ON serial_devices(usb_path);
 CREATE INDEX IF NOT EXISTS idx_serial_ports_sbc ON serial_ports(sbc_id);
 CREATE INDEX IF NOT EXISTS idx_serial_ports_device ON serial_ports(device_path);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_serial_ports_alias ON serial_ports(alias) WHERE alias IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_status_log_sbc ON status_log(sbc_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_entity ON audit_log(entity_type, entity_id);
 """
@@ -140,8 +156,40 @@ class Database:
 
     def _apply_migrations(self, conn: sqlite3.Connection, from_version: int) -> None:
         """Apply database migrations."""
-        # Future migrations would go here
-        # For now, just update version
+        if from_version < 2:
+            # v2: Add serial_devices table, add alias/serial_device_id to serial_ports
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS serial_devices (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE NOT NULL,
+                    usb_path TEXT UNIQUE NOT NULL,
+                    vendor TEXT,
+                    model TEXT,
+                    serial_number TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_serial_devices_usb_path
+                    ON serial_devices(usb_path);
+            """)
+            # ALTER TABLE cannot add FK constraints in SQLite, but the column works fine
+            try:
+                conn.execute("ALTER TABLE serial_ports ADD COLUMN alias TEXT")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+            try:
+                conn.execute(
+                    "ALTER TABLE serial_ports ADD COLUMN serial_device_id INTEGER"
+                )
+            except sqlite3.OperationalError:
+                pass  # Column already exists
+            try:
+                conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_serial_ports_alias "
+                    "ON serial_ports(alias) WHERE alias IS NOT NULL"
+                )
+            except sqlite3.OperationalError:
+                pass  # Index already exists
+
         conn.execute(
             "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
         )

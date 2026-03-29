@@ -179,6 +179,7 @@ def sbc_port_assign(name: str):
         return redirect(url_for("views.index"))
 
     port_type = request.form.get("port_type", "").strip()
+    alias = request.form.get("alias", "").strip() or None
     device = request.form.get("device", "").strip()
     tcp_port = request.form.get("tcp_port", "").strip()
     baud_rate = request.form.get("baud_rate", "115200").strip()
@@ -194,6 +195,7 @@ def sbc_port_assign(name: str):
             device_path=device,
             tcp_port=int(tcp_port) if tcp_port else None,
             baud_rate=int(baud_rate),
+            alias=alias,
         )
         flash(f"Assigned {port_type} port", "success")
     except Exception as e:

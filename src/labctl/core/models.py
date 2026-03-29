@@ -45,8 +45,34 @@ class PlugType(Enum):
 
 
 @dataclass
+class SerialDevice:
+    """Physical USB-serial adapter registered in the system."""
+
+    id: Optional[int] = None
+    name: str = ""
+    usb_path: str = ""
+    vendor: Optional[str] = None
+    model: Optional[str] = None
+    serial_number: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "SerialDevice":
+        """Create SerialDevice from database row."""
+        return cls(
+            id=row["id"],
+            name=row["name"],
+            usb_path=row["usb_path"],
+            vendor=row["vendor"],
+            model=row["model"],
+            serial_number=row["serial_number"],
+            created_at=row["created_at"],
+        )
+
+
+@dataclass
 class SerialPort:
-    """Serial port assignment."""
+    """Serial port assignment linking a serial device to an SBC."""
 
     id: Optional[int] = None
     sbc_id: int = 0
@@ -54,11 +80,17 @@ class SerialPort:
     device_path: str = ""
     tcp_port: Optional[int] = None
     baud_rate: int = 115200
+    alias: Optional[str] = None
+    serial_device_id: Optional[int] = None
     created_at: Optional[datetime] = None
+
+    # Populated by manager when loading relations
+    serial_device: Optional[SerialDevice] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "SerialPort":
         """Create SerialPort from database row."""
+        keys = row.keys()
         return cls(
             id=row["id"],
             sbc_id=row["sbc_id"],
@@ -66,6 +98,8 @@ class SerialPort:
             device_path=row["device_path"],
             tcp_port=row["tcp_port"],
             baud_rate=row["baud_rate"],
+            alias=row["alias"] if "alias" in keys else None,
+            serial_device_id=row["serial_device_id"] if "serial_device_id" in keys else None,
             created_at=row["created_at"],
         )
 

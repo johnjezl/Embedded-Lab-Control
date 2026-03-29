@@ -210,14 +210,34 @@ def _get_tcp_port(port_name: str, config: Config) -> int | None:
 def connect_cmd(ctx: click.Context, port_name: str, baud: int | None) -> None:
     """Connect to a serial port console.
 
-    PORT_NAME is the name of the port (e.g., 'sbc1-console') or the full
-    path (e.g., '/dev/lab/sbc1-console').
+    PORT_NAME can be a port alias, SBC name, device name (e.g., 'port-1'),
+    or full path (e.g., '/dev/lab/port-1').
     """
     verbose = ctx.obj.get("verbose", False)
     config: Config = ctx.obj["config"]
     dev_dir = config.serial.dev_dir
+    manager = _get_manager(ctx)
 
-    # Resolve port name to path
+    # 1. Try alias lookup from database
+    port = manager.get_serial_port_by_alias(port_name)
+    if port and port.tcp_port:
+        if verbose:
+            click.echo(f"Connecting to alias '{port_name}' via TCP port {port.tcp_port}...")
+        _connect_tcp("localhost", port.tcp_port)
+        return
+
+    # 2. Try SBC name lookup (use console port)
+    sbc = manager.get_sbc_by_name(port_name)
+    if sbc and sbc.console_port and sbc.console_port.tcp_port:
+        if verbose:
+            click.echo(
+                f"Connecting to {port_name} console via TCP port "
+                f"{sbc.console_port.tcp_port}..."
+            )
+        _connect_tcp("localhost", sbc.console_port.tcp_port)
+        return
+
+    # 3. Fall back to filesystem path resolution
     if port_name.startswith("/"):
         port_path = Path(port_name)
         port_name = port_path.name
@@ -226,18 +246,17 @@ def connect_cmd(ctx: click.Context, port_name: str, baud: int | None) -> None:
 
     if not port_path.exists():
         click.echo(f"Error: Port not found: {port_path}", err=True)
+        click.echo("Tip: Use a port alias, SBC name, or device path.")
         sys.exit(1)
 
-    # Look up TCP port
+    # Look up TCP port from ser2net config
     tcp_port = _get_tcp_port(port_name, config)
 
     if tcp_port and config.ser2net.enabled:
-        # Connect via TCP (preferred - allows multiple clients)
         if verbose:
             click.echo(f"Connecting to {port_name} via TCP port {tcp_port}...")
         _connect_tcp("localhost", tcp_port)
     else:
-        # Fall back to direct serial connection
         if verbose:
             click.echo(f"Connecting directly to {port_path}...")
         _connect_direct(port_path, baud or config.serial.default_baud)
@@ -483,6 +502,213 @@ def edit_cmd(
 # --- Port Assignment Commands ---
 
 
+@main.group("serial")
+def serial_group() -> None:
+    """Manage USB-serial adapters."""
+    pass
+
+
+@serial_group.command("discover")
+@click.option("--json-output", "-j", "json_out", is_flag=True, help="Output as JSON")
+@click.pass_context
+def serial_discover_cmd(ctx: click.Context, json_out: bool) -> None:
+    """Discover connected USB-serial devices."""
+    import json
+
+    from labctl.serial.udev import discover_usb_serial
+
+    manager = _get_manager(ctx)
+    devices = discover_usb_serial()
+    known = {d.usb_path: d for d in manager.list_serial_devices()}
+
+    if json_out:
+        click.echo(json.dumps(devices, indent=2))
+        return
+
+    if not devices:
+        click.echo("No USB-serial devices found.")
+        return
+
+    click.echo(
+        f"{'DEVICE':<12} {'USB PATH':<15} {'VENDOR':<20} {'MODEL':<25} {'REGISTERED'}"
+    )
+    click.echo("-" * 85)
+
+    for d in devices:
+        reg = known.get(d["usb_path"])
+        reg_str = reg.name if reg else "-"
+        click.echo(
+            f"{d['device']:<12} {d['usb_path']:<15} "
+            f"{d['vendor'][:18]:<20} {d['model'][:23]:<25} {reg_str}"
+        )
+
+
+@serial_group.command("add")
+@click.argument("name")
+@click.argument("usb_path")
+@click.option("--vendor", help="Vendor name")
+@click.option("--model", help="Model name")
+@click.option("--serial-number", help="USB serial number")
+@click.pass_context
+def serial_add_cmd(
+    ctx: click.Context,
+    name: str,
+    usb_path: str,
+    vendor: str | None,
+    model: str | None,
+    serial_number: str | None,
+) -> None:
+    """Register a USB-serial adapter.
+
+    NAME is a short identifier (e.g., port-1, cp2102-a).
+    USB_PATH is the physical USB path (e.g., 1-10.1.3).
+    """
+    manager = _get_manager(ctx)
+
+    try:
+        device = manager.create_serial_device(
+            name=name,
+            usb_path=usb_path,
+            vendor=vendor,
+            model=model,
+            serial_number=serial_number,
+        )
+        click.echo(f"Registered serial device: {device.name} ({device.usb_path})")
+        click.echo(f"Udev symlink: /dev/lab/{device.name}")
+        click.echo(
+            "Run 'labctl serial udev --install' to activate udev rules."
+        )
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@serial_group.command("remove")
+@click.argument("name")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+@click.pass_context
+def serial_remove_cmd(ctx: click.Context, name: str, yes: bool) -> None:
+    """Unregister a USB-serial adapter."""
+    manager = _get_manager(ctx)
+
+    device = manager.get_serial_device_by_name(name)
+    if not device:
+        click.echo(f"Error: Serial device '{name}' not found", err=True)
+        sys.exit(1)
+
+    if not yes:
+        click.confirm(f"Remove serial device '{name}'?", abort=True)
+
+    try:
+        manager.delete_serial_device(device.id)
+        click.echo(f"Removed serial device: {name}")
+        click.echo(
+            "Run 'labctl serial udev --install' to update udev rules."
+        )
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@serial_group.command("list")
+@click.pass_context
+def serial_list_cmd(ctx: click.Context) -> None:
+    """List all registered USB-serial adapters."""
+    manager = _get_manager(ctx)
+
+    devices = manager.list_serial_devices()
+    if not devices:
+        click.echo(
+            "No serial devices registered. Use 'labctl serial discover' to find devices."
+        )
+        return
+
+    # Check which devices are in use
+    ports = manager.list_serial_ports()
+    in_use = {}
+    sbc_names = {s.id: s.name for s in manager.list_sbcs()}
+    for p in ports:
+        if p.serial_device_id:
+            sbc_name = sbc_names.get(p.sbc_id, "?")
+            alias = p.alias or ""
+            in_use[p.serial_device_id] = f"{sbc_name} ({alias})" if alias else sbc_name
+
+    click.echo(
+        f"{'NAME':<15} {'USB PATH':<15} {'VENDOR':<18} {'MODEL':<20} {'ASSIGNED TO'}"
+    )
+    click.echo("-" * 80)
+
+    for d in devices:
+        assigned = in_use.get(d.id, "-")
+        vendor = (d.vendor or "-")[:16]
+        model = (d.model or "-")[:18]
+        click.echo(
+            f"{d.name:<15} {d.usb_path:<15} {vendor:<18} {model:<20} {assigned}"
+        )
+
+
+@serial_group.command("rename")
+@click.argument("name")
+@click.argument("new_name")
+@click.pass_context
+def serial_rename_cmd(ctx: click.Context, name: str, new_name: str) -> None:
+    """Rename a USB-serial adapter."""
+    manager = _get_manager(ctx)
+
+    device = manager.get_serial_device_by_name(name)
+    if not device:
+        click.echo(f"Error: Serial device '{name}' not found", err=True)
+        sys.exit(1)
+
+    try:
+        manager.rename_serial_device(device.id, new_name)
+        click.echo(f"Renamed: {name} -> {new_name}")
+        click.echo(
+            "Run 'labctl serial udev --install' to update udev rules."
+        )
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@serial_group.command("udev")
+@click.option("--install", is_flag=True, help="Install rules to /etc/udev/rules.d/")
+@click.option("--reload", is_flag=True, help="Reload udev rules after install")
+@click.pass_context
+def serial_udev_cmd(ctx: click.Context, install: bool, reload: bool) -> None:
+    """Generate udev rules from registered serial devices."""
+    from labctl.serial.udev import (
+        generate_udev_rules,
+        install_udev_rules,
+        reload_udev,
+    )
+
+    manager = _get_manager(ctx)
+    devices = manager.list_serial_devices()
+
+    if not devices:
+        click.echo("No serial devices registered. Nothing to generate.")
+        return
+
+    rules = generate_udev_rules(devices)
+
+    if install:
+        try:
+            install_udev_rules(rules)
+            click.echo(f"Installed udev rules ({len(devices)} devices)")
+        except PermissionError:
+            click.echo("Error: Permission denied. Try with sudo.", err=True)
+            sys.exit(1)
+
+        if reload:
+            if reload_udev():
+                click.echo("Udev rules reloaded")
+            else:
+                click.echo("Warning: Failed to reload udev rules", err=True)
+    else:
+        click.echo(rules)
+
+
 @main.group("port")
 def port_group() -> None:
     """Manage serial port assignments."""
@@ -492,40 +718,79 @@ def port_group() -> None:
 @port_group.command("assign")
 @click.argument("sbc_name")
 @click.argument("port_type", type=click.Choice([t.value for t in PortType]))
-@click.argument("device")
+@click.argument("device", required=False, default=None)
 @click.option(
     "--tcp-port", "-t", type=int, help="TCP port (auto-assigned if not specified)"
 )
 @click.option(
     "--baud", "-b", type=int, default=115200, help="Baud rate (default: 115200)"
 )
+@click.option(
+    "--alias", "-a", help="Human-friendly name for this assignment"
+)
+@click.option(
+    "--serial-device", "-s", "serial_device_name",
+    help="Name of a registered serial device (auto-sets device path)",
+)
 @click.pass_context
 def port_assign_cmd(
     ctx: click.Context,
     sbc_name: str,
     port_type: str,
-    device: str,
+    device: str | None,
     tcp_port: int | None,
     baud: int,
+    alias: str | None,
+    serial_device_name: str | None,
 ) -> None:
-    """Assign a serial port to an SBC."""
+    """Assign a serial port to an SBC.
+
+    DEVICE is the device path (e.g. /dev/lab/port-1). If --serial-device is
+    given, the device path is derived automatically.
+    """
     manager = _get_manager(ctx)
+    config: Config = ctx.obj["config"]
 
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
         sys.exit(1)
 
-    port = manager.assign_serial_port(
-        sbc_id=sbc.id,
-        port_type=PortType(port_type),
-        device_path=device,
-        tcp_port=tcp_port,
-        baud_rate=baud,
-    )
-    click.echo(
-        f"Assigned {port_type} port to {sbc_name}: {device} (tcp:{port.tcp_port})"
-    )
+    serial_device_id = None
+    if serial_device_name:
+        sd = manager.get_serial_device_by_name(serial_device_name)
+        if not sd:
+            click.echo(
+                f"Error: Serial device '{serial_device_name}' not found", err=True
+            )
+            sys.exit(1)
+        serial_device_id = sd.id
+        if not device:
+            device = str(config.serial.dev_dir / sd.name)
+
+    if not device:
+        click.echo(
+            "Error: DEVICE argument is required (or use --serial-device)", err=True
+        )
+        sys.exit(1)
+
+    try:
+        port = manager.assign_serial_port(
+            sbc_id=sbc.id,
+            port_type=PortType(port_type),
+            device_path=device,
+            tcp_port=tcp_port,
+            baud_rate=baud,
+            alias=alias,
+            serial_device_id=serial_device_id,
+        )
+        alias_str = f" as '{alias}'" if alias else ""
+        click.echo(
+            f"Assigned {port_type} port to {sbc_name}{alias_str}: {device} (tcp:{port.tcp_port})"
+        )
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
 
 
 @port_group.command("remove")
@@ -571,14 +836,17 @@ def port_list_cmd(ctx: click.Context, unassigned: bool) -> None:
     assigned_devices = {p.device_path for p in ports}
 
     if ports:
-        click.echo(f"{'SBC':<15} {'TYPE':<10} {'DEVICE':<25} {'TCP':<8} {'BAUD':<10}")
-        click.echo("-" * 68)
+        click.echo(
+            f"{'SBC':<15} {'TYPE':<10} {'ALIAS':<18} {'DEVICE':<25} {'TCP':<8} {'BAUD':<10}"
+        )
+        click.echo("-" * 86)
 
         for port in ports:
             sbc_name = sbc_names.get(port.sbc_id, f"#{port.sbc_id}")
             tcp = str(port.tcp_port) if port.tcp_port else "-"
-            line = f"{sbc_name:<15} {port.port_type.value:<10} {port.device_path:<25} "
-            line += f"{tcp:<8} {port.baud_rate:<10}"
+            alias = port.alias or "-"
+            line = f"{sbc_name:<15} {port.port_type.value:<10} {alias:<18} "
+            line += f"{port.device_path:<25} {tcp:<8} {port.baud_rate:<10}"
             click.echo(line)
     else:
         click.echo(
@@ -714,7 +982,7 @@ def ser2net_generate_cmd(
     ports = []
     for db_port in db_ports:
         sbc_name = sbc_names.get(db_port.sbc_id, f"sbc{db_port.sbc_id}")
-        port_name = f"{sbc_name}-{db_port.port_type.value}"
+        port_name = db_port.alias or f"{sbc_name}-{db_port.port_type.value}"
 
         ports.append(
             Ser2NetPort(
@@ -749,20 +1017,25 @@ def ser2net_generate_cmd(
 @click.pass_context
 def ser2net_reload_cmd(ctx: click.Context) -> None:
     """Reload ser2net service."""
-    try:
-        result = subprocess.run(
-            ["systemctl", "restart", "ser2net"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode == 0:
-            click.echo("ser2net service restarted successfully")
-        else:
-            click.echo(f"Error restarting ser2net: {result.stderr}", err=True)
+    for use_sudo in (False, True):
+        try:
+            prefix = ["sudo"] if use_sudo else []
+            result = subprocess.run(
+                [*prefix, "systemctl", "restart", "ser2net"],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                click.echo("ser2net service restarted successfully")
+                return
+            elif not use_sudo and "Permission" in (result.stderr or ""):
+                continue  # Retry with sudo
+            else:
+                click.echo(f"Error restarting ser2net: {result.stderr}", err=True)
+                sys.exit(1)
+        except FileNotFoundError:
+            click.echo("Error: systemctl not found", err=True)
             sys.exit(1)
-    except FileNotFoundError:
-        click.echo("Error: systemctl not found", err=True)
-        sys.exit(1)
 
 
 # --- Plug Assignment Commands ---
@@ -1376,8 +1649,23 @@ def export_cmd(ctx: click.Context, fmt: str, output: Path | None) -> None:
         click.echo("No SBCs to export.")
         return
 
-    # Build export data
-    data = {"sbcs": []}
+    # Build export data — serial devices first
+    serial_devices = manager.list_serial_devices()
+    data = {}
+
+    if serial_devices:
+        data["serial_devices"] = []
+        for sd in serial_devices:
+            sd_data = {"name": sd.name, "usb_path": sd.usb_path}
+            if sd.vendor:
+                sd_data["vendor"] = sd.vendor
+            if sd.model:
+                sd_data["model"] = sd.model
+            if sd.serial_number:
+                sd_data["serial_number"] = sd.serial_number
+            data["serial_devices"].append(sd_data)
+
+    data["sbcs"] = []
     for sbc in sbcs:
         sbc_data = {
             "name": sbc.name,
@@ -1391,14 +1679,17 @@ def export_cmd(ctx: click.Context, fmt: str, output: Path | None) -> None:
         if sbc.serial_ports:
             sbc_data["serial_ports"] = []
             for port in sbc.serial_ports:
-                sbc_data["serial_ports"].append(
-                    {
-                        "type": port.port_type.value,
-                        "device": port.device_path,
-                        "tcp_port": port.tcp_port,
-                        "baud_rate": port.baud_rate,
-                    }
-                )
+                port_data = {
+                    "type": port.port_type.value,
+                    "device": port.device_path,
+                    "tcp_port": port.tcp_port,
+                    "baud_rate": port.baud_rate,
+                }
+                if port.alias:
+                    port_data["alias"] = port.alias
+                if port.serial_device:
+                    port_data["serial_device"] = port.serial_device.name
+                sbc_data["serial_ports"].append(port_data)
 
         # Add network addresses
         if sbc.network_addresses:
@@ -1464,6 +1755,28 @@ def import_cmd(ctx: click.Context, file: Path, update: bool) -> None:
         except Exception:
             data = json.loads(content)
 
+    # Import serial devices first (must exist before port references)
+    for sd_data in data.get("serial_devices", []):
+        sd_name = sd_data.get("name")
+        if not sd_name:
+            continue
+        existing_sd = manager.get_serial_device_by_name(sd_name)
+        if existing_sd:
+            if update:
+                click.echo(f"  Serial device already exists: {sd_name}")
+            continue
+        try:
+            manager.create_serial_device(
+                name=sd_name,
+                usb_path=sd_data.get("usb_path", ""),
+                vendor=sd_data.get("vendor"),
+                model=sd_data.get("model"),
+                serial_number=sd_data.get("serial_number"),
+            )
+            click.echo(f"  Created serial device: {sd_name}")
+        except Exception as e:
+            click.echo(f"  Warning: Failed to create serial device {sd_name}: {e}", err=True)
+
     sbcs_data = data.get("sbcs", [])
     if not sbcs_data:
         click.echo("No SBCs found in import file.")
@@ -1511,12 +1824,20 @@ def import_cmd(ctx: click.Context, file: Path, update: bool) -> None:
 
         # Import serial ports
         for port_data in sbc_data.get("serial_ports", []):
+            sd_id = None
+            sd_name = port_data.get("serial_device")
+            if sd_name:
+                sd = manager.get_serial_device_by_name(sd_name)
+                if sd:
+                    sd_id = sd.id
             manager.assign_serial_port(
                 sbc_id=sbc.id,
                 port_type=PortType(port_data["type"]),
                 device_path=port_data["device"],
                 tcp_port=port_data.get("tcp_port"),
                 baud_rate=port_data.get("baud_rate", 115200),
+                alias=port_data.get("alias"),
+                serial_device_id=sd_id,
             )
 
         # Import network addresses

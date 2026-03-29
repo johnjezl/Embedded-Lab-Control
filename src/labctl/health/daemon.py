@@ -78,6 +78,15 @@ class MonitorDaemon:
         new_status = summary.recommended_status
         old_status = self._last_status.get(sbc_name)
 
+        logger.info(
+            "Health check %s: ping=%s serial=%s power=%s -> %s",
+            sbc_name,
+            summary.ping_result.success if summary.ping_result else "n/a",
+            summary.serial_result.success if summary.serial_result else "n/a",
+            summary.power_state.value if summary.power_state else "n/a",
+            new_status.value if new_status else "n/a",
+        )
+
         # Update status in database if enabled
         if self.update_status and new_status:
             sbc = self.manager.get_sbc_by_name(sbc_name)

@@ -7,6 +7,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Two-tier serial device management (2026-03-28)
+  - `serial_devices` database table for registering physical USB-serial adapters
+  - `labctl serial` CLI command group: discover, add, remove, list, rename, udev
+  - Port assignments now support `--alias` for human-friendly names and `--serial-device` to link to registered adapters
+  - `labctl connect` resolves by alias, SBC name, or device path
+  - `labctl serial udev --install --reload` generates udev rules from database (replaces manual YAML editing)
+  - Pure-Python USB discovery via `/sys` and `udevadm` (no external script dependency)
+  - Database schema v2 migration (adds serial_devices table, alias/serial_device_id columns to serial_ports)
+  - Export/import includes serial devices and port aliases
+  - Web UI updated: alias field in port assignment form, alias column in port table
+  - REST API updated: serial device endpoints, alias in port endpoints
+  - Udev rules file group-writable by labctl group (no sudo needed for install)
+  - Sudoers entries for passwordless udevadm and ser2net restart
+- Kasa power retry logic (2026-03-28)
+  - Retries up to 2 times on transient KLAP authentication failures
+  - Handles intermittent HS300 firmware handshake errors transparently
 - Native HTTPS support for web server (2026-03-28)
   - `--cert` and `--key` CLI flags on `labctl web` command
   - `web:` config section for persistent SSL configuration (cert_file, key_file)
@@ -33,10 +49,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Changed
 - Default log level changed from INFO to WARNING (2026-03-28)
+- Kasa controller logging lowered from INFO/ERROR to DEBUG (2026-03-28)
+  - Prevents log noise in `labctl status` output
+- `labctl ser2net generate` uses port alias as connection name when available (2026-03-28)
+- `labctl ser2net reload` auto-escalates to sudo when needed (2026-03-28)
 
 ### Fixed
 - Health check power probe using wrong function signature (2026-03-28)
   - `get_controller(sbc.power_plug)` → `PowerController.from_plug(sbc.power_plug)`
+- Monitor daemon ping failing under systemd sandbox (2026-03-28)
+  - Removed `NoNewPrivileges=yes`, added `AmbientCapabilities=CAP_NET_RAW`
+- Kasa unclosed aiohttp sessions on authentication failure (2026-03-28)
+  - `_get_device()` now disconnects device in all error paths
+- USB serial discovery returning root hub path instead of device-specific paths (2026-03-28)
 - Authentication system (2026-03-06)
   - Session-based web login with username/password
   - API key authentication via `X-API-Key` header for REST endpoints

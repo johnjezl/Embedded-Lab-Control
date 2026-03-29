@@ -24,16 +24,18 @@ def sbc_to_dict(sbc) -> dict:
 
     # Add serial ports
     if sbc.serial_ports:
-        data["serial_ports"] = [
-            {
+        data["serial_ports"] = []
+        for p in sbc.serial_ports:
+            port_data = {
                 "id": p.id,
                 "type": p.port_type.value,
                 "device": p.device_path,
                 "tcp_port": p.tcp_port,
                 "baud_rate": p.baud_rate,
+                "alias": p.alias,
+                "serial_device": p.serial_device.name if p.serial_device else None,
             }
-            for p in sbc.serial_ports
-        ]
+            data["serial_ports"].append(port_data)
 
     # Add network addresses
     if sbc.network_addresses:
@@ -252,13 +254,26 @@ def assign_port(name: str):
     except ValueError:
         return jsonify({"error": f"Invalid port type: {data['type']}"}), 400
 
-    port = g.manager.assign_serial_port(
-        sbc_id=sbc.id,
-        port_type=port_type,
-        device_path=data["device"],
-        tcp_port=data.get("tcp_port"),
-        baud_rate=data.get("baud_rate", 115200),
-    )
+    # Resolve serial device name to ID
+    serial_device_id = None
+    sd_name = data.get("serial_device")
+    if sd_name:
+        sd = g.manager.get_serial_device_by_name(sd_name)
+        if sd:
+            serial_device_id = sd.id
+
+    try:
+        port = g.manager.assign_serial_port(
+            sbc_id=sbc.id,
+            port_type=port_type,
+            device_path=data["device"],
+            tcp_port=data.get("tcp_port"),
+            baud_rate=data.get("baud_rate", 115200),
+            alias=data.get("alias"),
+            serial_device_id=serial_device_id,
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
     return (
         jsonify(
@@ -268,6 +283,7 @@ def assign_port(name: str):
                 "device": port.device_path,
                 "tcp_port": port.tcp_port,
                 "baud_rate": port.baud_rate,
+                "alias": port.alias,
             }
         ),
         201,

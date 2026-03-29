@@ -109,6 +109,40 @@ This document records significant design decisions made during development.
 
 ---
 
+## D007: Two-tier serial device management
+
+- **Date**: 2026-03-28
+- **Context**: USB-serial adapters were managed via manual YAML file editing (port-mapping.yaml), requiring udev rule regeneration scripts. Adding/removing adapters as projects change was excessive overhead.
+- **Options Considered**:
+  1. Keep YAML-based workflow, add CLI to edit the YAML
+  2. Move device registry to the database with CLI management and separate assignment aliases
+- **Decision**: Database-backed two-tier model — serial devices (physical adapters) and port assignments (SBC connections with aliases)
+- **Rationale**:
+  - Devices registered once with generic names (e.g., `port-1`), reusable across SBCs
+  - Assignments get meaningful aliases (e.g., `jetson-console`) that travel with the SBC, not the adapter
+  - Udev rules auto-generated from database via `labctl serial udev --install`
+  - Pure-Python USB discovery via `/sys` and `udevadm` — no external script dependency
+  - Schema v2 migration is additive (ALTER TABLE ADD COLUMN) — preserves existing data
+  - `labctl connect` resolves by alias → SBC name → filesystem path for flexibility
+
+---
+
+## D008: Systemd service permissions for ping and udev
+
+- **Date**: 2026-03-28
+- **Context**: Monitor daemon's health checks failed to ping SBCs due to systemd's `NoNewPrivileges=yes` blocking ping's `cap_net_raw` capability. Udev rule installation and ser2net restart required sudo.
+- **Options Considered**:
+  1. Remove all systemd security hardening
+  2. Targeted capability grants and group permissions
+- **Decision**: Targeted permissions — `AmbientCapabilities=CAP_NET_RAW` for monitor, group-writable udev rules file, sudoers entries for udevadm and ser2net restart
+- **Rationale**:
+  - Minimal privilege escalation — only CAP_NET_RAW for ping, not full root
+  - Group-writable rules file avoids sudo for file writes
+  - Passwordless sudoers entries scoped to specific commands only
+  - Other systemd hardening (ProtectSystem, ProtectHome, PrivateTmp) preserved
+
+---
+
 _Template for new decisions:_
 
 ```markdown

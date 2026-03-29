@@ -21,11 +21,11 @@ StandardError=journal
 SyslogIdentifier=labctl-monitor
 
 # Security hardening
-NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
 ReadWritePaths=/var/lib/labctl
+AmbientCapabilities=CAP_NET_RAW
 
 [Install]
 WantedBy=multi-user.target

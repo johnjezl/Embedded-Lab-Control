@@ -4,8 +4,10 @@ from pathlib import Path
 
 from labctl.core.config import (
     Config,
+    KasaConfig,
     Ser2NetConfig,
     SerialConfig,
+    WebConfig,
     get_default_config,
     load_config,
     save_config,
@@ -31,6 +33,71 @@ class TestSer2NetConfig:
         config = Ser2NetConfig()
         assert config.config_file == Path("/etc/ser2net.yaml")
         assert config.enabled is True
+
+
+class TestWebConfig:
+    """Tests for WebConfig dataclass."""
+
+    def test_default_values(self):
+        """Test default web configuration."""
+        config = WebConfig()
+        assert config.cert_file == ""
+        assert config.key_file == ""
+
+    def test_from_dict(self):
+        """Test WebConfig values populated from Config.from_dict."""
+        data = {
+            "web": {
+                "cert_file": "/etc/ssl/cert.pem",
+                "key_file": "/etc/ssl/key.pem",
+            }
+        }
+        config = Config.from_dict(data)
+        assert config.web.cert_file == "/etc/ssl/cert.pem"
+        assert config.web.key_file == "/etc/ssl/key.pem"
+
+    def test_to_dict(self):
+        """Test WebConfig values appear in Config.to_dict."""
+        config = Config()
+        config.web.cert_file = "/path/to/cert"
+        config.web.key_file = "/path/to/key"
+        data = config.to_dict()
+
+        assert data["web"]["cert_file"] == "/path/to/cert"
+        assert data["web"]["key_file"] == "/path/to/key"
+
+    def test_roundtrip(self):
+        """Test WebConfig survives to_dict/from_dict roundtrip."""
+        original = Config()
+        original.web.cert_file = "/etc/ssl/lab.crt"
+        original.web.key_file = "/etc/ssl/lab.key"
+        data = original.to_dict()
+        restored = Config.from_dict(data)
+
+        assert restored.web.cert_file == original.web.cert_file
+        assert restored.web.key_file == original.web.key_file
+
+
+class TestKasaConfig:
+    """Tests for KasaConfig dataclass."""
+
+    def test_default_values(self):
+        """Test default kasa configuration."""
+        config = KasaConfig()
+        assert config.username == ""
+        assert config.password == ""
+
+    def test_from_dict(self):
+        """Test KasaConfig values populated from Config.from_dict."""
+        data = {
+            "kasa": {
+                "username": "user@example.com",
+                "password": "secret123",
+            }
+        }
+        config = Config.from_dict(data)
+        assert config.kasa.username == "user@example.com"
+        assert config.kasa.password == "secret123"
 
 
 class TestConfig:

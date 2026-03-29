@@ -82,14 +82,38 @@ fi
 
 chown -R labctl:labctl "$LABCTL_HOME"
 
-# 4. Install systemd service files
+# 4. Set up udev rules file (group-writable so labctl users don't need sudo)
+echo "[+] Setting up udev rules file..."
+touch /etc/udev/rules.d/99-lab-serial.rules
+chown root:labctl /etc/udev/rules.d/99-lab-serial.rules
+chmod 664 /etc/udev/rules.d/99-lab-serial.rules
+echo "[ok] /etc/udev/rules.d/99-lab-serial.rules (group-writable by labctl)"
+
+# Allow labctl group to reload udev without password
+# Make ser2net config group-writable
+if [ -f /etc/ser2net.yaml ]; then
+    chown root:labctl /etc/ser2net.yaml
+    chmod 664 /etc/ser2net.yaml
+    echo "[ok] /etc/ser2net.yaml (group-writable by labctl)"
+fi
+
+# Allow labctl group to reload udev and ser2net without password
+SUDOERS_FILE="/etc/sudoers.d/labctl"
+cat > "$SUDOERS_FILE" << 'SUDOERS'
+%labctl ALL=(ALL) NOPASSWD: /usr/bin/udevadm
+%labctl ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart ser2net
+SUDOERS
+chmod 440 "$SUDOERS_FILE"
+echo "[ok] Added passwordless sudo for udevadm and ser2net restart (labctl group)"
+
+# 5. Install systemd service files
 echo "[+] Installing systemd service files..."
 cp "$CONFIG_DIR/labctl-monitor.service" /etc/systemd/system/
 cp "$CONFIG_DIR/labctl-web.service" /etc/systemd/system/
 
 systemctl daemon-reload
 
-# 5. Enable and start services
+# 6. Enable and start services
 echo "[+] Enabling services..."
 systemctl enable labctl-monitor labctl-web
 

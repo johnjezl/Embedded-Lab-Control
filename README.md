@@ -84,13 +84,25 @@ labctl web --port 5000
 | `labctl status` | Show status overview |
 | `labctl status --watch` | Continuous status monitoring |
 
+### Serial Device Management
+
+| Command | Description |
+|---------|-------------|
+| `labctl serial discover` | Scan for connected USB-serial adapters |
+| `labctl serial add <name> <usb_path>` | Register a USB-serial adapter |
+| `labctl serial remove <name>` | Unregister an adapter |
+| `labctl serial list` | List all registered adapters |
+| `labctl serial rename <name> <new>` | Rename an adapter |
+| `labctl serial udev --install --reload` | Generate and apply udev rules |
+
 ### Serial Console
 
 | Command | Description |
 |---------|-------------|
-| `labctl port assign <sbc> <port>` | Assign serial port |
+| `labctl port assign <sbc> <type> [device]` | Assign serial port (-s, --alias) |
 | `labctl port list` | List port assignments |
 | `labctl port list --unassigned` | Show unassigned /dev/lab/* devices |
+| `labctl connect <alias\|sbc\|device>` | Connect by alias, SBC name, or device |
 | `labctl console <sbc>` | Connect to serial console |
 | `labctl log <sbc>` | Capture serial to log file |
 | `labctl log <sbc> --follow` | Stream serial output to terminal |

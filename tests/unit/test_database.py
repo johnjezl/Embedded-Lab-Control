@@ -106,3 +106,238 @@ class TestDatabase:
         db.initialize()
 
         assert db_path.exists()
+
+    def test_schema_v2_creates_serial_devices_table(self, tmp_path):
+        """Test that schema v2 creates the serial_devices table with correct columns."""
+        db_path = tmp_path / "test.db"
+        db = get_database(db_path)
+
+        # Verify serial_devices table exists
+        tables = db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='serial_devices'"
+        )
+        assert len(tables) == 1
+
+        # Verify columns on serial_devices
+        cols = db.execute("PRAGMA table_info(serial_devices)")
+        col_names = [row["name"] for row in cols]
+        assert "id" in col_names
+        assert "name" in col_names
+        assert "usb_path" in col_names
+        assert "vendor" in col_names
+        assert "model" in col_names
+        assert "serial_number" in col_names
+        assert "created_at" in col_names
+
+    def test_schema_v2_serial_ports_has_alias_and_device_id(self, tmp_path):
+        """Test that serial_ports table has alias and serial_device_id columns."""
+        db_path = tmp_path / "test.db"
+        db = get_database(db_path)
+
+        cols = db.execute("PRAGMA table_info(serial_ports)")
+        col_names = [row["name"] for row in cols]
+        assert "alias" in col_names
+        assert "serial_device_id" in col_names
+
+    def test_migration_v1_to_v2(self, tmp_path):
+        """Test migration from schema v1 to v2 adds serial_devices and new columns."""
+        import sqlite3
+
+        db_path = tmp_path / "test_migrate.db"
+
+        # Manually create a v1-like database
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript("""
+            CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE sbcs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                project TEXT,
+                description TEXT,
+                ssh_user TEXT DEFAULT 'root',
+                status TEXT DEFAULT 'unknown',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE serial_ports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sbc_id INTEGER NOT NULL,
+                port_type TEXT NOT NULL,
+                device_path TEXT NOT NULL,
+                tcp_port INTEGER,
+                baud_rate INTEGER DEFAULT 115200,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sbc_id) REFERENCES sbcs(id) ON DELETE CASCADE,
+                UNIQUE (sbc_id, port_type)
+            );
+
+            CREATE TABLE network_addresses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sbc_id INTEGER NOT NULL,
+                address_type TEXT NOT NULL,
+                ip_address TEXT NOT NULL,
+                mac_address TEXT,
+                hostname TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sbc_id) REFERENCES sbcs(id) ON DELETE CASCADE,
+                UNIQUE (sbc_id, address_type)
+            );
+
+            CREATE TABLE power_plugs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sbc_id INTEGER UNIQUE NOT NULL,
+                plug_type TEXT NOT NULL,
+                address TEXT NOT NULL,
+                plug_index INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sbc_id) REFERENCES sbcs(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE status_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sbc_id INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                details TEXT,
+                logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sbc_id) REFERENCES sbcs(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id INTEGER,
+                entity_name TEXT,
+                details TEXT,
+                logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            INSERT INTO schema_version (version) VALUES (1);
+        """)
+        conn.commit()
+        conn.close()
+
+        # Now open with Database which should trigger migration
+        db = Database(db_path)
+        db.initialize()
+
+        # Verify serial_devices table was created
+        tables = db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='serial_devices'"
+        )
+        assert len(tables) == 1
+
+        # Verify alias and serial_device_id columns were added to serial_ports
+        cols = db.execute("PRAGMA table_info(serial_ports)")
+        col_names = [row["name"] for row in cols]
+        assert "alias" in col_names
+        assert "serial_device_id" in col_names
+
+        # Verify schema version was bumped to 2
+        row = db.execute_one("SELECT MAX(version) as v FROM schema_version")
+        assert row["v"] == 2
+
+    def test_migration_v1_to_v2_preserves_existing_data(self, tmp_path):
+        """Test that v1->v2 migration does not lose existing serial_ports data."""
+        import sqlite3
+
+        db_path = tmp_path / "test_preserve.db"
+
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript("""
+            CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE sbcs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                project TEXT,
+                description TEXT,
+                ssh_user TEXT DEFAULT 'root',
+                status TEXT DEFAULT 'unknown',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE serial_ports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sbc_id INTEGER NOT NULL,
+                port_type TEXT NOT NULL,
+                device_path TEXT NOT NULL,
+                tcp_port INTEGER,
+                baud_rate INTEGER DEFAULT 115200,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sbc_id) REFERENCES sbcs(id) ON DELETE CASCADE,
+                UNIQUE (sbc_id, port_type)
+            );
+
+            CREATE TABLE network_addresses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sbc_id INTEGER NOT NULL,
+                address_type TEXT NOT NULL,
+                ip_address TEXT NOT NULL,
+                mac_address TEXT,
+                hostname TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sbc_id) REFERENCES sbcs(id) ON DELETE CASCADE,
+                UNIQUE (sbc_id, address_type)
+            );
+
+            CREATE TABLE power_plugs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sbc_id INTEGER UNIQUE NOT NULL,
+                plug_type TEXT NOT NULL,
+                address TEXT NOT NULL,
+                plug_index INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sbc_id) REFERENCES sbcs(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE status_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sbc_id INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                details TEXT,
+                logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sbc_id) REFERENCES sbcs(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id INTEGER,
+                entity_name TEXT,
+                details TEXT,
+                logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            INSERT INTO schema_version (version) VALUES (1);
+            INSERT INTO sbcs (name) VALUES ('existing-sbc');
+            INSERT INTO serial_ports (sbc_id, port_type, device_path, tcp_port, baud_rate)
+                VALUES (1, 'console', '/dev/ttyUSB0', 4000, 115200);
+        """)
+        conn.commit()
+        conn.close()
+
+        # Run migration
+        db = Database(db_path)
+        db.initialize()
+
+        # Existing data should still be present
+        row = db.execute_one("SELECT * FROM serial_ports WHERE sbc_id = 1")
+        assert row is not None
+        assert row["device_path"] == "/dev/ttyUSB0"
+        assert row["tcp_port"] == 4000
+        # New columns should be NULL for existing rows
+        assert row["alias"] is None
+        assert row["serial_device_id"] is None

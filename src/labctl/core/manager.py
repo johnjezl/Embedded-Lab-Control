@@ -15,6 +15,7 @@ from labctl.core.models import (
     PlugType,
     PortType,
     PowerPlug,
+    SerialDevice,
     SerialPort,
     Status,
 )
@@ -98,6 +99,14 @@ class ResourceManager:
         # Load serial ports
         rows = self.db.execute("SELECT * FROM serial_ports WHERE sbc_id = ?", (sbc.id,))
         sbc.serial_ports = [SerialPort.from_row(r) for r in rows]
+        for port in sbc.serial_ports:
+            if port.serial_device_id:
+                dev_row = self.db.execute_one(
+                    "SELECT * FROM serial_devices WHERE id = ?",
+                    (port.serial_device_id,),
+                )
+                if dev_row:
+                    port.serial_device = SerialDevice.from_row(dev_row)
 
         # Load network addresses
         rows = self.db.execute(
@@ -221,6 +230,87 @@ class ResourceManager:
 
         return False
 
+    # --- Serial Device Operations ---
+
+    def create_serial_device(
+        self,
+        name: str,
+        usb_path: str,
+        vendor: Optional[str] = None,
+        model: Optional[str] = None,
+        serial_number: Optional[str] = None,
+    ) -> SerialDevice:
+        """Register a USB-serial adapter."""
+        device_id = self.db.execute_insert(
+            """
+            INSERT INTO serial_devices (name, usb_path, vendor, model, serial_number)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (name, usb_path, vendor, model, serial_number),
+        )
+        self._audit_log(
+            "create", "serial_device", device_id, name,
+            f"Registered serial device: {name} ({usb_path})",
+        )
+        row = self.db.execute_one("SELECT * FROM serial_devices WHERE id = ?", (device_id,))
+        return SerialDevice.from_row(row)
+
+    def get_serial_device(self, device_id: int) -> Optional[SerialDevice]:
+        """Get serial device by ID."""
+        row = self.db.execute_one("SELECT * FROM serial_devices WHERE id = ?", (device_id,))
+        return SerialDevice.from_row(row) if row else None
+
+    def get_serial_device_by_name(self, name: str) -> Optional[SerialDevice]:
+        """Get serial device by name."""
+        row = self.db.execute_one("SELECT * FROM serial_devices WHERE name = ?", (name,))
+        return SerialDevice.from_row(row) if row else None
+
+    def list_serial_devices(self) -> list[SerialDevice]:
+        """List all registered serial devices."""
+        rows = self.db.execute("SELECT * FROM serial_devices ORDER BY name")
+        return [SerialDevice.from_row(r) for r in rows]
+
+    def rename_serial_device(self, device_id: int, new_name: str) -> Optional[SerialDevice]:
+        """Rename a serial device."""
+        device = self.get_serial_device(device_id)
+        if not device:
+            return None
+        self.db.execute_modify(
+            "UPDATE serial_devices SET name = ? WHERE id = ?", (new_name, device_id)
+        )
+        self._audit_log(
+            "update", "serial_device", device_id, new_name,
+            f"Renamed serial device: {device.name} -> {new_name}",
+        )
+        return self.get_serial_device(device_id)
+
+    def delete_serial_device(self, device_id: int) -> bool:
+        """Delete a serial device. Raises ValueError if still assigned to a port."""
+        device = self.get_serial_device(device_id)
+        if not device:
+            return False
+
+        # Check if in use
+        row = self.db.execute_one(
+            "SELECT id FROM serial_ports WHERE serial_device_id = ?", (device_id,)
+        )
+        if row:
+            raise ValueError(
+                f"Serial device '{device.name}' is still assigned to a port. "
+                "Remove the port assignment first."
+            )
+
+        count = self.db.execute_modify(
+            "DELETE FROM serial_devices WHERE id = ?", (device_id,)
+        )
+        if count > 0:
+            self._audit_log(
+                "delete", "serial_device", device_id, device.name,
+                f"Deleted serial device: {device.name}",
+            )
+            return True
+        return False
+
     # --- Serial Port Operations ---
 
     def assign_serial_port(
@@ -230,6 +320,8 @@ class ResourceManager:
         device_path: str,
         tcp_port: Optional[int] = None,
         baud_rate: int = 115200,
+        alias: Optional[str] = None,
+        serial_device_id: Optional[int] = None,
     ) -> SerialPort:
         """
         Assign a serial port to an SBC.
@@ -237,16 +329,34 @@ class ResourceManager:
         Args:
             sbc_id: SBC ID
             port_type: Type of port (console, jtag, debug)
-            device_path: Path to device (e.g., /dev/lab/sbc1-console)
+            device_path: Path to device (e.g., /dev/lab/port-1)
             tcp_port: TCP port for ser2net (auto-assigned if None)
             baud_rate: Baud rate (default: 115200)
-
-        Returns:
-            Created SerialPort instance
+            alias: Human-friendly name for this assignment
+            serial_device_id: FK to serial_devices table
         """
         sbc = self.get_sbc(sbc_id)
         if not sbc:
             raise ValueError(f"SBC with ID {sbc_id} not found")
+
+        # Validate alias uniqueness
+        if alias:
+            existing = self.db.execute_one(
+                "SELECT id, sbc_id, port_type FROM serial_ports WHERE alias = ?",
+                (alias,),
+            )
+            if existing and (
+                existing["sbc_id"] != sbc_id or existing["port_type"] != port_type.value
+            ):
+                raise ValueError(f"Alias '{alias}' is already in use")
+
+        # Validate serial device exists
+        if serial_device_id:
+            dev = self.db.execute_one(
+                "SELECT id FROM serial_devices WHERE id = ?", (serial_device_id,)
+            )
+            if not dev:
+                raise ValueError(f"Serial device with ID {serial_device_id} not found")
 
         # Auto-assign TCP port if not specified
         if tcp_port is None:
@@ -261,19 +371,16 @@ class ResourceManager:
         port_id = self.db.execute_insert(
             """
             INSERT INTO serial_ports
-                (sbc_id, port_type, device_path, tcp_port, baud_rate)
-            VALUES (?, ?, ?, ?, ?)
+                (sbc_id, port_type, device_path, tcp_port, baud_rate, alias, serial_device_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (sbc_id, port_type.value, device_path, tcp_port, baud_rate),
+            (sbc_id, port_type.value, device_path, tcp_port, baud_rate, alias, serial_device_id),
         )
 
-        self._audit_log(
-            "assign",
-            "serial_port",
-            port_id,
-            sbc.name,
-            f"Assigned {port_type.value} port {device_path} to {sbc.name}",
-        )
+        details = f"Assigned {port_type.value} port {device_path} to {sbc.name}"
+        if alias:
+            details += f" (alias: {alias})"
+        self._audit_log("assign", "serial_port", port_id, sbc.name, details)
 
         row = self.db.execute_one("SELECT * FROM serial_ports WHERE id = ?", (port_id,))
         return SerialPort.from_row(row)
@@ -304,7 +411,33 @@ class ResourceManager:
     def list_serial_ports(self) -> list[SerialPort]:
         """List all serial port assignments."""
         rows = self.db.execute("SELECT * FROM serial_ports ORDER BY sbc_id, port_type")
-        return [SerialPort.from_row(r) for r in rows]
+        ports = [SerialPort.from_row(r) for r in rows]
+        for port in ports:
+            if port.serial_device_id:
+                dev_row = self.db.execute_one(
+                    "SELECT * FROM serial_devices WHERE id = ?",
+                    (port.serial_device_id,),
+                )
+                if dev_row:
+                    port.serial_device = SerialDevice.from_row(dev_row)
+        return ports
+
+    def get_serial_port_by_alias(self, alias: str) -> Optional[SerialPort]:
+        """Get a serial port assignment by its alias."""
+        row = self.db.execute_one(
+            "SELECT * FROM serial_ports WHERE alias = ?", (alias,)
+        )
+        if not row:
+            return None
+        port = SerialPort.from_row(row)
+        if port.serial_device_id:
+            dev_row = self.db.execute_one(
+                "SELECT * FROM serial_devices WHERE id = ?",
+                (port.serial_device_id,),
+            )
+            if dev_row:
+                port.serial_device = SerialDevice.from_row(dev_row)
+        return port
 
     def _next_tcp_port(self, base_port: int = 4000) -> int:
         """Get next available TCP port."""

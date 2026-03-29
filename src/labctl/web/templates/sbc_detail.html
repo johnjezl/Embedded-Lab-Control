@@ -130,10 +130,11 @@
         </h3>
         {% if sbc.serial_ports %}
         <table class="detail-table">
-            <tr><th>Type</th><th>Device</th><th>TCP Port</th><th>Baud</th><th></th></tr>
+            <tr><th>Type</th><th>Alias</th><th>Device</th><th>TCP Port</th><th>Baud</th><th></th></tr>
             {% for port in sbc.serial_ports %}
             <tr>
                 <td>{{ port.port_type.value }}</td>
+                <td>{{ port.alias or '-' }}</td>
                 <td><code>{{ port.device_path }}</code></td>
                 <td>{{ port.tcp_port or '-' }}</td>
                 <td>{{ port.baud_rate }}</td>
@@ -168,8 +169,12 @@
                 </select>
             </div>
             <div class="form-group">
+                <label>Alias (optional)</label>
+                <input type="text" name="alias" placeholder="e.g. jetson-console" class="form-control">
+            </div>
+            <div class="form-group">
                 <label>Device Path</label>
-                <input type="text" name="device" placeholder="/dev/lab/sbc1-console" class="form-control" required>
+                <input type="text" name="device" placeholder="/dev/lab/port-1" class="form-control" required>
             </div>
             <div class="form-group">
                 <label>TCP Port (optional)</label>

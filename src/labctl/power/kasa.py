@@ -54,6 +54,8 @@ class KasaController(PowerController):
         root_device is the top-level device (needed for disconnect cleanup).
         target is the specific outlet to control — either the root device
         itself (for single plugs) or a child device (for strip outlets).
+
+        On failure, ensures the device is disconnected before raising.
         """
         from kasa import Discover
 
@@ -62,21 +64,28 @@ class KasaController(PowerController):
         if credentials:
             kwargs["credentials"] = credentials
 
-        logger.info("Discovering Kasa device at %s", self.address)
+        logger.debug("Discovering Kasa device at %s", self.address)
         device = await Discover.discover_single(**kwargs)
 
-        logger.info("Updating device state for %s (%s)", self.address, device.alias)
-        await device.update()
+        try:
+            logger.debug(
+                "Updating device state for %s (%s)", self.address, device.alias
+            )
+            await device.update()
+        except Exception:
+            await device.disconnect()
+            raise
 
         if device.children:
             idx = self.plug_index - 1  # Convert 1-based to 0-based
             if idx < 0 or idx >= len(device.children):
+                await device.disconnect()
                 raise RuntimeError(
                     f"Outlet index {self.plug_index} out of range "
                     f"(device has {len(device.children)} outlets)"
                 )
             target = device.children[idx]
-            logger.info(
+            logger.debug(
                 "Selected outlet %d (%s) on strip %s",
                 self.plug_index,
                 target.alias,
@@ -86,13 +95,17 @@ class KasaController(PowerController):
 
         return device, device
 
-    def _run(self, coro_func, action: str):
+    def _run(self, coro_func, action: str, retries: int = 2):
         """
-        Run an async power operation with error handling.
+        Run an async power operation with error handling and retries.
+
+        Retries on authentication errors, which occur intermittently
+        with HS300 firmware using the KLAP protocol.
 
         Args:
             coro_func: Async callable that takes (device, target) and performs the action.
             action: Human-readable action name for logging (e.g. "power_on").
+            retries: Number of retry attempts on transient errors.
 
         Returns:
             The return value of coro_func.
@@ -100,61 +113,75 @@ class KasaController(PowerController):
         Raises:
             RuntimeError: On ImportError, authentication, connection, or device errors.
         """
-        try:
+        last_error = None
+        for attempt in range(1 + retries):
+            try:
 
-            async def _exec():
-                device, target = await self._get_device()
-                try:
-                    return await coro_func(device, target)
-                finally:
-                    await device.disconnect()
+                async def _exec():
+                    device, target = await self._get_device()
+                    try:
+                        return await coro_func(device, target)
+                    finally:
+                        await device.disconnect()
 
-            return asyncio.run(_exec())
-        except ImportError:
-            raise RuntimeError(
-                "python-kasa not installed. Install with: pip install python-kasa"
-            )
-        except RuntimeError:
-            raise
-        except Exception as e:
-            error_type = type(e).__name__
-            msg = (
-                f"Kasa {action} failed for {self.address}"
-                f"[{self.plug_index}]: {error_type}: {e}"
-            )
-            logger.error(msg)
-            raise RuntimeError(msg) from e
+                return asyncio.run(_exec())
+            except ImportError:
+                raise RuntimeError(
+                    "python-kasa not installed. Install with: pip install python-kasa"
+                )
+            except RuntimeError:
+                raise
+            except Exception as e:
+                last_error = e
+                if attempt < retries:
+                    logger.debug(
+                        "Kasa %s attempt %d failed for %s[%d]: %s, retrying...",
+                        action, attempt + 1, self.address, self.plug_index, e,
+                    )
+                    continue
+                break
+
+        error_type = type(last_error).__name__
+        msg = (
+            f"Kasa {action} failed for {self.address}"
+            f"[{self.plug_index}]: {error_type}: {last_error}"
+        )
+        logger.debug(msg)
+        raise RuntimeError(msg) from last_error
 
     def power_on(self) -> bool:
         """Turn power on."""
-        logger.info("Kasa power_on: %s[%d]", self.address, self.plug_index)
+        logger.debug("Kasa power_on: %s[%d]", self.address, self.plug_index)
 
         async def _on(device, target):
             await target.turn_on()
-            logger.info("Power ON sent to %s[%d]", self.address, self.plug_index)
+            logger.debug("Power ON sent to %s[%d]", self.address, self.plug_index)
             return True
 
         return self._run(_on, "power_on")
 
     def power_off(self) -> bool:
         """Turn power off."""
-        logger.info("Kasa power_off: %s[%d]", self.address, self.plug_index)
+        logger.debug("Kasa power_off: %s[%d]", self.address, self.plug_index)
 
         async def _off(device, target):
             await target.turn_off()
-            logger.info("Power OFF sent to %s[%d]", self.address, self.plug_index)
+            logger.debug("Power OFF sent to %s[%d]", self.address, self.plug_index)
             return True
 
         return self._run(_off, "power_off")
 
     def get_state(self) -> PowerState:
         """Get current power state."""
-        logger.info("Kasa get_state: %s[%d]", self.address, self.plug_index)
+        logger.debug("Kasa get_state: %s[%d]", self.address, self.plug_index)
 
         async def _state(device, target):
             state = PowerState.ON if target.is_on else PowerState.OFF
-            logger.info(
-                "Power state for %s[%d]: %s", self.address, self.plug_index, state.value
+            logger.debug(
+                "Power state for %s[%d]: %s",
+                self.address,
+                self.plug_index,
+                state.value,
             )
             return state
 
