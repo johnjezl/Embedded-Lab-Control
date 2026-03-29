@@ -2,7 +2,7 @@
 
 ## Current State
 
-- **Milestone**: All milestones complete + serial device management + HTTPS + Kasa strips
+- **Milestone**: All milestones complete + MCP server + serial device management + HTTPS + Kasa strips
 - **Sub-task**: All complete
 - **Status**: Feature complete
 
@@ -10,6 +10,7 @@
 
 - **Date**: 2026-03-28
 - **Completed**:
+  - MCP (Model Context Protocol) server for AI assistant integration
   - Two-tier serial device management (serial_devices table, CLI commands, udev generation)
   - Kasa Smart Power Strip support (auto-detect, multi-outlet, KLAP auth, retry logic)
   - Native HTTPS for web server (--cert/--key flags, web: config section)
@@ -30,13 +31,14 @@
 ## Notes
 
 - **All Milestones Complete!**
-- 188+ tests passing
+- 259 tests passing
 - Database schema v2: serial_devices table, alias/serial_device_id on serial_ports
 - Schema migration is automatic and preserves existing data
 - Two config files may need to be kept in sync (user + labctl system user)
   - Recommendation: use /etc/labctl/config.yaml as single source of truth
 - HTTPS uses Flask's built-in ssl_context (suitable for lab use)
 - Monitor service needs AmbientCapabilities=CAP_NET_RAW for ping to work
+- MCP server available via `labctl mcp` (stdio) or `labctl mcp --http <port>`
 
 ## Milestones Summary
 
@@ -51,3 +53,4 @@
 | M7 | Monitoring and Health | Complete |
 | - | Deferred Items | Complete |
 | - | Authentication | Complete |
+| - | MCP Server | Complete |

@@ -144,6 +144,13 @@ labctl web --port 5000
 | `labctl user add <username>` | Interactive user creation with YAML output |
 | `labctl user verify <username>` | Verify password against config |
 
+### MCP Server (AI Integration)
+
+| Command | Description |
+|---------|-------------|
+| `labctl mcp` | Start MCP server (stdio transport) |
+| `labctl mcp --http 8080` | Start MCP server (HTTP transport) |
+
 ### Aliases
 
 For convenience, common aliases are supported:
@@ -289,6 +296,41 @@ curl -k -H "X-API-Key: your-api-key" https://localhost:5000/api/sbcs
 | `/sbcs/<name>/health` | GET | Get health status |
 | `/sbcs/<name>/uptime` | GET | Get uptime statistics |
 | `/health` | GET | System health (always open, no auth required) |
+
+## MCP Server (AI Integration)
+
+labctl includes an MCP (Model Context Protocol) server for AI assistant integration.
+This allows tools like Claude Desktop and Claude Code to manage lab resources directly.
+
+Install the MCP dependency:
+
+```bash
+pip install labctl[mcp]
+```
+
+**Resources** (read-only data): `lab://sbcs`, `lab://sbcs/{name}`, `lab://power/{name}`,
+`lab://serial-devices`, `lab://ports`, `lab://health/{name}`, `lab://status`
+
+**Tools** (actions): `power_on`, `power_off`, `power_cycle`, `run_health_check`,
+`add_sbc`, `remove_sbc`, `update_sbc`, `assign_serial_port`, `assign_power_plug`,
+`set_network_address`
+
+**Prompts**: `debug-sbc` (guided SBC debugging), `lab-report` (comprehensive status)
+
+### Claude Desktop / Claude Code Configuration
+
+Add to your MCP client configuration:
+
+```json
+{
+  "mcpServers": {
+    "labctl": {
+      "command": "/opt/labctl/venv/bin/labctl",
+      "args": ["mcp"]
+    }
+  }
+}
+```
 
 ## Systemd Services
 

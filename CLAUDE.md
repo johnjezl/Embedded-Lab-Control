@@ -1,13 +1,13 @@
-cat > CLAUDE.md << 'EOF'
 # Embedded Lab Control (labctl)
 
 ## Project Overview
-Centralized management system for embedded development lab resources. Provides deterministic USB serial access, power control, and resource tracking for multiple SBCs.
+Centralized management system for embedded development lab resources. Provides deterministic USB serial access, power control, resource tracking, health monitoring, and AI integration for multiple SBCs.
 
 ## Key Documentation
 - `docs/IMPLEMENTATION.md` - Milestone TODOs (update status here!)
 - `docs/AGENT_RULES.md` - **READ THIS FIRST** - Development process rules
 - `docs/DECISIONS.md` - Design decision log
+- `docs/MCP_SERVER.md` - MCP server architecture and usage
 - `STATUS.md` - Current project state
 - `CHANGELOG.md` - Track all changes
 
@@ -21,20 +21,25 @@ Centralized management system for embedded development lab resources. Provides d
 7. Update `STATUS.md` at session start/end
 
 ## Current State
-All milestones (M1-M7) complete. Authentication added (session-based web + API key).
+All milestones (M1-M7) complete. Additional features: authentication (session-based web + API key), MCP server, serial device management, Kasa power strip support, HTTPS.
 
 ## Tech Stack
 - Python 3.10+
 - Click (CLI)
 - Flask (web/API)
-- SQLite (database)
+- SQLite (database, schema v2)
 - ser2net (serial over TCP)
-- pytest (testing)
+- MCP SDK (AI integration via Model Context Protocol)
+- python-kasa (TP-Link Kasa smart plug/strip control)
+- pytest (testing, 259 tests)
 
 ## Commands Reference
 ```bash
 # Run tests
 pytest tests/ -v
+
+# Run specific test file
+pytest tests/unit/test_mcp_server.py -v
 
 # Format code
 black src/ tests/
@@ -42,14 +47,16 @@ isort src/ tests/
 
 # Lint
 flake8 src/ tests/
-```
-EOF
+
+# Install with all extras
+pip install ".[web,mcp,kasa]"
 ```
 
-Then commit this with the initial commit.
-
----
-
-**Suggested starting prompt for Claude Code:**
-```
-Read docs/AGENT_RULES.md and docs/IMPLEMENTATION.md to understand the project process and current state. Then begin Milestone 1, starting with sub-milestone 1.1 (Project Setup). Follow the rules of engagement - report back before committing anything.
+## Key Architecture
+- `src/labctl/core/` - Config, database, models, resource manager
+- `src/labctl/cli.py` - Click CLI (all commands)
+- `src/labctl/web/` - Flask web UI and REST API
+- `src/labctl/power/` - Power controllers (Tasmota, Kasa, Shelly)
+- `src/labctl/health/` - Health checks, monitoring daemon, alerts
+- `src/labctl/serial/` - ser2net config, serial proxy, udev rules
+- `src/labctl/mcp_server.py` - MCP server (resources, tools, prompts)

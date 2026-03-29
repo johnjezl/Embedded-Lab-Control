@@ -43,6 +43,9 @@ web = [
     "flask>=3.0",
     "flask-socketio>=5.0",
 ]
+mcp = [
+    "mcp>=1.0",
+]
 kasa = [
     "python-kasa>=0.5",
 ]

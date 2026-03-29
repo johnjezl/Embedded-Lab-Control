@@ -143,6 +143,26 @@ This document records significant design decisions made during development.
 
 ---
 
+## D009: MCP server for AI assistant integration
+
+- **Date**: 2026-03-28
+- **Context**: AI assistants (Claude Desktop, Claude Code) can manage external systems via the Model Context Protocol. Exposing lab resources through MCP enables AI-assisted lab management — debugging SBCs, checking health, controlling power — through natural language.
+- **Options Considered**:
+  1. Expose the existing REST API directly (requires AI to know HTTP endpoints)
+  2. Build an MCP server as a thin wrapper around the existing ResourceManager
+  3. Build a standalone MCP service with its own data layer
+- **Decision**: MCP server as thin wrapper using the official `mcp` Python SDK's FastMCP API
+- **Rationale**:
+  - Zero duplicated business logic — MCP tools/resources call the same manager methods as the CLI and web API
+  - FastMCP generates JSON Schema from type hints and docstrings automatically
+  - stdio transport for local use (standard for Claude Desktop/Code), HTTP available for remote
+  - Resources for read-only data (SBC list, power state, health), tools for mutations (power control, SBC management)
+  - Prompts provide guided workflows (debug-sbc, lab-report) for common tasks
+  - `mcp` is an optional dependency — doesn't affect existing installations
+  - See `docs/MCP_SERVER.md` for full architecture documentation
+
+---
+
 _Template for new decisions:_
 
 ```markdown

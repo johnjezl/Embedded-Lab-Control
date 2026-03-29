@@ -2013,6 +2013,34 @@ def sessions_cmd(ctx: click.Context, sbc_name: str | None) -> None:
     click.echo("client connections are logged to the console and session log files.")
 
 
+# --- MCP Server ---
+
+
+@main.command("mcp")
+@click.option(
+    "--http",
+    "http_port",
+    type=int,
+    default=None,
+    help="Run as HTTP server on this port (default: stdio transport)",
+)
+@click.pass_context
+def mcp_cmd(ctx: click.Context, http_port: int | None) -> None:
+    """Start the MCP (Model Context Protocol) server.
+
+    By default uses stdio transport for local AI tool integration
+    (Claude Desktop, Claude Code, etc.). Use --http for remote access.
+    """
+    from labctl.mcp_server import run_server
+
+    if http_port:
+        click.echo(f"Starting MCP server (HTTP on port {http_port})...")
+        run_server(transport="http", http_port=http_port)
+    else:
+        # stdio mode — no output to stdout (it's the JSON-RPC channel)
+        run_server(transport="stdio")
+
+
 # --- Web Server ---
 
 

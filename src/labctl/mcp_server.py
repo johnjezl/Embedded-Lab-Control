@@ -1,0 +1,654 @@
+"""
+MCP (Model Context Protocol) server for lab controller.
+
+Exposes lab resources, power control, health checks, and SBC management
+as MCP resources, tools, and prompts for AI assistant integration.
+
+Usage:
+    labctl mcp                    # stdio transport (default)
+    labctl mcp --http 8080        # streamable HTTP transport
+
+    # Or directly:
+    python -m labctl.mcp_server
+"""
+
+import json
+import logging
+import sys
+from typing import Optional
+
+from mcp.server.fastmcp import FastMCP
+
+# All logging must go to stderr (stdout is the JSON-RPC channel for stdio transport)
+logging.basicConfig(
+    level=logging.WARNING,
+    format="%(asctime)s %(name)s [%(levelname)s] %(message)s",
+    stream=sys.stderr,
+)
+
+logger = logging.getLogger(__name__)
+
+mcp = FastMCP(
+    "labctl",
+    instructions=(
+        "Lab Controller MCP server. Provides access to embedded development "
+        "lab resources including SBC management, power control, serial ports, "
+        "and health monitoring. Use resources to read state, tools to perform actions."
+    ),
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_manager():
+    """Get a ResourceManager instance."""
+    from labctl.core.config import load_config
+    from labctl.core.manager import get_manager
+
+    config = load_config()
+    return get_manager(config.database_path)
+
+
+def _sbc_to_dict(sbc) -> dict:
+    """Convert an SBC model to a JSON-serializable dict."""
+    data = {
+        "name": sbc.name,
+        "project": sbc.project,
+        "description": sbc.description,
+        "ssh_user": sbc.ssh_user,
+        "status": sbc.status.value,
+        "primary_ip": sbc.primary_ip,
+    }
+
+    if sbc.serial_ports:
+        data["serial_ports"] = [
+            {
+                "type": p.port_type.value,
+                "device": p.device_path,
+                "alias": p.alias,
+                "tcp_port": p.tcp_port,
+                "baud_rate": p.baud_rate,
+                "serial_device": p.serial_device.name if p.serial_device else None,
+            }
+            for p in sbc.serial_ports
+        ]
+
+    if sbc.network_addresses:
+        data["network_addresses"] = [
+            {
+                "type": a.address_type.value,
+                "ip": a.ip_address,
+                "mac": a.mac_address,
+                "hostname": a.hostname,
+            }
+            for a in sbc.network_addresses
+        ]
+
+    if sbc.power_plug:
+        data["power_plug"] = {
+            "type": sbc.power_plug.plug_type.value,
+            "address": sbc.power_plug.address,
+            "index": sbc.power_plug.plug_index,
+        }
+
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Resources (read-only data)
+# ---------------------------------------------------------------------------
+
+
+@mcp.resource("lab://sbcs")
+def list_sbcs() -> str:
+    """List all SBCs in the lab with their status, project, IP, and power plug info."""
+    manager = _get_manager()
+    sbcs = manager.list_sbcs()
+    return json.dumps([_sbc_to_dict(s) for s in sbcs], indent=2)
+
+
+@mcp.resource("lab://sbcs/{sbc_name}")
+def get_sbc_details(sbc_name: str) -> str:
+    """Get full details for a specific SBC including serial ports, network, and power."""
+    manager = _get_manager()
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return json.dumps({"error": f"SBC '{sbc_name}' not found"})
+    return json.dumps(_sbc_to_dict(sbc), indent=2)
+
+
+@mcp.resource("lab://power/{sbc_name}")
+def get_power_state(sbc_name: str) -> str:
+    """Get current power state for an SBC (on/off/unknown)."""
+    from labctl.power import PowerController, PowerState
+
+    manager = _get_manager()
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return json.dumps({"error": f"SBC '{sbc_name}' not found"})
+    if not sbc.power_plug:
+        return json.dumps({"error": f"No power plug assigned to '{sbc_name}'"})
+
+    try:
+        controller = PowerController.from_plug(sbc.power_plug)
+        state = controller.get_state()
+        return json.dumps({
+            "sbc": sbc_name,
+            "state": state.value,
+            "plug_type": sbc.power_plug.plug_type.value,
+            "address": sbc.power_plug.address,
+        })
+    except RuntimeError as e:
+        return json.dumps({"sbc": sbc_name, "state": "error", "error": str(e)})
+
+
+@mcp.resource("lab://serial-devices")
+def list_serial_devices() -> str:
+    """List all registered USB-serial adapters."""
+    manager = _get_manager()
+    devices = manager.list_serial_devices()
+    return json.dumps(
+        [
+            {
+                "name": d.name,
+                "usb_path": d.usb_path,
+                "vendor": d.vendor,
+                "model": d.model,
+                "serial_number": d.serial_number,
+            }
+            for d in devices
+        ],
+        indent=2,
+    )
+
+
+@mcp.resource("lab://ports")
+def list_ports() -> str:
+    """List all serial port assignments with aliases and SBC mappings."""
+    manager = _get_manager()
+    ports = manager.list_serial_ports()
+    sbc_names = {s.id: s.name for s in manager.list_sbcs()}
+    return json.dumps(
+        [
+            {
+                "sbc": sbc_names.get(p.sbc_id, f"#{p.sbc_id}"),
+                "type": p.port_type.value,
+                "alias": p.alias,
+                "device": p.device_path,
+                "tcp_port": p.tcp_port,
+                "baud_rate": p.baud_rate,
+                "serial_device": p.serial_device.name if p.serial_device else None,
+            }
+            for p in ports
+        ],
+        indent=2,
+    )
+
+
+@mcp.resource("lab://health/{sbc_name}")
+def get_health(sbc_name: str) -> str:
+    """Run a live health check on an SBC and return results."""
+    from labctl.core.config import load_config
+    from labctl.health.checks import HealthChecker
+
+    manager = _get_manager()
+    config = load_config()
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return json.dumps({"error": f"SBC '{sbc_name}' not found"})
+
+    checker = HealthChecker(
+        ping_timeout=config.health.ping_timeout,
+        serial_timeout=config.health.serial_timeout,
+    )
+    summary = checker.check_sbc(sbc)
+
+    return json.dumps(
+        {
+            "sbc": sbc_name,
+            "ping": {
+                "success": summary.ping_result.success,
+                "message": summary.ping_result.message,
+            }
+            if summary.ping_result
+            else None,
+            "serial": {
+                "success": summary.serial_result.success,
+                "message": summary.serial_result.message,
+            }
+            if summary.serial_result
+            else None,
+            "power": {
+                "state": summary.power_state.value if summary.power_state else None,
+                "success": summary.power_result.success
+                if summary.power_result
+                else None,
+                "message": summary.power_result.message
+                if summary.power_result
+                else None,
+            },
+            "recommended_status": summary.recommended_status.value
+            if summary.recommended_status
+            else None,
+        },
+        indent=2,
+    )
+
+
+@mcp.resource("lab://status")
+def get_status_overview() -> str:
+    """Get a dashboard-style overview of all SBCs with power states."""
+    from labctl.power import PowerController, PowerState
+
+    manager = _get_manager()
+    sbcs = manager.list_sbcs()
+    result = []
+
+    for sbc in sbcs:
+        entry = {
+            "name": sbc.name,
+            "project": sbc.project or "-",
+            "status": sbc.status.value,
+            "ip": sbc.primary_ip or "-",
+            "power": "-",
+        }
+
+        if sbc.power_plug:
+            try:
+                controller = PowerController.from_plug(sbc.power_plug)
+                state = controller.get_state()
+                entry["power"] = state.value
+            except Exception:
+                entry["power"] = "error"
+
+        result.append(entry)
+
+    return json.dumps(result, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Tools (actions)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def power_on(sbc_name: str) -> str:
+    """Turn on power to an SBC.
+
+    Args:
+        sbc_name: Name of the SBC to power on
+    """
+    from labctl.power import PowerController
+
+    manager = _get_manager()
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return f"Error: SBC '{sbc_name}' not found"
+    if not sbc.power_plug:
+        return f"Error: No power plug assigned to '{sbc_name}'"
+
+    try:
+        controller = PowerController.from_plug(sbc.power_plug)
+        if controller.power_on():
+            return f"Power ON: {sbc_name}"
+        return f"Failed to power on {sbc_name}"
+    except RuntimeError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def power_off(sbc_name: str) -> str:
+    """Turn off power to an SBC.
+
+    Args:
+        sbc_name: Name of the SBC to power off
+    """
+    from labctl.power import PowerController
+
+    manager = _get_manager()
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return f"Error: SBC '{sbc_name}' not found"
+    if not sbc.power_plug:
+        return f"Error: No power plug assigned to '{sbc_name}'"
+
+    try:
+        controller = PowerController.from_plug(sbc.power_plug)
+        if controller.power_off():
+            return f"Power OFF: {sbc_name}"
+        return f"Failed to power off {sbc_name}"
+    except RuntimeError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def power_cycle(sbc_name: str, delay: float = 2.0) -> str:
+    """Power cycle an SBC (turn off, wait, turn on).
+
+    Args:
+        sbc_name: Name of the SBC to power cycle
+        delay: Seconds to wait between off and on (default 2.0)
+    """
+    from labctl.power import PowerController
+
+    manager = _get_manager()
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return f"Error: SBC '{sbc_name}' not found"
+    if not sbc.power_plug:
+        return f"Error: No power plug assigned to '{sbc_name}'"
+
+    try:
+        controller = PowerController.from_plug(sbc.power_plug)
+        if controller.power_cycle(delay):
+            return f"Power cycled: {sbc_name} (delay: {delay}s)"
+        return f"Failed to power cycle {sbc_name}"
+    except RuntimeError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def run_health_check(sbc_name: Optional[str] = None) -> str:
+    """Run health checks on one or all SBCs and return results.
+
+    Args:
+        sbc_name: Name of a specific SBC to check, or omit for all SBCs
+    """
+    from labctl.core.config import load_config
+    from labctl.health.checks import HealthChecker
+
+    manager = _get_manager()
+    config = load_config()
+
+    checker = HealthChecker(
+        ping_timeout=config.health.ping_timeout,
+        serial_timeout=config.health.serial_timeout,
+    )
+
+    if sbc_name:
+        sbc = manager.get_sbc_by_name(sbc_name)
+        if not sbc:
+            return f"Error: SBC '{sbc_name}' not found"
+        sbcs = [sbc]
+    else:
+        sbcs = manager.list_sbcs()
+
+    results = checker.check_all(sbcs)
+
+    output = []
+    for name, summary in results.items():
+        entry = {"sbc": name}
+        if summary.ping_result:
+            entry["ping"] = summary.ping_result.success
+        if summary.serial_result:
+            entry["serial"] = summary.serial_result.success
+        if summary.power_state:
+            entry["power"] = summary.power_state.value
+        if summary.recommended_status:
+            entry["status"] = summary.recommended_status.value
+        output.append(entry)
+
+    return json.dumps(output, indent=2)
+
+
+@mcp.tool()
+def add_sbc(
+    name: str,
+    project: Optional[str] = None,
+    description: Optional[str] = None,
+    ssh_user: str = "root",
+) -> str:
+    """Create a new SBC record in the lab inventory.
+
+    Args:
+        name: Unique name for the SBC (e.g., 'rpi4-01', 'jetson-nano-2')
+        project: Project this SBC belongs to
+        description: Human-readable description
+        ssh_user: SSH username for remote access (default: root)
+    """
+    manager = _get_manager()
+
+    try:
+        sbc = manager.create_sbc(
+            name=name,
+            project=project,
+            description=description,
+            ssh_user=ssh_user,
+        )
+        return json.dumps({"created": _sbc_to_dict(sbc)}, indent=2)
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def remove_sbc(name: str) -> str:
+    """Remove an SBC and all its assignments from the lab inventory.
+
+    Args:
+        name: Name of the SBC to remove
+    """
+    manager = _get_manager()
+    sbc = manager.get_sbc_by_name(name)
+    if not sbc:
+        return f"Error: SBC '{name}' not found"
+
+    if manager.delete_sbc(sbc.id):
+        return f"Removed SBC: {name}"
+    return f"Failed to remove SBC: {name}"
+
+
+@mcp.tool()
+def update_sbc(
+    name: str,
+    rename: Optional[str] = None,
+    project: Optional[str] = None,
+    description: Optional[str] = None,
+    ssh_user: Optional[str] = None,
+    status: Optional[str] = None,
+) -> str:
+    """Update an SBC's properties.
+
+    Args:
+        name: Current name of the SBC
+        rename: New name for the SBC (optional)
+        project: New project name (optional)
+        description: New description (optional)
+        ssh_user: New SSH username (optional)
+        status: New status: unknown, online, offline, booting, error (optional)
+    """
+    from labctl.core.models import Status
+
+    manager = _get_manager()
+    sbc = manager.get_sbc_by_name(name)
+    if not sbc:
+        return f"Error: SBC '{name}' not found"
+
+    status_enum = Status(status) if status else None
+
+    try:
+        updated = manager.update_sbc(
+            sbc.id,
+            name=rename,
+            project=project,
+            description=description,
+            ssh_user=ssh_user,
+            status=status_enum,
+        )
+        return json.dumps({"updated": _sbc_to_dict(updated)}, indent=2)
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def assign_serial_port(
+    sbc_name: str,
+    port_type: str,
+    device: str,
+    alias: Optional[str] = None,
+    baud_rate: int = 115200,
+) -> str:
+    """Assign a serial port to an SBC.
+
+    Args:
+        sbc_name: Name of the SBC
+        port_type: Type of port: console, jtag, or debug
+        device: Device path (e.g., /dev/lab/port-1)
+        alias: Human-friendly name for this connection (e.g., jetson-console)
+        baud_rate: Baud rate (default: 115200)
+    """
+    from labctl.core.models import PortType
+
+    manager = _get_manager()
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return f"Error: SBC '{sbc_name}' not found"
+
+    try:
+        port = manager.assign_serial_port(
+            sbc_id=sbc.id,
+            port_type=PortType(port_type),
+            device_path=device,
+            baud_rate=baud_rate,
+            alias=alias,
+        )
+        return f"Assigned {port_type} port to {sbc_name}: {device} (tcp:{port.tcp_port})"
+    except (ValueError, KeyError) as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def assign_power_plug(
+    sbc_name: str,
+    plug_type: str,
+    address: str,
+    index: int = 1,
+) -> str:
+    """Assign a smart power plug to an SBC for remote power control.
+
+    Args:
+        sbc_name: Name of the SBC
+        plug_type: Type of plug: tasmota, kasa, or shelly
+        address: IP address or hostname of the plug
+        index: Outlet index for multi-outlet strips (default: 1)
+    """
+    from labctl.core.models import PlugType
+
+    manager = _get_manager()
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return f"Error: SBC '{sbc_name}' not found"
+
+    try:
+        plug = manager.assign_power_plug(
+            sbc_id=sbc.id,
+            plug_type=PlugType(plug_type),
+            address=address,
+            plug_index=index,
+        )
+        idx = f"[{plug.plug_index}]" if plug.plug_index > 1 else ""
+        return f"Assigned {plug_type} plug to {sbc_name}: {address}{idx}"
+    except (ValueError, KeyError) as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def set_network_address(
+    sbc_name: str,
+    address_type: str,
+    ip_address: str,
+    mac: Optional[str] = None,
+    hostname: Optional[str] = None,
+) -> str:
+    """Set a network address for an SBC (used for ping health checks).
+
+    Args:
+        sbc_name: Name of the SBC
+        address_type: Type of connection: ethernet or wifi
+        ip_address: IP address (e.g., 192.168.1.100)
+        mac: MAC address (optional)
+        hostname: Hostname (optional)
+    """
+    from labctl.core.models import AddressType
+
+    manager = _get_manager()
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return f"Error: SBC '{sbc_name}' not found"
+
+    try:
+        addr = manager.set_network_address(
+            sbc_id=sbc.id,
+            address_type=AddressType(address_type),
+            ip_address=ip_address,
+            mac_address=mac,
+            hostname=hostname,
+        )
+        return f"Set {address_type} address for {sbc_name}: {addr.ip_address}"
+    except (ValueError, KeyError) as e:
+        return f"Error: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Prompts (reusable instruction templates)
+# ---------------------------------------------------------------------------
+
+
+@mcp.prompt()
+def debug_sbc(sbc_name: str) -> str:
+    """Guide through debugging an unresponsive SBC.
+
+    Args:
+        sbc_name: Name of the SBC to debug
+    """
+    return f"""Debug SBC '{sbc_name}' by following these steps:
+
+1. Check the SBC's current state by reading the lab://sbcs/{sbc_name} resource.
+2. Check power state by reading the lab://power/{sbc_name} resource.
+3. Run a health check using the run_health_check tool with sbc_name="{sbc_name}".
+
+Based on findings:
+- If power is OFF: use the power_on tool to turn it on, wait 30 seconds, then re-check health.
+- If power is ON but ping fails: the SBC may be hung. Try power_cycle to reboot it.
+- If ping succeeds but serial fails: check physical serial cable connections.
+- If everything passes but status is wrong: use update_sbc to correct the status.
+
+Report your findings and any actions taken."""
+
+
+@mcp.prompt()
+def lab_report() -> str:
+    """Generate a comprehensive lab status report."""
+    return """Generate a lab status report by:
+
+1. Read the lab://status resource for an overview of all SBCs.
+2. Read the lab://serial-devices resource for registered USB adapters.
+3. Read the lab://ports resource for serial port assignments.
+
+Compile a report with:
+- Summary: total SBCs, how many online/offline/unknown
+- Per-SBC details: name, project, status, IP, power state
+- Any issues: SBCs that are offline or in error state
+- Serial port utilization: assigned vs unassigned devices
+- Recommendations for any problems found"""
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+
+def run_server(transport: str = "stdio", http_port: int = 8080):
+    """Start the MCP server."""
+    if transport == "stdio":
+        mcp.run(transport="stdio")
+    elif transport == "http":
+        mcp.run(transport="streamable-http")
+    else:
+        raise ValueError(f"Unknown transport: {transport}")
+
+
+if __name__ == "__main__":
+    run_server()

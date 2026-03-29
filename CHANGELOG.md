@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- MCP (Model Context Protocol) server for AI integration (2026-03-28)
+  - `labctl mcp` command — stdio (default) and HTTP transports
+  - 7 resources: lab://sbcs, lab://sbcs/{name}, lab://power/{name},
+    lab://serial-devices, lab://ports, lab://health/{name}, lab://status
+  - 10 tools: power_on/off/cycle, run_health_check, add/remove/update_sbc,
+    assign_serial_port, assign_power_plug, set_network_address
+  - 2 prompts: debug-sbc (guided debugging), lab-report (status overview)
+  - Uses official `mcp` Python SDK with FastMCP
+  - 28 comprehensive tests for tools and resources
 - Two-tier serial device management (2026-03-28)
   - `serial_devices` database table for registering physical USB-serial adapters
   - `labctl serial` CLI command group: discover, add, remove, list, rename, udev
