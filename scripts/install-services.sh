@@ -110,6 +110,7 @@ echo "[ok] Added passwordless sudo for udevadm and ser2net restart (labctl group
 echo "[+] Installing systemd service files..."
 cp "$CONFIG_DIR/labctl-monitor.service" /etc/systemd/system/
 cp "$CONFIG_DIR/labctl-web.service" /etc/systemd/system/
+cp "$CONFIG_DIR/labctl-mcp.service" /etc/systemd/system/
 
 systemctl daemon-reload
 
@@ -119,6 +120,10 @@ systemctl enable labctl-monitor labctl-web
 
 echo "[+] Starting services..."
 systemctl start labctl-monitor labctl-web
+
+# MCP service is installed but not enabled by default
+echo "[ok] MCP service installed (not enabled by default)"
+echo "     To enable: sudo systemctl enable --now labctl-mcp"
 
 echo ""
 echo "=== Installation Complete ==="

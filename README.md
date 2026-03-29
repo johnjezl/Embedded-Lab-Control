@@ -340,6 +340,9 @@ Install systemd services for production use:
 sudo ./scripts/install-services.sh
 sudo systemctl enable --now labctl-web
 sudo systemctl enable --now labctl-monitor
+
+# Optional: MCP server for remote AI integration (HTTP on port 8080)
+sudo systemctl enable --now labctl-mcp
 ```
 
 ## Development

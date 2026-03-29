@@ -75,6 +75,40 @@ labctl mcp --http 8080
 Uses the Streamable HTTP transport on the specified port. Useful for
 multi-client scenarios or accessing the lab from a different machine.
 
+### Running as a systemd service
+
+A service file is provided for running the MCP server as a persistent HTTP service:
+
+```bash
+# Install (included in install-services.sh but not enabled by default)
+sudo cp config/systemd/labctl-mcp.service /etc/systemd/system/
+sudo systemctl daemon-reload
+
+# Enable and start
+sudo systemctl enable --now labctl-mcp
+
+# Check status
+systemctl status labctl-mcp
+journalctl -u labctl-mcp -f
+```
+
+The service runs on port 8080 by default. Edit the service file to change the port.
+
+Remote clients connect via HTTP:
+
+```json
+{
+  "mcpServers": {
+    "labctl": {
+      "url": "http://tarrasque:8080/mcp"
+    }
+  }
+}
+```
+
+**Note:** The HTTP transport currently has no authentication. Only run on
+trusted networks or behind a reverse proxy with auth.
+
 ### Direct Python invocation
 
 ```bash

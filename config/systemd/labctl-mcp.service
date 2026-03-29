@@ -1,0 +1,31 @@
+[Unit]
+Description=Lab Controller MCP Server
+Documentation=https://github.com/johnjezl/Embedded-Lab-Control
+After=network.target
+
+[Service]
+Type=simple
+User=labctl
+Group=labctl
+ExecStart=/opt/labctl/venv/bin/labctl mcp --http 8080
+Restart=on-failure
+RestartSec=10
+
+# Environment and paths
+Environment="HOME=/var/lib/labctl"
+WorkingDirectory=/var/lib/labctl
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=labctl-mcp
+
+# Security hardening
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/labctl
+AmbientCapabilities=CAP_NET_RAW
+
+[Install]
+WantedBy=multi-user.target
