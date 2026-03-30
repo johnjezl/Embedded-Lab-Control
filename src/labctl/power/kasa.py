@@ -124,7 +124,21 @@ class KasaController(PowerController):
                     finally:
                         await device.disconnect()
 
-                return asyncio.run(_exec())
+                # If already inside an async event loop (e.g., MCP server),
+                # run in a new thread to avoid "cannot call asyncio.run()
+                # from a running event loop" error.
+                try:
+                    asyncio.get_running_loop()
+                    # We're inside an async context — run in a thread
+                    import concurrent.futures
+
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        future = pool.submit(asyncio.run, _exec())
+                        result = future.result()
+                    return result
+                except RuntimeError:
+                    # No running loop — normal sync context
+                    return asyncio.run(_exec())
             except ImportError:
                 raise RuntimeError(
                     "python-kasa not installed. Install with: pip install python-kasa"
