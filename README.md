@@ -72,6 +72,15 @@ labctl web --port 5000
 
 ## CLI Reference
 
+### Global Options
+
+| Option | Description |
+|--------|-------------|
+| `-v`, `--verbose` | Enable verbose (DEBUG) output |
+| `-q`, `--quiet` | Suppress non-essential output |
+| `-d`, `--delay <seconds>` | Wait before executing the command |
+| `-c`, `--config <path>` | Path to config file |
+
 ### SBC Management
 
 | Command | Description |

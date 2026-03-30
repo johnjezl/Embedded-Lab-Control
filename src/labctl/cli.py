@@ -88,9 +88,16 @@ def _get_manager(ctx: click.Context) -> ResourceManager:
     type=click.Path(exists=True, path_type=Path),
     help="Path to config file",
 )
+@click.option(
+    "--delay",
+    "-d",
+    type=float,
+    default=0,
+    help="Delay in seconds before executing the command",
+)
 @click.pass_context
 def main(
-    ctx: click.Context, verbose: bool, quiet: bool, config_path: Path | None
+    ctx: click.Context, verbose: bool, quiet: bool, config_path: Path | None, delay: float
 ) -> None:
     """Lab Controller - Manage embedded development lab resources.
 
@@ -120,6 +127,13 @@ def main(
         format="%(asctime)s %(name)s [%(levelname)s] %(message)s",
         stream=sys.stderr,
     )
+
+    if delay > 0:
+        import time
+
+        if not quiet:
+            click.echo(f"Waiting {delay}s...")
+        time.sleep(delay)
 
 
 @main.command("ports")

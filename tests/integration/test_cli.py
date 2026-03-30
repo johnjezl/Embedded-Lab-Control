@@ -31,6 +31,62 @@ class TestMainCommand:
         assert "connect" in result.output
 
 
+class TestDelayOption:
+    """Tests for the global --delay option."""
+
+    def test_help_shows_delay(self, runner):
+        """Test that --delay appears in help output."""
+        result = runner.invoke(main, ["--help"])
+        assert "--delay" in result.output
+        assert "-d" in result.output
+
+    def test_delay_zero_no_message(self, runner):
+        """Test that --delay 0 produces no waiting message."""
+        result = runner.invoke(main, ["--delay", "0", "ports"])
+        assert result.exit_code == 0
+        assert "Waiting" not in result.output
+
+    def test_delay_shows_message(self, runner):
+        """Test that --delay shows waiting message."""
+        result = runner.invoke(main, ["--delay", "0.01", "ports"])
+        assert result.exit_code == 0
+        assert "Waiting 0.01s" in result.output
+
+    def test_delay_short_flag(self, runner):
+        """Test -d short flag works."""
+        result = runner.invoke(main, ["-d", "0.01", "ports"])
+        assert result.exit_code == 0
+        assert "Waiting 0.01s" in result.output
+
+    def test_delay_quiet_suppresses_message(self, runner):
+        """Test that --quiet suppresses the delay message."""
+        result = runner.invoke(main, ["-q", "--delay", "0.01", "ports"])
+        assert result.exit_code == 0
+        assert "Waiting" not in result.output
+
+    def test_delay_actually_delays(self, runner):
+        """Test that delay actually waits before executing."""
+        import time
+
+        start = time.monotonic()
+        result = runner.invoke(main, ["--delay", "0.2", "ports"])
+        elapsed = time.monotonic() - start
+
+        assert result.exit_code == 0
+        assert elapsed >= 0.2
+
+    def test_delay_with_version(self, runner):
+        """Test that --delay works alongside --version."""
+        result = runner.invoke(main, ["--delay", "0.01", "--version"])
+        assert result.exit_code == 0
+        assert "labctl" in result.output
+
+    def test_delay_invalid_value(self, runner):
+        """Test that invalid delay value shows error."""
+        result = runner.invoke(main, ["--delay", "abc", "ports"])
+        assert result.exit_code != 0
+
+
 class TestPortsCommand:
     """Tests for the ports command."""
 

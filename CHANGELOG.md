@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Global `--delay` / `-d` CLI option (2026-03-29)
+  - Adds a delay in seconds before any command executes
+  - Useful for chaining commands after power cycles (e.g., `labctl -d 30 health-check`)
+  - Suppressed with `--quiet`, prints "Waiting Xs..." otherwise
 - MCP (Model Context Protocol) server for AI integration (2026-03-28)
   - `labctl mcp` command — stdio (default) and HTTP transports
   - 7 resources: lab://sbcs, lab://sbcs/{name}, lab://power/{name},
