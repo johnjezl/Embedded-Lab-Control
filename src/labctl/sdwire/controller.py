@@ -5,7 +5,10 @@ Wraps the sdwire Python library to control SDWire, SDWireC, and SDWire3 devices.
 """
 
 import logging
+import os
+import shutil
 import subprocess
+import tempfile
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -123,6 +126,82 @@ class SDWireController:
             return True
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Flash failed: {e}") from e
+
+
+    def update_files(
+        self,
+        partition: int,
+        file_pairs: list[tuple[str, str]],
+    ) -> list[str]:
+        """Copy files to a partition on the SD card.
+
+        Mounts the partition, copies files, unmounts. Assumes SD card is
+        already switched to host mode.
+
+        Args:
+            partition: Partition number (e.g., 1 for /dev/sdb1)
+            file_pairs: List of (source_path, dest_path_relative_to_partition_root)
+
+        Returns:
+            List of files successfully copied.
+
+        Raises:
+            RuntimeError: If block device not found, mount fails, or copy fails.
+        """
+        block_dev = self.get_block_device()
+        if not block_dev:
+            raise RuntimeError(
+                "Cannot determine block device. "
+                "Is the SD card switched to host mode?"
+            )
+
+        part_dev = f"{block_dev}{partition}"
+        mount_point = tempfile.mkdtemp(prefix="labctl-sdwire-")
+
+        logger.info("Mounting %s at %s", part_dev, mount_point)
+
+        try:
+            # Mount the partition
+            subprocess.run(
+                ["mount", part_dev, mount_point],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as e:
+            os.rmdir(mount_point)
+            raise RuntimeError(
+                f"Failed to mount {part_dev}: {e.stderr.strip()}"
+            ) from e
+
+        copied = []
+        try:
+            for src, dest_relative in file_pairs:
+                dest = os.path.join(mount_point, dest_relative)
+
+                # Create parent directories if needed
+                dest_dir = os.path.dirname(dest)
+                if dest_dir and not os.path.exists(dest_dir):
+                    os.makedirs(dest_dir, exist_ok=True)
+
+                logger.info("Copying %s -> %s", src, dest_relative)
+                shutil.copy2(src, dest)
+                copied.append(dest_relative)
+
+        finally:
+            # Always unmount and clean up
+            logger.info("Unmounting %s", mount_point)
+            subprocess.run(
+                ["umount", mount_point],
+                capture_output=True,
+            )
+            try:
+                os.rmdir(mount_point)
+            except OSError:
+                pass
+
+        subprocess.run(["sync"], check=True)
+        return copied
 
 
 def discover_sdwire_devices() -> list[dict]:

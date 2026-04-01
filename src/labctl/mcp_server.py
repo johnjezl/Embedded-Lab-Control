@@ -674,6 +674,67 @@ def sdwire_to_host(sbc_name: str) -> str:
         return f"Error: {e}"
 
 
+@mcp.tool()
+def sdwire_update(
+    sbc_name: str,
+    partition: int,
+    copies: list[str],
+    reboot: bool = False,
+) -> str:
+    """Copy files to a partition on an SBC's SD card.
+
+    Atomic operation: switches SD to host, mounts partition, copies files,
+    unmounts, switches back to DUT, optionally power cycles.
+
+    Args:
+        sbc_name: Name of the SBC with an assigned SDWire device
+        partition: Partition number (e.g., 1 for the first partition)
+        copies: List of "source:dest" pairs (dest is relative to partition root)
+        reboot: Whether to power cycle the SBC after updating
+    """
+    import time
+
+    from labctl.sdwire import SDWireController
+
+    manager = _get_manager()
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return f"Error: SBC '{sbc_name}' not found"
+    if not sbc.sdwire:
+        return f"Error: No SDWire assigned to '{sbc_name}'"
+
+    # Parse copy pairs
+    file_pairs = []
+    for spec in copies:
+        if ":" not in spec:
+            return f"Error: Invalid copy format '{spec}'. Use source:dest"
+        src, dest = spec.split(":", 1)
+        file_pairs.append((src, dest))
+
+    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+
+    try:
+        ctrl.switch_to_host()
+        time.sleep(2)
+
+        copied = ctrl.update_files(partition, file_pairs)
+
+        ctrl.switch_to_dut()
+
+        result = f"Updated {len(copied)} file(s) on partition {partition}: {', '.join(copied)}"
+
+        if reboot and sbc.power_plug:
+            from labctl.power import PowerController
+
+            power_ctrl = PowerController.from_plug(sbc.power_plug)
+            power_ctrl.power_cycle(delay=2.0)
+            result += f". Power cycled {sbc_name}."
+
+        return result
+    except RuntimeError as e:
+        return f"Error: {e}"
+
+
 # ---------------------------------------------------------------------------
 # Prompts (reusable instruction templates)
 # ---------------------------------------------------------------------------

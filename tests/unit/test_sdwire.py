@@ -174,6 +174,99 @@ class TestSDWireController:
                     ctrl.flash_image("/path/to/image.img")
 
 
+class TestUpdateFiles:
+    """Tests for SDWireController.update_files."""
+
+    def test_update_files_no_block_device(self):
+        """Test update_files raises when no block device found."""
+        ctrl = SDWireController("test_serial")
+
+        with patch.object(ctrl, "get_block_device", return_value=None):
+            with pytest.raises(RuntimeError, match="Cannot determine block device"):
+                ctrl.update_files(1, [("src.bin", "dest.bin")])
+
+    def test_update_files_mount_fails(self):
+        """Test update_files raises when mount fails."""
+        import subprocess
+
+        ctrl = SDWireController("test_serial")
+
+        with patch.object(ctrl, "get_block_device", return_value="/dev/sdb"):
+            with patch("labctl.sdwire.controller.subprocess.run") as mock_run:
+                mock_run.side_effect = subprocess.CalledProcessError(
+                    1, "mount", stderr="mount: permission denied"
+                )
+                with patch("tempfile.mkdtemp", return_value="/tmp/labctl-test"):
+                    with patch("os.rmdir"):
+                        with pytest.raises(RuntimeError, match="Failed to mount"):
+                            ctrl.update_files(1, [("src.bin", "dest.bin")])
+
+    def test_update_files_success(self):
+        """Test update_files mounts, copies, unmounts."""
+        ctrl = SDWireController("test_serial")
+
+        with patch.object(ctrl, "get_block_device", return_value="/dev/sdb"):
+            with patch("labctl.sdwire.controller.subprocess.run") as mock_run:
+                with patch("tempfile.mkdtemp", return_value="/tmp/labctl-test"):
+                    with patch("shutil.copy2") as mock_copy:
+                        with patch("os.rmdir"):
+                            with patch("os.path.exists", return_value=True):
+                                result = ctrl.update_files(
+                                    1,
+                                    [("local.bin", "kernel.img")],
+                                )
+
+        assert result == ["kernel.img"]
+        # Verify mount was called with correct partition
+        mount_call = mock_run.call_args_list[0]
+        assert mount_call[0][0] == ["mount", "/dev/sdb1", "/tmp/labctl-test"]
+        # Verify copy
+        mock_copy.assert_called_once()
+        # Verify unmount
+        umount_call = mock_run.call_args_list[1]
+        assert umount_call[0][0] == ["umount", "/tmp/labctl-test"]
+
+    def test_update_files_multiple(self):
+        """Test update_files copies multiple files."""
+        ctrl = SDWireController("test_serial")
+
+        with patch.object(ctrl, "get_block_device", return_value="/dev/sdb"):
+            with patch("labctl.sdwire.controller.subprocess.run"):
+                with patch("tempfile.mkdtemp", return_value="/tmp/labctl-test"):
+                    with patch("shutil.copy2"):
+                        with patch("os.rmdir"):
+                            with patch("os.path.exists", return_value=True):
+                                result = ctrl.update_files(
+                                    1,
+                                    [
+                                        ("a.bin", "kernel.img"),
+                                        ("b.txt", "config.txt"),
+                                    ],
+                                )
+
+        assert result == ["kernel.img", "config.txt"]
+
+    def test_update_files_unmounts_on_copy_error(self):
+        """Test that unmount runs even if copy fails."""
+        ctrl = SDWireController("test_serial")
+
+        with patch.object(ctrl, "get_block_device", return_value="/dev/sdb"):
+            with patch("labctl.sdwire.controller.subprocess.run") as mock_run:
+                with patch("tempfile.mkdtemp", return_value="/tmp/labctl-test"):
+                    with patch("shutil.copy2", side_effect=OSError("disk full")):
+                        with patch("os.rmdir"):
+                            with patch("os.path.exists", return_value=True):
+                                with pytest.raises(OSError, match="disk full"):
+                                    ctrl.update_files(1, [("a.bin", "b.bin")])
+
+        # Unmount should still have been called
+        umount_calls = [
+            c for c in mock_run.call_args_list
+            if c[0][0][0] == "umount"
+        ]
+        assert len(umount_calls) == 1
+
+
 class TestDiscoverSDWireDevices:
     """Tests for discover_sdwire_devices."""
 

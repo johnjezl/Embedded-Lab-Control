@@ -816,6 +816,99 @@ def sdwire_flash_cmd(
         sys.exit(1)
 
 
+@sdwire_group.command("update")
+@click.argument("sbc_name")
+@click.option(
+    "--partition", "-p", type=int, required=True,
+    help="Partition number (e.g., 1 for first partition)",
+)
+@click.option(
+    "--copy", "-c", "copies", multiple=True, required=True,
+    help="File to copy as source:dest (dest relative to partition root)",
+)
+@click.option("--reboot", is_flag=True, help="Power cycle the SBC after updating")
+@click.pass_context
+def sdwire_update_cmd(
+    ctx: click.Context,
+    sbc_name: str,
+    partition: int,
+    copies: tuple[str, ...],
+    reboot: bool,
+) -> None:
+    """Copy files to a partition on an SBC's SD card.
+
+    Switches to host, mounts the partition, copies files, unmounts,
+    switches back to DUT, and optionally power cycles.
+
+    \b
+    Examples:
+      labctl sdwire update pi-5 -p 1 --copy kernel.img:kernel_2712.img
+      labctl sdwire update pi-5 -p 1 -c fw.bin:firmware.bin -c cfg.txt:config.txt --reboot
+    """
+    from labctl.sdwire.controller import SDWireController
+
+    manager = _get_manager(ctx)
+
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
+        sys.exit(1)
+    if not sbc.sdwire:
+        click.echo(f"Error: No SDWire assigned to '{sbc_name}'", err=True)
+        sys.exit(1)
+
+    # Parse copy pairs
+    file_pairs = []
+    for copy_spec in copies:
+        if ":" not in copy_spec:
+            click.echo(
+                f"Error: Invalid --copy format '{copy_spec}'. Use source:dest",
+                err=True,
+            )
+            sys.exit(1)
+        src, dest = copy_spec.split(":", 1)
+        if not Path(src).exists():
+            click.echo(f"Error: Source file not found: {src}", err=True)
+            sys.exit(1)
+        file_pairs.append((src, dest))
+
+    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+
+    try:
+        # Step 1: Switch to host
+        click.echo("Switching SD card to host...")
+        ctrl.switch_to_host()
+
+        import time
+        time.sleep(2)  # Wait for block device and partitions to appear
+
+        # Step 2: Mount and copy files
+        click.echo(f"Mounting partition {partition}...")
+        copied = ctrl.update_files(partition, file_pairs)
+        for f in copied:
+            click.echo(f"  Copied: {f}")
+
+        # Step 3: Switch back to DUT
+        click.echo("Switching SD card to DUT...")
+        ctrl.switch_to_dut()
+
+        # Step 4: Optional power cycle
+        if reboot and sbc.power_plug:
+            click.echo(f"Power cycling {sbc_name}...")
+            from labctl.power import PowerController
+            power_ctrl = PowerController.from_plug(sbc.power_plug)
+            power_ctrl.power_cycle(delay=2.0)
+            click.echo(f"Power cycled: {sbc_name}")
+        elif reboot and not sbc.power_plug:
+            click.echo("Warning: --reboot requested but no power plug assigned")
+
+        click.echo("Done!")
+
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
 @main.group("serial")
 def serial_group() -> None:
     """Manage USB-serial adapters."""
