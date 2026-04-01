@@ -237,7 +237,7 @@ This document outlines the phased implementation of the Lab Controller System. E
 - ✅ Create `src/labctl/power/kasa.py`
   - ✅ Async wrapper for python-kasa
   - ✅ Implement all `PowerController` methods
-- ⏸️ Test with Kasa device if available
+- ✅ Test with Kasa device if available
 
 #### 3.4 Shelly Implementation (Optional)
 - ✅ Create `src/labctl/power/shelly.py`
@@ -263,7 +263,7 @@ This document outlines the phased implementation of the Lab Controller System. E
 
 ### Acceptance Criteria
 - ✅ Can assign smart plugs to SBCs in database
-- ⏸️ `labctl power <sbc> on/off/cycle` controls actual hardware (pending hardware test)
+- ✅ `labctl power <sbc> on/off/cycle` controls actual hardware
 - ✅ `labctl power <sbc> status` shows current power state
 - ✅ Power operations logged in audit log
 
@@ -632,9 +632,9 @@ picocom or minicom (for direct serial access)
 - ✅ Authentication (test_auth.py - 14 tests)
 
 ### Manual Tests
-- ⏸️ Full workflow with real hardware (pending hardware)
-- ⏸️ Power control with actual plugs (pending hardware)
-- ⏸️ Serial console with real SBC (pending hardware)
+- ✅ Full workflow with real hardware
+- ✅ Power control with actual plugs
+- ✅ Serial console with real SBC
 
 ## Appendix C: Documentation
 
