@@ -56,7 +56,6 @@ def populated_manager(manager):
     sdwire = manager.create_sdwire_device(
         name="sdwire-1",
         serial_number="bdgrd_sdwirec_001",
-        device_type="sdwirec",
     )
     manager.assign_sdwire(sbc1.id, sdwire.id)
 
@@ -362,7 +361,6 @@ class TestMcpSDWireResource:
         assert len(result) == 1
         assert result[0]["name"] == "sdwire-1"
         assert result[0]["serial_number"] == "bdgrd_sdwirec_001"
-        assert result[0]["device_type"] == "sdwirec"
         assert result[0]["assigned_to"] == "test-sbc-1"
 
     def test_sbc_details_includes_sdwire(self, mock_manager):

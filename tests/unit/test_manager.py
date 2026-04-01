@@ -578,34 +578,16 @@ class TestSDWireDeviceOperations:
     """Tests for SDWire device CRUD operations."""
 
     def test_create_sdwire_device(self, manager):
-        """Test creating an SDWire device with all fields."""
+        """Test creating an SDWireC device."""
         device = manager.create_sdwire_device(
             name="sdwire-1",
             serial_number="bdgrd_sdwirec_522",
-            device_type="sdwirec",
         )
         assert device.id is not None
         assert device.name == "sdwire-1"
         assert device.serial_number == "bdgrd_sdwirec_522"
         assert device.device_type == "sdwirec"
         assert device.created_at is not None
-
-    def test_create_sdwire_device_default_type(self, manager):
-        """Test creating an SDWire device with default type."""
-        device = manager.create_sdwire_device(
-            name="sdwire-default",
-            serial_number="test_serial_001",
-        )
-        assert device.device_type == "sdwirec"
-
-    def test_create_sdwire_device_sdwire3(self, manager):
-        """Test creating an SDWire3 device."""
-        device = manager.create_sdwire_device(
-            name="sdwire3-1",
-            serial_number="sdwire_gen2_101",
-            device_type="sdwire3",
-        )
-        assert device.device_type == "sdwire3"
 
     def test_create_sdwire_device_duplicate_name(self, manager):
         """Test creating a device with duplicate name fails."""

@@ -557,13 +557,12 @@ class ResourceManager:
         self,
         name: str,
         serial_number: str,
-        device_type: str = "sdwirec",
     ) -> SDWireDevice:
-        """Register an SDWire SD card multiplexer device."""
+        """Register an SDWireC SD card multiplexer device."""
         device_id = self.db.execute_insert(
             """INSERT INTO sdwire_devices (name, serial_number, device_type)
-               VALUES (?, ?, ?)""",
-            (name, serial_number, device_type),
+               VALUES (?, ?, 'sdwirec')""",
+            (name, serial_number),
         )
         self._audit_log(
             "create", "sdwire_device", device_id, name,
