@@ -19,9 +19,10 @@ class TestSDWireController:
         """Test _get_device raises when device not connected."""
         ctrl = SDWireController("nonexistent_serial")
 
-        with patch("sdwire.backend.detect.get_sdwire_devices", return_value=[]):
-            with pytest.raises(RuntimeError, match="not found"):
-                ctrl._get_device()
+        with patch("sdwire.backend.detect.get_sdwirec_devices", return_value=[]):
+            with patch("sdwire.backend.detect.get_sdwire_devices", return_value=[]):
+                with pytest.raises(RuntimeError, match="not found"):
+                    ctrl._get_device()
 
     def test_get_device_found(self):
         """Test _get_device returns matching device."""
@@ -30,8 +31,9 @@ class TestSDWireController:
         mock_dev = MagicMock()
         mock_dev.serial_string = "test_serial"
 
-        with patch("sdwire.backend.detect.get_sdwire_devices", return_value=[mock_dev]):
-            result = ctrl._get_device()
+        with patch("sdwire.backend.detect.get_sdwirec_devices", return_value=[mock_dev]):
+            with patch("sdwire.backend.detect.get_sdwire_devices", return_value=[]):
+                result = ctrl._get_device()
 
         assert result is mock_dev
 
@@ -45,8 +47,9 @@ class TestSDWireController:
         target_dev = MagicMock()
         target_dev.serial_string = "target_serial"
 
-        with patch("sdwire.backend.detect.get_sdwire_devices", return_value=[other_dev, target_dev]):
-            result = ctrl._get_device()
+        with patch("sdwire.backend.detect.get_sdwirec_devices", return_value=[other_dev]):
+            with patch("sdwire.backend.detect.get_sdwire_devices", return_value=[target_dev]):
+                result = ctrl._get_device()
 
         assert result is target_dev
 
@@ -327,55 +330,98 @@ class TestBlockDeviceHelpers:
 class TestDiscoverSDWireDevices:
     """Tests for discover_sdwire_devices."""
 
-    def test_discover_returns_list(self):
-        """Test discover returns a list of device dicts."""
+    def test_discover_returns_sdwirec(self):
+        """Test discover returns SDWireC (Realtek) devices."""
         from labctl.sdwire.controller import discover_sdwire_devices
 
         mock_dev = MagicMock()
-        mock_dev.serial_string = "bdgrd_sdwirec_001"
+        mock_dev.serial_string = "sdwirec_001"
         mock_dev.product_string = ""
         mock_dev.manufacturer_string = ""
         mock_dev.block_dev = "/dev/sdb"
 
-        with patch("sdwire.backend.detect.get_sdwire_devices", return_value=[mock_dev]):
-            result = discover_sdwire_devices()
+        with patch("sdwire.backend.detect.get_sdwirec_devices", return_value=[]):
+            with patch("sdwire.backend.detect.get_sdwire_devices", return_value=[mock_dev]):
+                result = discover_sdwire_devices()
 
         assert len(result) == 1
-        assert result[0]["serial_number"] == "bdgrd_sdwirec_001"
+        assert result[0]["serial_number"] == "sdwirec_001"
         assert result[0]["device_type"] == "sdwirec"
-        assert result[0]["block_dev"] == "/dev/sdb"
+
+    def test_discover_returns_legacy_sdwire(self):
+        """Test discover returns legacy SDWire (FTDI) devices."""
+        from labctl.sdwire.controller import discover_sdwire_devices
+
+        mock_dev = MagicMock()
+        mock_dev.serial_string = "sd-wire_1"
+        mock_dev.product_string = "sd-wire"
+        mock_dev.manufacturer_string = "SRPOL"
+        mock_dev.block_dev = "/dev/sdc"
+
+        with patch("sdwire.backend.detect.get_sdwirec_devices", return_value=[mock_dev]):
+            with patch("sdwire.backend.detect.get_sdwire_devices", return_value=[]):
+                result = discover_sdwire_devices()
+
+        assert len(result) == 1
+        assert result[0]["serial_number"] == "sd-wire_1"
+        assert result[0]["device_type"] == "sdwire"
 
     def test_discover_empty(self):
         """Test discover returns empty list when no devices connected."""
         from labctl.sdwire.controller import discover_sdwire_devices
 
-        with patch("sdwire.backend.detect.get_sdwire_devices", return_value=[]):
-            result = discover_sdwire_devices()
+        with patch("sdwire.backend.detect.get_sdwirec_devices", return_value=[]):
+            with patch("sdwire.backend.detect.get_sdwire_devices", return_value=[]):
+                result = discover_sdwire_devices()
 
         assert result == []
 
-    def test_discover_multiple_devices(self):
-        """Test discover finds multiple SDWireC devices."""
+    def test_discover_both_types(self):
+        """Test discover finds both SDWireC and legacy SDWire devices."""
         from labctl.sdwire.controller import discover_sdwire_devices
 
-        mock_dev1 = MagicMock()
-        mock_dev1.serial_string = "sdwirec_001"
-        mock_dev1.product_string = ""
-        mock_dev1.manufacturer_string = ""
-        mock_dev1.block_dev = "/dev/sdb"
+        mock_legacy = MagicMock()
+        mock_legacy.serial_string = "sd-wire_1"
+        mock_legacy.product_string = "sd-wire"
+        mock_legacy.manufacturer_string = "SRPOL"
+        mock_legacy.block_dev = "/dev/sdc"
 
-        mock_dev2 = MagicMock()
-        mock_dev2.serial_string = "sdwirec_002"
-        mock_dev2.product_string = ""
-        mock_dev2.manufacturer_string = ""
-        mock_dev2.block_dev = "/dev/sdc"
+        mock_sdwirec = MagicMock()
+        mock_sdwirec.serial_string = "sdwirec_001"
+        mock_sdwirec.product_string = ""
+        mock_sdwirec.manufacturer_string = ""
+        mock_sdwirec.block_dev = "/dev/sdd"
 
-        with patch("sdwire.backend.detect.get_sdwire_devices", return_value=[mock_dev1, mock_dev2]):
-            result = discover_sdwire_devices()
+        with patch("sdwire.backend.detect.get_sdwirec_devices", return_value=[mock_legacy]):
+            with patch("sdwire.backend.detect.get_sdwire_devices", return_value=[mock_sdwirec]):
+                result = discover_sdwire_devices()
 
         assert len(result) == 2
-        serials = {d["serial_number"] for d in result}
-        assert serials == {"sdwirec_001", "sdwirec_002"}
+        types = {d["device_type"] for d in result}
+        assert types == {"sdwire", "sdwirec"}
+
+    def test_discover_deduplicates(self):
+        """Test discover deduplicates devices returned by both functions."""
+        from labctl.sdwire.controller import discover_sdwire_devices
+
+        mock_dev = MagicMock()
+        mock_dev.serial_string = "sd-wire_1"
+        mock_dev.product_string = "sd-wire"
+        mock_dev.manufacturer_string = "SRPOL"
+        mock_dev.block_dev = "/dev/sdc"
+
+        mock_dup = MagicMock()
+        mock_dup.serial_string = "sd-wire_1"
+        mock_dup.product_string = "sd-wire"
+        mock_dup.manufacturer_string = "SRPOL"
+        mock_dup.block_dev = "/dev/sdc"
+
+        with patch("sdwire.backend.detect.get_sdwirec_devices", return_value=[mock_dev]):
+            with patch("sdwire.backend.detect.get_sdwire_devices", return_value=[mock_dup]):
+                result = discover_sdwire_devices()
+
+        assert len(result) == 1
+        assert result[0]["device_type"] == "sdwire"
 
     def test_discover_skips_empty_serial(self):
         """Test that devices with empty serial numbers are skipped."""
@@ -387,8 +433,9 @@ class TestDiscoverSDWireDevices:
         mock_dev.manufacturer_string = ""
         mock_dev.block_dev = None
 
-        with patch("sdwire.backend.detect.get_sdwire_devices", return_value=[mock_dev]):
-            result = discover_sdwire_devices()
+        with patch("sdwire.backend.detect.get_sdwirec_devices", return_value=[]):
+            with patch("sdwire.backend.detect.get_sdwire_devices", return_value=[mock_dev]):
+                result = discover_sdwire_devices()
 
         assert result == []
 

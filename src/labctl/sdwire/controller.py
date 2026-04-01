@@ -1,9 +1,11 @@
 """
 SDWire controller for switching SD cards between DUT and host.
 
-Wraps the sdwire Python library to control SDWireC devices.
-SDWireC (Realtek-based, VID 0BDA:0316) is the supported device type.
-Legacy SDWire (FTDI-based, VID 04E8:6001) is not currently supported.
+Wraps the sdwire Python library to control SDWire devices.
+
+Supported device types:
+  - sdwirec: SDWireC (Realtek-based, VID 0BDA:0316) — newer, faster
+  - sdwire:  Legacy SDWire (FTDI-based, VID 04E8:6001)
 """
 
 import logging
@@ -17,47 +19,56 @@ logger = logging.getLogger(__name__)
 
 
 class SDWireController:
-    """Controls an SDWireC SD card multiplexer."""
+    """Controls an SDWire SD card multiplexer."""
 
-    def __init__(self, serial_number: str):
+    def __init__(self, serial_number: str, device_type: str = "sdwirec"):
         self.serial_number = serial_number
+        self.device_type = device_type
 
     def _get_device(self):
         """Find and return the sdwire device object by serial number."""
         try:
-            from sdwire.backend.detect import get_sdwire_devices
+            from sdwire.backend.detect import (
+                get_sdwire_devices,
+                get_sdwirec_devices,
+            )
         except ImportError:
             raise RuntimeError(
                 "sdwire package not installed. Install with: pip install sdwire"
             )
 
+        all_devices = []
         try:
-            devices = get_sdwire_devices()
+            all_devices.extend(get_sdwirec_devices())
         except Exception:
-            devices = []
+            pass
+        try:
+            all_devices.extend(get_sdwire_devices())
+        except Exception:
+            pass
 
-        for dev in devices:
+        for dev in all_devices:
             if dev.serial_string == self.serial_number:
                 return dev
 
         raise RuntimeError(
-            f"SDWireC device with serial '{self.serial_number}' not found. "
+            f"SDWire device with serial '{self.serial_number}' not found. "
             "Is it connected?"
         )
 
     def switch_to_dut(self) -> None:
         """Switch SD card to the DUT (target SBC boots from it)."""
-        logger.debug("Switching SDWireC %s to DUT", self.serial_number)
+        logger.debug("Switching SDWire %s to DUT", self.serial_number)
         device = self._get_device()
         device.switch_dut()
-        logger.debug("SDWireC %s switched to DUT", self.serial_number)
+        logger.debug("SDWire %s switched to DUT", self.serial_number)
 
     def switch_to_host(self) -> None:
         """Switch SD card to the host (dev machine can read/write it)."""
-        logger.debug("Switching SDWireC %s to host", self.serial_number)
+        logger.debug("Switching SDWire %s to host", self.serial_number)
         device = self._get_device()
         device.switch_ts()
-        logger.debug("SDWireC %s switched to host", self.serial_number)
+        logger.debug("SDWire %s switched to host", self.serial_number)
 
     def get_block_device(self, settle_time: float = 0) -> Optional[str]:
         """Get the block device path when SD card is connected to host.
@@ -116,7 +127,7 @@ class SDWireController:
             )
 
         logger.info(
-            "Flashing %s to %s via SDWireC %s",
+            "Flashing %s to %s via SDWire %s",
             image_path, block_dev, self.serial_number,
         )
 
@@ -223,25 +234,47 @@ def _block_device_has_media(block_dev: str) -> bool:
 
 
 def discover_sdwire_devices() -> list[dict]:
-    """Discover all connected SDWireC devices.
+    """Discover all connected SDWire devices.
 
-    Returns a list of dicts with serial_number and block_dev.
-    Only detects SDWireC (Realtek-based) devices. Legacy SDWire
-    (FTDI-based) devices are not supported.
+    Returns a list of dicts with serial_number, device_type, and block_dev.
+    Detects both SDWireC (Realtek) and legacy SDWire (FTDI) devices.
     """
     try:
-        from sdwire.backend.detect import get_sdwire_devices
+        from sdwire.backend.detect import (
+            get_sdwire_devices,
+            get_sdwirec_devices,
+        )
     except ImportError:
         raise RuntimeError(
             "sdwire package not installed. Install with: pip install sdwire"
         )
 
     results = []
+    seen_serials = set()
 
+    # Legacy SDWire (FTDI-based, VID 04E8:6001)
+    try:
+        for dev in get_sdwirec_devices():
+            serial = dev.serial_string
+            if serial and serial not in seen_serials:
+                seen_serials.add(serial)
+                results.append({
+                    "serial_number": serial,
+                    "device_type": "sdwire",
+                    "product": getattr(dev, "product_string", ""),
+                    "manufacturer": getattr(dev, "manufacturer_string", ""),
+                    "block_dev": getattr(dev, "block_dev", None),
+                })
+    except Exception:
+        pass
+
+    # SDWireC (Realtek-based, VID 0BDA:0316)
+    # get_sdwire_devices() also returns legacy devices, so deduplicate
     try:
         for dev in get_sdwire_devices():
             serial = dev.serial_string
-            if serial:
+            if serial and serial not in seen_serials:
+                seen_serials.add(serial)
                 results.append({
                     "serial_number": serial,
                     "device_type": "sdwirec",

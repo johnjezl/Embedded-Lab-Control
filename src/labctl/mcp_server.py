@@ -98,6 +98,7 @@ def _sbc_to_dict(sbc) -> dict:
         data["sdwire"] = {
             "name": sbc.sdwire.name,
             "serial_number": sbc.sdwire.serial_number,
+            "device_type": sbc.sdwire.device_type,
         }
 
     return data
@@ -637,7 +638,7 @@ def sdwire_to_dut(sbc_name: str) -> str:
         return f"Error: No SDWire assigned to '{sbc_name}'"
 
     try:
-        ctrl = SDWireController(sbc.sdwire.serial_number)
+        ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
         ctrl.switch_to_dut()
         return f"SD card switched to DUT: {sbc_name}"
     except RuntimeError as e:
@@ -661,7 +662,7 @@ def sdwire_to_host(sbc_name: str) -> str:
         return f"Error: No SDWire assigned to '{sbc_name}'"
 
     try:
-        ctrl = SDWireController(sbc.sdwire.serial_number)
+        ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
         ctrl.switch_to_host()
         block_dev = ctrl.get_block_device()
         msg = f"SD card switched to host: {sbc_name}"
@@ -709,7 +710,7 @@ def sdwire_update(
         src, dest = spec.split(":", 1)
         file_pairs.append((src, dest))
 
-    ctrl = SDWireController(sbc.sdwire.serial_number)
+    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
 
     try:
         ctrl.switch_to_host()

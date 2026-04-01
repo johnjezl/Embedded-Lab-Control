@@ -466,7 +466,7 @@ def info_cmd(ctx: click.Context, name: str) -> None:
     click.echo("\nSDWire:")
     if sbc.sdwire:
         click.echo(
-            f"  {sbc.sdwire.name}: {sbc.sdwire.serial_number}"
+            f"  {sbc.sdwire.name}: {sbc.sdwire.serial_number} ({sbc.sdwire.device_type})"
         )
     else:
         click.echo("  (none)")
@@ -551,34 +551,63 @@ def sdwire_discover_cmd(ctx: click.Context) -> None:
         click.echo("No SDWire devices found.")
         return
 
-    click.echo(f"{'SERIAL':<25} {'BLOCK DEV':<12} {'REGISTERED'}")
-    click.echo("-" * 50)
+    click.echo(f"{'SERIAL':<25} {'TYPE':<10} {'BLOCK DEV':<12} {'REGISTERED'}")
+    click.echo("-" * 60)
 
     for d in devices:
         reg = known.get(d["serial_number"])
         reg_str = reg.name if reg else "-"
         block = d.get("block_dev") or "-"
-        click.echo(f"{d['serial_number']:<25} {block:<12} {reg_str}")
+        click.echo(
+            f"{d['serial_number']:<25} {d['device_type']:<10} "
+            f"{block:<12} {reg_str}"
+        )
 
 
 @sdwire_group.command("add")
 @click.argument("name")
 @click.argument("serial_number")
+@click.option(
+    "--type", "device_type",
+    type=click.Choice(["sdwire", "sdwirec"]),
+    default=None,
+    help="Device type (auto-detected if not specified)",
+)
 @click.pass_context
-def sdwire_add_cmd(ctx: click.Context, name: str, serial_number: str) -> None:
-    """Register an SDWireC device.
+def sdwire_add_cmd(
+    ctx: click.Context, name: str, serial_number: str, device_type: str | None
+) -> None:
+    """Register an SDWire device.
 
     NAME is a short identifier (e.g., sdwire-1).
     SERIAL_NUMBER is the USB serial (from 'labctl sdwire discover').
     """
     manager = _get_manager(ctx)
 
+    # Auto-detect type from connected devices if not specified
+    if device_type is None:
+        try:
+            from labctl.sdwire.controller import discover_sdwire_devices
+
+            for d in discover_sdwire_devices():
+                if d["serial_number"] == serial_number:
+                    device_type = d["device_type"]
+                    break
+        except RuntimeError:
+            pass
+        if device_type is None:
+            device_type = "sdwirec"
+
     try:
         device = manager.create_sdwire_device(
             name=name,
             serial_number=serial_number,
+            device_type=device_type,
         )
-        click.echo(f"Registered SDWireC device: {device.name} ({device.serial_number})")
+        click.echo(
+            f"Registered SDWire device: {device.name} ({device.serial_number}) "
+            f"type={device.device_type}"
+        )
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -628,12 +657,14 @@ def sdwire_list_cmd(ctx: click.Context) -> None:
         if sbc.sdwire:
             assigned[sbc.sdwire.id] = sbc.name
 
-    click.echo(f"{'NAME':<15} {'SERIAL':<25} {'ASSIGNED TO'}")
-    click.echo("-" * 50)
+    click.echo(f"{'NAME':<15} {'SERIAL':<25} {'TYPE':<10} {'ASSIGNED TO'}")
+    click.echo("-" * 60)
 
     for d in devices:
         sbc_name = assigned.get(d.id, "-")
-        click.echo(f"{d.name:<15} {d.serial_number:<25} {sbc_name}")
+        click.echo(
+            f"{d.name:<15} {d.serial_number:<25} {d.device_type:<10} {sbc_name}"
+        )
 
 
 @sdwire_group.command("assign")
@@ -698,7 +729,7 @@ def sdwire_dut_cmd(ctx: click.Context, sbc_name: str) -> None:
         sys.exit(1)
 
     try:
-        ctrl = SDWireController(sbc.sdwire.serial_number)
+        ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
         ctrl.switch_to_dut()
         click.echo(f"SD card switched to DUT: {sbc_name}")
     except RuntimeError as e:
@@ -724,7 +755,7 @@ def sdwire_host_cmd(ctx: click.Context, sbc_name: str) -> None:
         sys.exit(1)
 
     try:
-        ctrl = SDWireController(sbc.sdwire.serial_number)
+        ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
         ctrl.switch_to_host()
         block_dev = ctrl.get_block_device()
         msg = f"SD card switched to host: {sbc_name}"
@@ -761,7 +792,7 @@ def sdwire_flash_cmd(
         click.echo(f"Error: No SDWire assigned to '{sbc_name}'", err=True)
         sys.exit(1)
 
-    ctrl = SDWireController(sbc.sdwire.serial_number)
+    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
 
     try:
         # Step 1: Switch to host
@@ -856,7 +887,7 @@ def sdwire_update_cmd(
             sys.exit(1)
         file_pairs.append((src, dest))
 
-    ctrl = SDWireController(sbc.sdwire.serial_number)
+    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
 
     try:
         # Step 1: Switch to host
@@ -2133,6 +2164,7 @@ def export_cmd(ctx: click.Context, fmt: str, output: Path | None) -> None:
             sbc_data["sdwire"] = {
                 "name": sbc.sdwire.name,
                 "serial_number": sbc.sdwire.serial_number,
+                "device_type": sbc.sdwire.device_type,
             }
 
         data["sbcs"].append(sbc_data)
@@ -2294,6 +2326,7 @@ def import_cmd(ctx: click.Context, file: Path, update: bool) -> None:
                         sw_device = manager.create_sdwire_device(
                             name=sw_name,
                             serial_number=sw_data.get("serial_number", ""),
+                            device_type=sw_data.get("device_type", "sdwirec"),
                         )
                     except Exception:
                         pass
