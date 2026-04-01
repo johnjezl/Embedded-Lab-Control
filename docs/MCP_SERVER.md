@@ -252,6 +252,7 @@ Tools perform mutations — the AI assistant calls these to take action.
 |------|------------|-------------|
 | `sdwire_to_dut` | `sbc_name` | Switch SD card to SBC (boot from SD) |
 | `sdwire_to_host` | `sbc_name` | Switch SD card to host (for flashing) |
+| `sdwire_update` | `sbc_name`, `partition`, `copies`, `reboot` | Copy files to SD card partition (atomic: mount, copy, unmount) |
 
 ### Tool Return Values
 

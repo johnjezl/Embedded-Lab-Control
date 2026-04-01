@@ -9,8 +9,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 - SDWire SD card multiplexer support (2026-03-31)
   - Supports SDWire, SDWireC, and SDWire3 devices via `sdwire` Python library
-  - `labctl sdwire` CLI command group: discover, add, remove, list, assign, unassign, dut, host, flash
+  - `labctl sdwire` CLI command group: discover, add, remove, list, assign, unassign, dut, host, flash, update
   - `labctl sdwire flash <sbc> <image>` — automated workflow: switch to host, dd image, switch to DUT, power cycle
+  - `labctl sdwire update <sbc> -p N -c src:dest` — atomic partial update: mount partition, copy files, unmount, optional reboot
+  - Destination paths relative to partition root (e.g., `kernel.img` not `/boot/firmware/kernel.img`)
   - Database schema v3: `sdwire_devices` and `sdwire_assignments` tables
   - SDWire shown in `labctl info` output
   - MCP resource `lab://sdwire-devices` and tools `sdwire_to_dut`, `sdwire_to_host`

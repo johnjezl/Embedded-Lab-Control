@@ -456,3 +456,91 @@ class TestMcpSDWireTools:
 
         assert "Error" in result
         assert "device not found" in result
+
+    def test_sdwire_update_no_sdwire(self, mock_manager):
+        from labctl.mcp_server import sdwire_update
+
+        result = sdwire_update(
+            sbc_name="test-sbc-2", partition=1, copies=["a.bin:b.bin"]
+        )
+        assert "No SDWire" in result
+
+    def test_sdwire_update_not_found(self, mock_manager):
+        from labctl.mcp_server import sdwire_update
+
+        result = sdwire_update(
+            sbc_name="nope", partition=1, copies=["a.bin:b.bin"]
+        )
+        assert "not found" in result
+
+    def test_sdwire_update_bad_copy_format(self, mock_manager):
+        from labctl.mcp_server import sdwire_update
+
+        result = sdwire_update(
+            sbc_name="test-sbc-1", partition=1, copies=["no-colon"]
+        )
+        assert "Invalid copy format" in result
+
+    def test_sdwire_update_success(self, mock_manager):
+        from unittest.mock import MagicMock
+
+        from labctl.mcp_server import sdwire_update
+
+        mock_ctrl_instance = MagicMock()
+        mock_ctrl_instance.update_files.return_value = ["kernel.img"]
+
+        with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl_instance):
+            result = sdwire_update(
+                sbc_name="test-sbc-1",
+                partition=1,
+                copies=["local.bin:kernel.img"],
+            )
+
+        assert "Updated 1 file(s)" in result
+        assert "kernel.img" in result
+        mock_ctrl_instance.switch_to_host.assert_called_once()
+        mock_ctrl_instance.update_files.assert_called_once_with(
+            1, [("local.bin", "kernel.img")]
+        )
+        mock_ctrl_instance.switch_to_dut.assert_called_once()
+
+    def test_sdwire_update_with_reboot(self, mock_manager):
+        from unittest.mock import MagicMock
+
+        from labctl.mcp_server import sdwire_update
+
+        mock_ctrl_instance = MagicMock()
+        mock_ctrl_instance.update_files.return_value = ["kernel.img"]
+
+        mock_power = MagicMock()
+        mock_power.power_cycle.return_value = True
+
+        with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl_instance):
+            with patch("labctl.power.base.PowerController.from_plug", return_value=mock_power):
+                result = sdwire_update(
+                    sbc_name="test-sbc-1",
+                    partition=1,
+                    copies=["local.bin:kernel.img"],
+                    reboot=True,
+                )
+
+        assert "Power cycled" in result
+        mock_power.power_cycle.assert_called_once()
+
+    def test_sdwire_update_runtime_error(self, mock_manager):
+        from unittest.mock import MagicMock
+
+        from labctl.mcp_server import sdwire_update
+
+        mock_ctrl_instance = MagicMock()
+        mock_ctrl_instance.update_files.side_effect = RuntimeError("mount failed")
+
+        with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl_instance):
+            result = sdwire_update(
+                sbc_name="test-sbc-1",
+                partition=1,
+                copies=["a.bin:b.bin"],
+            )
+
+        assert "Error" in result
+        assert "mount failed" in result
