@@ -141,28 +141,39 @@ def discover_sdwire_devices() -> list[dict]:
         )
 
     results = []
+    seen_serials = set()
 
+    # SDWireC detection is more specific (matches VID 04E8 only),
+    # so process it first to establish correct device types.
     try:
         for dev in get_sdwirec_devices():
-            results.append({
-                "serial_number": dev.serial_string,
-                "device_type": "sdwirec",
-                "product": getattr(dev, "product_string", ""),
-                "manufacturer": getattr(dev, "manufacturer_string", ""),
-                "block_dev": getattr(dev, "block_dev", None),
-            })
+            serial = dev.serial_string
+            if serial and serial not in seen_serials:
+                seen_serials.add(serial)
+                results.append({
+                    "serial_number": serial,
+                    "device_type": "sdwirec",
+                    "product": getattr(dev, "product_string", ""),
+                    "manufacturer": getattr(dev, "manufacturer_string", ""),
+                    "block_dev": getattr(dev, "block_dev", None),
+                })
     except Exception:
         pass
 
+    # get_sdwire_devices() returns both SDWire3 AND SDWireC devices,
+    # so skip any we already found above.
     try:
         for dev in get_sdwire_devices():
-            results.append({
-                "serial_number": dev.serial_string,
-                "device_type": "sdwire3",
-                "product": getattr(dev, "product_string", ""),
-                "manufacturer": getattr(dev, "manufacturer_string", ""),
-                "block_dev": getattr(dev, "block_dev", None),
-            })
+            serial = dev.serial_string
+            if serial and serial not in seen_serials:
+                seen_serials.add(serial)
+                results.append({
+                    "serial_number": serial,
+                    "device_type": "sdwire3",
+                    "product": getattr(dev, "product_string", ""),
+                    "manufacturer": getattr(dev, "manufacturer_string", ""),
+                    "block_dev": getattr(dev, "block_dev", None),
+                })
     except Exception:
         pass
 
