@@ -572,12 +572,12 @@ def sdwire_discover_cmd(ctx: click.Context) -> None:
 @click.option(
     "--type", "device_type",
     type=click.Choice(["sdwire", "sdwirec", "sdwire3"]),
-    default="sdwirec",
-    help="Device type (default: sdwirec)",
+    default=None,
+    help="Device type (auto-detected from connected devices if not specified)",
 )
 @click.pass_context
 def sdwire_add_cmd(
-    ctx: click.Context, name: str, serial_number: str, device_type: str
+    ctx: click.Context, name: str, serial_number: str, device_type: str | None
 ) -> None:
     """Register an SDWire device.
 
@@ -586,13 +586,34 @@ def sdwire_add_cmd(
     """
     manager = _get_manager(ctx)
 
+    # Auto-detect type from connected devices if not specified
+    if device_type is None:
+        try:
+            from labctl.sdwire.controller import discover_sdwire_devices
+
+            for d in discover_sdwire_devices():
+                if d["serial_number"] == serial_number:
+                    device_type = d["device_type"]
+                    break
+        except RuntimeError:
+            pass
+
+        if device_type is None:
+            device_type = "sdwirec"
+            click.echo(
+                f"Warning: Could not auto-detect type, defaulting to {device_type}"
+            )
+
     try:
         device = manager.create_sdwire_device(
             name=name,
             serial_number=serial_number,
             device_type=device_type,
         )
-        click.echo(f"Registered SDWire device: {device.name} ({device.serial_number})")
+        click.echo(
+            f"Registered SDWire device: {device.name} ({device.serial_number}) "
+            f"type={device.device_type}"
+        )
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
