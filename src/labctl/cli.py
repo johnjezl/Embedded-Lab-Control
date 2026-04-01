@@ -1678,76 +1678,100 @@ def log_cmd(
         output = Path(f"{sbc_name}-{ts}.log")
 
     click.echo(f"Logging {sbc_name} to {output}")
-    click.echo(f"Connecting to localhost:{port.tcp_port}...")
     if lines:
         click.echo(f"Will capture {lines} lines then exit")
     else:
         click.echo("Press Ctrl+C to stop")
 
     line_count = 0
-    buffer = b""
+    reconnect_delay = 2
 
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect(("localhost", port.tcp_port))
-        sock.setblocking(False)
-
         with open(output, "a") as f:
             while True:
-                # Use select for non-blocking read
-                readable, _, _ = select.select([sock], [], [], 1.0)
-                if readable:
-                    try:
-                        data = sock.recv(4096)
-                        if not data:
-                            click.echo("\nConnection closed by remote")
-                            break
+                sock = None
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.connect(("localhost", port.tcp_port))
+                    sock.setblocking(False)
 
-                        buffer += data
+                    if follow:
+                        click.echo(
+                            f"Connected to localhost:{port.tcp_port}"
+                        )
 
-                        # Process complete lines
-                        while b"\n" in buffer:
-                            line, buffer = buffer.split(b"\n", 1)
+                    buffer = b""
+
+                    while True:
+                        readable, _, _ = select.select([sock], [], [], 1.0)
+                        if readable:
                             try:
-                                line_str = line.decode(
-                                    "utf-8", errors="replace"
-                                ).rstrip()
-                            except Exception:
-                                line_str = line.decode("latin-1").rstrip()
+                                data = sock.recv(4096)
+                                if not data:
+                                    # Connection closed — break to reconnect
+                                    break
 
-                            if timestamp:
-                                ts_str = datetime.now().strftime(
-                                    "%Y-%m-%d %H:%M:%S.%f"
-                                )[:-3]
-                                log_line = f"[{ts_str}] {line_str}\n"
-                            else:
-                                log_line = f"{line_str}\n"
+                                buffer += data
 
-                            f.write(log_line)
-                            f.flush()
+                                while b"\n" in buffer:
+                                    line, buffer = buffer.split(b"\n", 1)
+                                    try:
+                                        line_str = line.decode(
+                                            "utf-8", errors="replace"
+                                        ).rstrip()
+                                    except Exception:
+                                        line_str = line.decode(
+                                            "latin-1"
+                                        ).rstrip()
 
-                            if follow:
-                                click.echo(log_line, nl=False)
+                                    if timestamp:
+                                        ts_str = datetime.now().strftime(
+                                            "%Y-%m-%d %H:%M:%S.%f"
+                                        )[:-3]
+                                        log_line = f"[{ts_str}] {line_str}\n"
+                                    else:
+                                        log_line = f"{line_str}\n"
 
-                            line_count += 1
+                                    f.write(log_line)
+                                    f.flush()
 
-                            if lines and line_count >= lines:
-                                click.echo(f"\nCaptured {line_count} lines")
-                                return
+                                    if follow:
+                                        click.echo(log_line, nl=False)
 
-                    except BlockingIOError:
-                        pass
+                                    line_count += 1
 
-    except ConnectionRefusedError:
-        click.echo(f"Error: Connection refused to localhost:{port.tcp_port}", err=True)
-        sys.exit(1)
+                                    if lines and line_count >= lines:
+                                        click.echo(
+                                            f"\nCaptured {line_count} lines"
+                                        )
+                                        return
+
+                            except BlockingIOError:
+                                pass
+
+                except (ConnectionRefusedError, OSError):
+                    pass
+                finally:
+                    if sock:
+                        try:
+                            sock.close()
+                        except Exception:
+                            pass
+
+                # Reconnect after disconnect or connection failure
+                if lines and line_count >= lines:
+                    return
+
+                if follow:
+                    click.echo(
+                        f"Disconnected. Reconnecting in {reconnect_delay}s..."
+                    )
+
+                import time
+                time.sleep(reconnect_delay)
+
     except KeyboardInterrupt:
         click.echo(f"\nLogged {line_count} lines to {output}")
-    finally:
-        try:
-            sock.close()
-        except Exception:
-            pass
 
 
 @main.command("console")
