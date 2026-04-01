@@ -163,6 +163,23 @@ This document records significant design decisions made during development.
 
 ---
 
+## D010: SDWire SD card multiplexer integration
+
+- **Date**: 2026-03-31
+- **Context**: Lab uses SDWire and SDWireC devices to switch SD cards between SBCs and the dev machine for automated flashing, eliminating manual SD card swapping.
+- **Options Considered**:
+  1. Shell out to `sd-mux-ctrl` C++ tool
+  2. Use the `sdwire` Python library directly
+- **Decision**: Use the `sdwire` Python library as an optional dependency
+- **Rationale**:
+  - Pure Python — no need to build C++ tools from source
+  - Supports all three device types (SDWire, SDWireC, SDWire3) with a unified API
+  - Provides block device mapping for automated image flashing
+  - Same pattern as other optional hardware (Kasa, MCP) — graceful ImportError handling
+  - `labctl sdwire flash` command automates the full workflow: switch to host, write image, switch to DUT, power cycle
+
+---
+
 _Template for new decisions:_
 
 ```markdown

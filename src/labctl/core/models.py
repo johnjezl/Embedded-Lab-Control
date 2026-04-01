@@ -155,6 +155,28 @@ class PowerPlug:
 
 
 @dataclass
+class SDWireDevice:
+    """SD card multiplexer (SDWire/SDWireC/SDWire3) device."""
+
+    id: Optional[int] = None
+    name: str = ""
+    serial_number: str = ""
+    device_type: str = "sdwirec"  # sdwire, sdwirec, sdwire3
+    created_at: Optional[datetime] = None
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "SDWireDevice":
+        """Create SDWireDevice from database row."""
+        return cls(
+            id=row["id"],
+            name=row["name"],
+            serial_number=row["serial_number"],
+            device_type=row["device_type"],
+            created_at=row["created_at"],
+        )
+
+
+@dataclass
 class SBC:
     """Single Board Computer record."""
 
@@ -171,6 +193,7 @@ class SBC:
     serial_ports: list[SerialPort] = field(default_factory=list)
     network_addresses: list[NetworkAddress] = field(default_factory=list)
     power_plug: Optional[PowerPlug] = None
+    sdwire: Optional[SDWireDevice] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "SBC":

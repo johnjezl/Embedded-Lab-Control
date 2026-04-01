@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Generator, Optional
 
 # Current schema version
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # SQL statements for schema creation
 SCHEMA_SQL = """
@@ -83,6 +83,25 @@ CREATE TABLE IF NOT EXISTS power_plugs (
     FOREIGN KEY (sbc_id) REFERENCES sbcs(id) ON DELETE CASCADE
 );
 
+-- SDWire (SD card multiplexer) devices
+CREATE TABLE IF NOT EXISTS sdwire_devices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL,
+    serial_number TEXT UNIQUE NOT NULL,
+    device_type TEXT NOT NULL DEFAULT 'sdwirec',  -- sdwire, sdwirec, sdwire3
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- SDWire assignments to SBCs
+CREATE TABLE IF NOT EXISTS sdwire_assignments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sbc_id INTEGER UNIQUE NOT NULL,
+    sdwire_device_id INTEGER NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (sbc_id) REFERENCES sbcs(id) ON DELETE CASCADE,
+    FOREIGN KEY (sdwire_device_id) REFERENCES sdwire_devices(id) ON DELETE CASCADE
+);
+
 -- Status history log
 CREATE TABLE IF NOT EXISTS status_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -111,6 +130,7 @@ CREATE INDEX IF NOT EXISTS idx_serial_devices_usb_path ON serial_devices(usb_pat
 CREATE INDEX IF NOT EXISTS idx_serial_ports_sbc ON serial_ports(sbc_id);
 CREATE INDEX IF NOT EXISTS idx_serial_ports_device ON serial_ports(device_path);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_serial_ports_alias ON serial_ports(alias) WHERE alias IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sdwire_assignments_sbc ON sdwire_assignments(sbc_id);
 CREATE INDEX IF NOT EXISTS idx_status_log_sbc ON status_log(sbc_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_entity ON audit_log(entity_type, entity_id);
 """
@@ -189,6 +209,29 @@ class Database:
                 )
             except sqlite3.OperationalError:
                 pass  # Index already exists
+
+        if from_version < 3:
+            # v3: Add SDWire device and assignment tables
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS sdwire_devices (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE NOT NULL,
+                    serial_number TEXT UNIQUE NOT NULL,
+                    device_type TEXT NOT NULL DEFAULT 'sdwirec',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS sdwire_assignments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sbc_id INTEGER UNIQUE NOT NULL,
+                    sdwire_device_id INTEGER NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (sbc_id) REFERENCES sbcs(id) ON DELETE CASCADE,
+                    FOREIGN KEY (sdwire_device_id) REFERENCES sdwire_devices(id)
+                        ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS idx_sdwire_assignments_sbc
+                    ON sdwire_assignments(sbc_id);
+            """)
 
         conn.execute(
             "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)

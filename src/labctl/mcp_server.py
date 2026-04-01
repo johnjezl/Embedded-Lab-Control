@@ -94,6 +94,13 @@ def _sbc_to_dict(sbc) -> dict:
             "index": sbc.power_plug.plug_index,
         }
 
+    if sbc.sdwire:
+        data["sdwire"] = {
+            "name": sbc.sdwire.name,
+            "serial_number": sbc.sdwire.serial_number,
+            "device_type": sbc.sdwire.device_type,
+        }
+
     return data
 
 
@@ -588,6 +595,82 @@ def set_network_address(
         )
         return f"Set {address_type} address for {sbc_name}: {addr.ip_address}"
     except (ValueError, KeyError) as e:
+        return f"Error: {e}"
+
+
+@mcp.resource("lab://sdwire-devices")
+def list_sdwire_devices() -> str:
+    """List all registered SDWire SD card multiplexer devices."""
+    manager = _get_manager()
+    devices = manager.list_sdwire_devices()
+    sbcs = manager.list_sbcs()
+    assigned = {}
+    for sbc in sbcs:
+        if sbc.sdwire:
+            assigned[sbc.sdwire.id] = sbc.name
+    return json.dumps(
+        [
+            {
+                "name": d.name,
+                "serial_number": d.serial_number,
+                "device_type": d.device_type,
+                "assigned_to": assigned.get(d.id),
+            }
+            for d in devices
+        ],
+        indent=2,
+    )
+
+
+@mcp.tool()
+def sdwire_to_dut(sbc_name: str) -> str:
+    """Switch an SBC's SD card to DUT mode (SBC boots from the SD card).
+
+    Args:
+        sbc_name: Name of the SBC with an assigned SDWire device
+    """
+    from labctl.sdwire import SDWireController
+
+    manager = _get_manager()
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return f"Error: SBC '{sbc_name}' not found"
+    if not sbc.sdwire:
+        return f"Error: No SDWire assigned to '{sbc_name}'"
+
+    try:
+        ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+        ctrl.switch_to_dut()
+        return f"SD card switched to DUT: {sbc_name}"
+    except RuntimeError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def sdwire_to_host(sbc_name: str) -> str:
+    """Switch an SBC's SD card to host mode (dev machine can read/write the SD card).
+
+    Args:
+        sbc_name: Name of the SBC with an assigned SDWire device
+    """
+    from labctl.sdwire import SDWireController
+
+    manager = _get_manager()
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return f"Error: SBC '{sbc_name}' not found"
+    if not sbc.sdwire:
+        return f"Error: No SDWire assigned to '{sbc_name}'"
+
+    try:
+        ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+        ctrl.switch_to_host()
+        block_dev = ctrl.get_block_device()
+        msg = f"SD card switched to host: {sbc_name}"
+        if block_dev:
+            msg += f" (block device: {block_dev})"
+        return msg
+    except RuntimeError as e:
         return f"Error: {e}"
 
 

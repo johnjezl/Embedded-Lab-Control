@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- SDWire SD card multiplexer support (2026-03-31)
+  - Supports SDWire, SDWireC, and SDWire3 devices via `sdwire` Python library
+  - `labctl sdwire` CLI command group: discover, add, remove, list, assign, unassign, dut, host, flash
+  - `labctl sdwire flash <sbc> <image>` — automated workflow: switch to host, dd image, switch to DUT, power cycle
+  - Database schema v3: `sdwire_devices` and `sdwire_assignments` tables
+  - SDWire shown in `labctl info` output
+  - MCP resource `lab://sdwire-devices` and tools `sdwire_to_dut`, `sdwire_to_host`
+  - Export/import includes SDWire device assignments
+  - 55 new tests (322 total)
 - Global `--delay` / `-d` CLI option (2026-03-29)
   - Adds a delay in seconds before any command executes
   - Useful for chaining commands after power cycles (e.g., `labctl -d 30 health-check`)

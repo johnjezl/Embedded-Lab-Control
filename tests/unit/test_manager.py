@@ -574,6 +574,212 @@ class TestPowerPlugOperations:
         assert sbc.power_plug is None
 
 
+class TestSDWireDeviceOperations:
+    """Tests for SDWire device CRUD operations."""
+
+    def test_create_sdwire_device(self, manager):
+        """Test creating an SDWire device with all fields."""
+        device = manager.create_sdwire_device(
+            name="sdwire-1",
+            serial_number="bdgrd_sdwirec_522",
+            device_type="sdwirec",
+        )
+        assert device.id is not None
+        assert device.name == "sdwire-1"
+        assert device.serial_number == "bdgrd_sdwirec_522"
+        assert device.device_type == "sdwirec"
+        assert device.created_at is not None
+
+    def test_create_sdwire_device_default_type(self, manager):
+        """Test creating an SDWire device with default type."""
+        device = manager.create_sdwire_device(
+            name="sdwire-default",
+            serial_number="test_serial_001",
+        )
+        assert device.device_type == "sdwirec"
+
+    def test_create_sdwire_device_sdwire3(self, manager):
+        """Test creating an SDWire3 device."""
+        device = manager.create_sdwire_device(
+            name="sdwire3-1",
+            serial_number="sdwire_gen2_101",
+            device_type="sdwire3",
+        )
+        assert device.device_type == "sdwire3"
+
+    def test_create_sdwire_device_duplicate_name(self, manager):
+        """Test creating a device with duplicate name fails."""
+        manager.create_sdwire_device(name="dup-name", serial_number="serial-1")
+        with pytest.raises(Exception):
+            manager.create_sdwire_device(name="dup-name", serial_number="serial-2")
+
+    def test_create_sdwire_device_duplicate_serial(self, manager):
+        """Test creating a device with duplicate serial fails."""
+        manager.create_sdwire_device(name="name-1", serial_number="dup-serial")
+        with pytest.raises(Exception):
+            manager.create_sdwire_device(name="name-2", serial_number="dup-serial")
+
+    def test_get_sdwire_device_by_id(self, manager):
+        """Test getting an SDWire device by ID."""
+        created = manager.create_sdwire_device(
+            name="get-by-id", serial_number="serial-get-id"
+        )
+        fetched = manager.get_sdwire_device(created.id)
+        assert fetched is not None
+        assert fetched.name == "get-by-id"
+        assert fetched.serial_number == "serial-get-id"
+
+    def test_get_sdwire_device_nonexistent(self, manager):
+        """Test getting a non-existent SDWire device returns None."""
+        assert manager.get_sdwire_device(999) is None
+
+    def test_get_sdwire_device_by_name(self, manager):
+        """Test getting an SDWire device by name."""
+        manager.create_sdwire_device(name="by-name", serial_number="serial-by-name")
+        fetched = manager.get_sdwire_device_by_name("by-name")
+        assert fetched is not None
+        assert fetched.serial_number == "serial-by-name"
+
+    def test_get_sdwire_device_by_name_nonexistent(self, manager):
+        """Test getting a non-existent device by name returns None."""
+        assert manager.get_sdwire_device_by_name("nope") is None
+
+    def test_list_sdwire_devices(self, manager):
+        """Test listing SDWire devices returns all, sorted by name."""
+        manager.create_sdwire_device(name="z-device", serial_number="s1")
+        manager.create_sdwire_device(name="a-device", serial_number="s2")
+        manager.create_sdwire_device(name="m-device", serial_number="s3")
+
+        devices = manager.list_sdwire_devices()
+        assert len(devices) == 3
+        assert devices[0].name == "a-device"
+        assert devices[1].name == "m-device"
+        assert devices[2].name == "z-device"
+
+    def test_list_sdwire_devices_empty(self, manager):
+        """Test listing returns empty list when none registered."""
+        assert manager.list_sdwire_devices() == []
+
+    def test_delete_sdwire_device(self, manager):
+        """Test deleting an SDWire device."""
+        device = manager.create_sdwire_device(
+            name="delete-me", serial_number="s-delete"
+        )
+        assert manager.delete_sdwire_device(device.id) is True
+        assert manager.get_sdwire_device(device.id) is None
+
+    def test_delete_sdwire_device_nonexistent(self, manager):
+        """Test deleting a non-existent device returns False."""
+        assert manager.delete_sdwire_device(999) is False
+
+    def test_delete_sdwire_device_fails_if_assigned(self, manager):
+        """Test deleting a device that is assigned to an SBC raises ValueError."""
+        sbc = manager.create_sbc(name="sdwire-sbc")
+        device = manager.create_sdwire_device(
+            name="assigned-sw", serial_number="s-assigned"
+        )
+        manager.assign_sdwire(sbc.id, device.id)
+
+        with pytest.raises(ValueError, match="still assigned"):
+            manager.delete_sdwire_device(device.id)
+
+
+class TestSDWireAssignment:
+    """Tests for SDWire assignment operations."""
+
+    def test_assign_sdwire(self, manager):
+        """Test assigning an SDWire device to an SBC."""
+        sbc = manager.create_sbc(name="sw-assign-sbc")
+        device = manager.create_sdwire_device(
+            name="sw-assign", serial_number="s-assign"
+        )
+
+        manager.assign_sdwire(sbc.id, device.id)
+
+        loaded = manager.get_sbc(sbc.id)
+        assert loaded.sdwire is not None
+        assert loaded.sdwire.name == "sw-assign"
+        assert loaded.sdwire.serial_number == "s-assign"
+
+    def test_assign_sdwire_replaces_existing(self, manager):
+        """Test assigning a new SDWire replaces the existing one."""
+        sbc = manager.create_sbc(name="sw-replace-sbc")
+        dev1 = manager.create_sdwire_device(name="sw-old", serial_number="s-old")
+        dev2 = manager.create_sdwire_device(name="sw-new", serial_number="s-new")
+
+        manager.assign_sdwire(sbc.id, dev1.id)
+        manager.assign_sdwire(sbc.id, dev2.id)
+
+        loaded = manager.get_sbc(sbc.id)
+        assert loaded.sdwire.name == "sw-new"
+
+    def test_assign_sdwire_bad_sbc(self, manager):
+        """Test assigning to non-existent SBC raises ValueError."""
+        device = manager.create_sdwire_device(
+            name="sw-bad-sbc", serial_number="s-bad-sbc"
+        )
+        with pytest.raises(ValueError, match="SBC with ID"):
+            manager.assign_sdwire(999, device.id)
+
+    def test_assign_sdwire_bad_device(self, manager):
+        """Test assigning non-existent device raises ValueError."""
+        sbc = manager.create_sbc(name="sw-bad-dev-sbc")
+        with pytest.raises(ValueError, match="SDWire device with ID"):
+            manager.assign_sdwire(sbc.id, 999)
+
+    def test_unassign_sdwire(self, manager):
+        """Test unassigning an SDWire from an SBC."""
+        sbc = manager.create_sbc(name="sw-unassign-sbc")
+        device = manager.create_sdwire_device(
+            name="sw-unassign", serial_number="s-unassign"
+        )
+        manager.assign_sdwire(sbc.id, device.id)
+
+        assert manager.unassign_sdwire(sbc.id) is True
+
+        loaded = manager.get_sbc(sbc.id)
+        assert loaded.sdwire is None
+
+    def test_unassign_sdwire_when_none(self, manager):
+        """Test unassigning returns False when no SDWire is assigned."""
+        sbc = manager.create_sbc(name="sw-none-sbc")
+        assert manager.unassign_sdwire(sbc.id) is False
+
+    def test_sbc_without_sdwire(self, manager):
+        """Test SBC loads with sdwire=None when not assigned."""
+        sbc = manager.create_sbc(name="no-sdwire")
+        loaded = manager.get_sbc(sbc.id)
+        assert loaded.sdwire is None
+
+    def test_list_sbcs_loads_sdwire(self, manager):
+        """Test that list_sbcs populates sdwire on each SBC."""
+        sbc = manager.create_sbc(name="list-sw-sbc")
+        device = manager.create_sdwire_device(
+            name="list-sw", serial_number="s-list"
+        )
+        manager.assign_sdwire(sbc.id, device.id)
+
+        sbcs = manager.list_sbcs()
+        assert len(sbcs) == 1
+        assert sbcs[0].sdwire is not None
+        assert sbcs[0].sdwire.name == "list-sw"
+
+    def test_delete_sbc_cascades_sdwire_assignment(self, manager):
+        """Test deleting an SBC removes its SDWire assignment."""
+        sbc = manager.create_sbc(name="cascade-sw-sbc")
+        device = manager.create_sdwire_device(
+            name="cascade-sw", serial_number="s-cascade"
+        )
+        manager.assign_sdwire(sbc.id, device.id)
+
+        manager.delete_sbc(sbc.id)
+
+        # Device still exists, but assignment is gone
+        assert manager.get_sdwire_device_by_name("cascade-sw") is not None
+        # Can now delete the device since it's unassigned
+        manager.delete_sdwire_device(device.id)
+
+
 class TestCascadeDelete:
     """Tests for cascade delete behavior."""
 

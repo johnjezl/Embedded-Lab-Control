@@ -15,6 +15,7 @@ from labctl.core.models import (
     PlugType,
     PortType,
     PowerPlug,
+    SDWireDevice,
     SerialDevice,
     SerialPort,
     Status,
@@ -120,6 +121,16 @@ class ResourceManager:
         )
         if row:
             sbc.power_plug = PowerPlug.from_row(row)
+
+        # Load SDWire assignment
+        row = self.db.execute_one(
+            """SELECT sd.* FROM sdwire_devices sd
+               JOIN sdwire_assignments sa ON sa.sdwire_device_id = sd.id
+               WHERE sa.sbc_id = ?""",
+            (sbc.id,),
+        )
+        if row:
+            sbc.sdwire = SDWireDevice.from_row(row)
 
     def list_sbcs(
         self,
@@ -537,6 +548,100 @@ class ResourceManager:
         """Remove power plug assignment from an SBC."""
         count = self.db.execute_modify(
             "DELETE FROM power_plugs WHERE sbc_id = ?", (sbc_id,)
+        )
+        return count > 0
+
+    # --- SDWire Device Operations ---
+
+    def create_sdwire_device(
+        self,
+        name: str,
+        serial_number: str,
+        device_type: str = "sdwirec",
+    ) -> SDWireDevice:
+        """Register an SDWire SD card multiplexer device."""
+        device_id = self.db.execute_insert(
+            """INSERT INTO sdwire_devices (name, serial_number, device_type)
+               VALUES (?, ?, ?)""",
+            (name, serial_number, device_type),
+        )
+        self._audit_log(
+            "create", "sdwire_device", device_id, name,
+            f"Registered SDWire device: {name} ({serial_number})",
+        )
+        row = self.db.execute_one("SELECT * FROM sdwire_devices WHERE id = ?", (device_id,))
+        return SDWireDevice.from_row(row)
+
+    def get_sdwire_device(self, device_id: int) -> Optional[SDWireDevice]:
+        """Get SDWire device by ID."""
+        row = self.db.execute_one("SELECT * FROM sdwire_devices WHERE id = ?", (device_id,))
+        return SDWireDevice.from_row(row) if row else None
+
+    def get_sdwire_device_by_name(self, name: str) -> Optional[SDWireDevice]:
+        """Get SDWire device by name."""
+        row = self.db.execute_one("SELECT * FROM sdwire_devices WHERE name = ?", (name,))
+        return SDWireDevice.from_row(row) if row else None
+
+    def list_sdwire_devices(self) -> list[SDWireDevice]:
+        """List all registered SDWire devices."""
+        rows = self.db.execute("SELECT * FROM sdwire_devices ORDER BY name")
+        return [SDWireDevice.from_row(r) for r in rows]
+
+    def delete_sdwire_device(self, device_id: int) -> bool:
+        """Delete an SDWire device. Raises ValueError if still assigned."""
+        device = self.get_sdwire_device(device_id)
+        if not device:
+            return False
+
+        row = self.db.execute_one(
+            "SELECT id FROM sdwire_assignments WHERE sdwire_device_id = ?", (device_id,)
+        )
+        if row:
+            raise ValueError(
+                f"SDWire device '{device.name}' is still assigned to an SBC. "
+                "Unassign it first."
+            )
+
+        count = self.db.execute_modify(
+            "DELETE FROM sdwire_devices WHERE id = ?", (device_id,)
+        )
+        if count > 0:
+            self._audit_log(
+                "delete", "sdwire_device", device_id, device.name,
+                f"Deleted SDWire device: {device.name}",
+            )
+            return True
+        return False
+
+    def assign_sdwire(self, sbc_id: int, sdwire_device_id: int) -> None:
+        """Assign an SDWire device to an SBC."""
+        sbc = self.get_sbc(sbc_id)
+        if not sbc:
+            raise ValueError(f"SBC with ID {sbc_id} not found")
+
+        device = self.get_sdwire_device(sdwire_device_id)
+        if not device:
+            raise ValueError(f"SDWire device with ID {sdwire_device_id} not found")
+
+        # Remove existing assignment for this SBC
+        self.db.execute_modify(
+            "DELETE FROM sdwire_assignments WHERE sbc_id = ?", (sbc_id,)
+        )
+
+        self.db.execute_insert(
+            "INSERT INTO sdwire_assignments (sbc_id, sdwire_device_id) VALUES (?, ?)",
+            (sbc_id, sdwire_device_id),
+        )
+
+        self._audit_log(
+            "assign", "sdwire", sdwire_device_id, sbc.name,
+            f"Assigned SDWire '{device.name}' to {sbc.name}",
+        )
+
+    def unassign_sdwire(self, sbc_id: int) -> bool:
+        """Remove SDWire assignment from an SBC."""
+        count = self.db.execute_modify(
+            "DELETE FROM sdwire_assignments WHERE sbc_id = ?", (sbc_id,)
         )
         return count > 0
 

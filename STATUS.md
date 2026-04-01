@@ -2,7 +2,7 @@
 
 ## Current State
 
-- **Milestone**: All milestones complete + MCP server + serial device management + HTTPS + Kasa strips
+- **Milestone**: All milestones complete + SDWire + MCP server + serial device management + HTTPS + Kasa strips
 - **Sub-task**: All complete
 - **Status**: Feature complete
 
@@ -31,8 +31,8 @@
 ## Notes
 
 - **All Milestones Complete!**
-- 259 tests passing
-- Database schema v2: serial_devices table, alias/serial_device_id on serial_ports
+- 322 tests passing
+- Database schema v3: serial_devices, sdwire_devices/sdwire_assignments tables
 - Schema migration is automatic and preserves existing data
 - Two config files may need to be kept in sync (user + labctl system user)
   - Recommendation: use /etc/labctl/config.yaml as single source of truth
@@ -54,3 +54,4 @@
 | - | Deferred Items | Complete |
 | - | Authentication | Complete |
 | - | MCP Server | Complete |
+| - | SDWire Support | Complete |

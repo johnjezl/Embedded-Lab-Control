@@ -163,6 +163,7 @@ to understand the current state before taking action.
 | `lab://sbcs` | All SBCs with status, project, IP, serial ports, network, and power plug info |
 | `lab://serial-devices` | All registered USB-serial adapters with vendor/model info |
 | `lab://ports` | All serial port assignments with aliases, SBC mappings, and TCP ports |
+| `lab://sdwire-devices` | All registered SDWire SD card multiplexer devices with assignments |
 | `lab://status` | Dashboard-style overview — all SBCs with live power state queries |
 
 ### Template Resources (parameterized)
@@ -244,6 +245,13 @@ Tools perform mutations — the AI assistant calls these to take action.
 | `assign_serial_port` | `sbc_name`, `port_type`, `device`, `alias`, `baud_rate` | Assign serial port to SBC |
 | `assign_power_plug` | `sbc_name`, `plug_type`, `address`, `index` | Assign smart plug to SBC |
 | `set_network_address` | `sbc_name`, `address_type`, `ip_address`, `mac`, `hostname` | Set network address for SBC |
+
+### SDWire (SD Card Multiplexer)
+
+| Tool | Parameters | Description |
+|------|------------|-------------|
+| `sdwire_to_dut` | `sbc_name` | Switch SD card to SBC (boot from SD) |
+| `sdwire_to_host` | `sbc_name` | Switch SD card to host (for flashing) |
 
 ### Tool Return Values
 

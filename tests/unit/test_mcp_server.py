@@ -53,6 +53,13 @@ def populated_manager(manager):
         address="192.168.1.200",
     )
 
+    sdwire = manager.create_sdwire_device(
+        name="sdwire-1",
+        serial_number="bdgrd_sdwirec_001",
+        device_type="sdwirec",
+    )
+    manager.assign_sdwire(sbc1.id, sdwire.id)
+
     return manager
 
 
@@ -343,3 +350,109 @@ class TestMcpPowerTools:
 
         assert "Error" in result
         assert "device unreachable" in result
+
+
+class TestMcpSDWireResource:
+    """Tests for SDWire MCP resource."""
+
+    def test_list_sdwire_devices(self, mock_manager):
+        from labctl.mcp_server import list_sdwire_devices
+
+        result = json.loads(list_sdwire_devices())
+        assert len(result) == 1
+        assert result[0]["name"] == "sdwire-1"
+        assert result[0]["serial_number"] == "bdgrd_sdwirec_001"
+        assert result[0]["device_type"] == "sdwirec"
+        assert result[0]["assigned_to"] == "test-sbc-1"
+
+    def test_sbc_details_includes_sdwire(self, mock_manager):
+        from labctl.mcp_server import get_sbc_details
+
+        result = json.loads(get_sbc_details("test-sbc-1"))
+        assert "sdwire" in result
+        assert result["sdwire"]["name"] == "sdwire-1"
+        assert result["sdwire"]["serial_number"] == "bdgrd_sdwirec_001"
+
+    def test_sbc_without_sdwire(self, mock_manager):
+        from labctl.mcp_server import get_sbc_details
+
+        result = json.loads(get_sbc_details("test-sbc-2"))
+        assert "sdwire" not in result
+
+    def test_list_sbcs_includes_sdwire(self, mock_manager):
+        from labctl.mcp_server import list_sbcs
+
+        result = json.loads(list_sbcs())
+        sbc1 = next(s for s in result if s["name"] == "test-sbc-1")
+        assert "sdwire" in sbc1
+        assert sbc1["sdwire"]["name"] == "sdwire-1"
+
+
+class TestMcpSDWireTools:
+    """Tests for SDWire MCP tools."""
+
+    def test_sdwire_to_dut_no_sdwire(self, mock_manager):
+        from labctl.mcp_server import sdwire_to_dut
+
+        result = sdwire_to_dut(sbc_name="test-sbc-2")
+        assert "No SDWire" in result
+
+    def test_sdwire_to_host_no_sdwire(self, mock_manager):
+        from labctl.mcp_server import sdwire_to_host
+
+        result = sdwire_to_host(sbc_name="test-sbc-2")
+        assert "No SDWire" in result
+
+    def test_sdwire_to_dut_not_found(self, mock_manager):
+        from labctl.mcp_server import sdwire_to_dut
+
+        result = sdwire_to_dut(sbc_name="nope")
+        assert "not found" in result
+
+    def test_sdwire_to_host_not_found(self, mock_manager):
+        from labctl.mcp_server import sdwire_to_host
+
+        result = sdwire_to_host(sbc_name="nope")
+        assert "not found" in result
+
+    def test_sdwire_to_dut_with_device(self, mock_manager):
+        from unittest.mock import MagicMock
+
+        from labctl.mcp_server import sdwire_to_dut
+
+        mock_ctrl_instance = MagicMock()
+
+        with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl_instance):
+            result = sdwire_to_dut(sbc_name="test-sbc-1")
+
+        assert "switched to DUT" in result
+        mock_ctrl_instance.switch_to_dut.assert_called_once()
+
+    def test_sdwire_to_host_with_device(self, mock_manager):
+        from unittest.mock import MagicMock
+
+        from labctl.mcp_server import sdwire_to_host
+
+        mock_ctrl_instance = MagicMock()
+        mock_ctrl_instance.get_block_device.return_value = "/dev/sdb"
+
+        with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl_instance):
+            result = sdwire_to_host(sbc_name="test-sbc-1")
+
+        assert "switched to host" in result
+        assert "/dev/sdb" in result
+        mock_ctrl_instance.switch_to_host.assert_called_once()
+
+    def test_sdwire_to_dut_runtime_error(self, mock_manager):
+        from unittest.mock import MagicMock
+
+        from labctl.mcp_server import sdwire_to_dut
+
+        mock_ctrl_instance = MagicMock()
+        mock_ctrl_instance.switch_to_dut.side_effect = RuntimeError("device not found")
+
+        with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl_instance):
+            result = sdwire_to_dut(sbc_name="test-sbc-1")
+
+        assert "Error" in result
+        assert "device not found" in result

@@ -31,7 +31,8 @@ All milestones (M1-M7) complete. Additional features: authentication (session-ba
 - ser2net (serial over TCP)
 - MCP SDK (AI integration via Model Context Protocol)
 - python-kasa (TP-Link Kasa smart plug/strip control)
-- pytest (testing, 259 tests)
+- sdwire (SD card multiplexer control — SDWire/SDWireC/SDWire3)
+- pytest (testing, 322 tests)
 
 ## Commands Reference
 ```bash
@@ -49,7 +50,7 @@ isort src/ tests/
 flake8 src/ tests/
 
 # Install with all extras
-pip install ".[web,mcp,kasa]"
+pip install ".[web,mcp,kasa,sdwire]"
 ```
 
 ## Key Architecture
@@ -59,4 +60,5 @@ pip install ".[web,mcp,kasa]"
 - `src/labctl/power/` - Power controllers (Tasmota, Kasa, Shelly)
 - `src/labctl/health/` - Health checks, monitoring daemon, alerts
 - `src/labctl/serial/` - ser2net config, serial proxy, udev rules
+- `src/labctl/sdwire/` - SDWire SD card multiplexer control
 - `src/labctl/mcp_server.py` - MCP server (resources, tools, prompts)

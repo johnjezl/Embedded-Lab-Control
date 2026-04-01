@@ -46,6 +46,9 @@ web = [
 mcp = [
     "mcp>=1.0",
 ]
+sdwire = [
+    "sdwire>=0.3",
+]
 kasa = [
     "python-kasa>=0.5",
 ]

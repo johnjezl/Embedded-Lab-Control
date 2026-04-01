@@ -239,9 +239,11 @@ class TestDatabase:
         assert "alias" in col_names
         assert "serial_device_id" in col_names
 
-        # Verify schema version was bumped to 2
+        # Verify schema version was bumped to latest
+        from labctl.core.database import SCHEMA_VERSION
+
         row = db.execute_one("SELECT MAX(version) as v FROM schema_version")
-        assert row["v"] == 2
+        assert row["v"] == SCHEMA_VERSION
 
     def test_migration_v1_to_v2_preserves_existing_data(self, tmp_path):
         """Test that v1->v2 migration does not lose existing serial_ports data."""
@@ -341,3 +343,135 @@ class TestDatabase:
         # New columns should be NULL for existing rows
         assert row["alias"] is None
         assert row["serial_device_id"] is None
+
+    def test_schema_v3_creates_sdwire_tables(self, tmp_path):
+        """Test that schema v3 creates sdwire_devices and sdwire_assignments tables."""
+        db_path = tmp_path / "test.db"
+        db = get_database(db_path)
+
+        # Check sdwire_devices table
+        rows = db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='sdwire_devices'"
+        )
+        assert len(rows) == 1
+
+        # Check columns
+        cols = db.execute("PRAGMA table_info(sdwire_devices)")
+        col_names = [c["name"] for c in cols]
+        assert "name" in col_names
+        assert "serial_number" in col_names
+        assert "device_type" in col_names
+
+        # Check sdwire_assignments table
+        rows = db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='sdwire_assignments'"
+        )
+        assert len(rows) == 1
+
+        cols = db.execute("PRAGMA table_info(sdwire_assignments)")
+        col_names = [c["name"] for c in cols]
+        assert "sbc_id" in col_names
+        assert "sdwire_device_id" in col_names
+
+    def test_migration_v2_to_v3(self, tmp_path):
+        """Test migration from v2 to v3 creates SDWire tables."""
+        import sqlite3
+
+        db_path = tmp_path / "test_v2_to_v3.db"
+
+        # Create a v2 database (has serial_devices but no sdwire tables)
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript("""
+            CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE sbcs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                project TEXT, description TEXT,
+                ssh_user TEXT DEFAULT 'root',
+                status TEXT DEFAULT 'unknown',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE serial_devices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                usb_path TEXT UNIQUE NOT NULL,
+                vendor TEXT, model TEXT, serial_number TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE serial_ports (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sbc_id INTEGER NOT NULL,
+                port_type TEXT NOT NULL,
+                device_path TEXT NOT NULL,
+                tcp_port INTEGER,
+                baud_rate INTEGER DEFAULT 115200,
+                alias TEXT,
+                serial_device_id INTEGER,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sbc_id) REFERENCES sbcs(id) ON DELETE CASCADE,
+                UNIQUE (sbc_id, port_type)
+            );
+            CREATE TABLE network_addresses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sbc_id INTEGER NOT NULL,
+                address_type TEXT NOT NULL,
+                ip_address TEXT NOT NULL,
+                mac_address TEXT, hostname TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sbc_id) REFERENCES sbcs(id) ON DELETE CASCADE,
+                UNIQUE (sbc_id, address_type)
+            );
+            CREATE TABLE power_plugs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sbc_id INTEGER UNIQUE NOT NULL,
+                plug_type TEXT NOT NULL,
+                address TEXT NOT NULL,
+                plug_index INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sbc_id) REFERENCES sbcs(id) ON DELETE CASCADE
+            );
+            CREATE TABLE status_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                sbc_id INTEGER NOT NULL,
+                status TEXT NOT NULL,
+                details TEXT,
+                logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (sbc_id) REFERENCES sbcs(id) ON DELETE CASCADE
+            );
+            CREATE TABLE audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id INTEGER, entity_name TEXT, details TEXT,
+                logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            INSERT INTO schema_version (version) VALUES (2);
+        """)
+        conn.commit()
+        conn.close()
+
+        # Run migration
+        db = Database(db_path)
+        db.initialize()
+
+        # SDWire tables should now exist
+        rows = db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='sdwire_devices'"
+        )
+        assert len(rows) == 1
+
+        rows = db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='sdwire_assignments'"
+        )
+        assert len(rows) == 1
+
+        # Schema version should be current
+        from labctl.core.database import SCHEMA_VERSION
+        row = db.execute_one("SELECT MAX(version) as v FROM schema_version")
+        assert row["v"] == SCHEMA_VERSION

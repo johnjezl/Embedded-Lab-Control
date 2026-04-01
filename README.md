@@ -93,6 +93,20 @@ labctl web --port 5000
 | `labctl status` | Show status overview |
 | `labctl status --watch` | Continuous status monitoring |
 
+### SDWire (SD Card Multiplexer)
+
+| Command | Description |
+|---------|-------------|
+| `labctl sdwire discover` | Scan for connected SDWire devices |
+| `labctl sdwire add <name> <serial>` | Register an SDWire device |
+| `labctl sdwire remove <name>` | Unregister an SDWire device |
+| `labctl sdwire list` | List all registered SDWire devices |
+| `labctl sdwire assign <sbc> <device>` | Assign SDWire to an SBC |
+| `labctl sdwire unassign <sbc>` | Remove SDWire assignment |
+| `labctl sdwire dut <sbc>` | Switch SD card to SBC (boot from SD) |
+| `labctl sdwire host <sbc>` | Switch SD card to host (for flashing) |
+| `labctl sdwire flash <sbc> <image>` | Flash image to SD card and reboot SBC |
+
 ### Serial Device Management
 
 | Command | Description |

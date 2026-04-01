@@ -437,8 +437,9 @@ def info_cmd(ctx: click.Context, name: str) -> None:
     if sbc.serial_ports:
         for port in sbc.serial_ports:
             tcp = f" (tcp:{port.tcp_port})" if port.tcp_port else ""
+            alias = f" [{port.alias}]" if port.alias else ""
             click.echo(
-                f"  {port.port_type.value}: {port.device_path}{tcp} @ {port.baud_rate}"
+                f"  {port.port_type.value}: {port.device_path}{tcp} @ {port.baud_rate}{alias}"
             )
     else:
         click.echo("  (none)")
@@ -458,6 +459,15 @@ def info_cmd(ctx: click.Context, name: str) -> None:
         plug = sbc.power_plug
         idx = f"[{plug.plug_index}]" if plug.plug_index > 1 else ""
         click.echo(f"  {plug.plug_type.value}: {plug.address}{idx}")
+    else:
+        click.echo("  (none)")
+
+    # SDWire
+    click.echo("\nSDWire:")
+    if sbc.sdwire:
+        click.echo(
+            f"  {sbc.sdwire.name}: {sbc.sdwire.serial_number} ({sbc.sdwire.device_type})"
+        )
     else:
         click.echo("  (none)")
 
@@ -514,6 +524,296 @@ def edit_cmd(
 
 
 # --- Port Assignment Commands ---
+
+
+@main.group("sdwire")
+def sdwire_group() -> None:
+    """Manage SDWire SD card multiplexers."""
+    pass
+
+
+@sdwire_group.command("discover")
+@click.pass_context
+def sdwire_discover_cmd(ctx: click.Context) -> None:
+    """Discover connected SDWire devices."""
+    from labctl.sdwire.controller import discover_sdwire_devices
+
+    manager = _get_manager(ctx)
+    known = {d.serial_number: d for d in manager.list_sdwire_devices()}
+
+    try:
+        devices = discover_sdwire_devices()
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    if not devices:
+        click.echo("No SDWire devices found.")
+        return
+
+    click.echo(
+        f"{'SERIAL':<25} {'TYPE':<10} {'BLOCK DEV':<12} {'REGISTERED'}"
+    )
+    click.echo("-" * 60)
+
+    for d in devices:
+        reg = known.get(d["serial_number"])
+        reg_str = reg.name if reg else "-"
+        block = d.get("block_dev") or "-"
+        click.echo(
+            f"{d['serial_number']:<25} {d['device_type']:<10} "
+            f"{block:<12} {reg_str}"
+        )
+
+
+@sdwire_group.command("add")
+@click.argument("name")
+@click.argument("serial_number")
+@click.option(
+    "--type", "device_type",
+    type=click.Choice(["sdwire", "sdwirec", "sdwire3"]),
+    default="sdwirec",
+    help="Device type (default: sdwirec)",
+)
+@click.pass_context
+def sdwire_add_cmd(
+    ctx: click.Context, name: str, serial_number: str, device_type: str
+) -> None:
+    """Register an SDWire device.
+
+    NAME is a short identifier (e.g., sdwire-1).
+    SERIAL_NUMBER is the USB serial (from 'labctl sdwire discover').
+    """
+    manager = _get_manager(ctx)
+
+    try:
+        device = manager.create_sdwire_device(
+            name=name,
+            serial_number=serial_number,
+            device_type=device_type,
+        )
+        click.echo(f"Registered SDWire device: {device.name} ({device.serial_number})")
+    except Exception as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@sdwire_group.command("remove")
+@click.argument("name")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+@click.pass_context
+def sdwire_remove_cmd(ctx: click.Context, name: str, yes: bool) -> None:
+    """Unregister an SDWire device."""
+    manager = _get_manager(ctx)
+
+    device = manager.get_sdwire_device_by_name(name)
+    if not device:
+        click.echo(f"Error: SDWire device '{name}' not found", err=True)
+        sys.exit(1)
+
+    if not yes:
+        click.confirm(f"Remove SDWire device '{name}'?", abort=True)
+
+    try:
+        manager.delete_sdwire_device(device.id)
+        click.echo(f"Removed SDWire device: {name}")
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@sdwire_group.command("list")
+@click.pass_context
+def sdwire_list_cmd(ctx: click.Context) -> None:
+    """List all registered SDWire devices."""
+    manager = _get_manager(ctx)
+
+    devices = manager.list_sdwire_devices()
+    if not devices:
+        click.echo(
+            "No SDWire devices registered. Use 'labctl sdwire discover' to find devices."
+        )
+        return
+
+    # Check assignments
+    sbcs = manager.list_sbcs()
+    assigned = {}
+    for sbc in sbcs:
+        if sbc.sdwire:
+            assigned[sbc.sdwire.id] = sbc.name
+
+    click.echo(f"{'NAME':<15} {'SERIAL':<25} {'TYPE':<10} {'ASSIGNED TO'}")
+    click.echo("-" * 60)
+
+    for d in devices:
+        sbc_name = assigned.get(d.id, "-")
+        click.echo(
+            f"{d.name:<15} {d.serial_number:<25} {d.device_type:<10} {sbc_name}"
+        )
+
+
+@sdwire_group.command("assign")
+@click.argument("sbc_name")
+@click.argument("device_name")
+@click.pass_context
+def sdwire_assign_cmd(ctx: click.Context, sbc_name: str, device_name: str) -> None:
+    """Assign an SDWire device to an SBC."""
+    manager = _get_manager(ctx)
+
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
+        sys.exit(1)
+
+    device = manager.get_sdwire_device_by_name(device_name)
+    if not device:
+        click.echo(f"Error: SDWire device '{device_name}' not found", err=True)
+        sys.exit(1)
+
+    try:
+        manager.assign_sdwire(sbc.id, device.id)
+        click.echo(f"Assigned SDWire '{device_name}' to {sbc_name}")
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@sdwire_group.command("unassign")
+@click.argument("sbc_name")
+@click.pass_context
+def sdwire_unassign_cmd(ctx: click.Context, sbc_name: str) -> None:
+    """Remove SDWire assignment from an SBC."""
+    manager = _get_manager(ctx)
+
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
+        sys.exit(1)
+
+    if manager.unassign_sdwire(sbc.id):
+        click.echo(f"Removed SDWire assignment from {sbc_name}")
+    else:
+        click.echo(f"No SDWire assigned to {sbc_name}")
+
+
+@sdwire_group.command("dut")
+@click.argument("sbc_name")
+@click.pass_context
+def sdwire_dut_cmd(ctx: click.Context, sbc_name: str) -> None:
+    """Switch SD card to DUT (SBC boots from SD)."""
+    from labctl.sdwire.controller import SDWireController
+
+    manager = _get_manager(ctx)
+
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
+        sys.exit(1)
+    if not sbc.sdwire:
+        click.echo(f"Error: No SDWire assigned to '{sbc_name}'", err=True)
+        sys.exit(1)
+
+    try:
+        ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+        ctrl.switch_to_dut()
+        click.echo(f"SD card switched to DUT: {sbc_name}")
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@sdwire_group.command("host")
+@click.argument("sbc_name")
+@click.pass_context
+def sdwire_host_cmd(ctx: click.Context, sbc_name: str) -> None:
+    """Switch SD card to host (dev machine can flash it)."""
+    from labctl.sdwire.controller import SDWireController
+
+    manager = _get_manager(ctx)
+
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
+        sys.exit(1)
+    if not sbc.sdwire:
+        click.echo(f"Error: No SDWire assigned to '{sbc_name}'", err=True)
+        sys.exit(1)
+
+    try:
+        ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+        ctrl.switch_to_host()
+        block_dev = ctrl.get_block_device()
+        msg = f"SD card switched to host: {sbc_name}"
+        if block_dev:
+            msg += f" ({block_dev})"
+        click.echo(msg)
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@sdwire_group.command("flash")
+@click.argument("sbc_name")
+@click.argument("image", type=click.Path(exists=True, path_type=Path))
+@click.option("--no-reboot", is_flag=True, help="Don't power cycle after flashing")
+@click.pass_context
+def sdwire_flash_cmd(
+    ctx: click.Context, sbc_name: str, image: Path, no_reboot: bool
+) -> None:
+    """Flash an SD card image to an SBC's SDWire.
+
+    Switches to host, writes the image, switches back to DUT,
+    and optionally power cycles the SBC.
+    """
+    from labctl.sdwire.controller import SDWireController
+
+    manager = _get_manager(ctx)
+
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
+        sys.exit(1)
+    if not sbc.sdwire:
+        click.echo(f"Error: No SDWire assigned to '{sbc_name}'", err=True)
+        sys.exit(1)
+
+    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+
+    try:
+        # Step 1: Switch to host
+        click.echo(f"Switching SD card to host...")
+        ctrl.switch_to_host()
+
+        import time
+        time.sleep(2)  # Wait for block device to appear
+
+        # Step 2: Flash image
+        block_dev = ctrl.get_block_device()
+        if not block_dev:
+            click.echo("Error: Block device not found after switching to host", err=True)
+            sys.exit(1)
+
+        click.echo(f"Flashing {image} to {block_dev}...")
+        ctrl.flash_image(str(image))
+        click.echo("Flash complete")
+
+        # Step 3: Switch back to DUT
+        click.echo(f"Switching SD card to DUT...")
+        ctrl.switch_to_dut()
+
+        # Step 4: Optional power cycle
+        if not no_reboot and sbc.power_plug:
+            click.echo(f"Power cycling {sbc_name}...")
+            from labctl.power import PowerController
+            power_ctrl = PowerController.from_plug(sbc.power_plug)
+            power_ctrl.power_cycle(delay=2.0)
+            click.echo(f"Power cycled: {sbc_name}")
+
+        click.echo(f"Done! {sbc_name} should boot from the new image.")
+
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
 
 
 @main.group("serial")
@@ -1727,6 +2027,14 @@ def export_cmd(ctx: click.Context, fmt: str, output: Path | None) -> None:
                 "index": sbc.power_plug.plug_index,
             }
 
+        # Add SDWire
+        if sbc.sdwire:
+            sbc_data["sdwire"] = {
+                "name": sbc.sdwire.name,
+                "serial_number": sbc.sdwire.serial_number,
+                "device_type": sbc.sdwire.device_type,
+            }
+
         data["sbcs"].append(sbc_data)
 
     # Format output
@@ -1873,6 +2181,28 @@ def import_cmd(ctx: click.Context, file: Path, update: bool) -> None:
                 address=plug_data["address"],
                 plug_index=plug_data.get("index", 1),
             )
+
+        # Import SDWire assignment
+        if "sdwire" in sbc_data:
+            sw_data = sbc_data["sdwire"]
+            sw_name = sw_data.get("name")
+            if sw_name:
+                # Ensure the SDWire device exists
+                sw_device = manager.get_sdwire_device_by_name(sw_name)
+                if not sw_device:
+                    try:
+                        sw_device = manager.create_sdwire_device(
+                            name=sw_name,
+                            serial_number=sw_data.get("serial_number", ""),
+                            device_type=sw_data.get("device_type", "sdwirec"),
+                        )
+                    except Exception:
+                        pass
+                if sw_device:
+                    try:
+                        manager.assign_sdwire(sbc.id, sw_device.id)
+                    except Exception:
+                        pass
 
     click.echo(
         f"\nImport complete: {created} created, {updated} updated, {skipped} skipped"
