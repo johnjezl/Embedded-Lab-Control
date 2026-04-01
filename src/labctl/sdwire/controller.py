@@ -75,9 +75,7 @@ class SDWireController:
         """Get the block device path when SD card is connected to host.
 
         Validates the device has actual media (non-zero size) to avoid
-        returning stale device nodes from previous enumerations. If the
-        library returns a stale node, falls back to scanning all USB
-        block devices for one with media.
+        returning stale device nodes from previous enumerations.
 
         Args:
             settle_time: Seconds to wait for device to settle (0 = no wait)
@@ -96,12 +94,12 @@ class SDWireController:
             if block_dev and _block_device_has_media(block_dev):
                 return block_dev
 
-            # Library returned a stale or missing device — scan for the real one
-            logger.debug(
-                "Block device %s has no media, scanning for alternatives",
-                block_dev,
-            )
-            return _find_usb_block_device_with_media()
+            if block_dev:
+                logger.debug(
+                    "Block device %s has no media (stale node)", block_dev
+                )
+
+            return None
 
         except RuntimeError:
             return None
@@ -239,34 +237,6 @@ def _block_device_has_media(block_dev: str) -> bool:
     except (OSError, ValueError):
         return False
 
-
-def _find_usb_block_device_with_media() -> Optional[str]:
-    """Scan all USB block devices and return one with actual media.
-
-    Used as a fallback when the sdwire library returns a stale device node.
-    """
-    import json
-
-    try:
-        result = subprocess.run(
-            ["lsblk", "-o", "NAME,TRAN,TYPE", "-J"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode != 0:
-            return None
-
-        data = json.loads(result.stdout)
-        for dev in data.get("blockdevices", []):
-            if dev.get("tran") == "usb" and dev.get("type") == "disk":
-                path = f"/dev/{dev['name']}"
-                if _block_device_has_media(path):
-                    logger.debug("Found USB block device with media: %s", path)
-                    return path
-    except Exception:
-        pass
-    return None
 
 
 def discover_sdwire_devices() -> list[dict]:

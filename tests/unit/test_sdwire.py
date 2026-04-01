@@ -103,14 +103,12 @@ class TestSDWireController:
         mock_dev = MagicMock(spec=[])  # No block_dev attribute
 
         with patch.object(ctrl, "_get_device", return_value=mock_dev):
-            with patch("labctl.sdwire.controller._block_device_has_media", return_value=False):
-                with patch("labctl.sdwire.controller._find_usb_block_device_with_media", return_value=None):
-                    result = ctrl.get_block_device()
+            result = ctrl.get_block_device()
 
         assert result is None
 
     def test_get_block_device_skips_zero_size(self):
-        """Test get_block_device skips stale devices with no media."""
+        """Test get_block_device returns None for stale devices with no media."""
         ctrl = SDWireController("test_serial")
 
         mock_dev = MagicMock()
@@ -119,10 +117,9 @@ class TestSDWireController:
 
         with patch.object(ctrl, "_get_device", return_value=mock_dev):
             with patch("labctl.sdwire.controller._block_device_has_media", return_value=False):
-                with patch("labctl.sdwire.controller._find_usb_block_device_with_media", return_value="/dev/sdd"):
-                    result = ctrl.get_block_device()
+                result = ctrl.get_block_device()
 
-        assert result == "/dev/sdd"
+        assert result is None
 
     def test_get_block_device_returns_valid(self):
         """Test get_block_device returns library result when it has media."""
@@ -334,30 +331,6 @@ class TestBlockDeviceHelpers:
         with patch("os.path.exists", return_value=False):
             assert _block_device_has_media("/dev/nonexistent") is False
 
-    def test_find_usb_block_device_with_media(self):
-        from labctl.sdwire.controller import _find_usb_block_device_with_media
-
-        lsblk_output = '{"blockdevices": [{"name": "sdc", "tran": "usb", "type": "disk"}, {"name": "sdd", "tran": "usb", "type": "disk"}]}'
-
-        with patch("labctl.sdwire.controller.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout=lsblk_output)
-            # sdc has no media, sdd has media
-            with patch("labctl.sdwire.controller._block_device_has_media", side_effect=lambda p: p == "/dev/sdd"):
-                result = _find_usb_block_device_with_media()
-
-        assert result == "/dev/sdd"
-
-    def test_find_usb_block_device_none_with_media(self):
-        from labctl.sdwire.controller import _find_usb_block_device_with_media
-
-        lsblk_output = '{"blockdevices": [{"name": "sdc", "tran": "usb", "type": "disk"}]}'
-
-        with patch("labctl.sdwire.controller.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock(returncode=0, stdout=lsblk_output)
-            with patch("labctl.sdwire.controller._block_device_has_media", return_value=False):
-                result = _find_usb_block_device_with_media()
-
-        assert result is None
 
 
 class TestDiscoverSDWireDevices:
