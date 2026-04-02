@@ -838,8 +838,16 @@ def sdwire_flash_cmd(
     help="Partition number (e.g., 1 for first partition)",
 )
 @click.option(
-    "--copy", "-c", "copies", multiple=True, required=True,
+    "--copy", "-c", "copies", multiple=True,
     help="File to copy as source:dest (dest relative to partition root)",
+)
+@click.option(
+    "--rename", "-r", "renames", multiple=True,
+    help="Rename file as oldname:newname (both relative to partition root)",
+)
+@click.option(
+    "--delete", "-d", "deletes", multiple=True,
+    help="Delete file (relative to partition root)",
 )
 @click.option("--reboot", is_flag=True, help="Power cycle the SBC after updating")
 @click.pass_context
@@ -848,19 +856,31 @@ def sdwire_update_cmd(
     sbc_name: str,
     partition: int,
     copies: tuple[str, ...],
+    renames: tuple[str, ...],
+    deletes: tuple[str, ...],
     reboot: bool,
 ) -> None:
-    """Copy files to a partition on an SBC's SD card.
+    """Copy, rename, and/or delete files on a partition on an SBC's SD card.
 
-    Switches to host, mounts the partition, copies files, unmounts,
-    switches back to DUT, and optionally power cycles.
+    Switches to host, mounts the partition, performs operations (copies first,
+    then renames, then deletes), unmounts, switches back to DUT, and optionally
+    power cycles.
 
     \b
     Examples:
       labctl sdwire update pi-5 -p 1 --copy kernel.img:kernel_2712.img
-      labctl sdwire update pi-5 -p 1 -c fw.bin:firmware.bin -c cfg.txt:config.txt --reboot
+      labctl sdwire update pi-5 -p 1 --rename armstub.bin:armstub.bin.disabled
+      labctl sdwire update pi-5 -p 1 --delete old-config.txt
+      labctl sdwire update pi-5 -p 1 -c fw.bin:firmware.bin -r old.bin:old.bin.bak -d stale.txt --reboot
     """
     from labctl.sdwire.controller import SDWireController
+
+    if not copies and not renames and not deletes:
+        click.echo(
+            "Error: At least one --copy, --rename, or --delete is required",
+            err=True,
+        )
+        sys.exit(1)
 
     manager = _get_manager(ctx)
 
@@ -887,6 +907,21 @@ def sdwire_update_cmd(
             sys.exit(1)
         file_pairs.append((src, dest))
 
+    # Parse rename pairs
+    rename_pairs = []
+    for rename_spec in renames:
+        if ":" not in rename_spec:
+            click.echo(
+                f"Error: Invalid --rename format '{rename_spec}'. Use oldname:newname",
+                err=True,
+            )
+            sys.exit(1)
+        old_name, new_name = rename_spec.split(":", 1)
+        rename_pairs.append((old_name, new_name))
+
+    # Deletes are just filenames, no parsing needed
+    delete_list = list(deletes)
+
     ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
 
     try:
@@ -897,11 +932,19 @@ def sdwire_update_cmd(
         import time
         time.sleep(2)  # Wait for block device and partitions to appear
 
-        # Step 2: Mount and copy files
+        # Step 2: Mount and perform operations
         click.echo(f"Mounting partition {partition}...")
-        copied = ctrl.update_files(partition, file_pairs)
-        for f in copied:
+        result = ctrl.update_files(
+            partition, file_pairs,
+            renames=rename_pairs or None,
+            deletes=delete_list or None,
+        )
+        for f in result["copied"]:
             click.echo(f"  Copied: {f}")
+        for f in result["renamed"]:
+            click.echo(f"  Renamed: {f}")
+        for f in result["deleted"]:
+            click.echo(f"  Deleted: {f}")
 
         # Step 3: Switch back to DUT
         click.echo("Switching SD card to DUT...")

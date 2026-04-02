@@ -11,12 +11,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Supports SDWire, SDWireC, and SDWire3 devices via `sdwire` Python library
   - `labctl sdwire` CLI command group: discover, add, remove, list, assign, unassign, dut, host, flash, update
   - `labctl sdwire flash <sbc> <image>` — automated workflow: switch to host, dd image, switch to DUT, power cycle
-  - `labctl sdwire update <sbc> -p N -c src:dest` — atomic partial update: mount partition, copy files, unmount, optional reboot
+  - `labctl sdwire update <sbc> -p N -c src:dest -r old:new -d file` — atomic partition operations: copy, rename, delete files, optional reboot
   - Destination paths relative to partition root (e.g., `kernel.img` not `/boot/firmware/kernel.img`)
   - Database schema v3: `sdwire_devices` and `sdwire_assignments` tables
   - SDWire shown in `labctl info` output
-  - MCP resource `lab://sdwire-devices` and tools `sdwire_to_dut`, `sdwire_to_host`
+  - MCP resource `lab://sdwire-devices` and tools `sdwire_to_dut`, `sdwire_to_host`, `sdwire_update`
   - Export/import includes SDWire device assignments
+  - Sudoers-based privilege escalation for SD card mount/umount/dd/sync operations (enables MCP server to manage SD cards without running as root)
   - 55 new tests (322 total)
 - Global `--delay` / `-d` CLI option (2026-03-29)
   - Adds a delay in seconds before any command executes

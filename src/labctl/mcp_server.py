@@ -677,23 +677,31 @@ def sdwire_to_host(sbc_name: str) -> str:
 def sdwire_update(
     sbc_name: str,
     partition: int,
-    copies: list[str],
+    copies: list[str] = [],
+    renames: list[str] = [],
+    deletes: list[str] = [],
     reboot: bool = False,
 ) -> str:
-    """Copy files to a partition on an SBC's SD card.
+    """Copy, rename, and/or delete files on a partition on an SBC's SD card.
 
-    Atomic operation: switches SD to host, mounts partition, copies files,
-    unmounts, switches back to DUT, optionally power cycles.
+    Atomic operation: switches SD to host, mounts partition, performs operations
+    (copies first, then renames, then deletes), unmounts, switches back to DUT,
+    optionally power cycles.
 
     Args:
         sbc_name: Name of the SBC with an assigned SDWire device
         partition: Partition number (e.g., 1 for the first partition)
         copies: List of "source:dest" pairs (dest is relative to partition root)
+        renames: List of "oldname:newname" pairs (both relative to partition root)
+        deletes: List of filenames to delete (relative to partition root)
         reboot: Whether to power cycle the SBC after updating
     """
     import time
 
     from labctl.sdwire import SDWireController
+
+    if not copies and not renames and not deletes:
+        return "Error: At least one of copies, renames, or deletes is required"
 
     manager = _get_manager()
     sbc = manager.get_sbc_by_name(sbc_name)
@@ -710,26 +718,45 @@ def sdwire_update(
         src, dest = spec.split(":", 1)
         file_pairs.append((src, dest))
 
+    # Parse rename pairs
+    rename_pairs = []
+    for spec in renames:
+        if ":" not in spec:
+            return f"Error: Invalid rename format '{spec}'. Use oldname:newname"
+        old_name, new_name = spec.split(":", 1)
+        rename_pairs.append((old_name, new_name))
+
     ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
 
     try:
         ctrl.switch_to_host()
         time.sleep(2)
 
-        copied = ctrl.update_files(partition, file_pairs)
+        result = ctrl.update_files(
+            partition, file_pairs,
+            renames=rename_pairs or None,
+            deletes=list(deletes) or None,
+        )
 
         ctrl.switch_to_dut()
 
-        result = f"Updated {len(copied)} file(s) on partition {partition}: {', '.join(copied)}"
+        parts = []
+        if result["copied"]:
+            parts.append(f"Copied: {', '.join(result['copied'])}")
+        if result["renamed"]:
+            parts.append(f"Renamed: {', '.join(result['renamed'])}")
+        if result["deleted"]:
+            parts.append(f"Deleted: {', '.join(result['deleted'])}")
+        summary = f"Partition {partition}: {'; '.join(parts)}"
 
         if reboot and sbc.power_plug:
             from labctl.power import PowerController
 
             power_ctrl = PowerController.from_plug(sbc.power_plug)
             power_ctrl.power_cycle(delay=2.0)
-            result += f". Power cycled {sbc_name}."
+            summary += f". Power cycled {sbc_name}."
 
-        return result
+        return summary
     except RuntimeError as e:
         return f"Error: {e}"
 

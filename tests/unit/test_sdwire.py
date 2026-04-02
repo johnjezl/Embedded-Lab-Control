@@ -179,7 +179,7 @@ class TestSDWireController:
         assert "of=/dev/sdb" in dd_call[0][0]
         # sync call
         sync_call = mock_run.call_args_list[1]
-        assert sync_call[0][0] == ["sync"]
+        assert sync_call[0][0] == ["sudo", "sync"]
 
     def test_flash_image_dd_fails(self):
         """Test flash_image raises on dd failure."""
@@ -238,15 +238,19 @@ class TestUpdateFiles:
                                     [("local.bin", "kernel.img")],
                                 )
 
-        assert result == ["kernel.img"]
+        assert result == {"copied": ["kernel.img"], "renamed": [], "deleted": []}
         # Verify mount was called with correct partition
         mount_call = mock_run.call_args_list[0]
-        assert mount_call[0][0] == ["mount", "/dev/sdb1", "/tmp/labctl-test"]
+        mount_cmd = mount_call[0][0]
+        assert mount_cmd[0:2] == ["sudo", "mount"]
+        assert "-o" in mount_cmd
+        assert "/dev/sdb1" in mount_cmd
+        assert "/tmp/labctl-test" in mount_cmd
         # Verify copy
         mock_copy.assert_called_once()
         # Verify unmount
         umount_call = mock_run.call_args_list[1]
-        assert umount_call[0][0] == ["umount", "/tmp/labctl-test"]
+        assert umount_call[0][0] == ["sudo", "umount", "/tmp/labctl-test"]
 
     def test_update_files_multiple(self):
         """Test update_files copies multiple files."""
@@ -266,7 +270,139 @@ class TestUpdateFiles:
                                     ],
                                 )
 
-        assert result == ["kernel.img", "config.txt"]
+        assert result["copied"] == ["kernel.img", "config.txt"]
+
+    def test_update_files_rename(self):
+        """Test update_files renames files."""
+        ctrl = SDWireController("test_serial")
+
+        def exists_side_effect(path):
+            # Source exists, destination does not
+            return path != "/tmp/labctl-test/new.bin"
+
+        with patch.object(ctrl, "get_block_device", return_value="/dev/sdb"):
+            with patch("labctl.sdwire.controller.subprocess.run"):
+                with patch("tempfile.mkdtemp", return_value="/tmp/labctl-test"):
+                    with patch("os.rmdir"):
+                        with patch("os.path.exists", side_effect=exists_side_effect):
+                            with patch("os.rename") as mock_rename:
+                                result = ctrl.update_files(
+                                    1, [],
+                                    renames=[("old.bin", "new.bin")],
+                                )
+
+        assert result["renamed"] == ["old.bin -> new.bin"]
+        mock_rename.assert_called_once_with(
+            "/tmp/labctl-test/old.bin", "/tmp/labctl-test/new.bin"
+        )
+
+    def test_update_files_rename_source_missing(self):
+        """Test rename raises when source file doesn't exist."""
+        ctrl = SDWireController("test_serial")
+
+        with patch.object(ctrl, "get_block_device", return_value="/dev/sdb"):
+            with patch("labctl.sdwire.controller.subprocess.run"):
+                with patch("tempfile.mkdtemp", return_value="/tmp/labctl-test"):
+                    with patch("os.rmdir"):
+                        with patch("os.path.exists", return_value=False):
+                            with pytest.raises(RuntimeError, match="not found"):
+                                ctrl.update_files(
+                                    1, [],
+                                    renames=[("missing.bin", "new.bin")],
+                                )
+
+    def test_update_files_rename_dest_exists(self):
+        """Test rename raises when destination already exists."""
+        ctrl = SDWireController("test_serial")
+
+        with patch.object(ctrl, "get_block_device", return_value="/dev/sdb"):
+            with patch("labctl.sdwire.controller.subprocess.run"):
+                with patch("tempfile.mkdtemp", return_value="/tmp/labctl-test"):
+                    with patch("os.rmdir"):
+                        with patch("os.path.exists", return_value=True):
+                            with pytest.raises(RuntimeError, match="already exists"):
+                                ctrl.update_files(
+                                    1, [],
+                                    renames=[("old.bin", "existing.bin")],
+                                )
+
+    def test_update_files_delete(self):
+        """Test update_files deletes files."""
+        ctrl = SDWireController("test_serial")
+
+        with patch.object(ctrl, "get_block_device", return_value="/dev/sdb"):
+            with patch("labctl.sdwire.controller.subprocess.run"):
+                with patch("tempfile.mkdtemp", return_value="/tmp/labctl-test"):
+                    with patch("os.rmdir"):
+                        with patch("os.path.exists", return_value=True):
+                            with patch("os.path.isdir", return_value=False):
+                                with patch("os.remove") as mock_remove:
+                                    result = ctrl.update_files(
+                                        1, [],
+                                        deletes=["stale.txt"],
+                                    )
+
+        assert result["deleted"] == ["stale.txt"]
+        mock_remove.assert_called_once_with("/tmp/labctl-test/stale.txt")
+
+    def test_update_files_delete_missing(self):
+        """Test delete raises when file doesn't exist."""
+        ctrl = SDWireController("test_serial")
+
+        with patch.object(ctrl, "get_block_device", return_value="/dev/sdb"):
+            with patch("labctl.sdwire.controller.subprocess.run"):
+                with patch("tempfile.mkdtemp", return_value="/tmp/labctl-test"):
+                    with patch("os.rmdir"):
+                        with patch("os.path.exists", return_value=False):
+                            with pytest.raises(RuntimeError, match="not found"):
+                                ctrl.update_files(
+                                    1, [],
+                                    deletes=["missing.txt"],
+                                )
+
+    def test_update_files_delete_directory_rejected(self):
+        """Test delete raises when target is a directory."""
+        ctrl = SDWireController("test_serial")
+
+        with patch.object(ctrl, "get_block_device", return_value="/dev/sdb"):
+            with patch("labctl.sdwire.controller.subprocess.run"):
+                with patch("tempfile.mkdtemp", return_value="/tmp/labctl-test"):
+                    with patch("os.rmdir"):
+                        with patch("os.path.exists", return_value=True):
+                            with patch("os.path.isdir", return_value=True):
+                                with pytest.raises(RuntimeError, match="is a directory"):
+                                    ctrl.update_files(
+                                        1, [],
+                                        deletes=["somedir"],
+                                    )
+
+    def test_update_files_combined_operations(self):
+        """Test copy, rename, and delete in one call."""
+        ctrl = SDWireController("test_serial")
+
+        def exists_side_effect(path):
+            # Rename destination doesn't exist yet
+            return path != "/tmp/labctl-test/a.bin.bak"
+
+        with patch.object(ctrl, "get_block_device", return_value="/dev/sdb"):
+            with patch("labctl.sdwire.controller.subprocess.run"):
+                with patch("tempfile.mkdtemp", return_value="/tmp/labctl-test"):
+                    with patch("shutil.copy2"):
+                        with patch("os.rmdir"):
+                            with patch("os.path.exists", side_effect=exists_side_effect):
+                                with patch("os.path.isdir", return_value=False):
+                                    with patch("os.rename"):
+                                        with patch("os.remove"):
+                                            result = ctrl.update_files(
+                                                1,
+                                                [("src.bin", "kernel.img")],
+                                                renames=[("a.bin", "a.bin.bak")],
+                                                deletes=["old.txt"],
+                                            )
+
+        assert result["copied"] == ["kernel.img"]
+        assert result["renamed"] == ["a.bin -> a.bin.bak"]
+        assert result["deleted"] == ["old.txt"]
 
     def test_update_files_unmounts_on_copy_error(self):
         """Test that unmount runs even if copy fails."""
@@ -284,7 +420,7 @@ class TestUpdateFiles:
         # Unmount should still have been called
         umount_calls = [
             c for c in mock_run.call_args_list
-            if c[0][0][0] == "umount"
+            if c[0][0][1] == "umount"
         ]
         assert len(umount_calls) == 1
 

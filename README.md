@@ -106,7 +106,7 @@ labctl web --port 5000
 | `labctl sdwire dut <sbc>` | Switch SD card to SBC (boot from SD) |
 | `labctl sdwire host <sbc>` | Switch SD card to host (for flashing) |
 | `labctl sdwire flash <sbc> <image>` | Flash full image to SD card and reboot SBC |
-| `labctl sdwire update <sbc> -p N -c src:dest` | Copy files to a partition on the SD card |
+| `labctl sdwire update <sbc> -p N -c src:dest -r old:new -d file` | Copy, rename, or delete files on a partition |
 
 ### Serial Device Management
 

@@ -143,6 +143,23 @@ This document records significant design decisions made during development.
 
 ---
 
+## D008b: Sudo for SD card mount/flash operations
+
+- **Date**: 2026-04-02
+- **Context**: SDWire file operations (mount, umount, dd, sync) require root. The MCP server and CLI run as unprivileged users (`labctl` service, `john` interactive).
+- **Options Considered**:
+  1. Run MCP server as root
+  2. Sudoers rules for specific commands
+  3. udisks2 for mounting
+- **Decision**: Passwordless sudoers rules in `/etc/sudoers.d/labctl` for mount, umount, dd, and sync. Controller prefixes all four commands with `sudo`. Mount uses `-o uid=<user>,gid=<group>` so the calling user can write to FAT partitions.
+- **Rationale**:
+  - Minimal privilege — only four specific commands, not full root
+  - Consistent with D008's approach for udevadm/ser2net
+  - udisks2 would add a dependency and doesn't cover dd/sync
+  - FAT uid/gid mount option avoids needing sudo for the file copy itself
+
+---
+
 ## D009: MCP server for AI assistant integration
 
 - **Date**: 2026-03-28

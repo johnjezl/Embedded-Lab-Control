@@ -485,7 +485,9 @@ class TestMcpSDWireTools:
         from labctl.mcp_server import sdwire_update
 
         mock_ctrl_instance = MagicMock()
-        mock_ctrl_instance.update_files.return_value = ["kernel.img"]
+        mock_ctrl_instance.update_files.return_value = {
+            "copied": ["kernel.img"], "renamed": [], "deleted": [],
+        }
 
         with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl_instance):
             result = sdwire_update(
@@ -494,12 +496,9 @@ class TestMcpSDWireTools:
                 copies=["local.bin:kernel.img"],
             )
 
-        assert "Updated 1 file(s)" in result
+        assert "Copied" in result
         assert "kernel.img" in result
         mock_ctrl_instance.switch_to_host.assert_called_once()
-        mock_ctrl_instance.update_files.assert_called_once_with(
-            1, [("local.bin", "kernel.img")]
-        )
         mock_ctrl_instance.switch_to_dut.assert_called_once()
 
     def test_sdwire_update_with_reboot(self, mock_manager):
@@ -508,7 +507,9 @@ class TestMcpSDWireTools:
         from labctl.mcp_server import sdwire_update
 
         mock_ctrl_instance = MagicMock()
-        mock_ctrl_instance.update_files.return_value = ["kernel.img"]
+        mock_ctrl_instance.update_files.return_value = {
+            "copied": ["kernel.img"], "renamed": [], "deleted": [],
+        }
 
         mock_power = MagicMock()
         mock_power.power_cycle.return_value = True

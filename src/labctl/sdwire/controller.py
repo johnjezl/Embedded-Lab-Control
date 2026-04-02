@@ -134,7 +134,7 @@ class SDWireController:
         try:
             subprocess.run(
                 [
-                    "dd",
+                    "sudo", "dd",
                     f"if={image_path}",
                     f"of={block_dev}",
                     f"bs={block_size}",
@@ -143,7 +143,7 @@ class SDWireController:
                 ],
                 check=True,
             )
-            subprocess.run(["sync"], check=True)
+            subprocess.run(["sudo", "sync"], check=True)
             return True
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Flash failed: {e}") from e
@@ -152,21 +152,25 @@ class SDWireController:
         self,
         partition: int,
         file_pairs: list[tuple[str, str]],
-    ) -> list[str]:
-        """Copy files to a partition on the SD card.
+        renames: list[tuple[str, str]] | None = None,
+        deletes: list[str] | None = None,
+    ) -> dict[str, list[str]]:
+        """Copy, rename, and/or delete files on a partition on the SD card.
 
-        Mounts the partition, copies files, unmounts. Assumes SD card is
-        already switched to host mode.
+        Mounts the partition, performs operations in order (copies, renames,
+        deletes), unmounts. Assumes SD card is already switched to host mode.
 
         Args:
             partition: Partition number (e.g., 1 for /dev/sdb1)
             file_pairs: List of (source_path, dest_path_relative_to_partition_root)
+            renames: List of (old_name, new_name) relative to partition root
+            deletes: List of filenames relative to partition root
 
         Returns:
-            List of files successfully copied.
+            Dict with keys "copied", "renamed", "deleted", each a list of strings.
 
         Raises:
-            RuntimeError: If block device not found, mount fails, or copy fails.
+            RuntimeError: If block device not found, mount fails, or any op fails.
         """
         block_dev = self.get_block_device()
         if not block_dev:
@@ -182,7 +186,11 @@ class SDWireController:
 
         try:
             subprocess.run(
-                ["mount", part_dev, mount_point],
+                [
+                    "sudo", "mount",
+                    "-o", f"uid={os.getuid()},gid={os.getgid()}",
+                    part_dev, mount_point,
+                ],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -193,8 +201,9 @@ class SDWireController:
                 f"Failed to mount {part_dev}: {e.stderr.strip()}"
             ) from e
 
-        copied = []
+        result = {"copied": [], "renamed": [], "deleted": []}
         try:
+            # 1. Copies
             for src, dest_relative in file_pairs:
                 dest = os.path.join(mount_point, dest_relative)
 
@@ -204,12 +213,51 @@ class SDWireController:
 
                 logger.info("Copying %s -> %s", src, dest_relative)
                 shutil.copy2(src, dest)
-                copied.append(dest_relative)
+                result["copied"].append(dest_relative)
+
+            # 2. Renames
+            for old_name, new_name in (renames or []):
+                old_path = os.path.join(mount_point, old_name)
+                new_path = os.path.join(mount_point, new_name)
+
+                if not os.path.exists(old_path):
+                    raise RuntimeError(
+                        f"Rename failed: '{old_name}' not found on partition"
+                    )
+                if os.path.exists(new_path):
+                    raise RuntimeError(
+                        f"Rename failed: '{new_name}' already exists on partition"
+                    )
+
+                new_dir = os.path.dirname(new_path)
+                if new_dir and not os.path.exists(new_dir):
+                    os.makedirs(new_dir, exist_ok=True)
+
+                logger.info("Renaming %s -> %s", old_name, new_name)
+                os.rename(old_path, new_path)
+                result["renamed"].append(f"{old_name} -> {new_name}")
+
+            # 3. Deletes
+            for filename in (deletes or []):
+                file_path = os.path.join(mount_point, filename)
+
+                if not os.path.exists(file_path):
+                    raise RuntimeError(
+                        f"Delete failed: '{filename}' not found on partition"
+                    )
+                if os.path.isdir(file_path):
+                    raise RuntimeError(
+                        f"Delete failed: '{filename}' is a directory, not a file"
+                    )
+
+                logger.info("Deleting %s", filename)
+                os.remove(file_path)
+                result["deleted"].append(filename)
 
         finally:
             logger.info("Unmounting %s", mount_point)
             subprocess.run(
-                ["umount", mount_point],
+                ["sudo", "umount", mount_point],
                 capture_output=True,
             )
             try:
@@ -217,8 +265,8 @@ class SDWireController:
             except OSError:
                 pass
 
-        subprocess.run(["sync"], check=True)
-        return copied
+        subprocess.run(["sudo", "sync"], check=True)
+        return result
 
 
 def _block_device_has_media(block_dev: str) -> bool:
