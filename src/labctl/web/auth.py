@@ -82,7 +82,10 @@ def login():
             session["user"] = username
             session.permanent = True
             flash("Logged in successfully.", "success")
-            next_url = request.args.get("next", url_for("views.index"))
+            next_url = request.args.get("next", "")
+            # Prevent open redirect: only allow relative paths
+            if not next_url or next_url.startswith("//") or "://" in next_url:
+                next_url = url_for("views.index")
             return redirect(next_url)
         else:
             flash("Invalid username or password.", "error")

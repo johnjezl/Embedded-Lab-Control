@@ -688,7 +688,7 @@ class ResourceManager:
             List of status log entries as dictionaries
         """
         if sbc_id:
-            rows = self.db.execute_query(
+            rows = self.db.execute(
                 """
                 SELECT sl.id, sl.sbc_id, s.name as sbc_name, sl.status,
                        sl.details, sl.logged_at
@@ -701,7 +701,7 @@ class ResourceManager:
                 (sbc_id, limit),
             )
         else:
-            rows = self.db.execute_query(
+            rows = self.db.execute(
                 """
                 SELECT sl.id, sl.sbc_id, s.name as sbc_name, sl.status,
                        sl.details, sl.logged_at
@@ -715,12 +715,12 @@ class ResourceManager:
 
         return [
             {
-                "id": row[0],
-                "sbc_id": row[1],
-                "sbc_name": row[2],
-                "status": row[3],
-                "details": row[4],
-                "logged_at": row[5],
+                "id": row["id"],
+                "sbc_id": row["sbc_id"],
+                "sbc_name": row["sbc_name"],
+                "status": row["status"],
+                "details": row["details"],
+                "logged_at": row["logged_at"],
             }
             for row in rows
         ]
@@ -798,10 +798,10 @@ class ResourceManager:
 
         # Calculate current uptime if online
         if sbc.status == Status.ONLINE and last_online_row:
-            last_online = datetime.fromisoformat(last_online_row[0])
+            last_online = datetime.fromisoformat(last_online_row["logged_at"])
             # Check if we went offline after going online
             if last_offline_row:
-                last_offline = datetime.fromisoformat(last_offline_row[0])
+                last_offline = datetime.fromisoformat(last_offline_row["logged_at"])
                 if last_offline > last_online:
                     # We're currently offline
                     result["current_uptime_seconds"] = 0
@@ -820,7 +820,7 @@ class ResourceManager:
 
         # Calculate 24h uptime percentage
         day_ago = now - timedelta(hours=24)
-        rows = self.db.execute_query(
+        rows = self.db.execute(
             """
             SELECT status, logged_at FROM status_log
             WHERE sbc_id = ? AND logged_at >= ?
@@ -835,8 +835,8 @@ class ResourceManager:
             prev_time = day_ago
 
             for row in rows:
-                status = row[0]
-                time_str = row[1]
+                status = row["status"]
+                time_str = row["logged_at"]
                 log_time = datetime.fromisoformat(time_str)
 
                 if prev_status == "online":
