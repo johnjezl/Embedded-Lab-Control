@@ -254,6 +254,19 @@ Tools perform mutations — the AI assistant calls these to take action.
 | `sdwire_to_host` | `sbc_name` | Switch SD card to host (for flashing) |
 | `sdwire_update` | `sbc_name`, `partition`, `copies`, `renames`, `deletes`, `reboot` | Copy, rename, or delete files on SD card partition (atomic: mount, operate, unmount) |
 
+### Serial I/O
+
+| Tool | Parameters | Description |
+|------|------------|-------------|
+| `serial_capture` | `port_name`, `timeout`, `until_pattern`, `tail` | Capture serial output until timeout or pattern match |
+| `serial_send` | `port_name`, `data`, `newline`, `capture_timeout`, `capture_until` | Send data to serial port, optionally capture response |
+
+### Boot Testing
+
+| Tool | Parameters | Description |
+|------|------------|-------------|
+| `boot_test` | `sbc_name`, `expect_pattern`, `runs`, `timeout`, `image`, `dest`, `partition`, `output_dir` | Automated boot reliability testing with deploy and serial capture |
+
 ### Tool Return Values
 
 All tools return strings. Success messages are plain text, structured data is

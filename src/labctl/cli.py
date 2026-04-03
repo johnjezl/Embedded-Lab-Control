@@ -1174,6 +1174,155 @@ def serial_udev_cmd(ctx: click.Context, install: bool, reload: bool) -> None:
         click.echo(rules)
 
 
+@serial_group.command("capture")
+@click.argument("port_name")
+@click.option(
+    "--timeout", "-t", type=float, default=15.0,
+    help="Max seconds to capture (default: 15)",
+)
+@click.option(
+    "--until", "-u", "until_pattern",
+    help="Stop when this regex pattern matches a line",
+)
+@click.option(
+    "--tail", "-n", type=int,
+    help="Return only the last N lines",
+)
+@click.pass_context
+def serial_capture_cmd(
+    ctx: click.Context,
+    port_name: str,
+    timeout: float,
+    until_pattern: str | None,
+    tail: int | None,
+) -> None:
+    """Capture serial output from a port.
+
+    PORT_NAME is a port alias or SBC name (defaults to console port).
+    Captures output until timeout or pattern match.
+
+    \b
+    Examples:
+      labctl serial capture pi-5-1-console --timeout 15
+      labctl serial capture pi-5-1 --until "slmos>" --timeout 30
+      labctl serial capture pi-5-1 --until "slmos>" --tail 20
+    """
+    from labctl.serial.capture import capture_serial_output, resolve_port
+
+    manager = _get_manager(ctx)
+
+    try:
+        port = resolve_port(manager, port_name)
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    if not port.tcp_port:
+        click.echo("Error: Port has no TCP port configured", err=True)
+        sys.exit(1)
+
+    try:
+        result = capture_serial_output(
+            tcp_host="localhost",
+            tcp_port=port.tcp_port,
+            timeout=timeout,
+            until_pattern=until_pattern,
+            tail=tail,
+        )
+
+        if result.output:
+            click.echo(result.output)
+
+        status = (
+            f"pattern matched" if result.pattern_matched else "timeout"
+        )
+        click.echo(
+            f"\n[{result.lines} lines, {result.elapsed_seconds:.1f}s, {status}]",
+            err=True,
+        )
+
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@serial_group.command("send")
+@click.argument("port_name")
+@click.argument("data")
+@click.option(
+    "--raw", is_flag=True,
+    help="Send raw data without appending newline",
+)
+@click.option(
+    "--capture", "-c", "capture_timeout", type=float,
+    help="Capture response for N seconds after sending",
+)
+@click.option(
+    "--until", "-u", "capture_until",
+    help="Stop capture when this regex pattern matches",
+)
+@click.pass_context
+def serial_send_cmd(
+    ctx: click.Context,
+    port_name: str,
+    data: str,
+    raw: bool,
+    capture_timeout: float | None,
+    capture_until: str | None,
+) -> None:
+    """Send data to a serial port.
+
+    PORT_NAME is a port alias or SBC name (defaults to console port).
+
+    \b
+    Examples:
+      labctl serial send pi-5-1-console "help"
+      labctl serial send pi-5-1 --raw "ABCD\\r\\n"
+      labctl serial send pi-5-1 "help" --capture 5
+      labctl serial send pi-5-1 "help" --capture 5 --until ">"
+    """
+    from labctl.serial.capture import resolve_port, send_serial_data
+
+    manager = _get_manager(ctx)
+
+    try:
+        port = resolve_port(manager, port_name)
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    if not port.tcp_port:
+        click.echo("Error: Port has no TCP port configured", err=True)
+        sys.exit(1)
+
+    try:
+        result = send_serial_data(
+            tcp_host="localhost",
+            tcp_port=port.tcp_port,
+            data=data,
+            newline=not raw,
+            capture_timeout=capture_timeout,
+            capture_until=capture_until,
+        )
+
+        if result.capture and result.capture.output:
+            click.echo(result.capture.output)
+            status = (
+                "pattern matched" if result.capture.pattern_matched else "timeout"
+            )
+            click.echo(
+                f"\n[{result.capture.lines} lines, "
+                f"{result.capture.elapsed_seconds:.1f}s, {status}]",
+                err=True,
+            )
+        else:
+            click.echo(f"Sent {result.bytes_sent} bytes")
+
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
 @main.group("port")
 def port_group() -> None:
     """Manage serial port assignments."""
@@ -2617,6 +2766,170 @@ def web_cmd(
     click.echo("Press Ctrl+C to stop")
 
     app.run(host=host, port=port, debug=debug, ssl_context=ssl_context)
+
+
+# --- Boot Test ---
+
+
+@main.command("boot-test")
+@click.argument("sbc_name")
+@click.option(
+    "--image", "-i", type=click.Path(exists=True),
+    help="Image file to deploy before testing",
+)
+@click.option(
+    "--dest", "-d",
+    help="Destination filename on SD card (required with --image)",
+)
+@click.option(
+    "--partition", "-p", type=int, default=1,
+    help="Partition number for deploy (default: 1)",
+)
+@click.option(
+    "--expect", "-e", "expect_pattern", required=True,
+    help="Regex pattern that indicates successful boot",
+)
+@click.option(
+    "--runs", "-r", type=int, default=10,
+    help="Number of boot cycles (default: 10)",
+)
+@click.option(
+    "--timeout", "-t", type=float, default=30.0,
+    help="Seconds to wait per boot (default: 30)",
+)
+@click.option(
+    "--output-dir", "-o", type=click.Path(),
+    help="Save per-run output to this directory",
+)
+@click.option(
+    "--no-deploy", is_flag=True,
+    help="Skip deploy, test current SD card contents",
+)
+@click.pass_context
+def boot_test_cmd(
+    ctx: click.Context,
+    sbc_name: str,
+    image: str | None,
+    dest: str | None,
+    partition: int,
+    expect_pattern: str,
+    runs: int,
+    timeout: float,
+    output_dir: str | None,
+    no_deploy: bool,
+) -> None:
+    """Automated boot reliability testing.
+
+    Deploys an image (optional), then reboots the SBC multiple times and
+    captures serial output to determine success rate.
+
+    \b
+    Examples:
+      labctl boot-test pi-5-1 -i slmos.bin -d kernel_2712.img -p 1 -e "slmos>" -r 10
+      labctl boot-test pi-5-1 --no-deploy -e "slmos>" -r 5 -t 30
+      labctl boot-test pi-5-1 -i slmos.bin -d kernel_2712.img -e "slmos>" -o /tmp/results/
+    """
+    import time as time_mod
+
+    from labctl.serial.boot_test import run_boot_test
+
+    manager = _get_manager(ctx)
+
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
+        sys.exit(1)
+
+    # Validate serial console
+    if not sbc.console_port or not sbc.console_port.tcp_port:
+        click.echo(
+            f"Error: SBC '{sbc_name}' has no console port with TCP configured",
+            err=True,
+        )
+        sys.exit(1)
+
+    # Validate power control
+    if not sbc.power_plug:
+        click.echo(
+            f"Error: SBC '{sbc_name}' has no power plug assigned",
+            err=True,
+        )
+        sys.exit(1)
+
+    # Validate deploy args
+    if not no_deploy:
+        if not image:
+            click.echo(
+                "Error: --image is required (or use --no-deploy)", err=True
+            )
+            sys.exit(1)
+        if not dest:
+            click.echo(
+                "Error: --dest is required with --image", err=True
+            )
+            sys.exit(1)
+
+    # Build deploy function
+    deploy_fn = None
+    if not no_deploy and image and dest:
+        def deploy_fn():
+            from labctl.sdwire.controller import SDWireController
+
+            if not sbc.sdwire:
+                raise RuntimeError(f"No SDWire assigned to '{sbc_name}'")
+
+            ctrl = SDWireController(
+                sbc.sdwire.serial_number, sbc.sdwire.device_type
+            )
+
+            click.echo("Deploying image...")
+            ctrl.switch_to_host()
+            time_mod.sleep(2)
+            ctrl.update_files(partition, [(image, dest)])
+            ctrl.switch_to_dut()
+            click.echo(f"Deployed {image} -> {dest}")
+
+    # Build power cycle function
+    def power_cycle_fn():
+        from labctl.power import PowerController
+        power_ctrl = PowerController.from_plug(sbc.power_plug)
+        power_ctrl.power_cycle(delay=2.0)
+
+    # Progress callback
+    def progress(run_num, total, run_result):
+        status = "PASS" if run_result.passed else "FAIL"
+        click.echo(
+            f"Run {run_num:2d}/{total}: {status} "
+            f"({run_result.elapsed_seconds:.1f}s)"
+        )
+
+    click.echo(f"Boot test: {sbc_name}, {runs} runs, "
+               f"pattern='{expect_pattern}', timeout={timeout}s")
+    click.echo("")
+
+    try:
+        result = run_boot_test(
+            sbc_name=sbc_name,
+            expect_pattern=expect_pattern,
+            tcp_host="localhost",
+            tcp_port=sbc.console_port.tcp_port,
+            power_cycle_fn=power_cycle_fn,
+            runs=runs,
+            timeout=timeout,
+            deploy_fn=deploy_fn,
+            image=image,
+            dest=dest,
+            partition=partition,
+            output_dir=output_dir,
+            progress_fn=progress,
+        )
+
+        click.echo("")
+        click.echo(result.format_summary())
+
+    except RuntimeError as e:
+        click.echo(f"\nError: {e}", err=True)
+        sys.exit(1)
 
 
 # --- Health Check Commands ---

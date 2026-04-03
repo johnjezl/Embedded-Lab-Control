@@ -762,6 +762,196 @@ def sdwire_update(
 
 
 # ---------------------------------------------------------------------------
+# Serial I/O Tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def serial_capture(
+    port_name: str,
+    timeout: float = 15.0,
+    until_pattern: str | None = None,
+    tail: int | None = None,
+) -> str:
+    """Capture serial output from a port.
+
+    Connects to the serial port via ser2net, captures output until timeout
+    or pattern match, then disconnects.
+
+    Args:
+        port_name: Port alias or SBC name (SBC defaults to console port)
+        timeout: Max seconds to capture (default: 15)
+        until_pattern: Regex to stop on when matched (per line)
+        tail: Return only last N lines (None = all)
+    """
+    from labctl.serial.capture import (
+        capture_serial_output,
+        resolve_port,
+    )
+
+    manager = _get_manager()
+
+    try:
+        port = resolve_port(manager, port_name)
+    except ValueError as e:
+        return f"Error: {e}"
+
+    if not port.tcp_port:
+        return f"Error: Port '{port_name}' has no TCP port configured"
+
+    try:
+        result = capture_serial_output(
+            tcp_host="localhost",
+            tcp_port=port.tcp_port,
+            timeout=timeout,
+            until_pattern=until_pattern,
+            tail=tail,
+        )
+        return result.to_mcp_string(pattern=until_pattern)
+    except RuntimeError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def serial_send(
+    port_name: str,
+    data: str,
+    newline: bool = True,
+    capture_timeout: float | None = None,
+    capture_until: str | None = None,
+) -> str:
+    """Send data to a serial port, optionally capturing the response.
+
+    Connects to the serial port via ser2net, sends data, optionally
+    captures the response, then disconnects.
+
+    Args:
+        port_name: Port alias or SBC name (SBC defaults to console port)
+        data: String data to send
+        newline: Append \\r\\n after data (default: True)
+        capture_timeout: If set, capture response for this many seconds
+        capture_until: If set, capture until this regex matches a line
+    """
+    from labctl.serial.capture import (
+        resolve_port,
+        send_serial_data,
+    )
+
+    manager = _get_manager()
+
+    try:
+        port = resolve_port(manager, port_name)
+    except ValueError as e:
+        return f"Error: {e}"
+
+    if not port.tcp_port:
+        return f"Error: Port '{port_name}' has no TCP port configured"
+
+    try:
+        result = send_serial_data(
+            tcp_host="localhost",
+            tcp_port=port.tcp_port,
+            data=data,
+            newline=newline,
+            capture_timeout=capture_timeout,
+            capture_until=capture_until,
+        )
+        return result.to_mcp_string()
+    except RuntimeError as e:
+        return f"Error: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Boot Test
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def boot_test(
+    sbc_name: str,
+    expect_pattern: str,
+    runs: int = 10,
+    timeout: float = 30.0,
+    image: str | None = None,
+    dest: str | None = None,
+    partition: int = 1,
+    output_dir: str | None = None,
+) -> str:
+    """Automated boot reliability testing.
+
+    Optionally deploys an image, then reboots the SBC multiple times,
+    capturing serial output each time. Reports how many boots
+    successfully reached the expected pattern.
+
+    Args:
+        sbc_name: Name of the SBC to test
+        expect_pattern: Regex that indicates successful boot
+        runs: Number of boot cycles (default: 10)
+        timeout: Seconds to wait per boot (default: 30)
+        image: Image file to deploy (None = skip deploy)
+        dest: Destination filename on SD card (required with image)
+        partition: Partition number for deploy (default: 1)
+        output_dir: Save per-run output to files here
+    """
+    import time as time_mod
+
+    from labctl.serial.boot_test import run_boot_test
+
+    manager = _get_manager()
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return f"Error: SBC '{sbc_name}' not found"
+    if not sbc.console_port or not sbc.console_port.tcp_port:
+        return f"Error: SBC '{sbc_name}' has no console port with TCP configured"
+    if not sbc.power_plug:
+        return f"Error: SBC '{sbc_name}' has no power plug assigned"
+
+    if image and not dest:
+        return "Error: dest is required when image is specified"
+
+    # Build deploy function
+    deploy_fn = None
+    if image and dest:
+        def deploy_fn():
+            from labctl.sdwire import SDWireController
+
+            if not sbc.sdwire:
+                raise RuntimeError(f"No SDWire assigned to '{sbc_name}'")
+            ctrl = SDWireController(
+                sbc.sdwire.serial_number, sbc.sdwire.device_type
+            )
+            ctrl.switch_to_host()
+            time_mod.sleep(2)
+            ctrl.update_files(partition, [(image, dest)])
+            ctrl.switch_to_dut()
+
+    # Build power cycle function
+    def power_cycle_fn():
+        from labctl.power import PowerController
+        power_ctrl = PowerController.from_plug(sbc.power_plug)
+        power_ctrl.power_cycle(delay=2.0)
+
+    try:
+        result = run_boot_test(
+            sbc_name=sbc_name,
+            expect_pattern=expect_pattern,
+            tcp_host="localhost",
+            tcp_port=sbc.console_port.tcp_port,
+            power_cycle_fn=power_cycle_fn,
+            runs=runs,
+            timeout=timeout,
+            deploy_fn=deploy_fn,
+            image=image,
+            dest=dest,
+            partition=partition,
+            output_dir=output_dir,
+        )
+        return result.format_summary()
+    except RuntimeError as e:
+        return f"Error: {e}"
+
+
+# ---------------------------------------------------------------------------
 # Prompts (reusable instruction templates)
 # ---------------------------------------------------------------------------
 

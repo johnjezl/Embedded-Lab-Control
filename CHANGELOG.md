@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Serial I/O and boot test tools (2026-04-02)
+  - `labctl serial capture <port> --timeout N --until <pattern>` — capture serial output with timeout or pattern match
+  - `labctl serial send <port> <data>` — send data to serial port, optional `--capture` for response
+  - `labctl boot-test <sbc>` — automated boot reliability testing: deploy, reboot N times, report success rate
+  - MCP tools: `serial_capture`, `serial_send`, `boot_test`
+  - Port name resolution: accepts port alias or SBC name (defaults to console port)
+  - 33 new tests for serial capture, send, and boot test
 - SDWire SD card multiplexer support (2026-03-31)
   - Supports SDWire, SDWireC, and SDWire3 devices via `sdwire` Python library
   - `labctl sdwire` CLI command group: discover, add, remove, list, assign, unassign, dut, host, flash, update

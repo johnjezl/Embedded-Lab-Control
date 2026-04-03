@@ -118,6 +118,14 @@ labctl web --port 5000
 | `labctl serial list` | List all registered adapters |
 | `labctl serial rename <name> <new>` | Rename an adapter |
 | `labctl serial udev --install --reload` | Generate and apply udev rules |
+| `labctl serial capture <port> --timeout N --until <pattern>` | Capture serial output |
+| `labctl serial send <port> <data> --capture N` | Send data to serial port |
+
+### Boot Testing
+
+| Command | Description |
+|---------|-------------|
+| `labctl boot-test <sbc> -i <image> -d <dest> -e <pattern> -r N` | Automated boot reliability testing |
 
 ### Serial Console
 
