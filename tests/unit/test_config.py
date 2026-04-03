@@ -1,5 +1,6 @@
 """Unit tests for configuration management."""
 
+import logging
 from pathlib import Path
 
 from labctl.core.config import (
@@ -253,3 +254,19 @@ class TestGetDefaultConfig:
         config = get_default_config()
         assert config.serial.dev_dir == Path("/dev/lab")
         assert config.serial.base_tcp_port == 4000
+
+
+class TestConfigLoadLogging:
+    """Tests for config load error logging."""
+
+    def test_invalid_yaml_logs_warning(self, tmp_path, caplog):
+        """Test that invalid YAML logs a warning and falls back."""
+        bad_config = tmp_path / "labctl.yaml"
+        bad_config.write_text("{{invalid yaml::: [")
+
+        with caplog.at_level(logging.WARNING, logger="labctl.core.config"):
+            config = load_config(bad_config)
+
+        assert any("Failed to load config" in r.message for r in caplog.records)
+        # Should return defaults since the config file failed
+        assert isinstance(config, Config)

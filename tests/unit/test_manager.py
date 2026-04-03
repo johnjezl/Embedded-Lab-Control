@@ -900,3 +900,134 @@ class TestStatusHistory:
         deleted = manager.cleanup_old_status_logs(30)
         assert isinstance(deleted, int)
         assert deleted >= 0
+
+
+class TestSBCToDict:
+    """Tests for SBC.to_dict() serialization."""
+
+    def test_to_dict_basic(self, manager):
+        """Test basic SBC serialization without IDs."""
+        sbc = manager.create_sbc(
+            name="dict-sbc", project="proj", description="desc"
+        )
+        d = sbc.to_dict()
+        assert d["name"] == "dict-sbc"
+        assert d["project"] == "proj"
+        assert d["description"] == "desc"
+        assert d["status"] == "unknown"
+        assert "id" not in d
+
+    def test_to_dict_with_ids(self, manager):
+        """Test SBC serialization includes IDs when requested."""
+        sbc = manager.create_sbc(name="id-sbc")
+        d = sbc.to_dict(include_ids=True)
+        assert "id" in d
+        assert d["id"] == sbc.id
+
+    def test_to_dict_with_serial_ports(self, manager):
+        """Test serialization includes serial port data."""
+        sbc = manager.create_sbc(name="port-sbc")
+        manager.assign_serial_port(
+            sbc.id, PortType.CONSOLE, "/dev/test",
+            tcp_port=4000, alias="test-console",
+        )
+        sbc = manager.get_sbc_by_name("port-sbc")
+        d = sbc.to_dict()
+        assert "serial_ports" in d
+        assert len(d["serial_ports"]) == 1
+        assert d["serial_ports"][0]["type"] == "console"
+        assert d["serial_ports"][0]["alias"] == "test-console"
+        assert "id" not in d["serial_ports"][0]
+
+    def test_to_dict_with_serial_ports_ids(self, manager):
+        """Test port IDs included when include_ids=True."""
+        sbc = manager.create_sbc(name="port-id-sbc")
+        manager.assign_serial_port(
+            sbc.id, PortType.CONSOLE, "/dev/test", tcp_port=4000
+        )
+        sbc = manager.get_sbc_by_name("port-id-sbc")
+        d = sbc.to_dict(include_ids=True)
+        assert "id" in d["serial_ports"][0]
+
+    def test_to_dict_with_network(self, manager):
+        """Test serialization includes network address data."""
+        sbc = manager.create_sbc(name="net-sbc")
+        manager.set_network_address(
+            sbc.id, AddressType.ETHERNET, "192.168.1.100"
+        )
+        sbc = manager.get_sbc_by_name("net-sbc")
+        d = sbc.to_dict()
+        assert "network_addresses" in d
+        assert d["network_addresses"][0]["ip"] == "192.168.1.100"
+
+    def test_to_dict_with_power_plug(self, manager):
+        """Test serialization includes power plug data."""
+        sbc = manager.create_sbc(name="power-sbc")
+        manager.assign_power_plug(sbc.id, PlugType.TASMOTA, "192.168.1.50")
+        sbc = manager.get_sbc_by_name("power-sbc")
+        d = sbc.to_dict()
+        assert "power_plug" in d
+        assert d["power_plug"]["type"] == "tasmota"
+        assert d["power_plug"]["address"] == "192.168.1.50"
+
+    def test_to_dict_with_sdwire(self, manager):
+        """Test serialization includes SDWire data."""
+        sbc = manager.create_sbc(name="sdwire-sbc")
+        device = manager.create_sdwire_device("sw1", "serial123")
+        manager.assign_sdwire(sbc.id, device.id)
+        sbc = manager.get_sbc_by_name("sdwire-sbc")
+        d = sbc.to_dict()
+        assert "sdwire" in d
+        assert d["sdwire"]["name"] == "sw1"
+        assert d["sdwire"]["serial_number"] == "serial123"
+
+    def test_to_dict_empty_relations(self, manager):
+        """Test serialization omits empty relation fields."""
+        sbc = manager.create_sbc(name="empty-sbc")
+        d = sbc.to_dict()
+        assert "serial_ports" not in d
+        assert "network_addresses" not in d
+        assert "power_plug" not in d
+        assert "sdwire" not in d
+
+
+class TestUpsertBehavior:
+    """Tests for atomic upsert (reassign) behavior."""
+
+    def test_network_address_upsert(self, manager):
+        """Test setting network address replaces existing."""
+        sbc = manager.create_sbc(name="upsert-net")
+        manager.set_network_address(
+            sbc.id, AddressType.ETHERNET, "10.0.0.1"
+        )
+        manager.set_network_address(
+            sbc.id, AddressType.ETHERNET, "10.0.0.2"
+        )
+        sbc = manager.get_sbc_by_name("upsert-net")
+        eth_addrs = [
+            a for a in sbc.network_addresses
+            if a.address_type == AddressType.ETHERNET
+        ]
+        assert len(eth_addrs) == 1
+        assert eth_addrs[0].ip_address == "10.0.0.2"
+
+    def test_power_plug_upsert(self, manager):
+        """Test assigning power plug replaces existing."""
+        sbc = manager.create_sbc(name="upsert-power")
+        manager.assign_power_plug(sbc.id, PlugType.TASMOTA, "192.168.1.50")
+        manager.assign_power_plug(sbc.id, PlugType.SHELLY, "192.168.1.60")
+        sbc = manager.get_sbc_by_name("upsert-power")
+        assert sbc.power_plug is not None
+        assert sbc.power_plug.plug_type == PlugType.SHELLY
+        assert sbc.power_plug.address == "192.168.1.60"
+
+    def test_sdwire_upsert(self, manager):
+        """Test assigning SDWire replaces existing assignment."""
+        sbc = manager.create_sbc(name="upsert-sdwire")
+        dev1 = manager.create_sdwire_device("sw-a", "serial-a")
+        dev2 = manager.create_sdwire_device("sw-b", "serial-b")
+        manager.assign_sdwire(sbc.id, dev1.id)
+        manager.assign_sdwire(sbc.id, dev2.id)
+        sbc = manager.get_sbc_by_name("upsert-sdwire")
+        assert sbc.sdwire is not None
+        assert sbc.sdwire.name == "sw-b"

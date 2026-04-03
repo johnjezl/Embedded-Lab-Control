@@ -6,11 +6,17 @@ tests, and documentation.
 
 ## Fix Status
 
-All critical (C1-C3) and high priority (H1-H7) issues have been fixed.
+All critical (C1-C3), high priority (H1-H7), and medium priority (M1-M10,
+excluding M3/M11 deferred) issues have been fixed.
 - C1-C3: Fixed in commit a39f419
 - H1-H6: Fixed in commit 3e0fc60
 - H7: Fixed in commit 2d69d88
-- Tests added in commit 9563e3e and subsequent
+- M1, M2, M4, M5, M7, M10: Fixed in commit d1b5b11
+- M3 (power status duplication): Deferred — larger refactor
+- M6 (Flask teardown): Not needed — DB uses per-query connections
+- M8, M9: Fixed with H3 in commit 3e0fc60
+- M11 (API rate limiting): Deferred — needs design decision
+- Tests added in commits 9563e3e, cfe1094, and subsequent
 
 ---
 

@@ -106,6 +106,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `asyncio.Lock` for write lock acquisition to prevent TOCTOU race
   - Snapshot `clients` dict before broadcast iteration
   - Guard orphaned `create_task(self.stop())` with state check
+- Consolidated SBC.to_dict() serialization, eliminating duplication between MCP and API (2026-04-03)
+- Atomic upsert (INSERT...ON CONFLICT) for serial ports, network addresses, power plugs, SDWire assignments (2026-04-03)
+- Config load exception now logs warning instead of silently continuing (2026-04-03)
+- SessionLogger rotation handles disk errors without leaking file handles (2026-04-03)
+- ser2net format string corrected: `115200n81` -> `115200,8n1`, extracted PARITY_CHARS constant (2026-04-03)
+- Extracted `_load_serial_device()` helper, eliminating 3x code duplication in manager (2026-04-03)
 - Health check power probe using wrong function signature (2026-03-28)
   - `get_controller(sbc.power_plug)` → `PowerController.from_plug(sbc.power_plug)`
 - Monitor daemon ping failing under systemd sandbox (2026-03-28)
