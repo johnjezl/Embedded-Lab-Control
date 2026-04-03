@@ -543,3 +543,246 @@ class TestMcpSDWireTools:
 
         assert "Error" in result
         assert "mount failed" in result
+
+
+# ---------------------------------------------------------------------------
+# Serial I/O Tool tests
+# ---------------------------------------------------------------------------
+
+
+class TestMcpSerialTools:
+    """Tests for MCP serial capture and send tools."""
+
+    def test_serial_capture_sbc_not_found(self, mock_manager):
+        from labctl.mcp_server import serial_capture
+
+        result = serial_capture(port_name="nonexistent")
+        assert "Error" in result
+
+    def test_serial_capture_no_tcp_port(self, mock_manager):
+        """Test capture on port with no TCP port configured."""
+        from labctl.mcp_server import serial_capture
+
+        # test-sbc-2 has no serial ports at all
+        result = serial_capture(port_name="test-sbc-2")
+        assert "Error" in result
+
+    def test_serial_capture_by_alias(self, mock_manager):
+        """Test capture resolves port by alias."""
+        from unittest.mock import MagicMock
+
+        from labctl.mcp_server import serial_capture
+        from labctl.serial.capture import CaptureResult
+
+        mock_result = CaptureResult(
+            output="boot output", lines=1,
+            pattern_matched=True, elapsed_seconds=5.0,
+        )
+
+        with patch(
+            "labctl.serial.capture.capture_serial_output",
+            return_value=mock_result,
+        ):
+            result = serial_capture(
+                port_name="sbc1-console",
+                timeout=10.0,
+                until_pattern="boot",
+            )
+
+        assert "boot output" in result
+        assert "matched" in result
+
+    def test_serial_capture_by_sbc_name(self, mock_manager):
+        """Test capture resolves port by SBC name (console fallback)."""
+        from labctl.mcp_server import serial_capture
+        from labctl.serial.capture import CaptureResult
+
+        mock_result = CaptureResult(
+            output="hello", lines=1,
+            pattern_matched=False, elapsed_seconds=15.0,
+        )
+
+        with patch(
+            "labctl.serial.capture.capture_serial_output",
+            return_value=mock_result,
+        ):
+            result = serial_capture(port_name="test-sbc-1", timeout=15.0)
+
+        assert "hello" in result
+        assert "timeout" in result
+
+    def test_serial_capture_connection_error(self, mock_manager):
+        """Test capture handles connection errors."""
+        from labctl.mcp_server import serial_capture
+
+        with patch(
+            "labctl.serial.capture.capture_serial_output",
+            side_effect=RuntimeError("Connection refused"),
+        ):
+            result = serial_capture(port_name="sbc1-console")
+
+        assert "Error" in result
+        assert "Connection refused" in result
+
+    def test_serial_send_sbc_not_found(self, mock_manager):
+        from labctl.mcp_server import serial_send
+
+        result = serial_send(port_name="nonexistent", data="hello")
+        assert "Error" in result
+
+    def test_serial_send_success(self, mock_manager):
+        """Test send resolves port and sends data."""
+        from labctl.mcp_server import serial_send
+        from labctl.serial.capture import SendResult
+
+        mock_result = SendResult(sent=True, bytes_sent=7)
+
+        with patch(
+            "labctl.serial.capture.send_serial_data",
+            return_value=mock_result,
+        ):
+            result = serial_send(
+                port_name="sbc1-console",
+                data="hello",
+            )
+
+        assert "7 bytes" in result
+
+    def test_serial_send_with_capture(self, mock_manager):
+        """Test send with capture returns captured output."""
+        from labctl.mcp_server import serial_send
+        from labctl.serial.capture import CaptureResult, SendResult
+
+        mock_result = SendResult(
+            sent=True, bytes_sent=7,
+            capture=CaptureResult(
+                output="response", lines=1,
+                pattern_matched=True, elapsed_seconds=2.0,
+            ),
+        )
+
+        with patch(
+            "labctl.serial.capture.send_serial_data",
+            return_value=mock_result,
+        ):
+            result = serial_send(
+                port_name="sbc1-console",
+                data="cmd",
+                capture_timeout=5.0,
+            )
+
+        assert "response" in result
+
+    def test_serial_send_connection_error(self, mock_manager):
+        """Test send handles connection errors."""
+        from labctl.mcp_server import serial_send
+
+        with patch(
+            "labctl.serial.capture.send_serial_data",
+            side_effect=RuntimeError("Connection refused"),
+        ):
+            result = serial_send(port_name="sbc1-console", data="hello")
+
+        assert "Error" in result
+
+
+# ---------------------------------------------------------------------------
+# Boot Test Tool tests
+# ---------------------------------------------------------------------------
+
+
+class TestMcpBootTest:
+    """Tests for MCP boot_test tool."""
+
+    def test_boot_test_sbc_not_found(self, mock_manager):
+        from labctl.mcp_server import boot_test
+
+        result = boot_test(sbc_name="nonexistent", expect_pattern="ok")
+        assert "Error" in result
+        assert "not found" in result
+
+    def test_boot_test_no_console_port(self, mock_manager):
+        """test-sbc-2 has no console port."""
+        from labctl.mcp_server import boot_test
+
+        result = boot_test(sbc_name="test-sbc-2", expect_pattern="ok")
+        assert "Error" in result
+        assert "console" in result.lower()
+
+    def test_boot_test_no_power_plug(self, mock_manager):
+        """SBC with console but no power plug."""
+        from labctl.mcp_server import boot_test
+
+        # Add console port to sbc-2 but it has no power plug
+        sbc2 = mock_manager.get_sbc_by_name("test-sbc-2")
+        mock_manager.assign_serial_port(
+            sbc_id=sbc2.id,
+            port_type=PortType.CONSOLE,
+            device_path="/dev/lab/port-2",
+            tcp_port=4001,
+        )
+
+        result = boot_test(sbc_name="test-sbc-2", expect_pattern="ok")
+        assert "Error" in result
+        assert "power" in result.lower()
+
+    def test_boot_test_missing_dest(self, mock_manager):
+        """Image specified without dest should error."""
+        from labctl.mcp_server import boot_test
+
+        result = boot_test(
+            sbc_name="test-sbc-1",
+            expect_pattern="ok",
+            image="test.bin",
+        )
+        assert "Error" in result
+        assert "dest" in result.lower()
+
+    def test_boot_test_success(self, mock_manager):
+        """Test successful boot test run."""
+        from labctl.mcp_server import boot_test
+        from labctl.serial.boot_test import BootRunResult, BootTestResult
+
+        mock_result = BootTestResult(
+            sbc_name="test-sbc-1",
+            expect_pattern="ok",
+            total_runs=2,
+            timeout_per_run=10.0,
+            runs=[
+                BootRunResult(1, True, 5.0, True),
+                BootRunResult(2, True, 6.0, True),
+            ],
+        )
+
+        with patch(
+            "labctl.serial.boot_test.run_boot_test",
+            return_value=mock_result,
+        ):
+            with patch("labctl.power.base.PowerController.from_plug"):
+                result = boot_test(
+                    sbc_name="test-sbc-1",
+                    expect_pattern="ok",
+                    runs=2,
+                    timeout=10.0,
+                )
+
+        assert "2/2" in result
+        assert "100%" in result
+
+    def test_boot_test_runtime_error(self, mock_manager):
+        """Test boot test handles runtime errors."""
+        from labctl.mcp_server import boot_test
+
+        with patch(
+            "labctl.serial.boot_test.run_boot_test",
+            side_effect=RuntimeError("power failure"),
+        ):
+            with patch("labctl.power.base.PowerController.from_plug"):
+                result = boot_test(
+                    sbc_name="test-sbc-1",
+                    expect_pattern="ok",
+                    runs=1,
+                )
+
+        assert "Error" in result
+        assert "power failure" in result

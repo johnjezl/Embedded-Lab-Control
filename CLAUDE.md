@@ -27,12 +27,12 @@ All milestones (M1-M7) complete. Additional features: authentication (session-ba
 - Python 3.10+
 - Click (CLI)
 - Flask (web/API)
-- SQLite (database, schema v2)
+- SQLite (database, schema v3)
 - ser2net (serial over TCP)
 - MCP SDK (AI integration via Model Context Protocol)
 - python-kasa (TP-Link Kasa smart plug/strip control)
 - sdwire (SD card multiplexer control — SDWire/SDWireC/SDWire3)
-- pytest (testing, 322 tests)
+- pytest (testing)
 
 ## Commands Reference
 ```bash

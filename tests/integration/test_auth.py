@@ -223,3 +223,51 @@ class TestAuthDisabledByDefault:
     def test_post_no_csrf_needed(self, noauth_client):
         resp = noauth_client.post("/api/sbcs", json={"name": "test"})
         assert resp.status_code == 201
+
+
+class TestOpenRedirectProtection:
+    """Test that login redirect prevents open redirect attacks."""
+
+    def _login_with_next(self, client, next_url):
+        """Login and redirect to the given next URL."""
+        import re
+
+        resp = client.get(f"/login?next={next_url}")
+        html = resp.data.decode()
+        match = re.search(r'name="_csrf_token" value="([^"]+)"', html)
+        csrf_token = match.group(1) if match else ""
+        return client.post(
+            f"/login?next={next_url}",
+            data={
+                "username": "admin",
+                "password": TEST_PASSWORD,
+                "_csrf_token": csrf_token,
+            },
+            follow_redirects=False,
+        )
+
+    def test_valid_relative_redirect(self, auth_client):
+        """Login with valid relative next URL should redirect there."""
+        resp = self._login_with_next(auth_client, "/settings")
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/settings")
+
+    def test_blocks_absolute_url(self, auth_client):
+        """Login with absolute URL should redirect to index instead."""
+        resp = self._login_with_next(auth_client, "https://evil.com")
+        assert resp.status_code == 302
+        location = resp.headers["Location"]
+        assert "evil.com" not in location
+
+    def test_blocks_protocol_relative_url(self, auth_client):
+        """Login with //evil.com should redirect to index instead."""
+        resp = self._login_with_next(auth_client, "//evil.com")
+        assert resp.status_code == 302
+        location = resp.headers["Location"]
+        assert "evil.com" not in location
+
+    def test_empty_next_defaults_to_index(self, auth_client):
+        """Login with empty next should redirect to index."""
+        resp = self._login_with_next(auth_client, "")
+        assert resp.status_code == 302
+        assert resp.headers["Location"].endswith("/")

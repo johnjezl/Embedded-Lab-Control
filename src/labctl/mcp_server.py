@@ -337,7 +337,7 @@ def power_cycle(sbc_name: str, delay: float = 3.0) -> str:
 
     Args:
         sbc_name: Name of the SBC to power cycle
-        delay: Seconds to wait between off and on (default 2.0)
+        delay: Seconds to wait between off and on (default 3.0)
     """
     from labctl.power import PowerController
 

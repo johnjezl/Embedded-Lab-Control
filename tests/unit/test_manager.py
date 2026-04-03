@@ -774,3 +774,129 @@ class TestCascadeDelete:
 
         ports = manager.list_serial_ports()
         assert len(ports) == 0
+
+
+class TestStatusHistory:
+    """Tests for status logging, history, and uptime."""
+
+    def test_log_status(self, manager):
+        """Test logging a status entry."""
+        sbc = manager.create_sbc(name="status-sbc")
+        log_id = manager.log_status(sbc.id, Status.ONLINE, "Boot complete")
+        assert log_id > 0
+
+    def test_get_status_history_by_sbc(self, manager):
+        """Test retrieving status history for a specific SBC."""
+        sbc = manager.create_sbc(name="hist-sbc")
+        manager.log_status(sbc.id, Status.ONLINE, "Boot")
+        manager.log_status(sbc.id, Status.OFFLINE, "Shutdown")
+
+        history = manager.get_status_history(sbc_id=sbc.id)
+        assert len(history) == 2
+        statuses = {h["status"] for h in history}
+        assert statuses == {"online", "offline"}
+        assert all(h["sbc_name"] == "hist-sbc" for h in history)
+        details = {h["details"] for h in history}
+        assert "Boot" in details
+        assert "Shutdown" in details
+
+    def test_get_status_history_all(self, manager):
+        """Test retrieving status history for all SBCs."""
+        sbc1 = manager.create_sbc(name="sbc-a")
+        sbc2 = manager.create_sbc(name="sbc-b")
+        manager.log_status(sbc1.id, Status.ONLINE)
+        manager.log_status(sbc2.id, Status.OFFLINE)
+
+        history = manager.get_status_history()
+        assert len(history) == 2
+        sbc_names = {h["sbc_name"] for h in history}
+        assert sbc_names == {"sbc-a", "sbc-b"}
+
+    def test_get_status_history_limit(self, manager):
+        """Test status history respects limit parameter."""
+        sbc = manager.create_sbc(name="limit-sbc")
+        for i in range(10):
+            manager.log_status(sbc.id, Status.ONLINE, f"entry-{i}")
+
+        history = manager.get_status_history(sbc_id=sbc.id, limit=3)
+        assert len(history) == 3
+
+    def test_get_status_history_empty(self, manager):
+        """Test status history returns empty list when no entries."""
+        sbc = manager.create_sbc(name="empty-sbc")
+        history = manager.get_status_history(sbc_id=sbc.id)
+        assert history == []
+
+    def test_get_status_history_dict_keys(self, manager):
+        """Test status history returns correct dict keys."""
+        sbc = manager.create_sbc(name="keys-sbc")
+        manager.log_status(sbc.id, Status.ONLINE)
+
+        history = manager.get_status_history(sbc_id=sbc.id)
+        assert len(history) == 1
+        entry = history[0]
+        assert "id" in entry
+        assert "sbc_id" in entry
+        assert "sbc_name" in entry
+        assert "status" in entry
+        assert "details" in entry
+        assert "logged_at" in entry
+
+    def test_get_uptime_no_history(self, manager):
+        """Test uptime returns None for nonexistent SBC."""
+        result = manager.get_uptime(99999)
+        assert result is None
+
+    def test_get_uptime_online(self, manager):
+        """Test uptime calculation for an online SBC."""
+        sbc = manager.create_sbc(name="uptime-sbc")
+        manager.update_sbc(sbc.id, status=Status.ONLINE)
+        manager.log_status(sbc.id, Status.ONLINE, "Boot")
+
+        result = manager.get_uptime(sbc.id)
+        assert result is not None
+        assert result["sbc_name"] == "uptime-sbc"
+        assert result["current_status"] == "online"
+        assert isinstance(result["current_uptime_seconds"], int)
+        assert "current_uptime_formatted" in result
+        assert "uptime_24h_percent" in result
+
+    def test_get_uptime_offline(self, manager):
+        """Test uptime for SBC that went offline."""
+        sbc = manager.create_sbc(name="offline-sbc")
+        manager.log_status(sbc.id, Status.ONLINE, "Boot")
+        manager.log_status(sbc.id, Status.OFFLINE, "Shutdown")
+
+        result = manager.get_uptime(sbc.id)
+        assert result is not None
+        assert result["current_uptime_seconds"] == 0
+
+    def test_get_uptime_24h_percent(self, manager):
+        """Test 24h uptime percentage is present and numeric."""
+        sbc = manager.create_sbc(name="pct-sbc")
+        manager.update_sbc(sbc.id, status=Status.ONLINE)
+        manager.log_status(sbc.id, Status.ONLINE, "Boot")
+
+        result = manager.get_uptime(sbc.id)
+        assert result is not None
+        assert isinstance(result["uptime_24h_percent"], float)
+
+    def test_cleanup_old_status_logs(self, manager):
+        """Test cleaning up old status log entries."""
+        sbc = manager.create_sbc(name="cleanup-sbc")
+        manager.log_status(sbc.id, Status.ONLINE)
+        manager.log_status(sbc.id, Status.OFFLINE)
+
+        # With large retention, nothing should be deleted
+        deleted = manager.cleanup_old_status_logs(365)
+        assert deleted == 0
+
+        # All entries should still exist
+        history = manager.get_status_history(sbc_id=sbc.id)
+        assert len(history) == 2
+
+    def test_cleanup_returns_int(self, manager):
+        """Test cleanup returns integer count."""
+        deleted = manager.cleanup_old_status_logs(30)
+        assert isinstance(deleted, int)
+        assert deleted >= 0
