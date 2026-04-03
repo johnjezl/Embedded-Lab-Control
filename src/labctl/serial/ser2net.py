@@ -10,6 +10,8 @@ from pathlib import Path
 
 import yaml
 
+PARITY_CHARS = {"none": "n", "even": "e", "odd": "o"}
+
 
 @dataclass
 class Ser2NetPort:
@@ -29,7 +31,7 @@ class Ser2NetPort:
         """Convert to ser2net YAML connection format."""
         # Build the connection string
         # Format: &name,baud,databits,parity,stopbits
-        parity_char = {"none": "n", "even": "e", "odd": "o"}[self.parity.lower()]
+        parity_char = PARITY_CHARS.get(self.parity.lower(), "n")
         conn_str = f"{self.baud},{self.databits}{parity_char}{self.stopbits}"
 
         # Build options list
@@ -83,8 +85,8 @@ def generate_ser2net_config(
 
     # Add each connection
     for port in ports:
-        parity_char = {"none": "n", "even": "e", "odd": "o"}[port.parity.lower()]
-        conn_str = f"{port.baud}{parity_char}{port.databits}{port.stopbits}"
+        parity_char = PARITY_CHARS.get(port.parity.lower(), "n")
+        conn_str = f"{port.baud},{port.databits}{parity_char}{port.stopbits}"
 
         # Build options - local means only localhost connections
         local_spec = "localhost," if port.local else ""

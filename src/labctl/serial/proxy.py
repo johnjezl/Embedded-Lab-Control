@@ -194,17 +194,22 @@ class SessionLogger:
             # Close current file
             if self._file_handle:
                 self._file_handle.close()
+                self._file_handle = None
 
-            # Rotate
-            rotated = self._rotator.rotate(self.log_file)
-            logger.info(f"Rotated log to {rotated}")
+            try:
+                # Rotate
+                rotated = self._rotator.rotate(self.log_file)
+                logger.info(f"Rotated log to {rotated}")
 
-            # Start new file
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            self.log_file = self.log_dir / f"{self.session_name}_{timestamp}.log"
-            self._file_handle = open(self.log_file, "a", buffering=1)
-            self._write_header()
-            self._bytes_written = 0
+                # Start new file
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                self.log_file = self.log_dir / f"{self.session_name}_{timestamp}.log"
+                self._file_handle = open(self.log_file, "a", buffering=1)
+                self._write_header()
+                self._bytes_written = 0
+            except Exception as e:
+                logger.error(f"Log rotation failed: {e}")
+                # _file_handle remains None; subsequent log calls are no-ops
 
     def log_output(self, data: bytes) -> None:
         """Log data received from device (output)."""

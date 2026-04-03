@@ -4,10 +4,13 @@ Configuration management for lab controller.
 Loads configuration from YAML files with environment variable overrides.
 """
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 import yaml
 
@@ -314,7 +317,8 @@ def load_config(
                 with open(path) as f:
                     config_data = yaml.safe_load(f) or {}
                 break
-            except Exception:
+            except Exception as e:
+                logger.warning("Failed to load config from %s: %s", path, e)
                 continue
 
     # Create config from loaded data (or defaults)

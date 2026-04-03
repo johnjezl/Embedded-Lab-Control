@@ -54,54 +54,7 @@ def _get_manager():
 
 def _sbc_to_dict(sbc) -> dict:
     """Convert an SBC model to a JSON-serializable dict."""
-    data = {
-        "name": sbc.name,
-        "project": sbc.project,
-        "description": sbc.description,
-        "ssh_user": sbc.ssh_user,
-        "status": sbc.status.value,
-        "primary_ip": sbc.primary_ip,
-    }
-
-    if sbc.serial_ports:
-        data["serial_ports"] = [
-            {
-                "type": p.port_type.value,
-                "device": p.device_path,
-                "alias": p.alias,
-                "tcp_port": p.tcp_port,
-                "baud_rate": p.baud_rate,
-                "serial_device": p.serial_device.name if p.serial_device else None,
-            }
-            for p in sbc.serial_ports
-        ]
-
-    if sbc.network_addresses:
-        data["network_addresses"] = [
-            {
-                "type": a.address_type.value,
-                "ip": a.ip_address,
-                "mac": a.mac_address,
-                "hostname": a.hostname,
-            }
-            for a in sbc.network_addresses
-        ]
-
-    if sbc.power_plug:
-        data["power_plug"] = {
-            "type": sbc.power_plug.plug_type.value,
-            "address": sbc.power_plug.address,
-            "index": sbc.power_plug.plug_index,
-        }
-
-    if sbc.sdwire:
-        data["sdwire"] = {
-            "name": sbc.sdwire.name,
-            "serial_number": sbc.sdwire.serial_number,
-            "device_type": sbc.sdwire.device_type,
-        }
-
-    return data
+    return sbc.to_dict(include_ids=False)
 
 
 # ---------------------------------------------------------------------------

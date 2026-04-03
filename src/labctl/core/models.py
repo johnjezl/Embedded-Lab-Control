@@ -226,3 +226,63 @@ class SBC:
         if self.network_addresses:
             return self.network_addresses[0].ip_address
         return None
+
+    def to_dict(self, include_ids: bool = False) -> dict:
+        """Convert SBC to JSON-serializable dict.
+
+        Args:
+            include_ids: Include database IDs in output (for REST API).
+        """
+        data = {
+            "name": self.name,
+            "project": self.project,
+            "description": self.description,
+            "ssh_user": self.ssh_user,
+            "status": self.status.value,
+            "primary_ip": self.primary_ip,
+        }
+        if include_ids:
+            data["id"] = self.id
+
+        if self.serial_ports:
+            data["serial_ports"] = [
+                {
+                    **({"id": p.id} if include_ids else {}),
+                    "type": p.port_type.value,
+                    "device": p.device_path,
+                    "alias": p.alias,
+                    "tcp_port": p.tcp_port,
+                    "baud_rate": p.baud_rate,
+                    "serial_device": p.serial_device.name if p.serial_device else None,
+                }
+                for p in self.serial_ports
+            ]
+
+        if self.network_addresses:
+            data["network_addresses"] = [
+                {
+                    **({"id": a.id} if include_ids else {}),
+                    "type": a.address_type.value,
+                    "ip": a.ip_address,
+                    "mac": a.mac_address,
+                    "hostname": a.hostname,
+                }
+                for a in self.network_addresses
+            ]
+
+        if self.power_plug:
+            data["power_plug"] = {
+                **({"id": self.power_plug.id} if include_ids else {}),
+                "type": self.power_plug.plug_type.value,
+                "address": self.power_plug.address,
+                "index": self.power_plug.plug_index,
+            }
+
+        if self.sdwire:
+            data["sdwire"] = {
+                "name": self.sdwire.name,
+                "serial_number": self.sdwire.serial_number,
+                "device_type": self.sdwire.device_type,
+            }
+
+        return data

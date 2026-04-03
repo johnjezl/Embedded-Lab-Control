@@ -95,19 +95,23 @@ class ResourceManager:
         self._load_sbc_relations(sbc)
         return sbc
 
+    def _load_serial_device(self, port: SerialPort) -> None:
+        """Load the serial device for a port if it has one."""
+        if port.serial_device_id:
+            dev_row = self.db.execute_one(
+                "SELECT * FROM serial_devices WHERE id = ?",
+                (port.serial_device_id,),
+            )
+            if dev_row:
+                port.serial_device = SerialDevice.from_row(dev_row)
+
     def _load_sbc_relations(self, sbc: SBC) -> None:
         """Load related objects for an SBC."""
         # Load serial ports
         rows = self.db.execute("SELECT * FROM serial_ports WHERE sbc_id = ?", (sbc.id,))
         sbc.serial_ports = [SerialPort.from_row(r) for r in rows]
         for port in sbc.serial_ports:
-            if port.serial_device_id:
-                dev_row = self.db.execute_one(
-                    "SELECT * FROM serial_devices WHERE id = ?",
-                    (port.serial_device_id,),
-                )
-                if dev_row:
-                    port.serial_device = SerialDevice.from_row(dev_row)
+            self._load_serial_device(port)
 
         # Load network addresses
         rows = self.db.execute(
@@ -375,17 +379,18 @@ class ResourceManager:
         if tcp_port is None:
             tcp_port = self._next_tcp_port()
 
-        # Insert or update (upsert)
-        self.db.execute_modify(
-            "DELETE FROM serial_ports WHERE sbc_id = ? AND port_type = ?",
-            (sbc_id, port_type.value),
-        )
-
+        # Atomic upsert
         port_id = self.db.execute_insert(
             """
             INSERT INTO serial_ports
                 (sbc_id, port_type, device_path, tcp_port, baud_rate, alias, serial_device_id)
             VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (sbc_id, port_type) DO UPDATE SET
+                device_path = excluded.device_path,
+                tcp_port = excluded.tcp_port,
+                baud_rate = excluded.baud_rate,
+                alias = excluded.alias,
+                serial_device_id = excluded.serial_device_id
             """,
             (sbc_id, port_type.value, device_path, tcp_port, baud_rate, alias, serial_device_id),
         )
@@ -395,9 +400,12 @@ class ResourceManager:
             details += f" (alias: {alias})"
         self._audit_log("assign", "serial_port", port_id, sbc.name, details)
 
-        row = self.db.execute_one("SELECT * FROM serial_ports WHERE id = ?", (port_id,))
+        row = self.db.execute_one(
+            "SELECT * FROM serial_ports WHERE sbc_id = ? AND port_type = ?",
+            (sbc_id, port_type.value),
+        )
         if not row:
-            raise RuntimeError(f"Failed to retrieve serial port {port_id}")
+            raise RuntimeError(f"Failed to retrieve serial port for {sbc.name}")
         return SerialPort.from_row(row)
 
     def remove_serial_port(self, sbc_id: int, port_type: PortType) -> bool:
@@ -428,13 +436,7 @@ class ResourceManager:
         rows = self.db.execute("SELECT * FROM serial_ports ORDER BY sbc_id, port_type")
         ports = [SerialPort.from_row(r) for r in rows]
         for port in ports:
-            if port.serial_device_id:
-                dev_row = self.db.execute_one(
-                    "SELECT * FROM serial_devices WHERE id = ?",
-                    (port.serial_device_id,),
-                )
-                if dev_row:
-                    port.serial_device = SerialDevice.from_row(dev_row)
+            self._load_serial_device(port)
         return ports
 
     def get_serial_port_by_alias(self, alias: str) -> Optional[SerialPort]:
@@ -445,13 +447,7 @@ class ResourceManager:
         if not row:
             return None
         port = SerialPort.from_row(row)
-        if port.serial_device_id:
-            dev_row = self.db.execute_one(
-                "SELECT * FROM serial_devices WHERE id = ?",
-                (port.serial_device_id,),
-            )
-            if dev_row:
-                port.serial_device = SerialDevice.from_row(dev_row)
+        self._load_serial_device(port)
         return port
 
     def _next_tcp_port(self, base_port: int = 4000) -> int:
@@ -476,17 +472,16 @@ class ResourceManager:
         if not sbc:
             raise ValueError(f"SBC with ID {sbc_id} not found")
 
-        # Insert or update (upsert)
-        self.db.execute_modify(
-            "DELETE FROM network_addresses WHERE sbc_id = ? AND address_type = ?",
-            (sbc_id, address_type.value),
-        )
-
+        # Atomic upsert
         addr_id = self.db.execute_insert(
             """
             INSERT INTO network_addresses
                 (sbc_id, address_type, ip_address, mac_address, hostname)
             VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT (sbc_id, address_type) DO UPDATE SET
+                ip_address = excluded.ip_address,
+                mac_address = excluded.mac_address,
+                hostname = excluded.hostname
             """,
             (sbc_id, address_type.value, ip_address, mac_address, hostname),
         )
@@ -500,10 +495,11 @@ class ResourceManager:
         )
 
         row = self.db.execute_one(
-            "SELECT * FROM network_addresses WHERE id = ?", (addr_id,)
+            "SELECT * FROM network_addresses WHERE sbc_id = ? AND address_type = ?",
+            (sbc_id, address_type.value),
         )
         if not row:
-            raise RuntimeError(f"Failed to retrieve network address {addr_id}")
+            raise RuntimeError(f"Failed to retrieve network address for {sbc.name}")
         return NetworkAddress.from_row(row)
 
     def remove_network_address(self, sbc_id: int, address_type: AddressType) -> bool:
@@ -528,13 +524,15 @@ class ResourceManager:
         if not sbc:
             raise ValueError(f"SBC with ID {sbc_id} not found")
 
-        # Remove existing plug assignment
-        self.db.execute_modify("DELETE FROM power_plugs WHERE sbc_id = ?", (sbc_id,))
-
+        # Atomic upsert
         plug_id = self.db.execute_insert(
             """
             INSERT INTO power_plugs (sbc_id, plug_type, address, plug_index)
             VALUES (?, ?, ?, ?)
+            ON CONFLICT (sbc_id) DO UPDATE SET
+                plug_type = excluded.plug_type,
+                address = excluded.address,
+                plug_index = excluded.plug_index
             """,
             (sbc_id, plug_type.value, address, plug_index),
         )
@@ -547,9 +545,11 @@ class ResourceManager:
             f"Assigned {plug_type.value} plug {address} to {sbc.name}",
         )
 
-        row = self.db.execute_one("SELECT * FROM power_plugs WHERE id = ?", (plug_id,))
+        row = self.db.execute_one(
+            "SELECT * FROM power_plugs WHERE sbc_id = ?", (sbc_id,)
+        )
         if not row:
-            raise RuntimeError(f"Failed to retrieve power plug {plug_id}")
+            raise RuntimeError(f"Failed to retrieve power plug for {sbc.name}")
         return PowerPlug.from_row(row)
 
     def remove_power_plug(self, sbc_id: int) -> bool:
@@ -633,13 +633,10 @@ class ResourceManager:
         if not device:
             raise ValueError(f"SDWire device with ID {sdwire_device_id} not found")
 
-        # Remove existing assignment for this SBC
-        self.db.execute_modify(
-            "DELETE FROM sdwire_assignments WHERE sbc_id = ?", (sbc_id,)
-        )
-
+        # Atomic upsert
         self.db.execute_insert(
-            "INSERT INTO sdwire_assignments (sbc_id, sdwire_device_id) VALUES (?, ?)",
+            """INSERT INTO sdwire_assignments (sbc_id, sdwire_device_id) VALUES (?, ?)
+               ON CONFLICT (sbc_id) DO UPDATE SET sdwire_device_id = excluded.sdwire_device_id""",
             (sbc_id, sdwire_device_id),
         )
 

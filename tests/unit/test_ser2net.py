@@ -58,7 +58,7 @@ class TestGenerateSer2netConfig:
         assert "%YAML 1.1" in config
         assert "connection: &test-console" in config
         assert "accepter: tcp,localhost,4000" in config
-        assert "connector: serialdev,/dev/lab/test-console,115200n81,local" in config
+        assert "connector: serialdev,/dev/lab/test-console,115200,8n1,local" in config
         assert "enable: on" in config
         assert "kickolduser: false" in config
 
@@ -90,7 +90,7 @@ class TestGenerateSer2netConfig:
         ]
         config = generate_ser2net_config(ports)
 
-        assert "9600n81" in config
+        assert "9600,8n1" in config
 
     def test_parity_settings(self):
         """Test different parity settings."""
@@ -104,7 +104,7 @@ class TestGenerateSer2netConfig:
                 )
             ]
             config = generate_ser2net_config(ports)
-            assert f"115200{char}81" in config
+            assert f"115200,8{char}1" in config
 
     def test_non_local_connection(self):
         """Test config for non-local (network accessible) port."""

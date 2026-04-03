@@ -12,54 +12,7 @@ api_bp = Blueprint("api", __name__)
 
 def sbc_to_dict(sbc) -> dict:
     """Convert SBC model to JSON-serializable dict."""
-    data = {
-        "id": sbc.id,
-        "name": sbc.name,
-        "project": sbc.project,
-        "description": sbc.description,
-        "ssh_user": sbc.ssh_user,
-        "status": sbc.status.value,
-        "primary_ip": sbc.primary_ip,
-    }
-
-    # Add serial ports
-    if sbc.serial_ports:
-        data["serial_ports"] = []
-        for p in sbc.serial_ports:
-            port_data = {
-                "id": p.id,
-                "type": p.port_type.value,
-                "device": p.device_path,
-                "tcp_port": p.tcp_port,
-                "baud_rate": p.baud_rate,
-                "alias": p.alias,
-                "serial_device": p.serial_device.name if p.serial_device else None,
-            }
-            data["serial_ports"].append(port_data)
-
-    # Add network addresses
-    if sbc.network_addresses:
-        data["network_addresses"] = [
-            {
-                "id": a.id,
-                "type": a.address_type.value,
-                "ip": a.ip_address,
-                "mac": a.mac_address,
-                "hostname": a.hostname,
-            }
-            for a in sbc.network_addresses
-        ]
-
-    # Add power plug
-    if sbc.power_plug:
-        data["power_plug"] = {
-            "id": sbc.power_plug.id,
-            "type": sbc.power_plug.plug_type.value,
-            "address": sbc.power_plug.address,
-            "index": sbc.power_plug.plug_index,
-        }
-
-    return data
+    return sbc.to_dict(include_ids=True)
 
 
 # --- SBC Endpoints ---
