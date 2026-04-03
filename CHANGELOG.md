@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- `/deploy-and-test` Claude Code skill (2026-04-02)
+  - Orchestrates build, deploy, boot, capture, and analysis via MCP tools
+  - Auto-discovers config from `.claude/deploy-config.json`, `CLAUDE.md`, or user prompts
+  - Boot reliability testing mode with `--runs N`
+  - Located at `skills/deploy-and-test.md`, opt in via project settings.json
 - Serial I/O and boot test tools (2026-04-02)
   - `labctl serial capture <port> --timeout N --until <pattern>` — capture serial output with timeout or pattern match
   - `labctl serial send <port> <data>` — send data to serial port, optional `--capture` for response

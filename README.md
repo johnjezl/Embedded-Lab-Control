@@ -12,6 +12,7 @@ Centralized management system for embedded development lab resources. Provides d
 - **Health Monitoring** - Automated ping, serial, and power checks
 - **Session Logging** - Capture serial output with rotation and compression
 - **Authentication** - Session-based web login and API key auth (optional, disabled by default)
+- **Claude Code Skill** - `/deploy-and-test` orchestrates build, deploy, boot, and serial capture
 
 ## Installation
 
