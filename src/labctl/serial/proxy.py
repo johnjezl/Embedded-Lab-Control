@@ -277,6 +277,7 @@ class SerialProxy:
 
         self.clients: dict[str, ProxyClient] = {}
         self.writer_client_id: Optional[str] = None
+        self._lock = asyncio.Lock()
         self._server: Optional[asyncio.Server] = None
         self._ser2net_reader: Optional[asyncio.StreamReader] = None
         self._ser2net_writer: Optional[asyncio.StreamWriter] = None
@@ -419,20 +420,20 @@ class SerialProxy:
 
                 # Check write permission
                 if not self._can_write(client.client_id):
-                    # Try to acquire write lock
-                    if self.writer_client_id is None:
-                        self.writer_client_id = client.client_id
-                        client.has_write_lock = True
+                    # Try to acquire write lock (atomic via asyncio.Lock)
+                    async with self._lock:
+                        if self.writer_client_id is None:
+                            self.writer_client_id = client.client_id
+                            client.has_write_lock = True
+                    if client.has_write_lock:
                         logger.info(
                             f"Client {client.client_id[:8]} acquired write lock"
                         )
-                        # Notify client
                         client.writer.write(
                             b"\r\n[Proxy: You now have write access]\r\n"
                         )
                         await client.writer.drain()
                     else:
-                        # Notify client they can't write
                         continue  # Silently drop the write
 
                 # Forward to ser2net
@@ -489,13 +490,14 @@ class SerialProxy:
         # Ser2net disconnected, stop proxy
         if self._running:
             logger.error("ser2net connection lost, stopping proxy")
-            asyncio.create_task(self.stop())
+            self._running = False
+            asyncio.ensure_future(self.stop())
 
     async def _broadcast(self, data: bytes) -> None:
         """Send data to all connected clients."""
         disconnected = []
 
-        for client_id, client in self.clients.items():
+        for client_id, client in list(self.clients.items()):
             try:
                 client.writer.write(data)
                 await client.writer.drain()

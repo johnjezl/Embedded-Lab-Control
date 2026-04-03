@@ -424,6 +424,48 @@ class TestUpdateFiles:
         ]
         assert len(umount_calls) == 1
 
+    def test_update_files_path_traversal_copy(self):
+        """Test that path traversal in copy dest is rejected."""
+        ctrl = SDWireController("test_serial")
+
+        with patch.object(ctrl, "get_block_device", return_value="/dev/sdb"):
+            with patch("labctl.sdwire.controller.subprocess.run"):
+                with patch("tempfile.mkdtemp", return_value="/tmp/labctl-test"):
+                    with patch("os.rmdir"):
+                        with pytest.raises(RuntimeError, match="Path traversal"):
+                            ctrl.update_files(
+                                1,
+                                [("local.bin", "../../etc/passwd")],
+                            )
+
+    def test_update_files_path_traversal_rename(self):
+        """Test that path traversal in rename is rejected."""
+        ctrl = SDWireController("test_serial")
+
+        with patch.object(ctrl, "get_block_device", return_value="/dev/sdb"):
+            with patch("labctl.sdwire.controller.subprocess.run"):
+                with patch("tempfile.mkdtemp", return_value="/tmp/labctl-test"):
+                    with patch("os.rmdir"):
+                        with pytest.raises(RuntimeError, match="Path traversal"):
+                            ctrl.update_files(
+                                1, [],
+                                renames=[("ok.bin", "../../../etc/shadow")],
+                            )
+
+    def test_update_files_path_traversal_delete(self):
+        """Test that path traversal in delete is rejected."""
+        ctrl = SDWireController("test_serial")
+
+        with patch.object(ctrl, "get_block_device", return_value="/dev/sdb"):
+            with patch("labctl.sdwire.controller.subprocess.run"):
+                with patch("tempfile.mkdtemp", return_value="/tmp/labctl-test"):
+                    with patch("os.rmdir"):
+                        with pytest.raises(RuntimeError, match="Path traversal"):
+                            ctrl.update_files(
+                                1, [],
+                                deletes=["../../../etc/passwd"],
+                            )
+
 
 class TestBlockDeviceHelpers:
     """Tests for block device validation helpers."""

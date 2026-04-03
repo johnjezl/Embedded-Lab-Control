@@ -4,11 +4,14 @@ Shelly power controller.
 Controls Shelly smart plugs via HTTP API.
 """
 
+import logging
 from typing import Optional
 
 import requests
 
 from labctl.power.base import PowerController, PowerState
+
+logger = logging.getLogger(__name__)
 
 
 class ShellyController(PowerController):
@@ -45,7 +48,8 @@ class ShellyController(PowerController):
             response = requests.get(url, params=params, timeout=self.timeout)
             response.raise_for_status()
             return response.json()
-        except Exception:
+        except Exception as e:
+            logger.warning("Shelly request '%s' failed for %s: %s", endpoint, self.address, e)
             return None
 
     def power_on(self) -> bool:

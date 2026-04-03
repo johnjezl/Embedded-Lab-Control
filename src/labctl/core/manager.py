@@ -264,6 +264,8 @@ class ResourceManager:
             f"Registered serial device: {name} ({usb_path})",
         )
         row = self.db.execute_one("SELECT * FROM serial_devices WHERE id = ?", (device_id,))
+        if not row:
+            raise RuntimeError(f"Failed to retrieve serial device {device_id}")
         return SerialDevice.from_row(row)
 
     def get_serial_device(self, device_id: int) -> Optional[SerialDevice]:
@@ -394,6 +396,8 @@ class ResourceManager:
         self._audit_log("assign", "serial_port", port_id, sbc.name, details)
 
         row = self.db.execute_one("SELECT * FROM serial_ports WHERE id = ?", (port_id,))
+        if not row:
+            raise RuntimeError(f"Failed to retrieve serial port {port_id}")
         return SerialPort.from_row(row)
 
     def remove_serial_port(self, sbc_id: int, port_type: PortType) -> bool:
@@ -498,6 +502,8 @@ class ResourceManager:
         row = self.db.execute_one(
             "SELECT * FROM network_addresses WHERE id = ?", (addr_id,)
         )
+        if not row:
+            raise RuntimeError(f"Failed to retrieve network address {addr_id}")
         return NetworkAddress.from_row(row)
 
     def remove_network_address(self, sbc_id: int, address_type: AddressType) -> bool:
@@ -542,6 +548,8 @@ class ResourceManager:
         )
 
         row = self.db.execute_one("SELECT * FROM power_plugs WHERE id = ?", (plug_id,))
+        if not row:
+            raise RuntimeError(f"Failed to retrieve power plug {plug_id}")
         return PowerPlug.from_row(row)
 
     def remove_power_plug(self, sbc_id: int) -> bool:
@@ -570,6 +578,8 @@ class ResourceManager:
             f"Registered SDWire device: {name} ({serial_number})",
         )
         row = self.db.execute_one("SELECT * FROM sdwire_devices WHERE id = ?", (device_id,))
+        if not row:
+            raise RuntimeError(f"Failed to retrieve SDWire device {device_id}")
         return SDWireDevice.from_row(row)
 
     def get_sdwire_device(self, device_id: int) -> Optional[SDWireDevice]:

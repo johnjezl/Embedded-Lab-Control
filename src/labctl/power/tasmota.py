@@ -4,11 +4,14 @@ Tasmota power controller.
 Controls Tasmota-flashed smart plugs via HTTP API.
 """
 
+import logging
 from typing import Optional
 
 import requests
 
 from labctl.power.base import PowerController, PowerState
+
+logger = logging.getLogger(__name__)
 
 
 class TasmotaController(PowerController):
@@ -38,7 +41,8 @@ class TasmotaController(PowerController):
             response = requests.get(url, params=params, timeout=self.timeout)
             response.raise_for_status()
             return response.json()
-        except Exception:
+        except Exception as e:
+            logger.warning("Tasmota command '%s' failed for %s: %s", cmnd, self.address, e)
             return None
 
     def _power_key(self) -> str:

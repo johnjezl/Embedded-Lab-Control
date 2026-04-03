@@ -134,7 +134,7 @@ class KasaController(PowerController):
 
                     with concurrent.futures.ThreadPoolExecutor() as pool:
                         future = pool.submit(asyncio.run, _exec())
-                        result = future.result()
+                        result = future.result(timeout=self.timeout + 10)
                     return result
                 except RuntimeError:
                     # No running loop — normal sync context
@@ -157,7 +157,7 @@ class KasaController(PowerController):
 
         error_type = type(last_error).__name__
         msg = (
-            f"Kasa {action} failed for {self.address}"
+            f"Kasa {action} failed for {self.address} "
             f"[{self.plug_index}]: {error_type}: {last_error}"
         )
         logger.debug(msg)

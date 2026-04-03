@@ -201,11 +201,22 @@ class SDWireController:
                 f"Failed to mount {part_dev}: {e.stderr.strip()}"
             ) from e
 
+        real_mount = os.path.realpath(mount_point)
+
+        def _safe_path(relative: str) -> str:
+            """Resolve path and verify it stays under mount_point."""
+            full = os.path.realpath(os.path.join(mount_point, relative))
+            if not full.startswith(real_mount + "/") and full != real_mount:
+                raise RuntimeError(
+                    f"Path traversal rejected: '{relative}' escapes partition"
+                )
+            return full
+
         result = {"copied": [], "renamed": [], "deleted": []}
         try:
             # 1. Copies
             for src, dest_relative in file_pairs:
-                dest = os.path.join(mount_point, dest_relative)
+                dest = _safe_path(dest_relative)
 
                 dest_dir = os.path.dirname(dest)
                 if dest_dir and not os.path.exists(dest_dir):
@@ -217,8 +228,8 @@ class SDWireController:
 
             # 2. Renames
             for old_name, new_name in (renames or []):
-                old_path = os.path.join(mount_point, old_name)
-                new_path = os.path.join(mount_point, new_name)
+                old_path = _safe_path(old_name)
+                new_path = _safe_path(new_name)
 
                 if not os.path.exists(old_path):
                     raise RuntimeError(
@@ -239,7 +250,7 @@ class SDWireController:
 
             # 3. Deletes
             for filename in (deletes or []):
-                file_path = os.path.join(mount_point, filename)
+                file_path = _safe_path(filename)
 
                 if not os.path.exists(file_path):
                     raise RuntimeError(
