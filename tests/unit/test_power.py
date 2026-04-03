@@ -1,5 +1,6 @@
 """Unit tests for power control module."""
 
+import logging
 from unittest.mock import Mock, patch
 
 from labctl.core.models import PlugType, PowerPlug
@@ -165,6 +166,18 @@ class TestTasmotaController:
 
         assert result is False
 
+    @patch("labctl.power.tasmota.requests.get")
+    def test_failure_logs_warning(self, mock_get, caplog):
+        """Test that connection failure logs a warning."""
+        mock_get.side_effect = ConnectionError("Network unreachable")
+
+        controller = TasmotaController("192.168.1.50")
+        with caplog.at_level(logging.WARNING, logger="labctl.power.tasmota"):
+            controller.power_on()
+
+        assert any("Tasmota command" in r.message for r in caplog.records)
+        assert any("192.168.1.50" in r.message for r in caplog.records)
+
 
 class TestShellyController:
     """Tests for Shelly power controller."""
@@ -226,6 +239,28 @@ class TestShellyController:
         call_args = mock_get.call_args
         assert "relay/1" in call_args[0][0]
 
+    @patch("labctl.power.shelly.requests.get")
+    def test_failure_logs_warning(self, mock_get, caplog):
+        """Test that connection failure logs a warning."""
+        mock_get.side_effect = ConnectionError("Network unreachable")
+
+        controller = ShellyController("192.168.1.51")
+        with caplog.at_level(logging.WARNING, logger="labctl.power.shelly"):
+            controller.power_on()
+
+        assert any("Shelly request" in r.message for r in caplog.records)
+        assert any("192.168.1.51" in r.message for r in caplog.records)
+
+    @patch("labctl.power.shelly.requests.get")
+    def test_power_on_failure(self, mock_get):
+        """Test power on returns False on failure."""
+        mock_get.side_effect = Exception("Connection failed")
+
+        controller = ShellyController("192.168.1.51")
+        result = controller.power_on()
+
+        assert result is False
+
 
 class TestPowerCycle:
     """Tests for power cycle functionality."""
@@ -250,6 +285,25 @@ class TestPowerCycle:
         assert result is True
         mock_sleep.assert_called_once_with(3.0)
         assert mock_get.call_count == 2
+
+    @patch("labctl.power.tasmota.requests.get")
+    @patch("time.sleep")
+    def test_power_cycle_default_delay(self, mock_sleep, mock_get):
+        """Test power cycle uses 3.0s default delay."""
+        mock_response_off = Mock()
+        mock_response_off.json.return_value = {"POWER": "OFF"}
+        mock_response_off.raise_for_status = Mock()
+
+        mock_response_on = Mock()
+        mock_response_on.json.return_value = {"POWER": "ON"}
+        mock_response_on.raise_for_status = Mock()
+
+        mock_get.side_effect = [mock_response_off, mock_response_on]
+
+        controller = TasmotaController("192.168.1.50")
+        controller.power_cycle()
+
+        mock_sleep.assert_called_once_with(3.0)
 
     @patch("labctl.power.tasmota.requests.get")
     def test_power_cycle_fails_on_off_failure(self, mock_get):

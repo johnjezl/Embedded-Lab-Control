@@ -92,6 +92,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `labctl ser2net reload` auto-escalates to sudo when needed (2026-03-28)
 
 ### Fixed
+- Critical: `get_status_history()` and `get_uptime()` called nonexistent `execute_query()` (2026-04-03)
+  - Replaced with `execute()`, fixed tuple indexing to dict-style access for `sqlite3.Row`
+- Critical: Open redirect in login — `next` parameter now rejects absolute and protocol-relative URLs (2026-04-03)
+- Path traversal protection in SDWire file operations (2026-04-03)
+  - Copy, rename, and delete paths validated via `realpath` to stay under mount point
+- Null checks after `execute_one()` on 5 insert-then-retrieve sites in manager (2026-04-03)
+- Power controller error handling improvements (2026-04-03)
+  - Added warning-level logging to Tasmota/Shelly bare exception handlers
+  - Added timeout to Kasa `future.result()` to prevent indefinite blocking
+  - Fixed missing space in Kasa error message formatting
+- SerialProxy thread safety fixes (2026-04-03)
+  - `asyncio.Lock` for write lock acquisition to prevent TOCTOU race
+  - Snapshot `clients` dict before broadcast iteration
+  - Guard orphaned `create_task(self.stop())` with state check
 - Health check power probe using wrong function signature (2026-03-28)
   - `get_controller(sbc.power_plug)` → `PowerController.from_plug(sbc.power_plug)`
 - Monitor daemon ping failing under systemd sandbox (2026-03-28)
