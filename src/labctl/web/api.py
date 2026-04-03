@@ -206,7 +206,7 @@ def control_power(name: str):
         elif action == "off":
             success = controller.power_off()
         else:
-            delay = data.get("delay", 2.0)
+            delay = data.get("delay", 3.0)
             success = controller.power_cycle(delay)
 
         if success:

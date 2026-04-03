@@ -332,7 +332,7 @@ def power_off(sbc_name: str) -> str:
 
 
 @mcp.tool()
-def power_cycle(sbc_name: str, delay: float = 2.0) -> str:
+def power_cycle(sbc_name: str, delay: float = 3.0) -> str:
     """Power cycle an SBC (turn off, wait, turn on).
 
     Args:
@@ -753,7 +753,7 @@ def sdwire_update(
             from labctl.power import PowerController
 
             power_ctrl = PowerController.from_plug(sbc.power_plug)
-            power_ctrl.power_cycle(delay=2.0)
+            power_ctrl.power_cycle()
             summary += f". Power cycled {sbc_name}."
 
         return summary
@@ -929,7 +929,7 @@ def boot_test(
     def power_cycle_fn():
         from labctl.power import PowerController
         power_ctrl = PowerController.from_plug(sbc.power_plug)
-        power_ctrl.power_cycle(delay=2.0)
+        power_ctrl.power_cycle(delay=3.0)
 
     try:
         result = run_boot_test(

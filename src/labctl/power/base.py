@@ -56,7 +56,7 @@ class PowerController(ABC):
         """
         pass
 
-    def power_cycle(self, delay: float = 2.0) -> bool:
+    def power_cycle(self, delay: float = 3.0) -> bool:
         """
         Power cycle (off, wait, on).
 

@@ -821,7 +821,7 @@ def sdwire_flash_cmd(
             click.echo(f"Power cycling {sbc_name}...")
             from labctl.power import PowerController
             power_ctrl = PowerController.from_plug(sbc.power_plug)
-            power_ctrl.power_cycle(delay=2.0)
+            power_ctrl.power_cycle()
             click.echo(f"Power cycled: {sbc_name}")
 
         click.echo(f"Done! {sbc_name} should boot from the new image.")
@@ -955,7 +955,7 @@ def sdwire_update_cmd(
             click.echo(f"Power cycling {sbc_name}...")
             from labctl.power import PowerController
             power_ctrl = PowerController.from_plug(sbc.power_plug)
-            power_ctrl.power_cycle(delay=2.0)
+            power_ctrl.power_cycle(delay=3.0)
             click.echo(f"Power cycled: {sbc_name}")
         elif reboot and not sbc.power_plug:
             click.echo("Warning: --reboot requested but no power plug assigned")
@@ -2893,7 +2893,7 @@ def boot_test_cmd(
     def power_cycle_fn():
         from labctl.power import PowerController
         power_ctrl = PowerController.from_plug(sbc.power_plug)
-        power_ctrl.power_cycle(delay=2.0)
+        power_ctrl.power_cycle()
 
     # Progress callback
     def progress(run_num, total, run_result):
