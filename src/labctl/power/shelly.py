@@ -60,7 +60,7 @@ class ShellyController(PowerController):
             return False
 
         # Shelly returns {"ison": true, ...}
-        return result.get("ison", False) is True
+        return bool(result.get("ison", False))
 
     def power_off(self) -> bool:
         """Turn power off."""
@@ -69,7 +69,7 @@ class ShellyController(PowerController):
         if result is None:
             return False
 
-        return result.get("ison", True) is False
+        return not result.get("ison", True)
 
     def get_state(self) -> PowerState:
         """Get current power state."""

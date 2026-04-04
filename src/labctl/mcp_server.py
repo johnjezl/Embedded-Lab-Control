@@ -292,6 +292,9 @@ def power_cycle(sbc_name: str, delay: float = 3.0) -> str:
         sbc_name: Name of the SBC to power cycle
         delay: Seconds to wait between off and on (default 3.0)
     """
+    if delay < 0:
+        return "Error: delay must be non-negative"
+
     from labctl.power import PowerController
 
     manager = _get_manager()
@@ -846,6 +849,11 @@ def boot_test(
         partition: Partition number for deploy (default: 1)
         output_dir: Save per-run output to files here
     """
+    if runs < 1:
+        return "Error: runs must be at least 1"
+    if timeout <= 0:
+        return "Error: timeout must be positive"
+
     import time as time_mod
 
     from labctl.serial.boot_test import run_boot_test

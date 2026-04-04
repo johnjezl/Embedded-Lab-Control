@@ -2,12 +2,18 @@
 REST API endpoints for lab controller.
 """
 
+import time
+
 from flask import Blueprint, g, jsonify, request
 
 from labctl.core.models import PortType, Status
 from labctl.power import PowerController
 
 api_bp = Blueprint("api", __name__)
+
+# Rate limiting: track last power cycle time per SBC to prevent hardware damage
+_power_cycle_times: dict[str, float] = {}
+POWER_CYCLE_MIN_INTERVAL = 5.0  # seconds
 
 
 def sbc_to_dict(sbc) -> dict:
@@ -151,6 +157,16 @@ def control_power(name: str):
     if action not in ["on", "off", "cycle"]:
         return jsonify({"error": "action must be on, off, or cycle"}), 400
 
+    # Rate limit power cycles to prevent hardware damage
+    if action == "cycle":
+        last_cycle = _power_cycle_times.get(name, 0)
+        elapsed = time.monotonic() - last_cycle
+        if elapsed < POWER_CYCLE_MIN_INTERVAL:
+            wait = POWER_CYCLE_MIN_INTERVAL - elapsed
+            return jsonify({
+                "error": f"Rate limited: wait {wait:.1f}s before next power cycle",
+            }), 429
+
     try:
         controller = PowerController.from_plug(sbc.power_plug)
 
@@ -161,6 +177,8 @@ def control_power(name: str):
         else:
             delay = data.get("delay", 3.0)
             success = controller.power_cycle(delay)
+            if success:
+                _power_cycle_times[name] = time.monotonic()
 
         if success:
             state = controller.get_state()

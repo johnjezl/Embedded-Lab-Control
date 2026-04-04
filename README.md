@@ -109,6 +109,14 @@ labctl web --port 5000
 | `labctl sdwire flash <sbc> <image>` | Flash full image to SD card and reboot SBC |
 | `labctl sdwire update <sbc> -p N -c src:dest -r old:new -d file` | Copy, rename, or delete files on a partition |
 
+Partition numbers are 1-based (e.g., `-p 1` for the first partition, which maps to `/dev/sdb1`).
+
+SDWire flash/update operations require sudo access for `mount`, `umount`, `dd`, and `sync`. Add a sudoers rule:
+```bash
+echo '<user> ALL=(root) NOPASSWD: /usr/bin/mount, /usr/bin/umount, /usr/bin/dd, /bin/dd, /usr/bin/sync, /bin/sync' | sudo tee /etc/sudoers.d/labctl
+sudo chmod 440 /etc/sudoers.d/labctl
+```
+
 ### Serial Device Management
 
 | Command | Description |
@@ -346,9 +354,12 @@ pip install labctl[mcp]
 
 **Tools** (actions): `power_on`, `power_off`, `power_cycle`, `run_health_check`,
 `add_sbc`, `remove_sbc`, `update_sbc`, `assign_serial_port`, `assign_power_plug`,
-`set_network_address`
+`set_network_address`, `sdwire_to_dut`, `sdwire_to_host`, `sdwire_update`,
+`serial_capture`, `serial_send`, `boot_test`
 
 **Prompts**: `debug-sbc` (guided SBC debugging), `lab-report` (comprehensive status)
+
+See `docs/MCP_SERVER.md` for full tool parameters and usage.
 
 ### Claude Desktop / Claude Code Configuration
 

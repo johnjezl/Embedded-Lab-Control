@@ -147,7 +147,6 @@ class Database:
             db_path: Path to SQLite database file
         """
         self.db_path = db_path
-        self._connection: Optional[sqlite3.Connection] = None
 
     def initialize(self) -> None:
         """Initialize database schema if needed."""

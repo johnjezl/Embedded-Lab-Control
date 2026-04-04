@@ -6,17 +6,29 @@ tests, and documentation.
 
 ## Fix Status
 
-All critical (C1-C3), high priority (H1-H7), and medium priority (M1-M10,
-excluding M3/M11 deferred) issues have been fixed.
-- C1-C3: Fixed in commit a39f419
-- H1-H6: Fixed in commit 3e0fc60
-- H7: Fixed in commit 2d69d88
+All critical, high, medium, and low priority issues have been addressed.
+
+**Critical (C1-C3):** Fixed in commit a39f419
+**High (H1-H7):** Fixed in commits 3e0fc60, 2d69d88
+**Medium (M1-M11):**
 - M1, M2, M4, M5, M7, M10: Fixed in commit d1b5b11
-- M3 (power status duplication): Deferred — larger refactor
+- M3 (power status duplication): Deferred — larger refactor, modest benefit
 - M6 (Flask teardown): Not needed — DB uses per-query connections
 - M8, M9: Fixed with H3 in commit 3e0fc60
-- M11 (API rate limiting): Deferred — needs design decision
-- Tests added in commits 9563e3e, cfe1094, and subsequent
+- M11 (API rate limiting): Fixed — 5s minimum between power cycles per SBC
+**Low (L1-L9):**
+- L1: Unused _connection field removed
+- L2: Redundant is True/False checks simplified
+- L3: Log timestamps now include milliseconds
+- L4 (WebSocket bridge): Deferred — stub is intentional, real impl is a larger feature
+- L5: Already fixed with M10 (PARITY_CHARS.get with default)
+- L6: MCP parameter validation added (delay, runs, timeout)
+- L7 (CLI option naming): Deferred — breaking change, low value
+- L8 (God functions): Deferred — cosmetic refactor
+- L9: Already fixed (CLAUDE.md schema v3)
+**Documentation (D1-D4):** README updated with sudoers setup, partition numbering,
+  synced MCP tool list. CLAUDE.md schema version fixed. CHANGELOG updated.
+**Tests:** Added in commits 9563e3e, cfe1094, 5c457f2, and subsequent
 
 ---
 

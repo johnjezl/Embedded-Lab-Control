@@ -171,7 +171,7 @@ class SessionLogger:
         if deleted > 0:
             logger.info(f"Cleaned up {deleted} old log files")
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
         self.log_file = self.log_dir / f"{self.session_name}_{timestamp}.log"
         self._bytes_written = 0
 
@@ -202,7 +202,7 @@ class SessionLogger:
                 logger.info(f"Rotated log to {rotated}")
 
                 # Start new file
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
                 self.log_file = self.log_dir / f"{self.session_name}_{timestamp}.log"
                 self._file_handle = open(self.log_file, "a", buffering=1)
                 self._write_header()
