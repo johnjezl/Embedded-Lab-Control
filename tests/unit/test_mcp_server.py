@@ -786,3 +786,209 @@ class TestMcpBootTest:
 
         assert "Error" in result
         assert "power failure" in result
+
+
+# ---------------------------------------------------------------------------
+# Remove / Unassign Tool tests
+# ---------------------------------------------------------------------------
+
+
+class TestMcpRemoveTools:
+    """Tests for MCP remove and unassign tools."""
+
+    def test_remove_serial_port(self, mock_manager):
+        from labctl.mcp_server import remove_serial_port
+
+        result = remove_serial_port(sbc_name="test-sbc-1", port_type="console")
+        assert "Removed" in result
+
+    def test_remove_serial_port_not_found(self, mock_manager):
+        from labctl.mcp_server import remove_serial_port
+
+        result = remove_serial_port(sbc_name="nonexistent")
+        assert "Error" in result
+
+    def test_remove_serial_port_none_assigned(self, mock_manager):
+        from labctl.mcp_server import remove_serial_port
+
+        result = remove_serial_port(sbc_name="test-sbc-2", port_type="console")
+        assert "No console port" in result
+
+    def test_remove_network_address(self, mock_manager):
+        from labctl.mcp_server import remove_network_address
+
+        result = remove_network_address(sbc_name="test-sbc-1", address_type="ethernet")
+        assert "Removed" in result
+
+    def test_remove_network_address_not_found(self, mock_manager):
+        from labctl.mcp_server import remove_network_address
+
+        result = remove_network_address(sbc_name="nonexistent")
+        assert "Error" in result
+
+    def test_remove_power_plug(self, mock_manager):
+        from labctl.mcp_server import remove_power_plug
+
+        result = remove_power_plug(sbc_name="test-sbc-1")
+        assert "Removed" in result
+
+    def test_remove_power_plug_none(self, mock_manager):
+        from labctl.mcp_server import remove_power_plug
+
+        result = remove_power_plug(sbc_name="test-sbc-2")
+        assert "No power plug" in result
+
+    def test_sdwire_unassign(self, mock_manager):
+        from labctl.mcp_server import sdwire_unassign
+
+        result = sdwire_unassign(sbc_name="test-sbc-1")
+        assert "Removed" in result
+
+    def test_sdwire_unassign_none(self, mock_manager):
+        from labctl.mcp_server import sdwire_unassign
+
+        result = sdwire_unassign(sbc_name="test-sbc-2")
+        assert "No SDWire" in result
+
+
+# ---------------------------------------------------------------------------
+# Serial/SDWire Device CRUD Tool tests
+# ---------------------------------------------------------------------------
+
+
+class TestMcpDeviceCrudTools:
+    """Tests for MCP device creation and removal tools."""
+
+    def test_add_serial_device(self, mock_manager):
+        from labctl.mcp_server import add_serial_device
+
+        result = add_serial_device(
+            name="new-port", usb_path="1-10.2.1", vendor="FTDI"
+        )
+        assert "Registered" in result
+        assert "new-port" in result
+
+    def test_add_serial_device_duplicate(self, mock_manager):
+        from labctl.mcp_server import add_serial_device
+
+        # port-1 already exists in populated_manager
+        result = add_serial_device(name="port-1", usb_path="1-10.2.1")
+        assert "Error" in result
+
+    def test_remove_serial_device(self, mock_manager):
+        from labctl.mcp_server import add_serial_device, remove_serial_device
+
+        add_serial_device(name="temp-port", usb_path="1-99.1")
+        result = remove_serial_device(name="temp-port")
+        assert "Removed" in result
+
+    def test_remove_serial_device_not_found(self, mock_manager):
+        from labctl.mcp_server import remove_serial_device
+
+        result = remove_serial_device(name="nonexistent")
+        assert "Error" in result
+
+    def test_sdwire_add(self, mock_manager):
+        from labctl.mcp_server import sdwire_add
+
+        result = sdwire_add(
+            name="new-sdwire", serial_number="serial-new-123"
+        )
+        assert "Registered" in result
+        assert "new-sdwire" in result
+
+    def test_sdwire_add_duplicate(self, mock_manager):
+        from labctl.mcp_server import sdwire_add
+
+        # sdwire-1 already exists
+        result = sdwire_add(name="sdwire-1", serial_number="new-serial")
+        assert "Error" in result
+
+    def test_sdwire_remove(self, mock_manager):
+        from labctl.mcp_server import sdwire_add, sdwire_remove
+
+        sdwire_add(name="temp-sdwire", serial_number="temp-serial-999")
+        result = sdwire_remove(name="temp-sdwire")
+        assert "Removed" in result
+
+    def test_sdwire_remove_not_found(self, mock_manager):
+        from labctl.mcp_server import sdwire_remove
+
+        result = sdwire_remove(name="nonexistent")
+        assert "Error" in result
+
+    def test_sdwire_assign(self, mock_manager):
+        from labctl.mcp_server import sdwire_add, sdwire_assign
+
+        sdwire_add(name="assign-sw", serial_number="assign-serial-123")
+        result = sdwire_assign(sbc_name="test-sbc-2", device_name="assign-sw")
+        assert "Assigned" in result
+
+    def test_sdwire_assign_bad_sbc(self, mock_manager):
+        from labctl.mcp_server import sdwire_assign
+
+        result = sdwire_assign(sbc_name="nonexistent", device_name="sdwire-1")
+        assert "Error" in result
+
+    def test_sdwire_assign_bad_device(self, mock_manager):
+        from labctl.mcp_server import sdwire_assign
+
+        result = sdwire_assign(sbc_name="test-sbc-1", device_name="nonexistent")
+        assert "Error" in result
+
+
+# ---------------------------------------------------------------------------
+# Discovery Tool tests
+# ---------------------------------------------------------------------------
+
+
+class TestMcpDiscoveryTools:
+    """Tests for MCP hardware discovery tools."""
+
+    def test_sdwire_discover_no_package(self, mock_manager):
+        from labctl.mcp_server import sdwire_discover
+
+        with patch(
+            "labctl.sdwire.controller.discover_sdwire_devices",
+            side_effect=RuntimeError("sdwire package not installed"),
+        ):
+            result = sdwire_discover()
+        assert "Error" in result
+
+    def test_sdwire_discover_empty(self, mock_manager):
+        from labctl.mcp_server import sdwire_discover
+
+        with patch(
+            "labctl.sdwire.controller.discover_sdwire_devices",
+            return_value=[],
+        ):
+            result = sdwire_discover()
+        assert "No SDWire" in result
+
+    def test_sdwire_discover_found(self, mock_manager):
+        from labctl.mcp_server import sdwire_discover
+
+        with patch(
+            "labctl.sdwire.controller.discover_sdwire_devices",
+            return_value=[{"serial_number": "abc", "device_type": "sdwirec"}],
+        ):
+            result = sdwire_discover()
+        assert "abc" in result
+        assert "sdwirec" in result
+
+    def test_serial_discover_empty(self, mock_manager):
+        from labctl.mcp_server import serial_discover
+
+        with patch("labctl.serial.udev.discover_usb_serial", return_value=[]):
+            result = serial_discover()
+        assert "No USB-serial" in result
+
+    def test_serial_discover_found(self, mock_manager):
+        from labctl.mcp_server import serial_discover
+
+        with patch(
+            "labctl.serial.udev.discover_usb_serial",
+            return_value=[{"device": "/dev/ttyUSB0", "usb_path": "1-10.1"}],
+        ):
+            result = serial_discover()
+        assert "ttyUSB0" in result

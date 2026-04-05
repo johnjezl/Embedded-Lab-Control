@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- MCP CRUD tools for full device lifecycle management (2026-04-04)
+  - Remove tools: `remove_serial_port`, `remove_network_address`, `remove_power_plug`
+  - Serial device tools: `add_serial_device`, `remove_serial_device`, `serial_discover`
+  - SDWire tools: `sdwire_add`, `sdwire_remove`, `sdwire_assign`, `sdwire_unassign`, `sdwire_discover`
+  - AI assistants can now fully manage lab resources without CLI
 - `/deploy-and-test` Claude Code skill (2026-04-02)
   - Orchestrates build, deploy, boot, capture, and analysis via MCP tools
   - Auto-discovers config from `.claude/deploy-config.json`, `CLAUDE.md`, or user prompts

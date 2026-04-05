@@ -243,8 +243,19 @@ Tools perform mutations — the AI assistant calls these to take action.
 | Tool | Parameters | Description |
 |------|------------|-------------|
 | `assign_serial_port` | `sbc_name`, `port_type`, `device`, `alias`, `baud_rate` | Assign serial port to SBC |
+| `remove_serial_port` | `sbc_name`, `port_type` | Remove serial port from SBC |
 | `assign_power_plug` | `sbc_name`, `plug_type`, `address`, `index` | Assign smart plug to SBC |
+| `remove_power_plug` | `sbc_name` | Remove power plug from SBC |
 | `set_network_address` | `sbc_name`, `address_type`, `ip_address`, `mac`, `hostname` | Set network address for SBC |
+| `remove_network_address` | `sbc_name`, `address_type` | Remove network address from SBC |
+
+### Device Management
+
+| Tool | Parameters | Description |
+|------|------------|-------------|
+| `add_serial_device` | `name`, `usb_path`, `vendor`, `model`, `serial_number` | Register a USB-serial adapter |
+| `remove_serial_device` | `name` | Unregister a USB-serial adapter |
+| `serial_discover` | | Scan for connected USB-serial adapters |
 
 ### SDWire (SD Card Multiplexer)
 
@@ -253,6 +264,11 @@ Tools perform mutations — the AI assistant calls these to take action.
 | `sdwire_to_dut` | `sbc_name` | Switch SD card to SBC (boot from SD) |
 | `sdwire_to_host` | `sbc_name` | Switch SD card to host (for flashing) |
 | `sdwire_update` | `sbc_name`, `partition`, `copies`, `renames`, `deletes`, `reboot` | Copy, rename, or delete files on SD card partition (atomic: mount, operate, unmount) |
+| `sdwire_add` | `name`, `serial_number`, `device_type` | Register an SDWire device |
+| `sdwire_remove` | `name` | Unregister an SDWire device |
+| `sdwire_assign` | `sbc_name`, `device_name` | Assign SDWire device to SBC |
+| `sdwire_unassign` | `sbc_name` | Remove SDWire assignment from SBC |
+| `sdwire_discover` | | Scan for connected SDWire devices |
 
 ### Serial I/O
 

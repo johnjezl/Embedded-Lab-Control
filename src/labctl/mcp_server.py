@@ -554,6 +554,255 @@ def set_network_address(
         return f"Error: {e}"
 
 
+# ---------------------------------------------------------------------------
+# Remove / Unassign Tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def remove_serial_port(sbc_name: str, port_type: str = "console") -> str:
+    """Remove a serial port assignment from an SBC.
+
+    Args:
+        sbc_name: Name of the SBC
+        port_type: Type of port to remove: console, jtag, or debug
+    """
+    from labctl.core.models import PortType
+
+    manager = _get_manager()
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return f"Error: SBC '{sbc_name}' not found"
+
+    try:
+        if manager.remove_serial_port(sbc.id, PortType(port_type)):
+            return f"Removed {port_type} port from {sbc_name}"
+        return f"No {port_type} port assigned to {sbc_name}"
+    except (ValueError, KeyError) as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def remove_network_address(sbc_name: str, address_type: str = "ethernet") -> str:
+    """Remove a network address from an SBC.
+
+    Args:
+        sbc_name: Name of the SBC
+        address_type: Type of address to remove: ethernet or wifi
+    """
+    from labctl.core.models import AddressType
+
+    manager = _get_manager()
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return f"Error: SBC '{sbc_name}' not found"
+
+    try:
+        if manager.remove_network_address(sbc.id, AddressType(address_type)):
+            return f"Removed {address_type} address from {sbc_name}"
+        return f"No {address_type} address assigned to {sbc_name}"
+    except (ValueError, KeyError) as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def remove_power_plug(sbc_name: str) -> str:
+    """Remove power plug assignment from an SBC.
+
+    Args:
+        sbc_name: Name of the SBC
+    """
+    manager = _get_manager()
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return f"Error: SBC '{sbc_name}' not found"
+
+    if manager.remove_power_plug(sbc.id):
+        return f"Removed power plug from {sbc_name}"
+    return f"No power plug assigned to {sbc_name}"
+
+
+# ---------------------------------------------------------------------------
+# Serial Device CRUD Tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def add_serial_device(
+    name: str,
+    usb_path: str,
+    vendor: str | None = None,
+    model: str | None = None,
+    serial_number: str | None = None,
+) -> str:
+    """Register a USB-serial adapter.
+
+    Args:
+        name: Friendly name for the device (e.g., port-1)
+        usb_path: USB bus path (e.g., 1-10.1.3)
+        vendor: Manufacturer (optional)
+        model: Device model (optional)
+        serial_number: Device serial number (optional)
+    """
+    manager = _get_manager()
+    try:
+        device = manager.create_serial_device(
+            name=name,
+            usb_path=usb_path,
+            vendor=vendor,
+            model=model,
+            serial_number=serial_number,
+        )
+        return f"Registered serial device: {device.name} (usb: {device.usb_path})"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def remove_serial_device(name: str) -> str:
+    """Unregister a USB-serial adapter.
+
+    Args:
+        name: Name of the serial device to remove
+    """
+    manager = _get_manager()
+    device = manager.get_serial_device_by_name(name)
+    if not device:
+        return f"Error: Serial device '{name}' not found"
+
+    try:
+        manager.delete_serial_device(device.id)
+        return f"Removed serial device: {name}"
+    except ValueError as e:
+        return f"Error: {e}"
+
+
+# ---------------------------------------------------------------------------
+# SDWire Device CRUD Tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def sdwire_add(
+    name: str,
+    serial_number: str,
+    device_type: str = "sdwirec",
+) -> str:
+    """Register an SDWire SD card multiplexer device.
+
+    Args:
+        name: Friendly name (e.g., pi5-sdwire)
+        serial_number: Device serial number from discovery
+        device_type: Type: sdwirec (Realtek) or sdwire (FTDI legacy)
+    """
+    manager = _get_manager()
+    try:
+        device = manager.create_sdwire_device(
+            name=name,
+            serial_number=serial_number,
+            device_type=device_type,
+        )
+        return f"Registered SDWire device: {device.name} ({device.serial_number})"
+    except Exception as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def sdwire_remove(name: str) -> str:
+    """Unregister an SDWire device.
+
+    Args:
+        name: Name of the SDWire device to remove
+    """
+    manager = _get_manager()
+    device = manager.get_sdwire_device_by_name(name)
+    if not device:
+        return f"Error: SDWire device '{name}' not found"
+
+    try:
+        manager.delete_sdwire_device(device.id)
+        return f"Removed SDWire device: {name}"
+    except ValueError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def sdwire_assign(sbc_name: str, device_name: str) -> str:
+    """Assign an SDWire device to an SBC.
+
+    Args:
+        sbc_name: Name of the SBC
+        device_name: Name of the SDWire device
+    """
+    manager = _get_manager()
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return f"Error: SBC '{sbc_name}' not found"
+
+    device = manager.get_sdwire_device_by_name(device_name)
+    if not device:
+        return f"Error: SDWire device '{device_name}' not found"
+
+    try:
+        manager.assign_sdwire(sbc.id, device.id)
+        return f"Assigned SDWire '{device_name}' to {sbc_name}"
+    except ValueError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def sdwire_unassign(sbc_name: str) -> str:
+    """Remove SDWire assignment from an SBC.
+
+    Args:
+        sbc_name: Name of the SBC
+    """
+    manager = _get_manager()
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return f"Error: SBC '{sbc_name}' not found"
+
+    if manager.unassign_sdwire(sbc.id):
+        return f"Removed SDWire assignment from {sbc_name}"
+    return f"No SDWire assigned to {sbc_name}"
+
+
+@mcp.tool()
+def sdwire_discover() -> str:
+    """Discover connected SDWire devices.
+
+    Scans for both SDWireC (Realtek) and legacy SDWire (FTDI) devices.
+    Returns device serial numbers and types for registration.
+    """
+    try:
+        from labctl.sdwire.controller import discover_sdwire_devices
+
+        devices = discover_sdwire_devices()
+        if not devices:
+            return "No SDWire devices found"
+        return json.dumps(devices, indent=2)
+    except RuntimeError as e:
+        return f"Error: {e}"
+
+
+@mcp.tool()
+def serial_discover() -> str:
+    """Discover connected USB-serial adapters.
+
+    Scans for ttyUSB and ttyACM devices and returns their USB paths,
+    vendor, model, and serial number for registration.
+    """
+    try:
+        from labctl.serial.udev import discover_usb_serial
+
+        devices = discover_usb_serial()
+        if not devices:
+            return "No USB-serial devices found"
+        return json.dumps(devices, indent=2)
+    except Exception as e:
+        return f"Error: {e}"
+
+
 @mcp.resource("lab://sdwire-devices")
 def list_sdwire_devices() -> str:
     """List all registered SDWire SD card multiplexer devices."""
