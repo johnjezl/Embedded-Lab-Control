@@ -95,7 +95,7 @@ class KasaController(PowerController):
 
         return device, device
 
-    def _run(self, coro_func, action: str, retries: int = 2):
+    def _run(self, coro_func, action: str, retries: int = 1):
         """
         Run an async power operation with error handling and retries.
 
@@ -149,9 +149,11 @@ class KasaController(PowerController):
                 last_error = e
                 if attempt < retries:
                     logger.debug(
-                        "Kasa %s attempt %d failed for %s[%d]: %s, retrying...",
+                        "Kasa %s attempt %d failed for %s[%d]: %s, retrying in 2s...",
                         action, attempt + 1, self.address, self.plug_index, e,
                     )
+                    import time
+                    time.sleep(2)
                     continue
                 break
 
