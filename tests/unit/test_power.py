@@ -1,7 +1,10 @@
 """Unit tests for power control module."""
 
+import asyncio
 import logging
 from unittest.mock import Mock, patch
+
+import pytest
 
 from labctl.core.models import PlugType, PowerPlug
 from labctl.power.base import PowerController, PowerState, get_controller
@@ -314,3 +317,61 @@ class TestPowerCycle:
         result = controller.power_cycle()
 
         assert result is False
+
+
+class TestKasaRetry:
+    """Tests for Kasa controller retry behavior."""
+
+    @patch("labctl.power.kasa.time.sleep")
+    def test_retry_on_auth_error_with_delay(self, mock_sleep):
+        """Test that Kasa retries with 2s delay on auth failure."""
+        from unittest.mock import AsyncMock
+
+        from labctl.power.kasa import KasaController
+
+        controller = KasaController("192.168.1.100")
+        call_count = [0]
+
+        async def _failing_coro(device, target):
+            call_count[0] += 1
+            raise Exception("KLAP auth failed")
+
+        with patch.object(controller, "_get_device", new_callable=AsyncMock) as mock_dev:
+            mock_device = Mock()
+            mock_device.disconnect = AsyncMock()
+            mock_dev.return_value = (mock_device, mock_device)
+
+            with pytest.raises(RuntimeError, match="KLAP auth failed"):
+                controller._run(_failing_coro, "power_on")
+
+        # Should have retried once (2 total attempts)
+        assert call_count[0] == 2
+        # Should have slept 2s between attempts
+        mock_sleep.assert_called_once_with(2)
+
+    @patch("labctl.power.kasa.time.sleep")
+    def test_retry_succeeds_on_second_attempt(self, mock_sleep):
+        """Test that Kasa succeeds on retry after initial auth failure."""
+        from unittest.mock import AsyncMock
+
+        from labctl.power.kasa import KasaController
+
+        controller = KasaController("192.168.1.100")
+        call_count = [0]
+
+        async def _flaky_coro(device, target):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise Exception("Auth error")
+            return True
+
+        with patch.object(controller, "_get_device", new_callable=AsyncMock) as mock_dev:
+            mock_device = Mock()
+            mock_device.disconnect = AsyncMock()
+            mock_dev.return_value = (mock_device, mock_device)
+
+            result = controller._run(_flaky_coro, "power_on")
+
+        assert result is True
+        assert call_count[0] == 2
+        mock_sleep.assert_called_once_with(2)

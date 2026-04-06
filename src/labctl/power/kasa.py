@@ -7,6 +7,7 @@ Supports single-outlet plugs and multi-outlet strips (e.g., HS300, KP303, EP40).
 
 import asyncio
 import logging
+import time
 
 from labctl.power.base import PowerController, PowerState
 
@@ -152,7 +153,6 @@ class KasaController(PowerController):
                         "Kasa %s attempt %d failed for %s[%d]: %s, retrying in 2s...",
                         action, attempt + 1, self.address, self.plug_index, e,
                     )
-                    import time
                     time.sleep(2)
                     continue
                 break
