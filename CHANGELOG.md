@@ -7,6 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- `flash_image` MCP tool and enhanced `labctl sdwire flash` CLI (2026-04-06)
+  - Supports .img, .img.xz, .img.gz compressed formats
+  - Safety checks: block device size validation (max 256 GB), mount check, image format validation
+  - Post-flash file copies to boot partition (e.g., custom config.txt)
+  - On flash failure, SD card left on host for inspection
+  - Automatic power-off before flash, optional reboot after
 - MCP CRUD tools for full device lifecycle management (2026-04-04)
   - Remove tools: `remove_serial_port`, `remove_network_address`, `remove_power_plug`
   - Serial device tools: `add_serial_device`, `remove_serial_device`, `serial_discover`

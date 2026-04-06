@@ -687,6 +687,119 @@ class TestMcpSerialTools:
 
 
 # ---------------------------------------------------------------------------
+# Flash Image Tool tests
+# ---------------------------------------------------------------------------
+
+
+class TestMcpFlashImage:
+    """Tests for MCP flash_image tool."""
+
+    def test_flash_image_sbc_not_found(self, mock_manager):
+        from labctl.mcp_server import flash_image
+
+        result = flash_image(sbc_name="nonexistent", image_path="/tmp/test.img")
+        assert "Error" in result
+        assert "not found" in result
+
+    def test_flash_image_no_sdwire(self, mock_manager):
+        from labctl.mcp_server import flash_image
+
+        result = flash_image(sbc_name="test-sbc-2", image_path="/tmp/test.img")
+        assert "Error" in result
+        assert "No SDWire" in result
+
+    def test_flash_image_success(self, mock_manager):
+        from unittest.mock import MagicMock
+
+        from labctl.mcp_server import flash_image
+
+        mock_ctrl = MagicMock()
+        mock_ctrl.get_block_device.return_value = "/dev/sdb"
+        mock_ctrl.flash_image.return_value = {
+            "bytes_written": 1024000,
+            "elapsed_seconds": 5.0,
+            "block_device": "/dev/sdb",
+        }
+
+        with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl):
+            with patch("labctl.power.base.PowerController.from_plug") as mock_power:
+                mock_power.return_value = MagicMock()
+                result = flash_image(
+                    sbc_name="test-sbc-1",
+                    image_path="/tmp/test.img",
+                )
+
+        assert "Flashed" in result
+        assert "1024000" in result
+        mock_ctrl.switch_to_host.assert_called_once()
+        mock_ctrl.switch_to_dut.assert_called_once()
+
+    def test_flash_image_with_reboot(self, mock_manager):
+        from unittest.mock import MagicMock
+
+        from labctl.mcp_server import flash_image
+
+        mock_ctrl = MagicMock()
+        mock_ctrl.get_block_device.return_value = "/dev/sdb"
+        mock_ctrl.flash_image.return_value = {
+            "bytes_written": 1024, "elapsed_seconds": 1.0,
+            "block_device": "/dev/sdb",
+        }
+
+        mock_power_inst = MagicMock()
+        with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl):
+            with patch("labctl.power.base.PowerController.from_plug",
+                       return_value=mock_power_inst):
+                result = flash_image(
+                    sbc_name="test-sbc-1",
+                    image_path="/tmp/test.img",
+                    reboot=True,
+                )
+
+        assert "Powered on" in result
+        mock_power_inst.power_on.assert_called_once()
+
+    def test_flash_image_no_block_device(self, mock_manager):
+        from unittest.mock import MagicMock
+
+        from labctl.mcp_server import flash_image
+
+        mock_ctrl = MagicMock()
+        mock_ctrl.get_block_device.return_value = None
+
+        with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl):
+            with patch("labctl.power.base.PowerController.from_plug"):
+                result = flash_image(
+                    sbc_name="test-sbc-1",
+                    image_path="/tmp/test.img",
+                )
+
+        assert "Error" in result
+        assert "Block device not found" in result
+
+    def test_flash_image_flash_error_leaves_on_host(self, mock_manager):
+        from unittest.mock import MagicMock
+
+        from labctl.mcp_server import flash_image
+
+        mock_ctrl = MagicMock()
+        mock_ctrl.get_block_device.return_value = "/dev/sdb"
+        mock_ctrl.flash_image.side_effect = RuntimeError("dd failed")
+
+        with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl):
+            with patch("labctl.power.base.PowerController.from_plug"):
+                result = flash_image(
+                    sbc_name="test-sbc-1",
+                    image_path="/tmp/test.img",
+                )
+
+        assert "Error" in result
+        assert "left on host" in result
+        # Should NOT have called switch_to_dut
+        mock_ctrl.switch_to_dut.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Boot Test Tool tests
 # ---------------------------------------------------------------------------
 

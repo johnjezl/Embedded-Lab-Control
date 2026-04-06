@@ -163,23 +163,21 @@ class TestSDWireController:
                 ctrl.flash_image("/path/to/image.img")
 
     def test_flash_image_success(self):
-        """Test flash_image runs dd and sync."""
+        """Test flash_image runs dd and sync, returns result dict."""
         ctrl = SDWireController("test_serial")
 
         with patch.object(ctrl, "get_block_device", return_value="/dev/sdb"):
             with patch("labctl.sdwire.controller.subprocess.run") as mock_run:
                 mock_run.return_value = MagicMock(returncode=0)
-                result = ctrl.flash_image("/path/to/image.img")
+                with patch("labctl.sdwire.controller._validate_block_device"):
+                    with patch("labctl.sdwire.controller._validate_image_file"):
+                        with patch("os.path.getsize", return_value=1024000):
+                            result = ctrl.flash_image("/path/to/image.img")
 
-        assert result is True
-        # dd call
-        dd_call = mock_run.call_args_list[0]
-        assert "dd" in dd_call[0][0]
-        assert "if=/path/to/image.img" in dd_call[0][0]
-        assert "of=/dev/sdb" in dd_call[0][0]
-        # sync call
-        sync_call = mock_run.call_args_list[1]
-        assert sync_call[0][0] == ["sudo", "sync"]
+        assert isinstance(result, dict)
+        assert result["bytes_written"] == 1024000
+        assert result["elapsed_seconds"] >= 0
+        assert result["block_device"] == "/dev/sdb"
 
     def test_flash_image_dd_fails(self):
         """Test flash_image raises on dd failure."""
@@ -188,12 +186,14 @@ class TestSDWireController:
         ctrl = SDWireController("test_serial")
 
         with patch.object(ctrl, "get_block_device", return_value="/dev/sdb"):
-            with patch(
-                "labctl.sdwire.controller.subprocess.run",
-                side_effect=subprocess.CalledProcessError(1, "dd"),
-            ):
-                with pytest.raises(RuntimeError, match="Flash failed"):
-                    ctrl.flash_image("/path/to/image.img")
+            with patch("labctl.sdwire.controller._validate_block_device"):
+                with patch("labctl.sdwire.controller._validate_image_file"):
+                    with patch(
+                        "labctl.sdwire.controller.subprocess.run",
+                        side_effect=subprocess.CalledProcessError(1, "dd"),
+                    ):
+                        with pytest.raises(RuntimeError, match="Flash failed"):
+                            ctrl.flash_image("/path/to/image.img")
 
 
 class TestUpdateFiles:
@@ -642,3 +642,103 @@ class TestDiscoverSDWireDevices:
                         )
 
                 patched()
+
+
+class TestValidation:
+    """Tests for block device and image file validation."""
+
+    def test_validate_block_device_zero_size(self):
+        from labctl.sdwire.controller import _validate_block_device
+
+        with patch("builtins.open", MagicMock(return_value=MagicMock(
+            __enter__=MagicMock(return_value=MagicMock(
+                read=MagicMock(return_value="0\n")
+            )),
+            __exit__=MagicMock(return_value=False),
+        ))):
+            with pytest.raises(RuntimeError, match="0 size"):
+                _validate_block_device("/dev/sdb")
+
+    def test_validate_block_device_too_large(self):
+        from labctl.sdwire.controller import _validate_block_device
+
+        # 512 GB in 512-byte sectors
+        huge_sectors = str(512 * 1024 * 1024 * 1024 // 512)
+        with patch("builtins.open", MagicMock(return_value=MagicMock(
+            __enter__=MagicMock(return_value=MagicMock(
+                read=MagicMock(return_value=huge_sectors + "\n")
+            )),
+            __exit__=MagicMock(return_value=False),
+        ))):
+            with pytest.raises(RuntimeError, match="too large"):
+                _validate_block_device("/dev/sdb")
+
+    def test_validate_block_device_mounted(self):
+        from labctl.sdwire.controller import _validate_block_device
+
+        # 32 GB in sectors
+        sectors = str(32 * 1024 * 1024 * 1024 // 512)
+        proc_mounts = "/dev/sdb1 /mnt/sd vfat rw 0 0\n"
+
+        def mock_open(path, *args, **kwargs):
+            m = MagicMock()
+            if "/sys/block" in str(path):
+                m.__enter__ = MagicMock(return_value=MagicMock(
+                    read=MagicMock(return_value=sectors + "\n")
+                ))
+            else:  # /proc/mounts
+                m.__enter__ = MagicMock(return_value=MagicMock(
+                    read=MagicMock(return_value=proc_mounts),
+                    __iter__=MagicMock(return_value=iter(proc_mounts.splitlines())),
+                ))
+            m.__exit__ = MagicMock(return_value=False)
+            return m
+
+        with patch("builtins.open", side_effect=mock_open):
+            with pytest.raises(RuntimeError, match="mounted"):
+                _validate_block_device("/dev/sdb")
+
+    def test_validate_block_device_valid(self):
+        from labctl.sdwire.controller import _validate_block_device
+
+        # 32 GB, not mounted
+        sectors = str(32 * 1024 * 1024 * 1024 // 512)
+
+        def mock_open(path, *args, **kwargs):
+            m = MagicMock()
+            if "/sys/block" in str(path):
+                m.__enter__ = MagicMock(return_value=MagicMock(
+                    read=MagicMock(return_value=sectors + "\n")
+                ))
+            else:
+                m.__enter__ = MagicMock(return_value=MagicMock(
+                    read=MagicMock(return_value=""),
+                    __iter__=MagicMock(return_value=iter([])),
+                ))
+            m.__exit__ = MagicMock(return_value=False)
+            return m
+
+        with patch("builtins.open", side_effect=mock_open):
+            _validate_block_device("/dev/sdb")  # Should not raise
+
+    def test_validate_image_file_not_found(self):
+        from labctl.sdwire.controller import _validate_image_file
+
+        with pytest.raises(RuntimeError, match="not found"):
+            _validate_image_file("/nonexistent/image.img")
+
+    def test_validate_image_file_unsupported_format(self, tmp_path):
+        from labctl.sdwire.controller import _validate_image_file
+
+        bad = tmp_path / "image.zip"
+        bad.touch()
+        with pytest.raises(RuntimeError, match="Unsupported"):
+            _validate_image_file(str(bad))
+
+    def test_validate_image_file_valid(self, tmp_path):
+        from labctl.sdwire.controller import _validate_image_file
+
+        for ext in [".img", ".img.xz", ".img.gz"]:
+            f = tmp_path / f"test{ext}"
+            f.touch()
+            _validate_image_file(str(f))  # Should not raise

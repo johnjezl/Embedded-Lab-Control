@@ -355,7 +355,7 @@ pip install labctl[mcp]
 **Tools** (actions): `power_on`, `power_off`, `power_cycle`, `run_health_check`,
 `add_sbc`, `remove_sbc`, `update_sbc`, `assign_serial_port`, `assign_power_plug`,
 `set_network_address`, `sdwire_to_dut`, `sdwire_to_host`, `sdwire_update`,
-`serial_capture`, `serial_send`, `boot_test`
+`flash_image`, `serial_capture`, `serial_send`, `boot_test`
 
 **Prompts**: `debug-sbc` (guided SBC debugging), `lab-report` (comprehensive status)
 

@@ -966,6 +966,116 @@ def sdwire_update(
         return f"Error: {e}"
 
 
+@mcp.tool()
+def flash_image(
+    sbc_name: str,
+    image_path: str,
+    reboot: bool = False,
+    post_flash_copies: list[str] = [],
+) -> str:
+    """Flash a raw disk image to an SBC's SD card via SDWire.
+
+    Supports .img, .img.xz, and .img.gz formats. Includes safety checks:
+    verifies block device size, ensures no partitions are mounted, and
+    resolves the device from SDWire config (never accepts raw /dev paths).
+
+    Args:
+        sbc_name: Name of the SBC with an assigned SDWire device
+        image_path: Absolute path to image file (.img, .img.xz, .img.gz)
+        reboot: Power on the SBC after flashing
+        post_flash_copies: Optional "source:dest" pairs to copy to boot partition after flash
+    """
+    import time as time_mod
+
+    from labctl.sdwire import SDWireController
+
+    manager = _get_manager()
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return f"Error: SBC '{sbc_name}' not found"
+    if not sbc.sdwire:
+        return f"Error: No SDWire assigned to '{sbc_name}'"
+
+    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    flash_ok = False
+
+    try:
+        # Power off (best effort)
+        if sbc.power_plug:
+            try:
+                from labctl.power import PowerController
+                power_ctrl = PowerController.from_plug(sbc.power_plug)
+                power_ctrl.power_off()
+                time_mod.sleep(1)
+            except Exception:
+                pass  # Continue even if power off fails
+
+        # Switch SD to host and wait for device
+        ctrl.switch_to_host()
+        time_mod.sleep(2)
+
+        block_dev = ctrl.get_block_device(settle_time=2)
+        if not block_dev:
+            block_dev = ctrl.get_block_device(settle_time=5)
+        if not block_dev:
+            return "Error: Block device not found after switching to host (waited 10s)"
+
+        # Flash image (includes safety validation)
+        result = ctrl.flash_image(image_path)
+        flash_ok = True
+
+        parts = [
+            f"Flashed {image_path} to {result['block_device']}",
+            f"{result['bytes_written']} bytes in {result['elapsed_seconds']}s",
+        ]
+
+        # Post-flash partition copies
+        if post_flash_copies:
+            try:
+                import subprocess
+                subprocess.run(
+                    ["sudo", "partprobe", block_dev],
+                    capture_output=True, timeout=10,
+                )
+                time_mod.sleep(2)
+
+                file_pairs = []
+                for spec in post_flash_copies:
+                    if ":" not in spec:
+                        parts.append(f"Skipped invalid copy: {spec}")
+                        continue
+                    src, dest = spec.split(":", 1)
+                    file_pairs.append((src, dest))
+
+                if file_pairs:
+                    copied = ctrl.update_files(1, file_pairs)
+                    for f in copied["copied"]:
+                        parts.append(f"Post-flash copied: {f}")
+            except RuntimeError as e:
+                parts.append(f"Post-flash copy error: {e}")
+
+        # Switch back to DUT
+        ctrl.switch_to_dut()
+
+        # Reboot
+        if reboot and sbc.power_plug:
+            from labctl.power import PowerController
+            power_ctrl = PowerController.from_plug(sbc.power_plug)
+            power_ctrl.power_on()
+            parts.append(f"Powered on {sbc_name}")
+
+        return ". ".join(parts)
+
+    except RuntimeError as e:
+        if not flash_ok:
+            return f"Error: {e}. SD card left on host for inspection."
+        try:
+            ctrl.switch_to_dut()
+        except Exception:
+            pass
+        return f"Error: {e}"
+
+
 # ---------------------------------------------------------------------------
 # Serial I/O Tools
 # ---------------------------------------------------------------------------

@@ -269,6 +269,7 @@ Tools perform mutations — the AI assistant calls these to take action.
 | `sdwire_assign` | `sbc_name`, `device_name` | Assign SDWire device to SBC |
 | `sdwire_unassign` | `sbc_name` | Remove SDWire assignment from SBC |
 | `sdwire_discover` | | Scan for connected SDWire devices |
+| `flash_image` | `sbc_name`, `image_path`, `reboot`, `post_flash_copies` | Flash raw disk image (.img/.img.xz/.img.gz) to SD card with safety checks |
 
 ### Serial I/O
 

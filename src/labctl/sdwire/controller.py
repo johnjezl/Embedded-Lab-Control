@@ -107,18 +107,26 @@ class SDWireController:
         self,
         image_path: str,
         block_size: str = "4M",
-    ) -> bool:
+        timeout: int = 1800,
+    ) -> dict:
         """Write an image to the SD card.
 
-        Assumes the SD card is already switched to host mode.
+        Supports raw .img, .img.xz, and .img.gz files. Assumes the SD
+        card is already switched to host mode.
 
         Args:
             image_path: Path to the image file
             block_size: Block size for dd (default: 4M)
+            timeout: Max seconds for the write (default: 1800 / 30 min)
 
         Returns:
-            True if successful
+            Dict with bytes_written and elapsed_seconds.
+
+        Raises:
+            RuntimeError: On validation failure or write error.
         """
+        import time as time_mod
+
         block_dev = self.get_block_device()
         if not block_dev:
             raise RuntimeError(
@@ -126,25 +134,85 @@ class SDWireController:
                 "Is the SD card switched to host mode?"
             )
 
+        # Safety checks
+        _validate_block_device(block_dev)
+        _validate_image_file(image_path)
+
         logger.info(
             "Flashing %s to %s via SDWire %s",
             image_path, block_dev, self.serial_number,
         )
 
+        start = time_mod.monotonic()
+
         try:
-            subprocess.run(
-                [
-                    "sudo", "dd",
-                    f"if={image_path}",
-                    f"of={block_dev}",
-                    f"bs={block_size}",
-                    "status=progress",
-                    "conv=fsync",
-                ],
-                check=True,
-            )
+            if image_path.endswith(".xz"):
+                # Pipe: xz -dc image | sudo dd of=dev bs=4M oflag=sync
+                decompress = subprocess.Popen(
+                    ["xz", "-dc", image_path],
+                    stdout=subprocess.PIPE,
+                )
+                dd = subprocess.Popen(
+                    ["sudo", "dd", f"of={block_dev}", f"bs={block_size}",
+                     "oflag=sync", "status=progress"],
+                    stdin=decompress.stdout,
+                    stderr=subprocess.PIPE,
+                )
+                decompress.stdout.close()
+                _, dd_stderr = dd.communicate(timeout=timeout)
+                if decompress.wait() != 0:
+                    raise RuntimeError("xz decompression failed")
+                if dd.returncode != 0:
+                    raise RuntimeError(
+                        f"dd failed: {dd_stderr.decode('utf-8', errors='replace')}"
+                    )
+            elif image_path.endswith(".gz"):
+                decompress = subprocess.Popen(
+                    ["gzip", "-dc", image_path],
+                    stdout=subprocess.PIPE,
+                )
+                dd = subprocess.Popen(
+                    ["sudo", "dd", f"of={block_dev}", f"bs={block_size}",
+                     "oflag=sync", "status=progress"],
+                    stdin=decompress.stdout,
+                    stderr=subprocess.PIPE,
+                )
+                decompress.stdout.close()
+                _, dd_stderr = dd.communicate(timeout=timeout)
+                if decompress.wait() != 0:
+                    raise RuntimeError("gzip decompression failed")
+                if dd.returncode != 0:
+                    raise RuntimeError(
+                        f"dd failed: {dd_stderr.decode('utf-8', errors='replace')}"
+                    )
+            else:
+                subprocess.run(
+                    [
+                        "sudo", "dd",
+                        f"if={image_path}",
+                        f"of={block_dev}",
+                        f"bs={block_size}",
+                        "status=progress",
+                        "conv=fsync",
+                    ],
+                    check=True,
+                    timeout=timeout,
+                )
+
             subprocess.run(["sudo", "sync"], check=True)
-            return True
+
+            elapsed = time_mod.monotonic() - start
+            image_size = os.path.getsize(image_path)
+
+            return {
+                "bytes_written": image_size,
+                "elapsed_seconds": round(elapsed, 1),
+                "block_device": block_dev,
+            }
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(
+                f"Flash timed out after {timeout}s"
+            )
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Flash failed: {e}") from e
 
@@ -278,6 +346,78 @@ class SDWireController:
 
         subprocess.run(["sudo", "sync"], check=True)
         return result
+
+
+def _validate_block_device(block_dev: str) -> None:
+    """Validate a block device is safe to write to.
+
+    Checks:
+    - Device has media (non-zero size)
+    - Device is not too large (max 256 GB — not a system disk)
+    - No partitions are currently mounted
+
+    Raises:
+        RuntimeError: If any check fails.
+    """
+    dev_name = os.path.basename(block_dev)
+    size_path = f"/sys/block/{dev_name}/size"
+
+    try:
+        with open(size_path) as f:
+            sectors = int(f.read().strip())
+    except (OSError, ValueError):
+        raise RuntimeError(f"Cannot read size of {block_dev}")
+
+    if sectors == 0:
+        raise RuntimeError(f"Block device {block_dev} reports 0 size (no media?)")
+
+    # 512 bytes per sector; 256 GB max
+    size_bytes = sectors * 512
+    max_bytes = 256 * 1024 * 1024 * 1024
+    if size_bytes > max_bytes:
+        size_gb = size_bytes / (1024 ** 3)
+        raise RuntimeError(
+            f"Block device {block_dev} is {size_gb:.0f} GB — too large for SD card "
+            f"(max 256 GB). Refusing to write for safety."
+        )
+
+    # Check no partitions are mounted
+    try:
+        with open("/proc/mounts") as f:
+            mounts = f.read()
+        if block_dev in mounts or f"{block_dev}p" in mounts:
+            raise RuntimeError(
+                f"Block device {block_dev} has mounted partitions. "
+                f"Unmount before flashing."
+            )
+        # Also check numbered partitions (e.g., /dev/sdb1)
+        for line in mounts.splitlines():
+            mount_dev = line.split()[0] if line.strip() else ""
+            if mount_dev.startswith(block_dev):
+                raise RuntimeError(
+                    f"Partition {mount_dev} is mounted. Unmount before flashing."
+                )
+    except OSError:
+        pass  # /proc/mounts not available — skip check
+
+
+def _validate_image_file(image_path: str) -> None:
+    """Validate an image file before flashing.
+
+    Raises:
+        RuntimeError: If the file is invalid.
+    """
+    if not os.path.exists(image_path):
+        raise RuntimeError(f"Image file not found: {image_path}")
+    if not os.path.isfile(image_path):
+        raise RuntimeError(f"Not a regular file: {image_path}")
+
+    supported = (".img", ".img.xz", ".img.gz")
+    if not any(image_path.endswith(ext) for ext in supported):
+        raise RuntimeError(
+            f"Unsupported image format: {image_path}. "
+            f"Supported: {', '.join(supported)}"
+        )
 
 
 def _block_device_has_media(block_dev: str) -> bool:

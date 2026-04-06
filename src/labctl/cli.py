@@ -771,15 +771,29 @@ def sdwire_host_cmd(ctx: click.Context, sbc_name: str) -> None:
 @click.argument("sbc_name")
 @click.argument("image", type=click.Path(exists=True, path_type=Path))
 @click.option("--no-reboot", is_flag=True, help="Don't power cycle after flashing")
+@click.option(
+    "--copy", "-c", "post_copies", multiple=True,
+    help="Copy file to boot partition after flash (source:dest)",
+)
 @click.pass_context
 def sdwire_flash_cmd(
-    ctx: click.Context, sbc_name: str, image: Path, no_reboot: bool
+    ctx: click.Context, sbc_name: str, image: Path, no_reboot: bool,
+    post_copies: tuple[str, ...],
 ) -> None:
     """Flash an SD card image to an SBC's SDWire.
 
-    Switches to host, writes the image, switches back to DUT,
-    and optionally power cycles the SBC.
+    Supports .img, .img.xz, and .img.gz formats. Switches to host,
+    writes the image, optionally copies files to the boot partition,
+    switches back to DUT, and optionally power cycles.
+
+    \b
+    Examples:
+      labctl sdwire flash pi-5 raspios.img
+      labctl sdwire flash pi-5 raspios.img.xz -c config.txt:config.txt
+      labctl sdwire flash pi-5 raspios.img --no-reboot
     """
+    import time
+
     from labctl.sdwire.controller import SDWireController
 
     manager = _get_manager(ctx)
@@ -793,30 +807,70 @@ def sdwire_flash_cmd(
         sys.exit(1)
 
     ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    flash_ok = False
 
     try:
-        # Step 1: Switch to host
-        click.echo(f"Switching SD card to host...")
+        # Power off (best effort)
+        if sbc.power_plug:
+            click.echo("Powering off SBC...")
+            try:
+                from labctl.power import PowerController
+                power_ctrl = PowerController.from_plug(sbc.power_plug)
+                power_ctrl.power_off()
+                time.sleep(1)
+            except Exception:
+                pass
+
+        # Switch to host
+        click.echo("Switching SD card to host...")
         ctrl.switch_to_host()
+        time.sleep(2)
 
-        import time
-        time.sleep(2)  # Wait for block device to appear
-
-        # Step 2: Flash image
-        block_dev = ctrl.get_block_device()
+        block_dev = ctrl.get_block_device(settle_time=2)
         if not block_dev:
-            click.echo("Error: Block device not found after switching to host", err=True)
+            block_dev = ctrl.get_block_device(settle_time=5)
+        if not block_dev:
+            click.echo("Error: Block device not found (waited 10s)", err=True)
             sys.exit(1)
 
+        # Flash image (includes safety validation)
         click.echo(f"Flashing {image} to {block_dev}...")
-        ctrl.flash_image(str(image))
-        click.echo("Flash complete")
+        result = ctrl.flash_image(str(image))
+        flash_ok = True
+        click.echo(
+            f"Flash complete: {result['bytes_written']} bytes "
+            f"in {result['elapsed_seconds']}s"
+        )
 
-        # Step 3: Switch back to DUT
-        click.echo(f"Switching SD card to DUT...")
+        # Post-flash copies
+        if post_copies:
+            import subprocess
+            click.echo("Re-reading partition table...")
+            subprocess.run(
+                ["sudo", "partprobe", block_dev],
+                capture_output=True, timeout=10,
+            )
+            time.sleep(2)
+
+            file_pairs = []
+            for spec in post_copies:
+                if ":" not in spec:
+                    click.echo(f"Warning: Invalid --copy format '{spec}', skipping", err=True)
+                    continue
+                src, dest = spec.split(":", 1)
+                file_pairs.append((src, dest))
+
+            if file_pairs:
+                click.echo("Copying files to boot partition...")
+                copied = ctrl.update_files(1, file_pairs)
+                for f in copied["copied"]:
+                    click.echo(f"  Copied: {f}")
+
+        # Switch back to DUT
+        click.echo("Switching SD card to DUT...")
         ctrl.switch_to_dut()
 
-        # Step 4: Optional power cycle
+        # Optional power cycle
         if not no_reboot and sbc.power_plug:
             click.echo(f"Power cycling {sbc_name}...")
             from labctl.power import PowerController
@@ -827,7 +881,15 @@ def sdwire_flash_cmd(
         click.echo(f"Done! {sbc_name} should boot from the new image.")
 
     except RuntimeError as e:
-        click.echo(f"Error: {e}", err=True)
+        if not flash_ok:
+            click.echo(f"Error: {e}", err=True)
+            click.echo("SD card left on host for inspection.", err=True)
+        else:
+            click.echo(f"Error: {e}", err=True)
+            try:
+                ctrl.switch_to_dut()
+            except Exception:
+                pass
         sys.exit(1)
 
 
