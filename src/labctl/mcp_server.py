@@ -851,11 +851,15 @@ def sdwire_to_dut(sbc_name: str) -> str:
 
 
 @mcp.tool()
-def sdwire_to_host(sbc_name: str) -> str:
+def sdwire_to_host(sbc_name: str, force: bool = False) -> str:
     """Switch an SBC's SD card to host mode (dev machine can read/write the SD card).
+
+    Refuses if the SBC is powered on to prevent SD card bus contention.
+    Use force=True to override (e.g., if SBC is halted but power relay is on).
 
     Args:
         sbc_name: Name of the SBC with an assigned SDWire device
+        force: Override power-on safety check
     """
     from labctl.sdwire import SDWireController
 
@@ -865,6 +869,22 @@ def sdwire_to_host(sbc_name: str) -> str:
         return f"Error: SBC '{sbc_name}' not found"
     if not sbc.sdwire:
         return f"Error: No SDWire assigned to '{sbc_name}'"
+
+    # Power safety check
+    if not force and sbc.power_plug:
+        try:
+            from labctl.power import PowerController
+            power_ctrl = PowerController.from_plug(sbc.power_plug)
+            state = power_ctrl.get_state()
+            from labctl.power.base import PowerState
+            if state == PowerState.ON:
+                return (
+                    f"Error: {sbc_name} is powered on. Power off before "
+                    f"switching SD to host mode. Use force=true to override "
+                    f"(risks SD card corruption)."
+                )
+        except Exception:
+            pass  # Power state unknown — allow operation
 
     try:
         ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
@@ -934,6 +954,16 @@ def sdwire_update(
     ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
 
     try:
+        # Auto power-off to prevent SD card bus contention
+        if sbc.power_plug:
+            try:
+                from labctl.power import PowerController
+                power_ctrl = PowerController.from_plug(sbc.power_plug)
+                power_ctrl.power_off()
+                time.sleep(1)
+            except Exception:
+                pass  # Best effort — continue even if power off fails
+
         ctrl.switch_to_host()
         time.sleep(2)
 

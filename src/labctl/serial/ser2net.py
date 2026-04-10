@@ -41,9 +41,14 @@ class Ser2NetPort:
         if not self.kickolduser:
             options.append("-kickolduser")
 
+        # Ensure device path is absolute
+        device = self.device
+        if not device.startswith("/"):
+            device = f"/dev/lab/{device}"
+
         connection = {
             "accepter": f"tcp,{self.tcp_port}",
-            "connector": f"serialdev,{self.device},{conn_str}",
+            "connector": f"serialdev,{device},{conn_str}",
             "enable": "on",
         }
 
@@ -91,9 +96,14 @@ def generate_ser2net_config(
         # Build options - local means only localhost connections
         local_spec = "localhost," if port.local else ""
 
+        # Ensure device path is absolute (fix for bare device names)
+        device = port.device
+        if not device.startswith("/"):
+            device = f"/dev/lab/{device}"
+
         output_lines.append(f"connection: &{port.name}")
         output_lines.append(f"  accepter: tcp,{local_spec}{port.tcp_port}")
-        output_lines.append(f"  connector: serialdev,{port.device},{conn_str},local")
+        output_lines.append(f"  connector: serialdev,{device},{conn_str},local")
         output_lines.append("  enable: on")
         output_lines.append("  options:")
         output_lines.append(

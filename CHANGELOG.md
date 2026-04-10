@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- SDWire power safety interlock (2026-04-09)
+  - `sdwire_to_host` rejects if SBC is powered on (prevents SD card bus contention)
+  - `--force` flag (CLI) / `force` parameter (MCP) to override when SBC is halted but power on
+  - `sdwire_update` and `flash_image` auto power-off SBC before switching to host
+  - Best-effort: allows operation when power state is unknown
 - `flash_image` MCP tool and enhanced `labctl sdwire flash` CLI (2026-04-06)
   - Supports .img, .img.xz, .img.gz compressed formats
   - Safety checks: block device size validation (max 256 GB), mount check, image format validation
@@ -117,6 +122,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - `asyncio.Lock` for write lock acquisition to prevent TOCTOU race
   - Snapshot `clients` dict before broadcast iteration
   - Guard orphaned `create_task(self.stop())` with state check
+- ser2net generate: add /dev/lab/ prefix for bare device names (2026-04-09)
 - Consolidated SBC.to_dict() serialization, eliminating duplication between MCP and API (2026-04-03)
 - Atomic upsert (INSERT...ON CONFLICT) for serial ports, network addresses, power plugs, SDWire assignments (2026-04-03)
 - Config load exception now logs warning instead of silently continuing (2026-04-03)

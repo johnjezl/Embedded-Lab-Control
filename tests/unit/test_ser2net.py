@@ -151,3 +151,39 @@ class TestGenerateSer2netConfig:
 
         assert "%YAML 1.1" in config
         assert "connection:" not in config
+
+    def test_bare_device_name_gets_prefix(self):
+        """Test that device names without /dev/ get /dev/lab/ prefix."""
+        ports = [
+            Ser2NetPort(
+                name="bare-port",
+                device="port-2-3",  # No /dev/lab/ prefix
+                tcp_port=4007,
+            )
+        ]
+        config = generate_ser2net_config(ports)
+        assert "serialdev,/dev/lab/port-2-3," in config
+
+    def test_absolute_device_path_unchanged(self):
+        """Test that absolute device paths pass through unchanged."""
+        ports = [
+            Ser2NetPort(
+                name="abs-port",
+                device="/dev/lab/port-2-3",
+                tcp_port=4007,
+            )
+        ]
+        config = generate_ser2net_config(ports)
+        assert "serialdev,/dev/lab/port-2-3," in config
+        # Should NOT double-prefix
+        assert "/dev/lab//dev/lab/" not in config
+
+    def test_to_ser2net_dict_bare_device(self):
+        """Test that to_ser2net_dict prefixes bare device names."""
+        port = Ser2NetPort(
+            name="dict-test",
+            device="port-1",
+            tcp_port=4000,
+        )
+        d = port.to_ser2net_dict()
+        assert "/dev/lab/port-1" in d["connector"]

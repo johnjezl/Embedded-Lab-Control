@@ -739,9 +739,14 @@ def sdwire_dut_cmd(ctx: click.Context, sbc_name: str) -> None:
 
 @sdwire_group.command("host")
 @click.argument("sbc_name")
+@click.option("--force", is_flag=True, help="Override power-on safety check")
 @click.pass_context
-def sdwire_host_cmd(ctx: click.Context, sbc_name: str) -> None:
-    """Switch SD card to host (dev machine can flash it)."""
+def sdwire_host_cmd(ctx: click.Context, sbc_name: str, force: bool) -> None:
+    """Switch SD card to host (dev machine can flash it).
+
+    Refuses if the SBC is powered on to prevent SD card bus contention.
+    Use --force to override (e.g., if SBC is halted but power relay is on).
+    """
     from labctl.sdwire.controller import SDWireController
 
     manager = _get_manager(ctx)
@@ -753,6 +758,24 @@ def sdwire_host_cmd(ctx: click.Context, sbc_name: str) -> None:
     if not sbc.sdwire:
         click.echo(f"Error: No SDWire assigned to '{sbc_name}'", err=True)
         sys.exit(1)
+
+    # Power safety check
+    if not force and sbc.power_plug:
+        try:
+            from labctl.power import PowerController
+            from labctl.power.base import PowerState
+            power_ctrl = PowerController.from_plug(sbc.power_plug)
+            state = power_ctrl.get_state()
+            if state == PowerState.ON:
+                click.echo(
+                    f"Error: {sbc_name} is powered on. Power off before "
+                    f"switching SD to host mode.\n"
+                    f"Use --force to override (risks SD card corruption).",
+                    err=True,
+                )
+                sys.exit(1)
+        except Exception:
+            pass  # Power state unknown — allow operation
 
     try:
         ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
@@ -987,6 +1010,18 @@ def sdwire_update_cmd(
     ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
 
     try:
+        # Step 0: Auto power-off to prevent SD card bus contention
+        if sbc.power_plug:
+            click.echo(f"Powering off {sbc_name}...")
+            try:
+                from labctl.power import PowerController
+                power_ctrl = PowerController.from_plug(sbc.power_plug)
+                power_ctrl.power_off()
+                import time as time_mod
+                time_mod.sleep(1)
+            except Exception:
+                click.echo("Warning: Could not power off (continuing anyway)", err=True)
+
         # Step 1: Switch to host
         click.echo("Switching SD card to host...")
         ctrl.switch_to_host()

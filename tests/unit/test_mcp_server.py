@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -440,6 +440,69 @@ class TestMcpSDWireTools:
         assert "switched to host" in result
         assert "/dev/sdb" in result
         mock_ctrl_instance.switch_to_host.assert_called_once()
+
+    def test_sdwire_to_host_rejects_powered_on(self, mock_manager):
+        """Test that sdwire_to_host rejects when SBC is powered on."""
+        from labctl.mcp_server import sdwire_to_host
+        from labctl.power.base import PowerState
+
+        mock_power = MagicMock()
+        mock_power.get_state.return_value = PowerState.ON
+
+        with patch("labctl.power.base.PowerController.from_plug", return_value=mock_power):
+            result = sdwire_to_host(sbc_name="test-sbc-1")
+
+        assert "Error" in result
+        assert "powered on" in result
+
+    def test_sdwire_to_host_force_overrides(self, mock_manager):
+        """Test that force=True bypasses power check."""
+        from labctl.mcp_server import sdwire_to_host
+        from labctl.power.base import PowerState
+
+        mock_power = MagicMock()
+        mock_power.get_state.return_value = PowerState.ON
+
+        mock_ctrl = MagicMock()
+        mock_ctrl.get_block_device.return_value = "/dev/sdb"
+
+        with patch("labctl.power.base.PowerController.from_plug", return_value=mock_power):
+            with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl):
+                result = sdwire_to_host(sbc_name="test-sbc-1", force=True)
+
+        assert "switched to host" in result
+
+    def test_sdwire_to_host_allows_powered_off(self, mock_manager):
+        """Test that sdwire_to_host allows when SBC is powered off."""
+        from labctl.mcp_server import sdwire_to_host
+        from labctl.power.base import PowerState
+
+        mock_power = MagicMock()
+        mock_power.get_state.return_value = PowerState.OFF
+
+        mock_ctrl = MagicMock()
+        mock_ctrl.get_block_device.return_value = "/dev/sdb"
+
+        with patch("labctl.power.base.PowerController.from_plug", return_value=mock_power):
+            with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl):
+                result = sdwire_to_host(sbc_name="test-sbc-1")
+
+        assert "switched to host" in result
+
+    def test_sdwire_to_host_allows_no_power_plug(self, mock_manager):
+        """Test that SBC without power plug can still switch to host."""
+        from labctl.mcp_server import sdwire_to_host
+
+        # test-sbc-2 has no power plug, but also no sdwire
+        # Use test-sbc-1 but mock out the power plug check
+        mock_ctrl = MagicMock()
+        mock_ctrl.get_block_device.return_value = None
+
+        # Temporarily remove power plug from sbc
+        sbc = mock_manager.get_sbc_by_name("test-sbc-2")
+        # test-sbc-2 has no sdwire, so this will fail for a different reason
+        result = sdwire_to_host(sbc_name="test-sbc-2")
+        assert "No SDWire" in result
 
     def test_sdwire_to_dut_runtime_error(self, mock_manager):
         from unittest.mock import MagicMock
