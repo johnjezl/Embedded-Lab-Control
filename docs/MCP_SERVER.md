@@ -173,6 +173,9 @@ to understand the current state before taking action.
 | `lab://sbcs/{sbc_name}` | SBC name | Full details for one SBC |
 | `lab://power/{sbc_name}` | SBC name | Live power state query (on/off/unknown) |
 | `lab://health/{sbc_name}` | SBC name | Live health check (ping, serial, power) |
+| `lab://claims` | — | All active claims across the lab |
+| `lab://claims/{sbc_name}` | SBC name | Current claim on an SBC |
+| `lab://claims/history/{sbc_name}` | SBC name | Past (released) claims for an SBC |
 
 ### Resource Output Format
 
@@ -284,10 +287,29 @@ Tools perform mutations — the AI assistant calls these to take action.
 |------|------------|-------------|
 | `boot_test` | `sbc_name`, `expect_pattern`, `runs`, `timeout`, `image`, `dest`, `partition`, `output_dir` | Automated boot reliability testing with deploy and serial capture |
 
+### Claims (Exclusive Access Coordination)
+
+| Tool | Parameters | Description |
+|------|------------|-------------|
+| `claim_sbc` | `sbc_name`, `duration_minutes`, `reason`, `agent_name`, `context` | Claim exclusive access to an SBC |
+| `release_sbc` | `sbc_name` | Release a claim held by the calling session |
+| `renew_sbc_claim` | `sbc_name`, `duration_minutes` | Extend an active claim's deadline |
+| `list_claims` | — | List all active claims across the lab |
+| `get_claim` | `sbc_name` | Get the current claim on an SBC |
+| `request_sbc_release` | `sbc_name`, `reason` | Politely ask the claimant to release |
+| `force_release_sbc` | `sbc_name`, `reason` | Operator override — forcibly release |
+
+**Claim enforcement:** Mutating tools (`power_on/off/cycle`, `serial_send`,
+`sdwire_to_host/dut`, `sdwire_update`, `flash_image`, `boot_test`, `remove_sbc`)
+check for active claims. If another agent holds the claim, a structured JSON
+error is returned with `"error": "sbc_claimed"` and hints. Claimant operations
+proceed and implicitly heartbeat the claim.
+
 ### Tool Return Values
 
 All tools return strings. Success messages are plain text, structured data is
-returned as formatted JSON. Errors are prefixed with "Error:".
+returned as formatted JSON. Errors are prefixed with "Error:" or returned as
+structured JSON with an `"error"` field (claim conflicts).
 
 ## Prompts (Guided Workflows)
 

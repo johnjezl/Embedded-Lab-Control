@@ -687,15 +687,18 @@ preventing destructive interference between concurrent workflows.
 
 ### Phase B: MCP integration
 
-- ☐ MCP tools: `claim_sbc`, `release_sbc`, `renew_sbc_claim`, `list_claims`,
+- ✅ MCP tools: `claim_sbc`, `release_sbc`, `renew_sbc_claim`, `list_claims`,
   `get_claim`, `request_sbc_release`, `force_release_sbc`
-- ☐ MCP resources: `lab://claims`, `lab://claims/{sbc_name}`,
+- ✅ MCP resources: `lab://claims`, `lab://claims/{sbc_name}`,
   `lab://claims/history/{sbc_name}`
-- ☐ Session ID derivation per transport: stdio `mcp-stdio:<pid>-<start_epoch>`,
-  HTTP `ctx.session_id`
-- ☐ Claim enforcement on existing mutating MCP tools (conflict error response)
-- ☐ Heartbeat on every claimant MCP tool call (reads and writes)
-- ☐ Integration tests against running MCP server
+- ✅ Session ID derivation: stdio `mcp-stdio:<pid>-<start_epoch>` (module-level)
+- ✅ Claim enforcement via `_check_claim()` on 10 mutating MCP tools
+  (power_on/off/cycle, serial_send, sdwire_to_host/dut, sdwire_update,
+  flash_image, boot_test, remove_sbc)
+- ✅ Heartbeat on every claimant tool call (via `_check_claim`)
+- ✅ Tests: claim tools (round-trip, conflict, renew, force-release,
+  request-release, resources, claim enforcement on power_on/remove_sbc)
+- ☐ HTTP session ID via FastMCP `ctx.session_id` (deferred to Phase C)
 
 ### Phase C: Expiry and dead-session handling
 

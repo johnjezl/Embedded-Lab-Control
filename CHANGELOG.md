@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Hardware claims MCP integration, Phase B (2026-04-16)
+  - MCP tools: `claim_sbc`, `release_sbc`, `renew_sbc_claim`, `list_claims`,
+    `get_claim`, `request_sbc_release`, `force_release_sbc`
+  - MCP resources: `lab://claims`, `lab://claims/{sbc_name}`,
+    `lab://claims/history/{sbc_name}`
+  - Claim enforcement on 10 mutating MCP tools — other-agent claims
+    return structured `sbc_claimed` JSON errors with hints
+  - Session identity via `mcp-stdio:<pid>-<start_epoch>` for stdio transport
+  - Heartbeat fires on every claimant tool call (reads and writes)
 - Hardware claims (exclusive access coordination), Phase A (2026-04-16)
   - SQLite schema v4 adds `claims` and `claim_requests` tables
   - Partial unique index enforces at most one active claim per SBC

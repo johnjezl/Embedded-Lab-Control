@@ -1180,3 +1180,261 @@ class TestMcpDiscoveryTools:
         ):
             result = serial_discover()
         assert "ttyUSB0" in result
+
+
+# ---------------------------------------------------------------------------
+# Claim Tool + Resource tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def claims_env(populated_manager, tmp_path):
+    """Patch _get_manager, _get_config, and session identity for claim tests."""
+    from labctl.core.config import ClaimsConfig, Config
+
+    config = Config()
+    config.claims = ClaimsConfig(
+        enabled=True,
+        default_duration_minutes=30,
+        max_duration_minutes=60,
+        min_duration_minutes=1,
+        grace_period_seconds=60,
+    )
+    config.database_path = tmp_path / "test.db"
+
+    with (
+        patch("labctl.mcp_server._get_manager", return_value=populated_manager),
+        patch("labctl.mcp_server._get_config", return_value=config),
+        patch("labctl.mcp_server._SESSION_ID", "test-session-1"),
+        patch("labctl.mcp_server._SESSION_KIND", "mcp-stdio"),
+        patch("labctl.mcp_server._AGENT_NAME", "test-agent"),
+    ):
+        yield populated_manager
+
+
+class TestMcpClaimTools:
+    """Tests for MCP claim_sbc, release_sbc, renew_sbc_claim, etc."""
+
+    def test_claim_and_release_round_trip(self, claims_env):
+        from labctl.mcp_server import claim_sbc, list_claims, release_sbc
+
+        result = json.loads(
+            claim_sbc(sbc_name="test-sbc-1", reason="bringup", duration_minutes=10)
+        )
+        assert result["status"] == "claimed"
+        assert result["claim"]["agent_name"] == "test-agent"
+
+        claims = json.loads(list_claims())
+        assert len(claims["active_claims"]) == 1
+
+        result = json.loads(release_sbc(sbc_name="test-sbc-1"))
+        assert result["status"] == "released"
+
+        claims = json.loads(list_claims())
+        assert len(claims["active_claims"]) == 0
+
+    def test_claim_conflict(self, claims_env):
+        from labctl.mcp_server import claim_sbc
+
+        # Claim by a different session first
+        claims_env.claim_sbc(
+            sbc_name="test-sbc-1",
+            agent_name="other",
+            session_id="other-session",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="first",
+        )
+
+        result = json.loads(claim_sbc(sbc_name="test-sbc-1", reason="second"))
+        assert result["error"] == "sbc_claimed"
+        assert "hints" in result
+
+    def test_claim_unknown_sbc(self, claims_env):
+        from labctl.mcp_server import claim_sbc
+
+        result = json.loads(claim_sbc(sbc_name="ghost", reason="r"))
+        assert result["error"] == "unknown_sbc"
+
+    def test_claim_duration_out_of_bounds(self, claims_env):
+        from labctl.mcp_server import claim_sbc
+
+        result = json.loads(
+            claim_sbc(sbc_name="test-sbc-1", reason="r", duration_minutes=120)
+        )
+        assert result["error"] == "duration_out_of_bounds"
+
+    def test_renew_extends_claim(self, claims_env):
+        from labctl.mcp_server import claim_sbc, renew_sbc_claim
+
+        claim_sbc(sbc_name="test-sbc-1", reason="r", duration_minutes=10)
+        result = json.loads(renew_sbc_claim(sbc_name="test-sbc-1", duration_minutes=20))
+        assert result["status"] == "renewed"
+        assert result["claim"]["duration_seconds"] == 1200
+
+    def test_renew_non_claimant(self, claims_env):
+        from labctl.mcp_server import renew_sbc_claim
+
+        claims_env.claim_sbc(
+            sbc_name="test-sbc-1",
+            agent_name="other",
+            session_id="other-session",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="holding",
+        )
+        result = json.loads(renew_sbc_claim(sbc_name="test-sbc-1"))
+        assert result["error"] == "not_claimant"
+
+    def test_release_non_claimant(self, claims_env):
+        from labctl.mcp_server import release_sbc
+
+        claims_env.claim_sbc(
+            sbc_name="test-sbc-1",
+            agent_name="other",
+            session_id="other-session",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="holding",
+        )
+        result = json.loads(release_sbc(sbc_name="test-sbc-1"))
+        assert result["error"] == "not_claimant"
+
+    def test_get_claim_when_free(self, claims_env):
+        from labctl.mcp_server import get_claim
+
+        result = json.loads(get_claim(sbc_name="test-sbc-1"))
+        assert result["claimed"] is False
+
+    def test_get_claim_when_held(self, claims_env):
+        from labctl.mcp_server import claim_sbc, get_claim
+
+        claim_sbc(sbc_name="test-sbc-1", reason="r")
+        result = json.loads(get_claim(sbc_name="test-sbc-1"))
+        assert result["claimed"] is True
+        assert result["claim"]["agent_name"] == "test-agent"
+
+    def test_request_release_recorded(self, claims_env):
+        from labctl.mcp_server import (
+            claim_sbc,
+            get_claim,
+            request_sbc_release,
+        )
+
+        claim_sbc(sbc_name="test-sbc-1", reason="r")
+        result = json.loads(
+            request_sbc_release(sbc_name="test-sbc-1", reason="need it")
+        )
+        assert result["status"] == "request_recorded"
+
+        claim = json.loads(get_claim(sbc_name="test-sbc-1"))
+        assert len(claim["claim"]["pending_requests"]) == 1
+
+    def test_force_release(self, claims_env):
+        from labctl.mcp_server import force_release_sbc
+
+        claims_env.claim_sbc(
+            sbc_name="test-sbc-1",
+            agent_name="other",
+            session_id="other-session",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="holding",
+        )
+        result = json.loads(
+            force_release_sbc(sbc_name="test-sbc-1", reason="emergency")
+        )
+        assert result["status"] == "force_released"
+        assert result["was_held_by"] == "other"
+
+
+class TestMcpClaimResources:
+    """Tests for claim MCP resources."""
+
+    def test_list_claims_resource_empty(self, claims_env):
+        from labctl.mcp_server import list_claims_resource
+
+        result = json.loads(list_claims_resource())
+        assert result == []
+
+    def test_list_claims_resource_with_claim(self, claims_env):
+        from labctl.mcp_server import claim_sbc, list_claims_resource
+
+        claim_sbc(sbc_name="test-sbc-1", reason="r")
+        result = json.loads(list_claims_resource())
+        assert len(result) == 1
+        assert result[0]["sbc_name"] == "test-sbc-1"
+
+    def test_get_claim_resource(self, claims_env):
+        from labctl.mcp_server import claim_sbc, get_claim_resource
+
+        claim_sbc(sbc_name="test-sbc-1", reason="r")
+        result = json.loads(get_claim_resource("test-sbc-1"))
+        assert result["claimed"] is True
+
+    def test_claim_history_resource(self, claims_env):
+        from labctl.mcp_server import (
+            claim_sbc,
+            get_claim_history_resource,
+            release_sbc,
+        )
+
+        claim_sbc(sbc_name="test-sbc-1", reason="first run")
+        release_sbc(sbc_name="test-sbc-1")
+        result = json.loads(get_claim_history_resource("test-sbc-1"))
+        assert len(result) == 1
+        assert result[0]["agent_name"] == "test-agent"
+
+
+class TestMcpClaimEnforcement:
+    """Tests that mutating ops are gated by other-agent claims."""
+
+    def test_power_on_blocked_by_other_claim(self, claims_env):
+        from labctl.mcp_server import power_on
+
+        claims_env.claim_sbc(
+            sbc_name="test-sbc-1",
+            agent_name="other",
+            session_id="other-session",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="holding",
+        )
+        result = power_on(sbc_name="test-sbc-1")
+        data = json.loads(result)
+        assert data["error"] == "sbc_claimed"
+        assert "other" in data["claim"]["agent_name"]
+
+    def test_power_on_allowed_for_claimant(self, claims_env):
+        from labctl.mcp_server import claim_sbc, power_on
+
+        claim_sbc(sbc_name="test-sbc-1", reason="my claim")
+
+        # power_on will try actual power control — mock it
+        with patch("labctl.power.base.PowerController.from_plug") as m:
+            m.return_value.power_on.return_value = True
+            result = power_on(sbc_name="test-sbc-1")
+        assert "Power ON" in result
+
+    def test_power_on_allowed_when_unclaimed(self, claims_env):
+        from labctl.mcp_server import power_on
+
+        with patch("labctl.power.base.PowerController.from_plug") as m:
+            m.return_value.power_on.return_value = True
+            result = power_on(sbc_name="test-sbc-1")
+        assert "Power ON" in result
+
+    def test_remove_sbc_blocked_by_claim(self, claims_env):
+        from labctl.mcp_server import remove_sbc
+
+        claims_env.claim_sbc(
+            sbc_name="test-sbc-1",
+            agent_name="other",
+            session_id="other-session",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="holding",
+        )
+        result = remove_sbc(name="test-sbc-1")
+        data = json.loads(result)
+        assert data["error"] == "sbc_claimed"

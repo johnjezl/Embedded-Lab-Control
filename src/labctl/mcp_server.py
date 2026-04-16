@@ -14,7 +14,9 @@ Usage:
 
 import json
 import logging
+import os
 import sys
+import time as _time_mod
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -52,9 +54,89 @@ def _get_manager():
     return get_manager(config.database_path)
 
 
+def _get_config():
+    from labctl.core.config import load_config
+
+    return load_config()
+
+
 def _sbc_to_dict(sbc) -> dict:
     """Convert an SBC model to a JSON-serializable dict."""
     return sbc.to_dict(include_ids=False)
+
+
+# --- Session identity (MCP stdio: one process = one session) ---
+
+_SERVER_START_EPOCH = int(_time_mod.time())
+_SESSION_ID = f"mcp-stdio:{os.getpid()}-{_SERVER_START_EPOCH}"
+_SESSION_KIND = "mcp-stdio"
+_AGENT_NAME: str | None = None
+
+
+def _get_session_id() -> str:
+    return _SESSION_ID
+
+
+def _get_agent_name() -> str:
+    return _AGENT_NAME or f"unnamed-{_SESSION_ID[:16]}"
+
+
+# --- Claim enforcement helper ---
+
+
+def _check_claim(manager, sbc_name: str, mutating: bool = True) -> str | None:
+    """Check claim state for an SBC-targeting tool call.
+
+    - Claimant of this session → heartbeat + return None (proceed).
+    - Other-agent claim + mutating → return structured JSON error string.
+    - Other-agent claim + read-only → return None (proceed, no heartbeat).
+    - No claim → return None (proceed).
+    """
+    config = _get_config()
+    if not config.claims.enabled:
+        return None
+
+    from labctl.core.models import UnknownSBCError
+
+    try:
+        claim = manager.get_active_claim(sbc_name)
+    except UnknownSBCError:
+        return None
+
+    session_id = _get_session_id()
+
+    if claim is None:
+        return None
+
+    if claim.session_id == session_id:
+        manager.heartbeat_claim(sbc_name, session_id)
+        return None
+
+    if mutating:
+        remaining = (
+            int(claim.time_remaining.total_seconds())
+            if claim.time_remaining is not None
+            else 0
+        )
+        return json.dumps(
+            {
+                "error": "sbc_claimed",
+                "sbc_name": sbc_name,
+                "message": (
+                    f"SBC '{sbc_name}' is claimed by "
+                    f"'{claim.agent_name}' until "
+                    f"{claim.expires_at.isoformat()}"
+                ),
+                "claim": claim.to_dict(),
+                "hints": [
+                    "Wait for claim to expire or be released",
+                    "Request early release with request_sbc_release",
+                    "Operator override with force_release_sbc",
+                ],
+            }
+        )
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +332,9 @@ def power_on(sbc_name: str) -> str:
     from labctl.power import PowerController
 
     manager = _get_manager()
+    claim_err = _check_claim(manager, sbc_name, mutating=True)
+    if claim_err:
+        return claim_err
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
@@ -275,6 +360,9 @@ def power_off(sbc_name: str) -> str:
     from labctl.power import PowerController
 
     manager = _get_manager()
+    claim_err = _check_claim(manager, sbc_name, mutating=True)
+    if claim_err:
+        return claim_err
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
@@ -304,6 +392,9 @@ def power_cycle(sbc_name: str, delay: float = 3.0) -> str:
     from labctl.power import PowerController
 
     manager = _get_manager()
+    claim_err = _check_claim(manager, sbc_name, mutating=True)
+    if claim_err:
+        return claim_err
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
@@ -400,6 +491,9 @@ def remove_sbc(name: str) -> str:
         name: Name of the SBC to remove
     """
     manager = _get_manager()
+    claim_err = _check_claim(manager, name, mutating=True)
+    if claim_err:
+        return claim_err
     sbc = manager.get_sbc_by_name(name)
     if not sbc:
         return f"Error: SBC '{name}' not found"
@@ -844,6 +938,9 @@ def sdwire_to_dut(sbc_name: str) -> str:
     from labctl.sdwire import SDWireController
 
     manager = _get_manager()
+    claim_err = _check_claim(manager, sbc_name, mutating=True)
+    if claim_err:
+        return claim_err
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
@@ -872,6 +969,9 @@ def sdwire_to_host(sbc_name: str, force: bool = False) -> str:
     from labctl.sdwire import SDWireController
 
     manager = _get_manager()
+    claim_err = _check_claim(manager, sbc_name, mutating=True)
+    if claim_err:
+        return claim_err
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
@@ -939,6 +1039,9 @@ def sdwire_update(
         return "Error: At least one of copies, renames, or deletes is required"
 
     manager = _get_manager()
+    claim_err = _check_claim(manager, sbc_name, mutating=True)
+    if claim_err:
+        return claim_err
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
@@ -1032,6 +1135,9 @@ def flash_image(
     from labctl.sdwire import SDWireController
 
     manager = _get_manager()
+    claim_err = _check_claim(manager, sbc_name, mutating=True)
+    if claim_err:
+        return claim_err
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
@@ -1205,6 +1311,13 @@ def serial_send(
     except ValueError as e:
         return f"Error: {e}"
 
+    # Resolve port → SBC for claim enforcement
+    sbc = manager.get_sbc(port.sbc_id) if port.sbc_id else None
+    if sbc:
+        claim_err = _check_claim(manager, sbc.name, mutating=True)
+        if claim_err:
+            return claim_err
+
     if not port.tcp_port:
         return f"Error: Port '{port_name}' has no TCP port configured"
 
@@ -1264,6 +1377,9 @@ def boot_test(
     from labctl.serial.boot_test import run_boot_test
 
     manager = _get_manager()
+    claim_err = _check_claim(manager, sbc_name, mutating=True)
+    if claim_err:
+        return claim_err
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
@@ -1315,6 +1431,314 @@ def boot_test(
         return result.format_summary()
     except RuntimeError as e:
         return f"Error: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Claims (exclusive access coordination)
+# ---------------------------------------------------------------------------
+
+
+@mcp.resource("lab://claims")
+def list_claims_resource() -> str:
+    """All active claims with their metadata."""
+    manager = _get_manager()
+    claims = manager.list_active_claims()
+    return json.dumps([c.to_dict() for c in claims], indent=2)
+
+
+@mcp.resource("lab://claims/{sbc_name}")
+def get_claim_resource(sbc_name: str) -> str:
+    """Current claim on a specific SBC."""
+    manager = _get_manager()
+    claim = manager.get_active_claim(sbc_name)
+    if claim is None:
+        return json.dumps({"sbc_name": sbc_name, "claimed": False})
+    return json.dumps({"sbc_name": sbc_name, "claimed": True, "claim": claim.to_dict()})
+
+
+@mcp.resource("lab://claims/history/{sbc_name}")
+def get_claim_history_resource(sbc_name: str) -> str:
+    """Historical claims (released) for an SBC."""
+    manager = _get_manager()
+    history = manager.list_claim_history(sbc_name, limit=20)
+    return json.dumps([c.to_dict() for c in history], indent=2)
+
+
+@mcp.tool()
+def claim_sbc(
+    sbc_name: str,
+    duration_minutes: int = 30,
+    reason: str = "",
+    agent_name: str | None = None,
+    context: dict | None = None,
+) -> str:
+    """Claim exclusive access to an SBC for a declared duration.
+
+    While claimed, mutating operations by other agents are blocked.
+
+    Args:
+        sbc_name: Name of the SBC to claim
+        duration_minutes: How long to hold (bounded by config)
+        reason: Human-readable reason (required for audit)
+        agent_name: Self-declared agent identifier
+        context: Optional metadata (git branch, ticket, etc.)
+    """
+    global _AGENT_NAME
+
+    from labctl.core.models import ClaimConflict, UnknownSBCError
+
+    if agent_name:
+        _AGENT_NAME = agent_name
+
+    config = _get_config()
+    duration_s = duration_minutes * 60
+    min_s = config.claims.min_duration_minutes * 60
+    max_s = config.claims.max_duration_minutes * 60
+    if duration_s < min_s or duration_s > max_s:
+        return json.dumps(
+            {
+                "error": "duration_out_of_bounds",
+                "message": (
+                    f"Duration {duration_minutes}m is outside "
+                    f"[{config.claims.min_duration_minutes}m, "
+                    f"{config.claims.max_duration_minutes}m]"
+                ),
+            }
+        )
+
+    manager = _get_manager()
+    try:
+        claim = manager.claim_sbc(
+            sbc_name=sbc_name,
+            agent_name=_get_agent_name(),
+            session_id=_get_session_id(),
+            session_kind=_SESSION_KIND,
+            duration_seconds=duration_s,
+            reason=reason or "no reason given",
+            context=context,
+            grace_seconds=config.claims.grace_period_seconds,
+        )
+    except UnknownSBCError:
+        return json.dumps(
+            {"error": "unknown_sbc", "message": f"SBC '{sbc_name}' not found"}
+        )
+    except ClaimConflict as exc:
+        return json.dumps(
+            {
+                "error": "sbc_claimed",
+                "sbc_name": sbc_name,
+                "message": str(exc),
+                "claim": exc.claim.to_dict(),
+                "hints": [
+                    "Wait for claim to expire or be released",
+                    "Request early release with request_sbc_release",
+                    "Operator override with force_release_sbc",
+                ],
+            }
+        )
+
+    return json.dumps(
+        {"status": "claimed", "sbc_name": sbc_name, "claim": claim.to_dict()}
+    )
+
+
+@mcp.tool()
+def release_sbc(sbc_name: str) -> str:
+    """Release a claim held by the calling session.
+
+    Only the session that created the claim can release it via this tool.
+
+    Args:
+        sbc_name: Name of the SBC to release
+    """
+    from labctl.core.models import (
+        ClaimNotFoundError,
+        NotClaimantError,
+        UnknownSBCError,
+    )
+
+    manager = _get_manager()
+    try:
+        released = manager.release_claim(sbc_name, _get_session_id())
+    except UnknownSBCError:
+        return json.dumps(
+            {"error": "unknown_sbc", "message": f"SBC '{sbc_name}' not found"}
+        )
+    except ClaimNotFoundError:
+        return json.dumps(
+            {
+                "error": "claim_not_found",
+                "message": f"No active claim on '{sbc_name}'",
+            }
+        )
+    except NotClaimantError:
+        return json.dumps(
+            {
+                "error": "not_claimant",
+                "message": f"You don't hold the claim on '{sbc_name}'",
+            }
+        )
+
+    return json.dumps({"status": "released", "sbc_name": sbc_name})
+
+
+@mcp.tool()
+def renew_sbc_claim(sbc_name: str, duration_minutes: int | None = None) -> str:
+    """Extend an active claim. Bounded by config max_duration.
+
+    Args:
+        sbc_name: Name of the SBC whose claim to renew
+        duration_minutes: New duration (omit to keep current)
+    """
+    from labctl.core.models import (
+        ClaimNotFoundError,
+        NotClaimantError,
+        UnknownSBCError,
+    )
+
+    config = _get_config()
+    duration_s = None
+    if duration_minutes is not None:
+        duration_s = duration_minutes * 60
+        max_s = config.claims.max_duration_minutes * 60
+        if duration_s > max_s:
+            return json.dumps(
+                {
+                    "error": "duration_out_of_bounds",
+                    "message": (
+                        f"Duration {duration_minutes}m exceeds "
+                        f"max {config.claims.max_duration_minutes}m"
+                    ),
+                }
+            )
+
+    manager = _get_manager()
+    try:
+        claim = manager.renew_claim(
+            sbc_name, _get_session_id(), duration_seconds=duration_s
+        )
+    except UnknownSBCError:
+        return json.dumps(
+            {"error": "unknown_sbc", "message": f"SBC '{sbc_name}' not found"}
+        )
+    except ClaimNotFoundError:
+        return json.dumps(
+            {
+                "error": "claim_not_found",
+                "message": f"No active claim on '{sbc_name}'",
+            }
+        )
+    except NotClaimantError:
+        return json.dumps(
+            {
+                "error": "not_claimant",
+                "message": f"You don't hold the claim on '{sbc_name}'",
+            }
+        )
+
+    return json.dumps(
+        {"status": "renewed", "sbc_name": sbc_name, "claim": claim.to_dict()}
+    )
+
+
+@mcp.tool()
+def list_claims() -> str:
+    """List all active claims across the lab."""
+    manager = _get_manager()
+    claims = manager.list_active_claims()
+    return json.dumps({"active_claims": [c.to_dict() for c in claims]}, indent=2)
+
+
+@mcp.tool()
+def get_claim(sbc_name: str) -> str:
+    """Get the current active claim on an SBC, including pending requests.
+
+    Args:
+        sbc_name: Name of the SBC to check
+    """
+    from labctl.core.models import UnknownSBCError
+
+    manager = _get_manager()
+    try:
+        claim = manager.get_active_claim(sbc_name)
+    except UnknownSBCError:
+        return json.dumps(
+            {"error": "unknown_sbc", "message": f"SBC '{sbc_name}' not found"}
+        )
+    if claim is None:
+        return json.dumps({"sbc_name": sbc_name, "claimed": False})
+    return json.dumps({"sbc_name": sbc_name, "claimed": True, "claim": claim.to_dict()})
+
+
+@mcp.tool()
+def request_sbc_release(sbc_name: str, reason: str) -> str:
+    """Politely ask the current claimant to release an SBC.
+
+    Non-binding — the claimant decides whether to act.
+
+    Args:
+        sbc_name: Name of the SBC
+        reason: Why you need the SBC
+    """
+    from labctl.core.models import ClaimNotFoundError, UnknownSBCError
+
+    manager = _get_manager()
+    try:
+        manager.record_release_request(
+            sbc_name, requested_by=_get_agent_name(), reason=reason
+        )
+    except UnknownSBCError:
+        return json.dumps(
+            {"error": "unknown_sbc", "message": f"SBC '{sbc_name}' not found"}
+        )
+    except ClaimNotFoundError:
+        return json.dumps(
+            {
+                "error": "claim_not_found",
+                "message": f"No active claim on '{sbc_name}'",
+            }
+        )
+
+    return json.dumps({"status": "request_recorded", "sbc_name": sbc_name})
+
+
+@mcp.tool()
+def force_release_sbc(sbc_name: str, reason: str) -> str:
+    """Operator override — forcibly release an active claim.
+
+    Should only be used when normal release is blocked (dead agent,
+    emergency).
+
+    Args:
+        sbc_name: Name of the SBC
+        reason: Why the override is needed (logged prominently)
+    """
+    from labctl.core.models import ClaimNotFoundError, UnknownSBCError
+
+    manager = _get_manager()
+    try:
+        released = manager.force_release_claim(
+            sbc_name, reason, released_by=_get_agent_name()
+        )
+    except UnknownSBCError:
+        return json.dumps(
+            {"error": "unknown_sbc", "message": f"SBC '{sbc_name}' not found"}
+        )
+    except ClaimNotFoundError:
+        return json.dumps(
+            {
+                "error": "claim_not_found",
+                "message": f"No active claim on '{sbc_name}'",
+            }
+        )
+
+    return json.dumps(
+        {
+            "status": "force_released",
+            "sbc_name": sbc_name,
+            "was_held_by": released.agent_name,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
