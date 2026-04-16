@@ -4,6 +4,8 @@ Resource manager for lab controller.
 Provides CRUD operations for SBCs, serial ports, network addresses, and power plugs.
 """
 
+import json
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -11,14 +13,21 @@ from labctl.core.database import Database, get_database
 from labctl.core.models import (
     SBC,
     AddressType,
+    Claim,
+    ClaimConflict,
+    ClaimNotFoundError,
+    ClaimRequest,
     NetworkAddress,
+    NotClaimantError,
     PlugType,
     PortType,
     PowerPlug,
+    ReleaseReason,
     SDWireDevice,
     SerialDevice,
     SerialPort,
     Status,
+    UnknownSBCError,
 )
 
 
@@ -218,24 +227,41 @@ class ResourceManager:
             old_name = sbc.name
             new_name = name if name else old_name
             self._audit_log(
-                "update", "sbc", sbc_id, new_name,
-                f"Updated SBC: {old_name}" + (f" (renamed to {new_name})" if name and name != old_name else ""),
+                "update",
+                "sbc",
+                sbc_id,
+                new_name,
+                f"Updated SBC: {old_name}"
+                + (f" (renamed to {new_name})" if name and name != old_name else ""),
             )
 
         return self.get_sbc(sbc_id)
 
-    def delete_sbc(self, sbc_id: int) -> bool:
+    def delete_sbc(self, sbc_id: int, force: bool = False) -> bool:
         """
         Delete SBC and all related records.
 
+        Args:
+            sbc_id: SBC database ID
+            force: If True, delete even when an active claim exists
+                (the claim rows cascade-delete with the SBC).
+
         Returns:
             True if deleted, False if not found
+
+        Raises:
+            ClaimConflict: If an active claim exists and force=False.
         """
         sbc = self.get_sbc(sbc_id)
         if not sbc:
             return False
 
-        # Cascade delete handles related records
+        if not force:
+            active = self.get_active_claim(sbc.name)
+            if active is not None:
+                raise ClaimConflict(active)
+
+        # Cascade delete handles related records (including claims)
         count = self.db.execute_modify("DELETE FROM sbcs WHERE id = ?", (sbc_id,))
         if count > 0:
             self._audit_log(
@@ -264,22 +290,31 @@ class ResourceManager:
             (name, usb_path, vendor, model, serial_number),
         )
         self._audit_log(
-            "create", "serial_device", device_id, name,
+            "create",
+            "serial_device",
+            device_id,
+            name,
             f"Registered serial device: {name} ({usb_path})",
         )
-        row = self.db.execute_one("SELECT * FROM serial_devices WHERE id = ?", (device_id,))
+        row = self.db.execute_one(
+            "SELECT * FROM serial_devices WHERE id = ?", (device_id,)
+        )
         if not row:
             raise RuntimeError(f"Failed to retrieve serial device {device_id}")
         return SerialDevice.from_row(row)
 
     def get_serial_device(self, device_id: int) -> Optional[SerialDevice]:
         """Get serial device by ID."""
-        row = self.db.execute_one("SELECT * FROM serial_devices WHERE id = ?", (device_id,))
+        row = self.db.execute_one(
+            "SELECT * FROM serial_devices WHERE id = ?", (device_id,)
+        )
         return SerialDevice.from_row(row) if row else None
 
     def get_serial_device_by_name(self, name: str) -> Optional[SerialDevice]:
         """Get serial device by name."""
-        row = self.db.execute_one("SELECT * FROM serial_devices WHERE name = ?", (name,))
+        row = self.db.execute_one(
+            "SELECT * FROM serial_devices WHERE name = ?", (name,)
+        )
         return SerialDevice.from_row(row) if row else None
 
     def list_serial_devices(self) -> list[SerialDevice]:
@@ -287,7 +322,9 @@ class ResourceManager:
         rows = self.db.execute("SELECT * FROM serial_devices ORDER BY name")
         return [SerialDevice.from_row(r) for r in rows]
 
-    def rename_serial_device(self, device_id: int, new_name: str) -> Optional[SerialDevice]:
+    def rename_serial_device(
+        self, device_id: int, new_name: str
+    ) -> Optional[SerialDevice]:
         """Rename a serial device."""
         device = self.get_serial_device(device_id)
         if not device:
@@ -296,7 +333,10 @@ class ResourceManager:
             "UPDATE serial_devices SET name = ? WHERE id = ?", (new_name, device_id)
         )
         self._audit_log(
-            "update", "serial_device", device_id, new_name,
+            "update",
+            "serial_device",
+            device_id,
+            new_name,
             f"Renamed serial device: {device.name} -> {new_name}",
         )
         return self.get_serial_device(device_id)
@@ -322,7 +362,10 @@ class ResourceManager:
         )
         if count > 0:
             self._audit_log(
-                "delete", "serial_device", device_id, device.name,
+                "delete",
+                "serial_device",
+                device_id,
+                device.name,
                 f"Deleted serial device: {device.name}",
             )
             return True
@@ -392,7 +435,15 @@ class ResourceManager:
                 alias = excluded.alias,
                 serial_device_id = excluded.serial_device_id
             """,
-            (sbc_id, port_type.value, device_path, tcp_port, baud_rate, alias, serial_device_id),
+            (
+                sbc_id,
+                port_type.value,
+                device_path,
+                tcp_port,
+                baud_rate,
+                alias,
+                serial_device_id,
+            ),
         )
 
         details = f"Assigned {port_type.value} port {device_path} to {sbc.name}"
@@ -574,22 +625,31 @@ class ResourceManager:
             (name, serial_number, device_type),
         )
         self._audit_log(
-            "create", "sdwire_device", device_id, name,
+            "create",
+            "sdwire_device",
+            device_id,
+            name,
             f"Registered SDWire device: {name} ({serial_number})",
         )
-        row = self.db.execute_one("SELECT * FROM sdwire_devices WHERE id = ?", (device_id,))
+        row = self.db.execute_one(
+            "SELECT * FROM sdwire_devices WHERE id = ?", (device_id,)
+        )
         if not row:
             raise RuntimeError(f"Failed to retrieve SDWire device {device_id}")
         return SDWireDevice.from_row(row)
 
     def get_sdwire_device(self, device_id: int) -> Optional[SDWireDevice]:
         """Get SDWire device by ID."""
-        row = self.db.execute_one("SELECT * FROM sdwire_devices WHERE id = ?", (device_id,))
+        row = self.db.execute_one(
+            "SELECT * FROM sdwire_devices WHERE id = ?", (device_id,)
+        )
         return SDWireDevice.from_row(row) if row else None
 
     def get_sdwire_device_by_name(self, name: str) -> Optional[SDWireDevice]:
         """Get SDWire device by name."""
-        row = self.db.execute_one("SELECT * FROM sdwire_devices WHERE name = ?", (name,))
+        row = self.db.execute_one(
+            "SELECT * FROM sdwire_devices WHERE name = ?", (name,)
+        )
         return SDWireDevice.from_row(row) if row else None
 
     def list_sdwire_devices(self) -> list[SDWireDevice]:
@@ -617,7 +677,10 @@ class ResourceManager:
         )
         if count > 0:
             self._audit_log(
-                "delete", "sdwire_device", device_id, device.name,
+                "delete",
+                "sdwire_device",
+                device_id,
+                device.name,
                 f"Deleted SDWire device: {device.name}",
             )
             return True
@@ -641,7 +704,10 @@ class ResourceManager:
         )
 
         self._audit_log(
-            "assign", "sdwire", sdwire_device_id, sbc.name,
+            "assign",
+            "sdwire",
+            sdwire_device_id,
+            sbc.name,
             f"Assigned SDWire '{device.name}' to {sbc.name}",
         )
 
@@ -879,6 +945,354 @@ class ResourceManager:
             d = seconds // 86400
             h = (seconds % 86400) // 3600
             return f"{d}d {h}h"
+
+    # --- Claim Operations ---
+
+    # Microsecond precision so short-duration expiry comparisons don't
+    # collapse to a single second. SQLite stores these as TEXT and the
+    # ISO-8601-ish layout compares lexically in the same order as datetimes.
+    _TS_FMT = "%Y-%m-%d %H:%M:%S.%f"
+
+    @classmethod
+    def _fmt_ts(cls, dt: datetime) -> str:
+        return dt.strftime(cls._TS_FMT)
+
+    def _load_pending_requests(self, claim: Claim) -> None:
+        rows = self.db.execute(
+            """
+            SELECT * FROM claim_requests
+            WHERE claim_id = ? AND acknowledged = 0
+            ORDER BY requested_at ASC
+            """,
+            (claim.id,),
+        )
+        claim.pending_requests = [ClaimRequest.from_row(r) for r in rows]
+
+    def _require_sbc_id(self, sbc_name: str) -> int:
+        sbc = self.get_sbc_by_name(sbc_name)
+        if sbc is None:
+            raise UnknownSBCError(f"SBC '{sbc_name}' does not exist")
+        return sbc.id
+
+    def expire_stale_claims(self, grace_seconds: int = 60) -> int:
+        """Mark claims past their deadline (+ grace) as released.
+
+        Returns the number of claims released by this sweep. Safe to call
+        repeatedly; only unreleased rows with an elapsed deadline are touched.
+        """
+        cutoff = self._fmt_ts(datetime.now() - timedelta(seconds=grace_seconds))
+        return self.db.execute_modify(
+            """
+            UPDATE claims
+            SET released_at = CURRENT_TIMESTAMP,
+                release_reason = ?,
+                released_by = 'system'
+            WHERE released_at IS NULL AND expires_at < ?
+            """,
+            (ReleaseReason.EXPIRED.value, cutoff),
+        )
+
+    def claim_sbc(
+        self,
+        sbc_name: str,
+        agent_name: str,
+        session_id: str,
+        session_kind: str,
+        duration_seconds: int,
+        reason: str,
+        context: Optional[dict] = None,
+        grace_seconds: int = 60,
+    ) -> Claim:
+        """Acquire an exclusive claim on an SBC.
+
+        Runs an expire-stale sweep inside the acquisition transaction so
+        the partial unique index can't block a legitimate caller behind a
+        claim whose deadline has already passed.
+        """
+        sbc_id = self._require_sbc_id(sbc_name)
+        context_json = json.dumps(context) if context else None
+        cutoff = self._fmt_ts(datetime.now() - timedelta(seconds=grace_seconds))
+
+        with self.db.connect() as conn:
+            # Release any expired claims on this SBC within the same
+            # transaction so the UNIQUE index reflects current reality.
+            conn.execute(
+                """
+                UPDATE claims
+                SET released_at = CURRENT_TIMESTAMP,
+                    release_reason = ?,
+                    released_by = 'system'
+                WHERE released_at IS NULL AND expires_at < ?
+                """,
+                (ReleaseReason.EXPIRED.value, cutoff),
+            )
+
+            # Check for active claim after the sweep
+            cursor = conn.execute(
+                """
+                SELECT c.*, s.name AS sbc_name
+                FROM claims c
+                JOIN sbcs s ON s.id = c.sbc_id
+                WHERE c.sbc_id = ? AND c.released_at IS NULL
+                """,
+                (sbc_id,),
+            )
+            existing = cursor.fetchone()
+            if existing is not None:
+                raise ClaimConflict(Claim.from_row(existing))
+
+            now = datetime.now()
+            expires_at = now + timedelta(seconds=duration_seconds)
+            cursor = conn.execute(
+                """
+                INSERT INTO claims (
+                    sbc_id, agent_name, session_id, session_kind, reason,
+                    context_json, acquired_at, duration_seconds,
+                    last_activity, expires_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sbc_id,
+                    agent_name,
+                    session_id,
+                    session_kind,
+                    reason,
+                    context_json,
+                    self._fmt_ts(now),
+                    duration_seconds,
+                    self._fmt_ts(now),
+                    self._fmt_ts(expires_at),
+                ),
+            )
+            claim_id = cursor.lastrowid
+            cursor = conn.execute(
+                """
+                SELECT c.*, s.name AS sbc_name
+                FROM claims c JOIN sbcs s ON s.id = c.sbc_id
+                WHERE c.id = ?
+                """,
+                (claim_id,),
+            )
+            claim = Claim.from_row(cursor.fetchone())
+
+        self._audit_log(
+            "claim",
+            "sbc",
+            sbc_id,
+            sbc_name,
+            f"Claimed by {agent_name} ({session_kind}) "
+            f"for {duration_seconds}s: {reason}",
+        )
+        return claim
+
+    def get_active_claim(self, sbc_name: str) -> Optional[Claim]:
+        """Return the active claim on an SBC, or None if free."""
+        sbc_id = self._require_sbc_id(sbc_name)
+        row = self.db.execute_one(
+            """
+            SELECT c.*, s.name AS sbc_name
+            FROM claims c JOIN sbcs s ON s.id = c.sbc_id
+            WHERE c.sbc_id = ? AND c.released_at IS NULL
+            """,
+            (sbc_id,),
+        )
+        if not row:
+            return None
+        claim = Claim.from_row(row)
+        # If materialized deadline passed, treat as free — the next sweep
+        # will commit the release. Don't return a zombie as active.
+        if not claim.is_active:
+            return None
+        self._load_pending_requests(claim)
+        return claim
+
+    def list_active_claims(self) -> list[Claim]:
+        """All currently active claims across the lab."""
+        rows = self.db.execute(
+            """
+            SELECT c.*, s.name AS sbc_name
+            FROM claims c JOIN sbcs s ON s.id = c.sbc_id
+            WHERE c.released_at IS NULL
+            ORDER BY c.acquired_at ASC
+            """
+        )
+        claims = []
+        for row in rows:
+            claim = Claim.from_row(row)
+            if claim.is_active:
+                self._load_pending_requests(claim)
+                claims.append(claim)
+        return claims
+
+    def list_claim_history(self, sbc_name: str, limit: int = 10) -> list[Claim]:
+        """Past (released) claims for a specific SBC, newest first."""
+        sbc_id = self._require_sbc_id(sbc_name)
+        rows = self.db.execute(
+            """
+            SELECT c.*, s.name AS sbc_name
+            FROM claims c JOIN sbcs s ON s.id = c.sbc_id
+            WHERE c.sbc_id = ? AND c.released_at IS NOT NULL
+            ORDER BY c.released_at DESC, c.id DESC
+            LIMIT ?
+            """,
+            (sbc_id, limit),
+        )
+        return [Claim.from_row(r) for r in rows]
+
+    def release_claim(self, sbc_name: str, session_id: str) -> Claim:
+        """Release the active claim held by ``session_id`` on an SBC."""
+        claim = self.get_active_claim(sbc_name)
+        if claim is None:
+            raise ClaimNotFoundError(f"No active claim on SBC '{sbc_name}'")
+        if claim.session_id != session_id:
+            raise NotClaimantError(
+                f"Claim on '{sbc_name}' is held by a different session"
+            )
+        self.db.execute_modify(
+            """
+            UPDATE claims
+            SET released_at = CURRENT_TIMESTAMP,
+                release_reason = ?,
+                released_by = ?
+            WHERE id = ?
+            """,
+            (ReleaseReason.RELEASED.value, claim.agent_name, claim.id),
+        )
+        self._audit_log(
+            "release",
+            "sbc",
+            claim.sbc_id,
+            sbc_name,
+            f"Released by {claim.agent_name}",
+        )
+        # Re-fetch fresh state so callers see released_at populated.
+        return self._get_claim_by_id(claim.id)
+
+    def force_release_claim(
+        self, sbc_name: str, reason: str, released_by: str = "operator"
+    ) -> Claim:
+        """Operator override — forcibly release the active claim.
+
+        Differs from :meth:`release_claim` in that no session-match check
+        applies. The reason is appended to the audit log prominently.
+        """
+        claim = self.get_active_claim(sbc_name)
+        if claim is None:
+            raise ClaimNotFoundError(f"No active claim on SBC '{sbc_name}'")
+        self.db.execute_modify(
+            """
+            UPDATE claims
+            SET released_at = CURRENT_TIMESTAMP,
+                release_reason = ?,
+                released_by = ?
+            WHERE id = ?
+            """,
+            (ReleaseReason.FORCE_RELEASED.value, released_by, claim.id),
+        )
+        self._audit_log(
+            "force_release",
+            "sbc",
+            claim.sbc_id,
+            sbc_name,
+            f"Force-released by {released_by} "
+            f"(was held by {claim.agent_name}): {reason}",
+        )
+        return self._get_claim_by_id(claim.id)
+
+    def renew_claim(
+        self,
+        sbc_name: str,
+        session_id: str,
+        duration_seconds: Optional[int] = None,
+    ) -> Claim:
+        """Extend an active claim's deadline.
+
+        If ``duration_seconds`` is omitted the previous duration is reused.
+        ``last_activity`` and ``expires_at`` are both advanced to "now" and
+        "now + duration_seconds" respectively.
+        """
+        claim = self.get_active_claim(sbc_name)
+        if claim is None:
+            raise ClaimNotFoundError(f"No active claim on SBC '{sbc_name}'")
+        if claim.session_id != session_id:
+            raise NotClaimantError(
+                f"Claim on '{sbc_name}' is held by a different session"
+            )
+        new_duration = (
+            duration_seconds if duration_seconds is not None else claim.duration_seconds
+        )
+        now = datetime.now()
+        new_expiry = now + timedelta(seconds=new_duration)
+        self.db.execute_modify(
+            """
+            UPDATE claims
+            SET duration_seconds = ?,
+                last_activity = ?,
+                expires_at = ?,
+                renewal_count = renewal_count + 1
+            WHERE id = ?
+            """,
+            (new_duration, self._fmt_ts(now), self._fmt_ts(new_expiry), claim.id),
+        )
+        return self._get_claim_by_id(claim.id)
+
+    def heartbeat_claim(self, sbc_name: str, session_id: str) -> bool:
+        """Advance last_activity and expires_at on the claim, if any.
+
+        Called from every claimant tool path (reads and writes). Silent
+        no-op when no claim exists or a different session holds it, so
+        that non-claim-aware callers don't need special handling.
+        """
+        claim = self.get_active_claim(sbc_name)
+        if claim is None or claim.session_id != session_id:
+            return False
+        now = datetime.now()
+        new_expiry = now + timedelta(seconds=claim.duration_seconds)
+        self.db.execute_modify(
+            """
+            UPDATE claims
+            SET last_activity = ?, expires_at = ?
+            WHERE id = ?
+            """,
+            (self._fmt_ts(now), self._fmt_ts(new_expiry), claim.id),
+        )
+        return True
+
+    def record_release_request(
+        self, sbc_name: str, requested_by: str, reason: str
+    ) -> ClaimRequest:
+        """Record a polite release request against the active claim."""
+        claim = self.get_active_claim(sbc_name)
+        if claim is None:
+            raise ClaimNotFoundError(f"No active claim on SBC '{sbc_name}'")
+        request_id = self.db.execute_insert(
+            """
+            INSERT INTO claim_requests (claim_id, requested_by, reason)
+            VALUES (?, ?, ?)
+            """,
+            (claim.id, requested_by, reason),
+        )
+        row = self.db.execute_one(
+            "SELECT * FROM claim_requests WHERE id = ?", (request_id,)
+        )
+        return ClaimRequest.from_row(row)
+
+    def _get_claim_by_id(self, claim_id: int) -> Optional[Claim]:
+        row = self.db.execute_one(
+            """
+            SELECT c.*, s.name AS sbc_name
+            FROM claims c JOIN sbcs s ON s.id = c.sbc_id
+            WHERE c.id = ?
+            """,
+            (claim_id,),
+        )
+        if not row:
+            return None
+        claim = Claim.from_row(row)
+        if claim.released_at is None:
+            self._load_pending_requests(claim)
+        return claim
 
     # --- Audit Log ---
 

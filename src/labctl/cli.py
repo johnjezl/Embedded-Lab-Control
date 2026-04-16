@@ -97,7 +97,11 @@ def _get_manager(ctx: click.Context) -> ResourceManager:
 )
 @click.pass_context
 def main(
-    ctx: click.Context, verbose: bool, quiet: bool, config_path: Path | None, delay: float
+    ctx: click.Context,
+    verbose: bool,
+    quiet: bool,
+    config_path: Path | None,
+    delay: float,
 ) -> None:
     """Lab Controller - Manage embedded development lab resources.
 
@@ -236,7 +240,9 @@ def connect_cmd(ctx: click.Context, port_name: str, baud: int | None) -> None:
     port = manager.get_serial_port_by_alias(port_name)
     if port and port.tcp_port:
         if verbose:
-            click.echo(f"Connecting to alias '{port_name}' via TCP port {port.tcp_port}...")
+            click.echo(
+                f"Connecting to alias '{port_name}' via TCP port {port.tcp_port}..."
+            )
         _connect_tcp("localhost", port.tcp_port)
         return
 
@@ -393,9 +399,16 @@ def add_cmd(
 @main.command("remove")
 @click.argument("name")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Remove even if an active claim is held (cascades claim rows)",
+)
 @click.pass_context
-def remove_cmd(ctx: click.Context, name: str, yes: bool) -> None:
+def remove_cmd(ctx: click.Context, name: str, yes: bool, force: bool) -> None:
     """Remove an SBC."""
+    from labctl.core.models import ClaimConflict
+
     manager = _get_manager(ctx)
 
     sbc = manager.get_sbc_by_name(name)
@@ -406,7 +419,17 @@ def remove_cmd(ctx: click.Context, name: str, yes: bool) -> None:
     if not yes:
         click.confirm(f"Remove SBC '{name}' and all associated data?", abort=True)
 
-    if manager.delete_sbc(sbc.id):
+    try:
+        deleted = manager.delete_sbc(sbc.id, force=force)
+    except ClaimConflict as exc:
+        holder = exc.claim.agent_name or "unknown agent"
+        click.echo(
+            f"Error: '{name}' is claimed by '{holder}'. "
+            f"Release the claim or rerun with --force.",
+            err=True,
+        )
+        sys.exit(1)
+    if deleted:
         click.echo(f"Removed SBC: {name}")
     else:
         click.echo(f"Error: Failed to remove SBC '{name}'", err=True)
@@ -559,8 +582,7 @@ def sdwire_discover_cmd(ctx: click.Context) -> None:
         reg_str = reg.name if reg else "-"
         block = d.get("block_dev") or "-"
         click.echo(
-            f"{d['serial_number']:<25} {d['device_type']:<10} "
-            f"{block:<12} {reg_str}"
+            f"{d['serial_number']:<25} {d['device_type']:<10} " f"{block:<12} {reg_str}"
         )
 
 
@@ -568,7 +590,8 @@ def sdwire_discover_cmd(ctx: click.Context) -> None:
 @click.argument("name")
 @click.argument("serial_number")
 @click.option(
-    "--type", "device_type",
+    "--type",
+    "device_type",
     type=click.Choice(["sdwire", "sdwirec"]),
     default=None,
     help="Device type (auto-detected if not specified)",
@@ -662,9 +685,7 @@ def sdwire_list_cmd(ctx: click.Context) -> None:
 
     for d in devices:
         sbc_name = assigned.get(d.id, "-")
-        click.echo(
-            f"{d.name:<15} {d.serial_number:<25} {d.device_type:<10} {sbc_name}"
-        )
+        click.echo(f"{d.name:<15} {d.serial_number:<25} {d.device_type:<10} {sbc_name}")
 
 
 @sdwire_group.command("assign")
@@ -764,6 +785,7 @@ def sdwire_host_cmd(ctx: click.Context, sbc_name: str, force: bool) -> None:
         try:
             from labctl.power import PowerController
             from labctl.power.base import PowerState
+
             power_ctrl = PowerController.from_plug(sbc.power_plug)
             state = power_ctrl.get_state()
             if state == PowerState.ON:
@@ -795,12 +817,18 @@ def sdwire_host_cmd(ctx: click.Context, sbc_name: str, force: bool) -> None:
 @click.argument("image", type=click.Path(exists=True, path_type=Path))
 @click.option("--no-reboot", is_flag=True, help="Don't power cycle after flashing")
 @click.option(
-    "--copy", "-c", "post_copies", multiple=True,
+    "--copy",
+    "-c",
+    "post_copies",
+    multiple=True,
     help="Copy file to boot partition after flash (source:dest)",
 )
 @click.pass_context
 def sdwire_flash_cmd(
-    ctx: click.Context, sbc_name: str, image: Path, no_reboot: bool,
+    ctx: click.Context,
+    sbc_name: str,
+    image: Path,
+    no_reboot: bool,
     post_copies: tuple[str, ...],
 ) -> None:
     """Flash an SD card image to an SBC's SDWire.
@@ -838,6 +866,7 @@ def sdwire_flash_cmd(
             click.echo("Powering off SBC...")
             try:
                 from labctl.power import PowerController
+
                 power_ctrl = PowerController.from_plug(sbc.power_plug)
                 power_ctrl.power_off()
                 time.sleep(1)
@@ -868,17 +897,21 @@ def sdwire_flash_cmd(
         # Post-flash copies
         if post_copies:
             import subprocess
+
             click.echo("Re-reading partition table...")
             subprocess.run(
                 ["sudo", "partprobe", block_dev],
-                capture_output=True, timeout=10,
+                capture_output=True,
+                timeout=10,
             )
             time.sleep(2)
 
             file_pairs = []
             for spec in post_copies:
                 if ":" not in spec:
-                    click.echo(f"Warning: Invalid --copy format '{spec}', skipping", err=True)
+                    click.echo(
+                        f"Warning: Invalid --copy format '{spec}', skipping", err=True
+                    )
                     continue
                 src, dest = spec.split(":", 1)
                 file_pairs.append((src, dest))
@@ -897,6 +930,7 @@ def sdwire_flash_cmd(
         if not no_reboot and sbc.power_plug:
             click.echo(f"Power cycling {sbc_name}...")
             from labctl.power import PowerController
+
             power_ctrl = PowerController.from_plug(sbc.power_plug)
             power_ctrl.power_cycle()
             click.echo(f"Power cycled: {sbc_name}")
@@ -919,19 +953,31 @@ def sdwire_flash_cmd(
 @sdwire_group.command("update")
 @click.argument("sbc_name")
 @click.option(
-    "--partition", "-p", type=int, required=True,
+    "--partition",
+    "-p",
+    type=int,
+    required=True,
     help="Partition number (e.g., 1 for first partition)",
 )
 @click.option(
-    "--copy", "-c", "copies", multiple=True,
+    "--copy",
+    "-c",
+    "copies",
+    multiple=True,
     help="File to copy as source:dest (dest relative to partition root)",
 )
 @click.option(
-    "--rename", "-r", "renames", multiple=True,
+    "--rename",
+    "-r",
+    "renames",
+    multiple=True,
     help="Rename file as oldname:newname (both relative to partition root)",
 )
 @click.option(
-    "--delete", "-d", "deletes", multiple=True,
+    "--delete",
+    "-d",
+    "deletes",
+    multiple=True,
     help="Delete file (relative to partition root)",
 )
 @click.option("--reboot", is_flag=True, help="Power cycle the SBC after updating")
@@ -1015,9 +1061,11 @@ def sdwire_update_cmd(
             click.echo(f"Powering off {sbc_name}...")
             try:
                 from labctl.power import PowerController
+
                 power_ctrl = PowerController.from_plug(sbc.power_plug)
                 power_ctrl.power_off()
                 import time as time_mod
+
                 time_mod.sleep(1)
             except Exception:
                 click.echo("Warning: Could not power off (continuing anyway)", err=True)
@@ -1027,12 +1075,14 @@ def sdwire_update_cmd(
         ctrl.switch_to_host()
 
         import time
+
         time.sleep(2)  # Wait for block device and partitions to appear
 
         # Step 2: Mount and perform operations
         click.echo(f"Mounting partition {partition}...")
         result = ctrl.update_files(
-            partition, file_pairs,
+            partition,
+            file_pairs,
             renames=rename_pairs or None,
             deletes=delete_list or None,
         )
@@ -1051,6 +1101,7 @@ def sdwire_update_cmd(
         if reboot and sbc.power_plug:
             click.echo(f"Power cycling {sbc_name}...")
             from labctl.power import PowerController
+
             power_ctrl = PowerController.from_plug(sbc.power_plug)
             power_ctrl.power_cycle(delay=3.0)
             click.echo(f"Power cycled: {sbc_name}")
@@ -1137,9 +1188,7 @@ def serial_add_cmd(
         )
         click.echo(f"Registered serial device: {device.name} ({device.usb_path})")
         click.echo(f"Udev symlink: /dev/lab/{device.name}")
-        click.echo(
-            "Run 'labctl serial udev --install' to activate udev rules."
-        )
+        click.echo("Run 'labctl serial udev --install' to activate udev rules.")
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -1164,9 +1213,7 @@ def serial_remove_cmd(ctx: click.Context, name: str, yes: bool) -> None:
     try:
         manager.delete_serial_device(device.id)
         click.echo(f"Removed serial device: {name}")
-        click.echo(
-            "Run 'labctl serial udev --install' to update udev rules."
-        )
+        click.echo("Run 'labctl serial udev --install' to update udev rules.")
     except ValueError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -1204,9 +1251,7 @@ def serial_list_cmd(ctx: click.Context) -> None:
         assigned = in_use.get(d.id, "-")
         vendor = (d.vendor or "-")[:16]
         model = (d.model or "-")[:18]
-        click.echo(
-            f"{d.name:<15} {d.usb_path:<15} {vendor:<18} {model:<20} {assigned}"
-        )
+        click.echo(f"{d.name:<15} {d.usb_path:<15} {vendor:<18} {model:<20} {assigned}")
 
 
 @serial_group.command("rename")
@@ -1225,9 +1270,7 @@ def serial_rename_cmd(ctx: click.Context, name: str, new_name: str) -> None:
     try:
         manager.rename_serial_device(device.id, new_name)
         click.echo(f"Renamed: {name} -> {new_name}")
-        click.echo(
-            "Run 'labctl serial udev --install' to update udev rules."
-        )
+        click.echo("Run 'labctl serial udev --install' to update udev rules.")
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -1274,15 +1317,22 @@ def serial_udev_cmd(ctx: click.Context, install: bool, reload: bool) -> None:
 @serial_group.command("capture")
 @click.argument("port_name")
 @click.option(
-    "--timeout", "-t", type=float, default=15.0,
+    "--timeout",
+    "-t",
+    type=float,
+    default=15.0,
     help="Max seconds to capture (default: 15)",
 )
 @click.option(
-    "--until", "-u", "until_pattern",
+    "--until",
+    "-u",
+    "until_pattern",
     help="Stop when this regex pattern matches a line",
 )
 @click.option(
-    "--tail", "-n", type=int,
+    "--tail",
+    "-n",
+    type=int,
     help="Return only the last N lines",
 )
 @click.pass_context
@@ -1330,9 +1380,7 @@ def serial_capture_cmd(
         if result.output:
             click.echo(result.output)
 
-        status = (
-            f"pattern matched" if result.pattern_matched else "timeout"
-        )
+        status = f"pattern matched" if result.pattern_matched else "timeout"
         click.echo(
             f"\n[{result.lines} lines, {result.elapsed_seconds:.1f}s, {status}]",
             err=True,
@@ -1347,15 +1395,21 @@ def serial_capture_cmd(
 @click.argument("port_name")
 @click.argument("data")
 @click.option(
-    "--raw", is_flag=True,
+    "--raw",
+    is_flag=True,
     help="Send raw data without appending newline",
 )
 @click.option(
-    "--capture", "-c", "capture_timeout", type=float,
+    "--capture",
+    "-c",
+    "capture_timeout",
+    type=float,
     help="Capture response for N seconds after sending",
 )
 @click.option(
-    "--until", "-u", "capture_until",
+    "--until",
+    "-u",
+    "capture_until",
     help="Stop capture when this regex pattern matches",
 )
 @click.pass_context
@@ -1404,9 +1458,7 @@ def serial_send_cmd(
 
         if result.capture and result.capture.output:
             click.echo(result.capture.output)
-            status = (
-                "pattern matched" if result.capture.pattern_matched else "timeout"
-            )
+            status = "pattern matched" if result.capture.pattern_matched else "timeout"
             click.echo(
                 f"\n[{result.capture.lines} lines, "
                 f"{result.capture.elapsed_seconds:.1f}s, {status}]",
@@ -1436,11 +1488,11 @@ def port_group() -> None:
 @click.option(
     "--baud", "-b", type=int, default=115200, help="Baud rate (default: 115200)"
 )
+@click.option("--alias", "-a", help="Human-friendly name for this assignment")
 @click.option(
-    "--alias", "-a", help="Human-friendly name for this assignment"
-)
-@click.option(
-    "--serial-device", "-s", "serial_device_name",
+    "--serial-device",
+    "-s",
+    "serial_device_name",
     help="Name of a registered serial device (auto-sets device path)",
 )
 @click.pass_context
@@ -2093,9 +2145,7 @@ def log_cmd(
                     sock.setblocking(False)
 
                     if follow:
-                        click.echo(
-                            f"Connected to localhost:{port.tcp_port}"
-                        )
+                        click.echo(f"Connected to localhost:{port.tcp_port}")
 
                     buffer = b""
 
@@ -2117,9 +2167,7 @@ def log_cmd(
                                             "utf-8", errors="replace"
                                         ).rstrip()
                                     except Exception:
-                                        line_str = line.decode(
-                                            "latin-1"
-                                        ).rstrip()
+                                        line_str = line.decode("latin-1").rstrip()
 
                                     if timestamp:
                                         ts_str = datetime.now().strftime(
@@ -2138,9 +2186,7 @@ def log_cmd(
                                     line_count += 1
 
                                     if lines and line_count >= lines:
-                                        click.echo(
-                                            f"\nCaptured {line_count} lines"
-                                        )
+                                        click.echo(f"\nCaptured {line_count} lines")
                                         return
 
                             except BlockingIOError:
@@ -2160,11 +2206,10 @@ def log_cmd(
                     return
 
                 if follow:
-                    click.echo(
-                        f"Disconnected. Reconnecting in {reconnect_delay}s..."
-                    )
+                    click.echo(f"Disconnected. Reconnecting in {reconnect_delay}s...")
 
                 import time
+
                 time.sleep(reconnect_delay)
 
     except KeyboardInterrupt:
@@ -2301,10 +2346,14 @@ def status_cmd(
         }
         reset = "\033[0m"
 
+        # Index active claims by sbc_name for O(1) per-row lookup.
+        claims_by_sbc = {c.sbc_name: c for c in manager.list_active_claims()}
+
         click.echo(
-            f"{'NAME':<15} {'PROJECT':<12} {'STATUS':<12} {'IP':<15} {'POWER':<10}"
+            f"{'NAME':<15} {'PROJECT':<12} {'STATUS':<12} {'IP':<15} "
+            f"{'POWER':<6} {'CLAIM':<30}"
         )
-        click.echo("-" * 64)
+        click.echo("-" * 90)
 
         for sbc in sbcs:
             color = colors.get(sbc.status, "")
@@ -2327,8 +2376,23 @@ def status_cmd(
                 except Exception:
                     power = "err"
 
+            claim = claims_by_sbc.get(sbc.name)
+            if claim is None:
+                claim_str = "-"
+            else:
+                remaining = (
+                    int(claim.time_remaining.total_seconds())
+                    if claim.time_remaining is not None
+                    else None
+                )
+                marker = " ⚠" if claim.pending_requests else ""
+                claim_str = (
+                    f"{claim.agent_name} ({_format_remaining(remaining)}){marker}"
+                )
+
             click.echo(
-                f"{sbc.name:<15} {project_name:<12} {status_str} {ip:<15} {power:<10}"
+                f"{sbc.name:<15} {project_name:<12} {status_str} {ip:<15} "
+                f"{power:<6} {claim_str:<30}"
             )
 
         return True
@@ -2350,6 +2414,329 @@ def status_cmd(
             click.echo("\nStopped watching")
     else:
         display_status()
+
+
+# --- Claim Commands ---
+
+
+def _cli_session_id() -> str:
+    """CLI sessions are scoped to user@host so release-by-claimant works across
+    invocations from the same user on the same machine."""
+    import getpass
+    import socket
+
+    return f"cli-{getpass.getuser()}@{socket.gethostname()}"
+
+
+def _default_agent_name() -> str:
+    import getpass
+
+    return getpass.getuser()
+
+
+def _parse_duration(raw: str) -> int:
+    """Parse a duration string like '30m', '2h', or bare minutes into seconds."""
+    s = raw.strip().lower()
+    if not s:
+        raise click.BadParameter("duration must not be empty")
+    if s.endswith("h"):
+        return int(float(s[:-1]) * 3600)
+    if s.endswith("m"):
+        return int(float(s[:-1]) * 60)
+    if s.endswith("s"):
+        return int(float(s[:-1]))
+    # Bare integer = minutes (matches the spec's 30m/1h/4h phrasing).
+    return int(float(s) * 60)
+
+
+def _validate_duration(ctx: click.Context, seconds: int) -> int:
+    """Apply ClaimsConfig min/max bounds; raise UsageError on violation."""
+    config: Config = ctx.obj["config"]
+    min_s = config.claims.min_duration_minutes * 60
+    max_s = config.claims.max_duration_minutes * 60
+    if seconds < min_s or seconds > max_s:
+        raise click.UsageError(
+            f"Duration {seconds}s is out of bounds "
+            f"[{min_s}s, {max_s}s] (see claims.min/max_duration_minutes)"
+        )
+    return seconds
+
+
+def _format_remaining(seconds: int | None) -> str:
+    if seconds is None or seconds < 0:
+        return "expired"
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m {seconds % 60}s"
+    return f"{seconds // 3600}h {(seconds % 3600) // 60}m"
+
+
+def _print_claim_row(claim) -> None:
+    """Render one claim as a multi-line block on status-like output."""
+    remaining_s = (
+        int(claim.time_remaining.total_seconds())
+        if claim.time_remaining is not None
+        else None
+    )
+    expires_display = claim.expires_at.strftime("%H:%M:%S") if claim.expires_at else "?"
+    click.echo(
+        f"  {claim.sbc_name:<15} held by {claim.agent_name} "
+        f"({claim.session_kind}, expires {expires_display}, "
+        f"remaining {_format_remaining(remaining_s)})"
+    )
+    if claim.reason:
+        click.echo(f"      reason: {claim.reason}")
+    if claim.renewal_count:
+        click.echo(f"      renewed {claim.renewal_count}x")
+    if claim.pending_requests:
+        for req in claim.pending_requests:
+            click.echo(f"      ⚠ release request from {req.requested_by}: {req.reason}")
+
+
+@main.command("claim")
+@click.argument("sbc_name")
+@click.option(
+    "--duration",
+    "-d",
+    default=None,
+    help="Duration like '30m', '2h', or minutes as integer (default from config)",
+)
+@click.option("--reason", "-r", required=True, help="Human-readable reason for audit")
+@click.option(
+    "--name", "-n", "agent_name", default=None, help="Agent identifier (default: $USER)"
+)
+@click.pass_context
+def claim_cmd(
+    ctx: click.Context,
+    sbc_name: str,
+    duration: str | None,
+    reason: str,
+    agent_name: str | None,
+) -> None:
+    """Reserve an SBC for exclusive access."""
+    from labctl.core.models import ClaimConflict, UnknownSBCError
+
+    config: Config = ctx.obj["config"]
+    manager = _get_manager(ctx)
+
+    if duration is None:
+        duration_seconds = config.claims.default_duration_minutes * 60
+    else:
+        duration_seconds = _parse_duration(duration)
+    duration_seconds = _validate_duration(ctx, duration_seconds)
+
+    try:
+        claim = manager.claim_sbc(
+            sbc_name=sbc_name,
+            agent_name=agent_name or _default_agent_name(),
+            session_id=_cli_session_id(),
+            session_kind="cli",
+            duration_seconds=duration_seconds,
+            reason=reason,
+            grace_seconds=config.claims.grace_period_seconds,
+        )
+    except UnknownSBCError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    except ClaimConflict as exc:
+        holder = exc.claim.agent_name or "unknown"
+        remaining = (
+            int(exc.claim.time_remaining.total_seconds())
+            if exc.claim.time_remaining is not None
+            else 0
+        )
+        click.echo(
+            f"Error: '{sbc_name}' is already claimed by '{holder}' "
+            f"({_format_remaining(remaining)} remaining). "
+            f"Use 'labctl request-release' or 'labctl force-release'.",
+            err=True,
+        )
+        sys.exit(1)
+
+    expires = (
+        claim.expires_at.strftime("%Y-%m-%d %H:%M:%S") if claim.expires_at else "?"
+    )
+    click.echo(
+        f"Claimed '{sbc_name}' as '{claim.agent_name}' until {expires} "
+        f"({_format_remaining(int(claim.time_remaining.total_seconds()))} from now)"
+    )
+
+
+@main.command("release")
+@click.argument("sbc_name")
+@click.pass_context
+def release_cmd(ctx: click.Context, sbc_name: str) -> None:
+    """Release a claim on an SBC."""
+    from labctl.core.models import (
+        ClaimNotFoundError,
+        NotClaimantError,
+        UnknownSBCError,
+    )
+
+    manager = _get_manager(ctx)
+    try:
+        manager.release_claim(sbc_name, _cli_session_id())
+    except (ClaimNotFoundError, NotClaimantError, UnknownSBCError) as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    click.echo(f"Released claim on '{sbc_name}'")
+
+
+@main.command("renew")
+@click.argument("sbc_name")
+@click.option(
+    "--duration",
+    "-d",
+    default=None,
+    help="New duration (default: keep previous duration but reset from now)",
+)
+@click.pass_context
+def renew_cmd(ctx: click.Context, sbc_name: str, duration: str | None) -> None:
+    """Extend an active claim's deadline."""
+    from labctl.core.models import (
+        ClaimNotFoundError,
+        NotClaimantError,
+        UnknownSBCError,
+    )
+
+    manager = _get_manager(ctx)
+    duration_seconds = None
+    if duration is not None:
+        duration_seconds = _validate_duration(ctx, _parse_duration(duration))
+
+    try:
+        claim = manager.renew_claim(
+            sbc_name, _cli_session_id(), duration_seconds=duration_seconds
+        )
+    except (ClaimNotFoundError, NotClaimantError, UnknownSBCError) as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+    expires = (
+        claim.expires_at.strftime("%Y-%m-%d %H:%M:%S") if claim.expires_at else "?"
+    )
+    click.echo(f"Renewed claim on '{sbc_name}' until {expires}")
+
+
+@main.command("force-release")
+@click.argument("sbc_name")
+@click.option("--reason", "-r", required=True, help="Why the override is needed")
+@click.pass_context
+def force_release_cmd(ctx: click.Context, sbc_name: str, reason: str) -> None:
+    """Operator override — forcibly release an active claim."""
+    from labctl.core.models import ClaimNotFoundError, UnknownSBCError
+
+    manager = _get_manager(ctx)
+    try:
+        released = manager.force_release_claim(
+            sbc_name, reason, released_by=_default_agent_name()
+        )
+    except (ClaimNotFoundError, UnknownSBCError) as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    click.echo(
+        f"Force-released claim on '{sbc_name}' "
+        f"(was held by '{released.agent_name}'): {reason}"
+    )
+
+
+@main.command("request-release")
+@click.argument("sbc_name")
+@click.option("--reason", "-r", required=True, help="Why you need the SBC")
+@click.pass_context
+def request_release_cmd(ctx: click.Context, sbc_name: str, reason: str) -> None:
+    """Politely ask the current claimant to release an SBC."""
+    from labctl.core.models import ClaimNotFoundError, UnknownSBCError
+
+    manager = _get_manager(ctx)
+    try:
+        manager.record_release_request(
+            sbc_name, requested_by=_default_agent_name(), reason=reason
+        )
+    except (ClaimNotFoundError, UnknownSBCError) as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    click.echo(
+        f"Release request recorded on '{sbc_name}'. "
+        f"Claimant will see it on their next operation."
+    )
+
+
+@main.group("claims")
+def claims_group() -> None:
+    """Inspect active and past claims."""
+
+
+@claims_group.command("list")
+@click.pass_context
+def claims_list_cmd(ctx: click.Context) -> None:
+    """List all active claims across the lab."""
+    manager = _get_manager(ctx)
+    claims = manager.list_active_claims()
+    if not claims:
+        click.echo("No active claims.")
+        return
+    click.echo(f"{len(claims)} active claim(s):")
+    for claim in claims:
+        _print_claim_row(claim)
+
+
+@claims_group.command("show")
+@click.argument("sbc_name")
+@click.pass_context
+def claims_show_cmd(ctx: click.Context, sbc_name: str) -> None:
+    """Show the active claim on an SBC, including pending release requests."""
+    from labctl.core.models import UnknownSBCError
+
+    manager = _get_manager(ctx)
+    try:
+        claim = manager.get_active_claim(sbc_name)
+    except UnknownSBCError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    if claim is None:
+        click.echo(f"No active claim on '{sbc_name}'.")
+        return
+    _print_claim_row(claim)
+
+
+@claims_group.command("history")
+@click.argument("sbc_name")
+@click.option("--last", "-n", type=int, default=10, help="How many entries to show")
+@click.pass_context
+def claims_history_cmd(ctx: click.Context, sbc_name: str, last: int) -> None:
+    """Show past claims for an SBC."""
+    from labctl.core.models import UnknownSBCError
+
+    manager = _get_manager(ctx)
+    try:
+        history = manager.list_claim_history(sbc_name, limit=last)
+    except UnknownSBCError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+    if not history:
+        click.echo(f"No claim history for '{sbc_name}'.")
+        return
+    click.echo(f"Last {len(history)} claim(s) on '{sbc_name}':")
+    for claim in history:
+        reason_str = claim.release_reason.value if claim.release_reason else "unknown"
+        acquired = (
+            claim.acquired_at.strftime("%Y-%m-%d %H:%M:%S")
+            if claim.acquired_at
+            else "?"
+        )
+        released = (
+            claim.released_at.strftime("%Y-%m-%d %H:%M:%S")
+            if claim.released_at
+            else "?"
+        )
+        click.echo(
+            f"  {claim.agent_name} ({claim.session_kind}): "
+            f"{acquired} → {released}  [{reason_str}]"
+        )
+        if claim.reason:
+            click.echo(f"      reason: {claim.reason}")
 
 
 # --- Export/Import Commands ---
@@ -2518,7 +2905,9 @@ def import_cmd(ctx: click.Context, file: Path, update: bool) -> None:
             )
             click.echo(f"  Created serial device: {sd_name}")
         except Exception as e:
-            click.echo(f"  Warning: Failed to create serial device {sd_name}: {e}", err=True)
+            click.echo(
+                f"  Warning: Failed to create serial device {sd_name}: {e}", err=True
+            )
 
     sbcs_data = data.get("sbcs", [])
     if not sbcs_data:
@@ -2849,9 +3238,7 @@ def web_cmd(
     ssl_key = key or config.web.key_file or None
 
     if bool(ssl_cert) != bool(ssl_key):
-        click.echo(
-            "Error: Both --cert and --key are required for SSL.", err=True
-        )
+        click.echo("Error: Both --cert and --key are required for SSL.", err=True)
         ctx.exit(1)
 
     ssl_context = (ssl_cert, ssl_key) if ssl_cert and ssl_key else None
@@ -2871,35 +3258,53 @@ def web_cmd(
 @main.command("boot-test")
 @click.argument("sbc_name")
 @click.option(
-    "--image", "-i", type=click.Path(exists=True),
+    "--image",
+    "-i",
+    type=click.Path(exists=True),
     help="Image file to deploy before testing",
 )
 @click.option(
-    "--dest", "-d",
+    "--dest",
+    "-d",
     help="Destination filename on SD card (required with --image)",
 )
 @click.option(
-    "--partition", "-p", type=int, default=1,
+    "--partition",
+    "-p",
+    type=int,
+    default=1,
     help="Partition number for deploy (default: 1)",
 )
 @click.option(
-    "--expect", "-e", "expect_pattern", required=True,
+    "--expect",
+    "-e",
+    "expect_pattern",
+    required=True,
     help="Regex pattern that indicates successful boot",
 )
 @click.option(
-    "--runs", "-r", type=int, default=10,
+    "--runs",
+    "-r",
+    type=int,
+    default=10,
     help="Number of boot cycles (default: 10)",
 )
 @click.option(
-    "--timeout", "-t", type=float, default=30.0,
+    "--timeout",
+    "-t",
+    type=float,
+    default=30.0,
     help="Seconds to wait per boot (default: 30)",
 )
 @click.option(
-    "--output-dir", "-o", type=click.Path(),
+    "--output-dir",
+    "-o",
+    type=click.Path(),
     help="Save per-run output to this directory",
 )
 @click.option(
-    "--no-deploy", is_flag=True,
+    "--no-deploy",
+    is_flag=True,
     help="Skip deploy, test current SD card contents",
 )
 @click.pass_context
@@ -2956,28 +3361,23 @@ def boot_test_cmd(
     # Validate deploy args
     if not no_deploy:
         if not image:
-            click.echo(
-                "Error: --image is required (or use --no-deploy)", err=True
-            )
+            click.echo("Error: --image is required (or use --no-deploy)", err=True)
             sys.exit(1)
         if not dest:
-            click.echo(
-                "Error: --dest is required with --image", err=True
-            )
+            click.echo("Error: --dest is required with --image", err=True)
             sys.exit(1)
 
     # Build deploy function
     deploy_fn = None
     if not no_deploy and image and dest:
+
         def deploy_fn():
             from labctl.sdwire.controller import SDWireController
 
             if not sbc.sdwire:
                 raise RuntimeError(f"No SDWire assigned to '{sbc_name}'")
 
-            ctrl = SDWireController(
-                sbc.sdwire.serial_number, sbc.sdwire.device_type
-            )
+            ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
 
             click.echo("Deploying image...")
             ctrl.switch_to_host()
@@ -2989,6 +3389,7 @@ def boot_test_cmd(
     # Build power cycle function
     def power_cycle_fn():
         from labctl.power import PowerController
+
         power_ctrl = PowerController.from_plug(sbc.power_plug)
         power_ctrl.power_cycle()
 
@@ -3000,8 +3401,10 @@ def boot_test_cmd(
             f"({run_result.elapsed_seconds:.1f}s)"
         )
 
-    click.echo(f"Boot test: {sbc_name}, {runs} runs, "
-               f"pattern='{expect_pattern}', timeout={timeout}s")
+    click.echo(
+        f"Boot test: {sbc_name}, {runs} runs, "
+        f"pattern='{expect_pattern}', timeout={timeout}s"
+    )
     click.echo("")
 
     try:

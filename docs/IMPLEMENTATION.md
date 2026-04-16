@@ -652,3 +652,70 @@ picocom or minicom (for direct serial access)
 | Version | Date | Changes |
 |---------|------|---------|
 | 0.1 | TBD | Initial implementation plan |
+
+---
+
+## Feature: Hardware Claims (Exclusive Access Coordination)
+
+**Spec**: `docs/SPEC_claims.md`
+**Goal**: Allow AI agents and humans to reserve SBCs for extended periods,
+preventing destructive interference between concurrent workflows.
+
+### Phase A: Core claim tracking (MVP)
+
+- ✅ Schema v3→v4 migration — `claims` + `claim_requests` tables,
+  partial unique index on active claim per SBC, expiry index
+- ✅ `Claim`, `ClaimRequest`, `ReleaseReason`, `SessionKind` dataclasses/enums
+  in `core/models.py`
+- ✅ Structured exception hierarchy (`ClaimConflict`, `ClaimNotFoundError`,
+  `NotClaimantError`, `UnknownSBCError`, `DurationOutOfBoundsError`)
+- ✅ `ResourceManager` ops: `claim_sbc`, `release_claim`, `renew_claim`,
+  `heartbeat_claim`, `get_active_claim`, `list_active_claims`,
+  `list_claim_history`, `force_release_claim`, `expire_stale_claims`,
+  `record_release_request`
+- ✅ Concurrent-acquisition race handled: expire-stale sweep runs inside
+  the acquisition transaction before INSERT
+- ✅ `delete_sbc` refuses while claim is active (`force=True` overrides)
+- ✅ `ClaimsConfig` section in `core/config.py` (enabled, durations,
+  grace period, retention, require_agent_name)
+- ✅ CLI: `labctl claim | release | renew | force-release | request-release`
+- ✅ CLI: `labctl claims list | show <sbc> | history <sbc>`
+- ✅ `labctl status` shows per-SBC claim holder and pending requests
+- ✅ Unit tests (acquisition, conflict, expiry, heartbeat, renewal,
+  force-release, delete-gating, history ordering)
+- ✅ Integration tests for CLI commands
+
+### Phase B: MCP integration
+
+- ☐ MCP tools: `claim_sbc`, `release_sbc`, `renew_sbc_claim`, `list_claims`,
+  `get_claim`, `request_sbc_release`, `force_release_sbc`
+- ☐ MCP resources: `lab://claims`, `lab://claims/{sbc_name}`,
+  `lab://claims/history/{sbc_name}`
+- ☐ Session ID derivation per transport: stdio `mcp-stdio:<pid>-<start_epoch>`,
+  HTTP `ctx.session_id`
+- ☐ Claim enforcement on existing mutating MCP tools (conflict error response)
+- ☐ Heartbeat on every claimant MCP tool call (reads and writes)
+- ☐ Integration tests against running MCP server
+
+### Phase C: Expiry and dead-session handling
+
+- ☐ Background expiry worker (periodic sweep of stale claims)
+- ☐ MCP stdio session liveness (kill -0 <pid>)
+- ☐ MCP HTTP session liveness (FastMCP session expiry)
+- ☐ Grace period logic for auto-release
+- ☐ Logging of auto-release events
+
+### Phase D: Operator tooling
+
+- ☐ Audit log filter by SBC / agent / outcome
+- ☐ Web dashboard integration (claim badges, manage-claim modal)
+- ☐ Web REST API (`/api/claims/*`)
+- ☐ Claim request notifications surfaced in tool responses
+
+### Phase E: Polish
+
+- ☐ Config validation for bounds
+- ☐ Retention / auto-prune of released claims
+- ☐ Metrics (claim acquire/release counts, average durations)
+- ☐ Documentation updates (MCP_SERVER.md, README.md, AGENT_RULES.md)
+- ☐ Example agent onboarding flow

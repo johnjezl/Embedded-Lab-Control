@@ -4,9 +4,10 @@ Data models for lab controller.
 Defines dataclasses for SBCs, serial ports, network addresses, and power plugs.
 """
 
+import json
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Optional
 
@@ -42,6 +43,56 @@ class PlugType(Enum):
     TASMOTA = "tasmota"
     KASA = "kasa"
     SHELLY = "shelly"
+
+
+class ReleaseReason(str, Enum):
+    """Reasons a claim transitioned to released state."""
+
+    RELEASED = "released"
+    EXPIRED = "expired"
+    FORCE_RELEASED = "force-released"
+    SESSION_LOST = "session-lost"
+
+
+class ClaimError(Exception):
+    """Base class for claim-related errors."""
+
+
+class UnknownSBCError(ClaimError):
+    """Referenced SBC does not exist."""
+
+
+class ClaimConflict(ClaimError):
+    """Another session holds an active claim on the target SBC."""
+
+    def __init__(self, claim: "Claim"):
+        self.claim = claim
+        holder = claim.agent_name or "unknown agent"
+        super().__init__(
+            f"SBC is claimed by '{holder}' until "
+            f"{claim.expires_at.isoformat() if claim.expires_at else 'unknown'}"
+        )
+
+
+class ClaimNotFoundError(ClaimError):
+    """No active claim exists on the target SBC."""
+
+
+class NotClaimantError(ClaimError):
+    """The calling session does not hold the active claim."""
+
+
+class DurationOutOfBoundsError(ClaimError):
+    """Requested duration is outside configured min/max bounds."""
+
+
+class SessionKind(str, Enum):
+    """Transport/origin of a claim session."""
+
+    MCP_STDIO = "mcp-stdio"
+    MCP_HTTP = "mcp-http"
+    CLI = "cli"
+    WEB = "web"
 
 
 @dataclass
@@ -99,7 +150,9 @@ class SerialPort:
             tcp_port=row["tcp_port"],
             baud_rate=row["baud_rate"],
             alias=row["alias"] if "alias" in keys else None,
-            serial_device_id=row["serial_device_id"] if "serial_device_id" in keys else None,
+            serial_device_id=(
+                row["serial_device_id"] if "serial_device_id" in keys else None
+            ),
             created_at=row["created_at"],
         )
 
@@ -285,4 +338,168 @@ class SBC:
                 "device_type": self.sdwire.device_type,
             }
 
+        return data
+
+
+def _parse_timestamp(value) -> Optional[datetime]:
+    """Parse a SQLite TIMESTAMP value into a datetime."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    # SQLite returns timestamps as strings in ISO-like format
+    # ("YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DDTHH:MM:SS[.ffffff]").
+    s = str(value).replace("T", " ")
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+@dataclass
+class ClaimRequest:
+    """A polite release request recorded against an active claim."""
+
+    id: Optional[int] = None
+    claim_id: int = 0
+    requested_by: str = ""
+    reason: str = ""
+    requested_at: Optional[datetime] = None
+    acknowledged: bool = False
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "ClaimRequest":
+        return cls(
+            id=row["id"],
+            claim_id=row["claim_id"],
+            requested_by=row["requested_by"],
+            reason=row["reason"],
+            requested_at=_parse_timestamp(row["requested_at"]),
+            acknowledged=bool(row["acknowledged"]),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "requested_by": self.requested_by,
+            "reason": self.reason,
+            "requested_at": (
+                self.requested_at.isoformat() if self.requested_at else None
+            ),
+            "acknowledged": self.acknowledged,
+        }
+
+
+@dataclass
+class Claim:
+    """Exclusive-access claim on an SBC.
+
+    Expiry is computed as ``last_activity + duration_seconds``; the
+    ``expires_at`` column is a materialized view of that rule, rewritten
+    alongside ``last_activity`` on every heartbeat.
+    """
+
+    id: Optional[int] = None
+    sbc_id: int = 0
+    agent_name: str = ""
+    session_id: str = ""
+    session_kind: str = ""
+    reason: str = ""
+    context: Optional[dict] = None
+    acquired_at: Optional[datetime] = None
+    duration_seconds: int = 0
+    last_activity: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+    renewal_count: int = 0
+    released_at: Optional[datetime] = None
+    release_reason: Optional[ReleaseReason] = None
+    released_by: Optional[str] = None
+    pending_requests: list[ClaimRequest] = field(default_factory=list)
+
+    # Populated by manager when loading relations
+    sbc_name: Optional[str] = None
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "Claim":
+        keys = row.keys()
+        context = None
+        if row["context_json"]:
+            try:
+                context = json.loads(row["context_json"])
+            except (json.JSONDecodeError, TypeError):
+                context = None
+        release_reason = None
+        if row["release_reason"]:
+            try:
+                release_reason = ReleaseReason(row["release_reason"])
+            except ValueError:
+                release_reason = None
+        return cls(
+            id=row["id"],
+            sbc_id=row["sbc_id"],
+            agent_name=row["agent_name"],
+            session_id=row["session_id"],
+            session_kind=row["session_kind"],
+            reason=row["reason"],
+            context=context,
+            acquired_at=_parse_timestamp(row["acquired_at"]),
+            duration_seconds=row["duration_seconds"],
+            last_activity=_parse_timestamp(row["last_activity"]),
+            expires_at=_parse_timestamp(row["expires_at"]),
+            renewal_count=row["renewal_count"],
+            released_at=_parse_timestamp(row["released_at"]),
+            release_reason=release_reason,
+            released_by=row["released_by"],
+            sbc_name=row["sbc_name"] if "sbc_name" in keys else None,
+        )
+
+    @property
+    def is_active(self) -> bool:
+        """True if the claim is unreleased and within its deadline."""
+        if self.released_at is not None:
+            return False
+        if self.expires_at is not None and datetime.now() > self.expires_at:
+            return False
+        return True
+
+    @property
+    def time_remaining(self) -> Optional[timedelta]:
+        if not self.is_active or self.expires_at is None:
+            return None
+        return self.expires_at - datetime.now()
+
+    def to_dict(self, include_ids: bool = False) -> dict:
+        data = {
+            "agent_name": self.agent_name,
+            "session_kind": self.session_kind,
+            "reason": self.reason,
+            "acquired_at": (self.acquired_at.isoformat() if self.acquired_at else None),
+            "expires_at": (self.expires_at.isoformat() if self.expires_at else None),
+            "last_activity": (
+                self.last_activity.isoformat() if self.last_activity else None
+            ),
+            "duration_seconds": self.duration_seconds,
+            "renewal_count": self.renewal_count,
+            "is_active": self.is_active,
+        }
+        remaining = self.time_remaining
+        if remaining is not None:
+            data["time_remaining_seconds"] = max(0, int(remaining.total_seconds()))
+        if self.context:
+            data["context"] = self.context
+        if self.sbc_name:
+            data["sbc_name"] = self.sbc_name
+        if self.released_at is not None:
+            data["released_at"] = self.released_at.isoformat()
+            data["release_reason"] = (
+                self.release_reason.value if self.release_reason else None
+            )
+            data["released_by"] = self.released_by
+        if self.pending_requests:
+            data["pending_requests"] = [r.to_dict() for r in self.pending_requests]
+        if include_ids:
+            data["id"] = self.id
+            data["sbc_id"] = self.sbc_id
         return data

@@ -7,6 +7,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Hardware claims (exclusive access coordination), Phase A (2026-04-16)
+  - SQLite schema v4 adds `claims` and `claim_requests` tables
+  - Partial unique index enforces at most one active claim per SBC
+  - CLI: `labctl claim`, `release`, `renew`, `force-release`, `request-release`
+  - CLI: `labctl claims list | show <sbc> | history <sbc>`
+  - `labctl status` surfaces the current claim holder and pending release requests
+  - `labctl remove <sbc>` refuses while a claim is active (use `--force` to override)
+  - Manager ops: `claim_sbc`, `release_claim`, `renew_claim`, `heartbeat_claim`,
+    `get_active_claim`, `list_active_claims`, `list_claim_history`,
+    `force_release_claim`, `expire_stale_claims`, `record_release_request`
+  - Structured exceptions: `ClaimConflict`, `ClaimNotFoundError`, `NotClaimantError`,
+    `UnknownSBCError`
+  - Acquisition runs expire-stale sweep inside the transaction so past-deadline
+    claims don't block new acquisitions even when no sweeper has run
+  - Spec: `docs/SPEC_claims.md`
 - SDWire power safety interlock (2026-04-09)
   - `sdwire_to_host` rejects if SBC is powered on (prevents SD card bus contention)
   - `--force` flag (CLI) / `force` parameter (MCP) to override when SBC is halted but power on

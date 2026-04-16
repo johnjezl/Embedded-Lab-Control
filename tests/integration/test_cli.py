@@ -128,3 +128,182 @@ class TestConnectCommand:
         result = runner.invoke(main, ["connect", "nonexistent-port"])
         assert result.exit_code != 0
         assert "not found" in result.output.lower()
+
+
+@pytest.fixture
+def claim_runner(tmp_path, monkeypatch):
+    """CLI runner with a throwaway DB so claim commands write nowhere real."""
+    db_path = tmp_path / "labctl.db"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        f"database_path: {db_path}\n"
+        "claims:\n"
+        "  enabled: true\n"
+        "  default_duration_minutes: 30\n"
+        "  max_duration_minutes: 60\n"
+        "  min_duration_minutes: 1\n"
+        "  grace_period_seconds: 60\n"
+    )
+
+    # Every CLI invocation creates a fresh manager from config — we
+    # seed the DB via a manager instance up front.
+    from labctl.core.manager import get_manager
+
+    manager = get_manager(db_path)
+    manager.create_sbc(name="pi-5-1", project="test")
+    manager.create_sbc(name="pi-5-2", project="test")
+
+    runner = CliRunner()
+    return runner, config_path, manager
+
+
+class TestClaimCommands:
+    """Integration tests for claim/release/renew/claims CLI commands."""
+
+    def test_claim_and_release_round_trip(self, claim_runner):
+        runner, config, manager = claim_runner
+
+        result = runner.invoke(
+            main,
+            ["-c", str(config), "claim", "pi-5-1", "-d", "10m", "-r", "bringup"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Claimed 'pi-5-1'" in result.output
+
+        result = runner.invoke(main, ["-c", str(config), "claims", "list"])
+        assert result.exit_code == 0
+        assert "pi-5-1" in result.output
+
+        result = runner.invoke(main, ["-c", str(config), "release", "pi-5-1"])
+        assert result.exit_code == 0
+
+        result = runner.invoke(main, ["-c", str(config), "claims", "list"])
+        assert result.exit_code == 0
+        assert "No active claims" in result.output
+
+    def test_claim_duration_out_of_bounds(self, claim_runner):
+        runner, config, _ = claim_runner
+        # Config max is 60 minutes; 4h should be rejected.
+        result = runner.invoke(
+            main,
+            ["-c", str(config), "claim", "pi-5-1", "-d", "4h", "-r", "too long"],
+        )
+        assert result.exit_code != 0
+        assert "out of bounds" in result.output.lower()
+
+    def test_claim_conflict_exit_nonzero(self, claim_runner):
+        runner, config, manager = claim_runner
+        # First claim via manager (different session id)
+        manager.claim_sbc(
+            sbc_name="pi-5-1",
+            agent_name="other",
+            session_id="cli-someone-else@host",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="holding",
+        )
+        result = runner.invoke(
+            main,
+            ["-c", str(config), "claim", "pi-5-1", "-r", "mine"],
+        )
+        assert result.exit_code != 0
+        assert "already claimed" in result.output
+
+    def test_force_release_overrides(self, claim_runner):
+        runner, config, manager = claim_runner
+        manager.claim_sbc(
+            sbc_name="pi-5-1",
+            agent_name="other",
+            session_id="cli-someone-else@host",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="holding",
+        )
+        result = runner.invoke(
+            main,
+            [
+                "-c",
+                str(config),
+                "force-release",
+                "pi-5-1",
+                "-r",
+                "operator takeover",
+            ],
+        )
+        assert result.exit_code == 0
+        assert manager.get_active_claim("pi-5-1") is None
+
+    def test_request_release_records_request(self, claim_runner):
+        runner, config, manager = claim_runner
+        manager.claim_sbc(
+            sbc_name="pi-5-1",
+            agent_name="other",
+            session_id="cli-someone-else@host",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="holding",
+        )
+        result = runner.invoke(
+            main,
+            [
+                "-c",
+                str(config),
+                "request-release",
+                "pi-5-1",
+                "-r",
+                "need the bench",
+            ],
+        )
+        assert result.exit_code == 0
+        claim = manager.get_active_claim("pi-5-1")
+        assert len(claim.pending_requests) == 1
+
+    def test_status_surfaces_claim(self, claim_runner):
+        runner, config, manager = claim_runner
+        manager.claim_sbc(
+            sbc_name="pi-5-1",
+            agent_name="other-agent",
+            session_id="cli-x@h",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="bringup",
+        )
+        result = runner.invoke(main, ["-c", str(config), "status"])
+        assert result.exit_code == 0
+        assert "other-agent" in result.output
+        assert "CLAIM" in result.output
+
+    def test_remove_blocked_by_claim_without_force(self, claim_runner):
+        runner, config, manager = claim_runner
+        manager.claim_sbc(
+            sbc_name="pi-5-1",
+            agent_name="holder",
+            session_id="cli-x@h",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="r",
+        )
+        result = runner.invoke(
+            main,
+            ["-c", str(config), "remove", "pi-5-1", "--yes"],
+        )
+        assert result.exit_code != 0
+        assert "claimed" in result.output.lower()
+        assert manager.get_sbc_by_name("pi-5-1") is not None
+
+    def test_remove_force_succeeds_while_claimed(self, claim_runner):
+        runner, config, manager = claim_runner
+        manager.claim_sbc(
+            sbc_name="pi-5-2",
+            agent_name="holder",
+            session_id="cli-x@h",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="r",
+        )
+        result = runner.invoke(
+            main,
+            ["-c", str(config), "remove", "pi-5-2", "--yes", "--force"],
+        )
+        assert result.exit_code == 0
+        assert manager.get_sbc_by_name("pi-5-2") is None

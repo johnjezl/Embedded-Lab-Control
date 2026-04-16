@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 
 from labctl.core.config import (
+    ClaimsConfig,
     Config,
     KasaConfig,
     Ser2NetConfig,
@@ -99,6 +100,47 @@ class TestKasaConfig:
         config = Config.from_dict(data)
         assert config.kasa.username == "user@example.com"
         assert config.kasa.password == "secret123"
+
+
+class TestClaimsConfig:
+    """Tests for ClaimsConfig dataclass."""
+
+    def test_default_values(self):
+        config = ClaimsConfig()
+        assert config.enabled is True
+        assert config.default_duration_minutes == 30
+        assert config.max_duration_minutes == 1440
+        assert config.min_duration_minutes == 1
+        assert config.grace_period_seconds == 60
+        assert config.auto_prune_released_after_days == 30
+        assert config.require_agent_name is False
+
+    def test_from_dict(self):
+        data = {
+            "claims": {
+                "enabled": False,
+                "default_duration_minutes": 15,
+                "max_duration_minutes": 120,
+                "grace_period_seconds": 30,
+                "require_agent_name": True,
+            }
+        }
+        config = Config.from_dict(data)
+        assert config.claims.enabled is False
+        assert config.claims.default_duration_minutes == 15
+        assert config.claims.max_duration_minutes == 120
+        assert config.claims.grace_period_seconds == 30
+        assert config.claims.require_agent_name is True
+
+    def test_roundtrip(self):
+        original = Config()
+        original.claims.enabled = False
+        original.claims.max_duration_minutes = 720
+        original.claims.require_agent_name = True
+        restored = Config.from_dict(original.to_dict())
+        assert restored.claims.enabled is False
+        assert restored.claims.max_duration_minutes == 720
+        assert restored.claims.require_agent_name is True
 
 
 class TestConfig:

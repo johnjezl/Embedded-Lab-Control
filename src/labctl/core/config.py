@@ -112,6 +112,19 @@ class AuthConfig:
 
 
 @dataclass
+class ClaimsConfig:
+    """Hardware claim (exclusive access) configuration."""
+
+    enabled: bool = True
+    default_duration_minutes: int = 30
+    max_duration_minutes: int = 1440  # 24h — covers overnight reliability runs
+    min_duration_minutes: int = 1
+    grace_period_seconds: int = 60
+    auto_prune_released_after_days: int = 30
+    require_agent_name: bool = False
+
+
+@dataclass
 class Config:
     """Main configuration for lab controller."""
 
@@ -122,6 +135,7 @@ class Config:
     auth: AuthConfig = field(default_factory=AuthConfig)
     web: WebConfig = field(default_factory=WebConfig)
     kasa: KasaConfig = field(default_factory=KasaConfig)
+    claims: ClaimsConfig = field(default_factory=ClaimsConfig)
     database_path: Path = field(
         default_factory=lambda: DEFAULT_CONFIG_DIR / "labctl.db"
     )
@@ -137,6 +151,7 @@ class Config:
         auth_data = data.get("auth", {})
         web_data = data.get("web", {})
         kasa_data = data.get("kasa", {})
+        claims_data = data.get("claims", {})
 
         serial = SerialConfig(
             dev_dir=Path(serial_data.get("dev_dir", "/dev/lab")),
@@ -200,6 +215,18 @@ class Config:
             password=kasa_data.get("password", ""),
         )
 
+        claims = ClaimsConfig(
+            enabled=claims_data.get("enabled", True),
+            default_duration_minutes=claims_data.get("default_duration_minutes", 30),
+            max_duration_minutes=claims_data.get("max_duration_minutes", 1440),
+            min_duration_minutes=claims_data.get("min_duration_minutes", 1),
+            grace_period_seconds=claims_data.get("grace_period_seconds", 60),
+            auto_prune_released_after_days=claims_data.get(
+                "auto_prune_released_after_days", 30
+            ),
+            require_agent_name=claims_data.get("require_agent_name", False),
+        )
+
         return cls(
             serial=serial,
             ser2net=ser2net,
@@ -208,6 +235,7 @@ class Config:
             auth=auth,
             web=web,
             kasa=kasa,
+            claims=claims,
             database_path=Path(
                 data.get("database_path", str(DEFAULT_CONFIG_DIR / "labctl.db"))
             ),
@@ -266,6 +294,15 @@ class Config:
             "kasa": {
                 "username": self.kasa.username,
                 "password": self.kasa.password,
+            },
+            "claims": {
+                "enabled": self.claims.enabled,
+                "default_duration_minutes": self.claims.default_duration_minutes,
+                "max_duration_minutes": self.claims.max_duration_minutes,
+                "min_duration_minutes": self.claims.min_duration_minutes,
+                "grace_period_seconds": self.claims.grace_period_seconds,
+                "auto_prune_released_after_days": self.claims.auto_prune_released_after_days,
+                "require_agent_name": self.claims.require_agent_name,
             },
             "database_path": str(self.database_path),
             "log_level": self.log_level,
