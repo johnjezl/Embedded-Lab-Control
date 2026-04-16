@@ -89,7 +89,7 @@ class BootTestResult:
                 if r.error:
                     detail = r.error
                 elif r.last_line:
-                    detail = f"timeout, last output: \"{r.last_line}\""
+                    detail = f'timeout, last output: "{r.last_line}"'
                 else:
                     detail = "timeout, no output"
             lines.append(
@@ -104,23 +104,17 @@ class BootTestResult:
         )
 
         if self.passed_count > 0:
-            lines.append(
-                f"Average boot time (successful): {self.avg_boot_time:.1f}s"
-            )
+            lines.append(f"Average boot time (successful): {self.avg_boot_time:.1f}s")
 
         # Failure mode breakdown
         if self.failed_count > 0:
             timeout_partial = sum(
-                1 for r in self.runs
-                if not r.passed and not r.error and r.last_line
+                1 for r in self.runs if not r.passed and not r.error and r.last_line
             )
             timeout_none = sum(
-                1 for r in self.runs
-                if not r.passed and not r.error and not r.last_line
+                1 for r in self.runs if not r.passed and not r.error and not r.last_line
             )
-            errors = sum(
-                1 for r in self.runs if not r.passed and r.error
-            )
+            errors = sum(1 for r in self.runs if not r.passed and r.error)
             lines.append("Failure modes:")
             if timeout_partial:
                 lines.append(f"  - Timeout with partial output: {timeout_partial}")

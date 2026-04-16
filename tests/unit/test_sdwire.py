@@ -31,7 +31,9 @@ class TestSDWireController:
         mock_dev = MagicMock()
         mock_dev.serial_string = "test_serial"
 
-        with patch("sdwire.backend.detect.get_sdwirec_devices", return_value=[mock_dev]):
+        with patch(
+            "sdwire.backend.detect.get_sdwirec_devices", return_value=[mock_dev]
+        ):
             with patch("sdwire.backend.detect.get_sdwire_devices", return_value=[]):
                 result = ctrl._get_device()
 
@@ -47,8 +49,12 @@ class TestSDWireController:
         target_dev = MagicMock()
         target_dev.serial_string = "target_serial"
 
-        with patch("sdwire.backend.detect.get_sdwirec_devices", return_value=[other_dev]):
-            with patch("sdwire.backend.detect.get_sdwire_devices", return_value=[target_dev]):
+        with patch(
+            "sdwire.backend.detect.get_sdwirec_devices", return_value=[other_dev]
+        ):
+            with patch(
+                "sdwire.backend.detect.get_sdwire_devices", return_value=[target_dev]
+            ):
                 result = ctrl._get_device()
 
         assert result is target_dev
@@ -110,7 +116,9 @@ class TestSDWireController:
         mock_dev.block_dev = "/dev/sdc"
 
         with patch.object(ctrl, "_get_device", return_value=mock_dev):
-            with patch("labctl.sdwire.controller._block_device_has_media", return_value=False):
+            with patch(
+                "labctl.sdwire.controller._block_device_has_media", return_value=False
+            ):
                 result = ctrl.get_block_device()
 
         assert result is None
@@ -124,7 +132,9 @@ class TestSDWireController:
         mock_dev.block_dev = "/dev/sdb"
 
         with patch.object(ctrl, "_get_device", return_value=mock_dev):
-            with patch("labctl.sdwire.controller._block_device_has_media", return_value=True):
+            with patch(
+                "labctl.sdwire.controller._block_device_has_media", return_value=True
+            ):
                 result = ctrl.get_block_device()
 
         assert result == "/dev/sdb"
@@ -287,7 +297,8 @@ class TestUpdateFiles:
                         with patch("os.path.exists", side_effect=exists_side_effect):
                             with patch("os.rename") as mock_rename:
                                 result = ctrl.update_files(
-                                    1, [],
+                                    1,
+                                    [],
                                     renames=[("old.bin", "new.bin")],
                                 )
 
@@ -307,7 +318,8 @@ class TestUpdateFiles:
                         with patch("os.path.exists", return_value=False):
                             with pytest.raises(RuntimeError, match="not found"):
                                 ctrl.update_files(
-                                    1, [],
+                                    1,
+                                    [],
                                     renames=[("missing.bin", "new.bin")],
                                 )
 
@@ -322,7 +334,8 @@ class TestUpdateFiles:
                         with patch("os.path.exists", return_value=True):
                             with pytest.raises(RuntimeError, match="already exists"):
                                 ctrl.update_files(
-                                    1, [],
+                                    1,
+                                    [],
                                     renames=[("old.bin", "existing.bin")],
                                 )
 
@@ -338,7 +351,8 @@ class TestUpdateFiles:
                             with patch("os.path.isdir", return_value=False):
                                 with patch("os.remove") as mock_remove:
                                     result = ctrl.update_files(
-                                        1, [],
+                                        1,
+                                        [],
                                         deletes=["stale.txt"],
                                     )
 
@@ -356,7 +370,8 @@ class TestUpdateFiles:
                         with patch("os.path.exists", return_value=False):
                             with pytest.raises(RuntimeError, match="not found"):
                                 ctrl.update_files(
-                                    1, [],
+                                    1,
+                                    [],
                                     deletes=["missing.txt"],
                                 )
 
@@ -370,9 +385,12 @@ class TestUpdateFiles:
                     with patch("os.rmdir"):
                         with patch("os.path.exists", return_value=True):
                             with patch("os.path.isdir", return_value=True):
-                                with pytest.raises(RuntimeError, match="is a directory"):
+                                with pytest.raises(
+                                    RuntimeError, match="is a directory"
+                                ):
                                     ctrl.update_files(
-                                        1, [],
+                                        1,
+                                        [],
                                         deletes=["somedir"],
                                     )
 
@@ -389,7 +407,9 @@ class TestUpdateFiles:
                 with patch("tempfile.mkdtemp", return_value="/tmp/labctl-test"):
                     with patch("shutil.copy2"):
                         with patch("os.rmdir"):
-                            with patch("os.path.exists", side_effect=exists_side_effect):
+                            with patch(
+                                "os.path.exists", side_effect=exists_side_effect
+                            ):
                                 with patch("os.path.isdir", return_value=False):
                                     with patch("os.rename"):
                                         with patch("os.remove"):
@@ -418,10 +438,7 @@ class TestUpdateFiles:
                                     ctrl.update_files(1, [("a.bin", "b.bin")])
 
         # Unmount should still have been called
-        umount_calls = [
-            c for c in mock_run.call_args_list
-            if c[0][0][1] == "umount"
-        ]
+        umount_calls = [c for c in mock_run.call_args_list if c[0][0][1] == "umount"]
         assert len(umount_calls) == 1
 
     def test_update_files_path_traversal_copy(self):
@@ -448,7 +465,8 @@ class TestUpdateFiles:
                     with patch("os.rmdir"):
                         with pytest.raises(RuntimeError, match="Path traversal"):
                             ctrl.update_files(
-                                1, [],
+                                1,
+                                [],
                                 renames=[("ok.bin", "../../../etc/shadow")],
                             )
 
@@ -462,7 +480,8 @@ class TestUpdateFiles:
                     with patch("os.rmdir"):
                         with pytest.raises(RuntimeError, match="Path traversal"):
                             ctrl.update_files(
-                                1, [],
+                                1,
+                                [],
                                 deletes=["../../../etc/passwd"],
                             )
 
@@ -473,26 +492,40 @@ class TestBlockDeviceHelpers:
     def test_block_device_has_media_true(self):
         from labctl.sdwire.controller import _block_device_has_media
 
-        with patch("builtins.open", MagicMock(return_value=MagicMock(
-            __enter__=MagicMock(return_value=MagicMock(
-                read=MagicMock(return_value="61071360\n"),
-                strip=MagicMock(return_value="61071360"),
-            )),
-            __exit__=MagicMock(return_value=False),
-        ))):
+        with patch(
+            "builtins.open",
+            MagicMock(
+                return_value=MagicMock(
+                    __enter__=MagicMock(
+                        return_value=MagicMock(
+                            read=MagicMock(return_value="61071360\n"),
+                            strip=MagicMock(return_value="61071360"),
+                        )
+                    ),
+                    __exit__=MagicMock(return_value=False),
+                )
+            ),
+        ):
             with patch("os.path.exists", return_value=True):
                 assert _block_device_has_media("/dev/sdd") is True
 
     def test_block_device_has_media_zero(self):
         from labctl.sdwire.controller import _block_device_has_media
 
-        with patch("builtins.open", MagicMock(return_value=MagicMock(
-            __enter__=MagicMock(return_value=MagicMock(
-                read=MagicMock(return_value="0\n"),
-                strip=MagicMock(return_value="0"),
-            )),
-            __exit__=MagicMock(return_value=False),
-        ))):
+        with patch(
+            "builtins.open",
+            MagicMock(
+                return_value=MagicMock(
+                    __enter__=MagicMock(
+                        return_value=MagicMock(
+                            read=MagicMock(return_value="0\n"),
+                            strip=MagicMock(return_value="0"),
+                        )
+                    ),
+                    __exit__=MagicMock(return_value=False),
+                )
+            ),
+        ):
             with patch("os.path.exists", return_value=True):
                 assert _block_device_has_media("/dev/sdc") is False
 
@@ -502,7 +535,6 @@ class TestBlockDeviceHelpers:
         assert _block_device_has_media(None) is False
         with patch("os.path.exists", return_value=False):
             assert _block_device_has_media("/dev/nonexistent") is False
-
 
 
 class TestDiscoverSDWireDevices:
@@ -519,7 +551,9 @@ class TestDiscoverSDWireDevices:
         mock_dev.block_dev = "/dev/sdb"
 
         with patch("sdwire.backend.detect.get_sdwirec_devices", return_value=[]):
-            with patch("sdwire.backend.detect.get_sdwire_devices", return_value=[mock_dev]):
+            with patch(
+                "sdwire.backend.detect.get_sdwire_devices", return_value=[mock_dev]
+            ):
                 result = discover_sdwire_devices()
 
         assert len(result) == 1
@@ -536,7 +570,9 @@ class TestDiscoverSDWireDevices:
         mock_dev.manufacturer_string = "SRPOL"
         mock_dev.block_dev = "/dev/sdc"
 
-        with patch("sdwire.backend.detect.get_sdwirec_devices", return_value=[mock_dev]):
+        with patch(
+            "sdwire.backend.detect.get_sdwirec_devices", return_value=[mock_dev]
+        ):
             with patch("sdwire.backend.detect.get_sdwire_devices", return_value=[]):
                 result = discover_sdwire_devices()
 
@@ -570,8 +606,12 @@ class TestDiscoverSDWireDevices:
         mock_sdwirec.manufacturer_string = ""
         mock_sdwirec.block_dev = "/dev/sdd"
 
-        with patch("sdwire.backend.detect.get_sdwirec_devices", return_value=[mock_legacy]):
-            with patch("sdwire.backend.detect.get_sdwire_devices", return_value=[mock_sdwirec]):
+        with patch(
+            "sdwire.backend.detect.get_sdwirec_devices", return_value=[mock_legacy]
+        ):
+            with patch(
+                "sdwire.backend.detect.get_sdwire_devices", return_value=[mock_sdwirec]
+            ):
                 result = discover_sdwire_devices()
 
         assert len(result) == 2
@@ -594,8 +634,12 @@ class TestDiscoverSDWireDevices:
         mock_dup.manufacturer_string = "SRPOL"
         mock_dup.block_dev = "/dev/sdc"
 
-        with patch("sdwire.backend.detect.get_sdwirec_devices", return_value=[mock_dev]):
-            with patch("sdwire.backend.detect.get_sdwire_devices", return_value=[mock_dup]):
+        with patch(
+            "sdwire.backend.detect.get_sdwirec_devices", return_value=[mock_dev]
+        ):
+            with patch(
+                "sdwire.backend.detect.get_sdwire_devices", return_value=[mock_dup]
+            ):
                 result = discover_sdwire_devices()
 
         assert len(result) == 1
@@ -612,7 +656,9 @@ class TestDiscoverSDWireDevices:
         mock_dev.block_dev = None
 
         with patch("sdwire.backend.detect.get_sdwirec_devices", return_value=[]):
-            with patch("sdwire.backend.detect.get_sdwire_devices", return_value=[mock_dev]):
+            with patch(
+                "sdwire.backend.detect.get_sdwire_devices", return_value=[mock_dev]
+            ):
                 result = discover_sdwire_devices()
 
         assert result == []
@@ -621,9 +667,13 @@ class TestDiscoverSDWireDevices:
         """Test discover raises RuntimeError when sdwire not installed."""
         from labctl.sdwire.controller import discover_sdwire_devices
 
-        with patch.dict("sys.modules", {"sdwire": None, "sdwire.backend": None, "sdwire.backend.detect": None}):
+        with patch.dict(
+            "sys.modules",
+            {"sdwire": None, "sdwire.backend": None, "sdwire.backend.detect": None},
+        ):
             # Force reimport to trigger ImportError
             import importlib
+
             import labctl.sdwire.controller
 
             with pytest.raises(RuntimeError, match="sdwire package not installed"):
@@ -650,12 +700,17 @@ class TestValidation:
     def test_validate_block_device_zero_size(self):
         from labctl.sdwire.controller import _validate_block_device
 
-        with patch("builtins.open", MagicMock(return_value=MagicMock(
-            __enter__=MagicMock(return_value=MagicMock(
-                read=MagicMock(return_value="0\n")
-            )),
-            __exit__=MagicMock(return_value=False),
-        ))):
+        with patch(
+            "builtins.open",
+            MagicMock(
+                return_value=MagicMock(
+                    __enter__=MagicMock(
+                        return_value=MagicMock(read=MagicMock(return_value="0\n"))
+                    ),
+                    __exit__=MagicMock(return_value=False),
+                )
+            ),
+        ):
             with pytest.raises(RuntimeError, match="0 size"):
                 _validate_block_device("/dev/sdb")
 
@@ -664,12 +719,19 @@ class TestValidation:
 
         # 512 GB in 512-byte sectors
         huge_sectors = str(512 * 1024 * 1024 * 1024 // 512)
-        with patch("builtins.open", MagicMock(return_value=MagicMock(
-            __enter__=MagicMock(return_value=MagicMock(
-                read=MagicMock(return_value=huge_sectors + "\n")
-            )),
-            __exit__=MagicMock(return_value=False),
-        ))):
+        with patch(
+            "builtins.open",
+            MagicMock(
+                return_value=MagicMock(
+                    __enter__=MagicMock(
+                        return_value=MagicMock(
+                            read=MagicMock(return_value=huge_sectors + "\n")
+                        )
+                    ),
+                    __exit__=MagicMock(return_value=False),
+                )
+            ),
+        ):
             with pytest.raises(RuntimeError, match="too large"):
                 _validate_block_device("/dev/sdb")
 
@@ -683,14 +745,16 @@ class TestValidation:
         def mock_open(path, *args, **kwargs):
             m = MagicMock()
             if "/sys/block" in str(path):
-                m.__enter__ = MagicMock(return_value=MagicMock(
-                    read=MagicMock(return_value=sectors + "\n")
-                ))
+                m.__enter__ = MagicMock(
+                    return_value=MagicMock(read=MagicMock(return_value=sectors + "\n"))
+                )
             else:  # /proc/mounts
-                m.__enter__ = MagicMock(return_value=MagicMock(
-                    read=MagicMock(return_value=proc_mounts),
-                    __iter__=MagicMock(return_value=iter(proc_mounts.splitlines())),
-                ))
+                m.__enter__ = MagicMock(
+                    return_value=MagicMock(
+                        read=MagicMock(return_value=proc_mounts),
+                        __iter__=MagicMock(return_value=iter(proc_mounts.splitlines())),
+                    )
+                )
             m.__exit__ = MagicMock(return_value=False)
             return m
 
@@ -707,14 +771,16 @@ class TestValidation:
         def mock_open(path, *args, **kwargs):
             m = MagicMock()
             if "/sys/block" in str(path):
-                m.__enter__ = MagicMock(return_value=MagicMock(
-                    read=MagicMock(return_value=sectors + "\n")
-                ))
+                m.__enter__ = MagicMock(
+                    return_value=MagicMock(read=MagicMock(return_value=sectors + "\n"))
+                )
             else:
-                m.__enter__ = MagicMock(return_value=MagicMock(
-                    read=MagicMock(return_value=""),
-                    __iter__=MagicMock(return_value=iter([])),
-                ))
+                m.__enter__ = MagicMock(
+                    return_value=MagicMock(
+                        read=MagicMock(return_value=""),
+                        __iter__=MagicMock(return_value=iter([])),
+                    )
+                )
             m.__exit__ = MagicMock(return_value=False)
             return m
 

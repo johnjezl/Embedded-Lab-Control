@@ -119,8 +119,10 @@ class TestSendResult:
 
     def test_to_mcp_string_with_capture(self):
         capture = CaptureResult(
-            output="response", lines=1,
-            pattern_matched=True, elapsed_seconds=1.0,
+            output="response",
+            lines=1,
+            pattern_matched=True,
+            elapsed_seconds=1.0,
         )
         result = SendResult(sent=True, bytes_sent=5, capture=capture)
         s = result.to_mcp_string()
@@ -182,9 +184,7 @@ class TestCaptureSerialOutput:
         server = FakeTCPServer(response_lines=["Hello", "World"])
         server.start()
         try:
-            result = capture_serial_output(
-                "localhost", server.port, timeout=2.0
-            )
+            result = capture_serial_output("localhost", server.port, timeout=2.0)
             assert result.lines >= 2
             assert "Hello" in result.output
             assert "World" in result.output
@@ -192,13 +192,12 @@ class TestCaptureSerialOutput:
             server.stop()
 
     def test_capture_with_pattern(self):
-        server = FakeTCPServer(
-            response_lines=["booting...", "init done", "slmos>"]
-        )
+        server = FakeTCPServer(response_lines=["booting...", "init done", "slmos>"])
         server.start()
         try:
             result = capture_serial_output(
-                "localhost", server.port,
+                "localhost",
+                server.port,
                 timeout=5.0,
                 until_pattern="slmos>",
             )
@@ -212,7 +211,8 @@ class TestCaptureSerialOutput:
         server.start()
         try:
             result = capture_serial_output(
-                "localhost", server.port,
+                "localhost",
+                server.port,
                 timeout=1.0,
                 until_pattern="never_match",
             )
@@ -221,13 +221,12 @@ class TestCaptureSerialOutput:
             server.stop()
 
     def test_capture_tail(self):
-        server = FakeTCPServer(
-            response_lines=[f"line{i}" for i in range(10)]
-        )
+        server = FakeTCPServer(response_lines=[f"line{i}" for i in range(10)])
         server.start()
         try:
             result = capture_serial_output(
-                "localhost", server.port,
+                "localhost",
+                server.port,
                 timeout=2.0,
                 tail=3,
             )
@@ -240,9 +239,7 @@ class TestCaptureSerialOutput:
         server = FakeTCPServer(response_lines=[], delay=5)
         server.start()
         try:
-            result = capture_serial_output(
-                "localhost", server.port, timeout=0.5
-            )
+            result = capture_serial_output("localhost", server.port, timeout=0.5)
             assert result.elapsed_seconds >= 0.4
             assert result.pattern_matched is False
         finally:
@@ -256,6 +253,7 @@ class TestCaptureSerialOutput:
 
         # Manually send data without trailing newline via the server
         import threading
+
         def send_prompt():
             time.sleep(0.1)
             if server._client:
@@ -284,7 +282,8 @@ class TestCaptureSerialOutput:
         t.start()
         try:
             result = capture_serial_output(
-                "localhost", port,
+                "localhost",
+                port,
                 timeout=5.0,
                 until_pattern="slmos>",
             )
@@ -307,9 +306,7 @@ class TestSendSerialData:
         server = FakeTCPServer()
         server.start()
         try:
-            result = send_serial_data(
-                "localhost", server.port, "hello"
-            )
+            result = send_serial_data("localhost", server.port, "hello")
             assert result.sent is True
             assert result.bytes_sent == 7  # "hello\r\n"
         finally:
@@ -319,9 +316,7 @@ class TestSendSerialData:
         server = FakeTCPServer()
         server.start()
         try:
-            result = send_serial_data(
-                "localhost", server.port, "raw", newline=False
-            )
+            result = send_serial_data("localhost", server.port, "raw", newline=False)
             assert result.bytes_sent == 3  # "raw"
         finally:
             server.stop()
@@ -334,7 +329,8 @@ class TestSendSerialData:
         server.start()
         try:
             result = send_serial_data(
-                "localhost", server.port,
+                "localhost",
+                server.port,
                 "cmd",
                 capture_timeout=2.0,
             )
@@ -352,7 +348,8 @@ class TestSendSerialData:
         server.start()
         try:
             result = send_serial_data(
-                "localhost", server.port,
+                "localhost",
+                server.port,
                 "cmd",
                 capture_timeout=5.0,
                 capture_until="done>",

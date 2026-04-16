@@ -163,9 +163,14 @@ def control_power(name: str):
         elapsed = time.monotonic() - last_cycle
         if elapsed < POWER_CYCLE_MIN_INTERVAL:
             wait = POWER_CYCLE_MIN_INTERVAL - elapsed
-            return jsonify({
-                "error": f"Rate limited: wait {wait:.1f}s before next power cycle",
-            }), 429
+            return (
+                jsonify(
+                    {
+                        "error": f"Rate limited: wait {wait:.1f}s before next power cycle",
+                    }
+                ),
+                429,
+            )
 
     try:
         controller = PowerController.from_plug(sbc.power_plug)

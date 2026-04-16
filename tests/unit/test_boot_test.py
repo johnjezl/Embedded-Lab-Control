@@ -12,16 +12,22 @@ class TestBootRunResult:
 
     def test_pass_result(self):
         r = BootRunResult(
-            run_number=1, passed=True, elapsed_seconds=12.0,
-            pattern_matched=True, output="boot output",
+            run_number=1,
+            passed=True,
+            elapsed_seconds=12.0,
+            pattern_matched=True,
+            output="boot output",
         )
         assert r.passed is True
         assert r.pattern_matched is True
 
     def test_fail_result(self):
         r = BootRunResult(
-            run_number=1, passed=False, elapsed_seconds=30.0,
-            pattern_matched=False, last_line="stuck here",
+            run_number=1,
+            passed=False,
+            elapsed_seconds=30.0,
+            pattern_matched=False,
+            last_line="stuck here",
         )
         assert r.passed is False
         assert r.last_line == "stuck here"
@@ -32,11 +38,11 @@ class TestBootTestResult:
 
     def test_pass_rate_all_pass(self):
         result = BootTestResult(
-            sbc_name="test", expect_pattern="ok",
-            total_runs=3, timeout_per_run=30.0,
-            runs=[
-                BootRunResult(i, True, 10.0, True) for i in range(1, 4)
-            ],
+            sbc_name="test",
+            expect_pattern="ok",
+            total_runs=3,
+            timeout_per_run=30.0,
+            runs=[BootRunResult(i, True, 10.0, True) for i in range(1, 4)],
         )
         assert result.passed_count == 3
         assert result.failed_count == 0
@@ -44,8 +50,10 @@ class TestBootTestResult:
 
     def test_pass_rate_mixed(self):
         result = BootTestResult(
-            sbc_name="test", expect_pattern="ok",
-            total_runs=4, timeout_per_run=30.0,
+            sbc_name="test",
+            expect_pattern="ok",
+            total_runs=4,
+            timeout_per_run=30.0,
             runs=[
                 BootRunResult(1, True, 10.0, True),
                 BootRunResult(2, False, 30.0, False),
@@ -59,8 +67,10 @@ class TestBootTestResult:
 
     def test_avg_boot_time(self):
         result = BootTestResult(
-            sbc_name="test", expect_pattern="ok",
-            total_runs=3, timeout_per_run=30.0,
+            sbc_name="test",
+            expect_pattern="ok",
+            total_runs=3,
+            timeout_per_run=30.0,
             runs=[
                 BootRunResult(1, True, 10.0, True),
                 BootRunResult(2, False, 30.0, False),
@@ -71,17 +81,23 @@ class TestBootTestResult:
 
     def test_avg_boot_time_no_passes(self):
         result = BootTestResult(
-            sbc_name="test", expect_pattern="ok",
-            total_runs=1, timeout_per_run=30.0,
+            sbc_name="test",
+            expect_pattern="ok",
+            total_runs=1,
+            timeout_per_run=30.0,
             runs=[BootRunResult(1, False, 30.0, False)],
         )
         assert result.avg_boot_time == 0.0
 
     def test_format_summary(self):
         result = BootTestResult(
-            sbc_name="pi-5-1", expect_pattern="slmos>",
-            total_runs=3, timeout_per_run=30.0,
-            image="slmos.bin", dest="kernel.img", partition=1,
+            sbc_name="pi-5-1",
+            expect_pattern="slmos>",
+            total_runs=3,
+            timeout_per_run=30.0,
+            image="slmos.bin",
+            dest="kernel.img",
+            partition=1,
             runs=[
                 BootRunResult(1, True, 12.0, True),
                 BootRunResult(2, False, 30.0, False, last_line="PMM init"),
@@ -98,8 +114,10 @@ class TestBootTestResult:
 
     def test_format_summary_no_deploy(self):
         result = BootTestResult(
-            sbc_name="pi-5-1", expect_pattern="ok",
-            total_runs=1, timeout_per_run=30.0,
+            sbc_name="pi-5-1",
+            expect_pattern="ok",
+            total_runs=1,
+            timeout_per_run=30.0,
             runs=[BootRunResult(1, True, 5.0, True)],
         )
         summary = result.format_summary()
@@ -115,9 +133,7 @@ class TestRunBootTest:
 
         mock_power = MagicMock()
 
-        with patch(
-            "labctl.serial.boot_test.capture_serial_output"
-        ) as mock_capture:
+        with patch("labctl.serial.boot_test.capture_serial_output") as mock_capture:
             mock_capture.return_value = CaptureResult(
                 output="booting...\nslmos>",
                 lines=2,
@@ -150,12 +166,16 @@ class TestRunBootTest:
             call_count[0] += 1
             if call_count[0] == 2:
                 return CaptureResult(
-                    output="stuck", lines=1,
-                    pattern_matched=False, elapsed_seconds=30.0,
+                    output="stuck",
+                    lines=1,
+                    pattern_matched=False,
+                    elapsed_seconds=30.0,
                 )
             return CaptureResult(
-                output="slmos>", lines=1,
-                pattern_matched=True, elapsed_seconds=10.0,
+                output="slmos>",
+                lines=1,
+                pattern_matched=True,
+                elapsed_seconds=10.0,
             )
 
         with patch(
@@ -182,12 +202,12 @@ class TestRunBootTest:
         mock_power = MagicMock()
         mock_deploy = MagicMock()
 
-        with patch(
-            "labctl.serial.boot_test.capture_serial_output"
-        ) as mock_capture:
+        with patch("labctl.serial.boot_test.capture_serial_output") as mock_capture:
             mock_capture.return_value = CaptureResult(
-                output="ok", lines=1,
-                pattern_matched=True, elapsed_seconds=5.0,
+                output="ok",
+                lines=1,
+                pattern_matched=True,
+                elapsed_seconds=5.0,
             )
 
             result = run_boot_test(
@@ -215,12 +235,12 @@ class TestRunBootTest:
         mock_power = MagicMock()
         output_dir = str(tmp_path / "results")
 
-        with patch(
-            "labctl.serial.boot_test.capture_serial_output"
-        ) as mock_capture:
+        with patch("labctl.serial.boot_test.capture_serial_output") as mock_capture:
             mock_capture.return_value = CaptureResult(
-                output="boot output here", lines=1,
-                pattern_matched=True, elapsed_seconds=5.0,
+                output="boot output here",
+                lines=1,
+                pattern_matched=True,
+                elapsed_seconds=5.0,
             )
 
             run_boot_test(
@@ -245,12 +265,12 @@ class TestRunBootTest:
         mock_power = MagicMock()
         progress_calls = []
 
-        with patch(
-            "labctl.serial.boot_test.capture_serial_output"
-        ) as mock_capture:
+        with patch("labctl.serial.boot_test.capture_serial_output") as mock_capture:
             mock_capture.return_value = CaptureResult(
-                output="ok", lines=1,
-                pattern_matched=True, elapsed_seconds=5.0,
+                output="ok",
+                lines=1,
+                pattern_matched=True,
+                elapsed_seconds=5.0,
             )
 
             run_boot_test(

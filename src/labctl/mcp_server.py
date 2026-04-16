@@ -95,12 +95,14 @@ def get_power_state(sbc_name: str) -> str:
     try:
         controller = PowerController.from_plug(sbc.power_plug)
         state = controller.get_state()
-        return json.dumps({
-            "sbc": sbc_name,
-            "state": state.value,
-            "plug_type": sbc.power_plug.plug_type.value,
-            "address": sbc.power_plug.address,
-        })
+        return json.dumps(
+            {
+                "sbc": sbc_name,
+                "state": state.value,
+                "plug_type": sbc.power_plug.plug_type.value,
+                "address": sbc.power_plug.address,
+            }
+        )
     except RuntimeError as e:
         return json.dumps({"sbc": sbc_name, "state": "error", "error": str(e)})
 
@@ -169,30 +171,34 @@ def get_health(sbc_name: str) -> str:
     return json.dumps(
         {
             "sbc": sbc_name,
-            "ping": {
-                "success": summary.ping_result.success,
-                "message": summary.ping_result.message,
-            }
-            if summary.ping_result
-            else None,
-            "serial": {
-                "success": summary.serial_result.success,
-                "message": summary.serial_result.message,
-            }
-            if summary.serial_result
-            else None,
+            "ping": (
+                {
+                    "success": summary.ping_result.success,
+                    "message": summary.ping_result.message,
+                }
+                if summary.ping_result
+                else None
+            ),
+            "serial": (
+                {
+                    "success": summary.serial_result.success,
+                    "message": summary.serial_result.message,
+                }
+                if summary.serial_result
+                else None
+            ),
             "power": {
                 "state": summary.power_state.value if summary.power_state else None,
-                "success": summary.power_result.success
-                if summary.power_result
-                else None,
-                "message": summary.power_result.message
-                if summary.power_result
-                else None,
+                "success": (
+                    summary.power_result.success if summary.power_result else None
+                ),
+                "message": (
+                    summary.power_result.message if summary.power_result else None
+                ),
             },
-            "recommended_status": summary.recommended_status.value
-            if summary.recommended_status
-            else None,
+            "recommended_status": (
+                summary.recommended_status.value if summary.recommended_status else None
+            ),
         },
         indent=2,
     )
@@ -477,7 +483,9 @@ def assign_serial_port(
             baud_rate=baud_rate,
             alias=alias,
         )
-        return f"Assigned {port_type} port to {sbc_name}: {device} (tcp:{port.tcp_port})"
+        return (
+            f"Assigned {port_type} port to {sbc_name}: {device} (tcp:{port.tcp_port})"
+        )
     except (ValueError, KeyError) as e:
         return f"Error: {e}"
 
@@ -874,9 +882,11 @@ def sdwire_to_host(sbc_name: str, force: bool = False) -> str:
     if not force and sbc.power_plug:
         try:
             from labctl.power import PowerController
+
             power_ctrl = PowerController.from_plug(sbc.power_plug)
             state = power_ctrl.get_state()
             from labctl.power.base import PowerState
+
             if state == PowerState.ON:
                 return (
                     f"Error: {sbc_name} is powered on. Power off before "
@@ -958,6 +968,7 @@ def sdwire_update(
         if sbc.power_plug:
             try:
                 from labctl.power import PowerController
+
                 power_ctrl = PowerController.from_plug(sbc.power_plug)
                 power_ctrl.power_off()
                 time.sleep(1)
@@ -968,7 +979,8 @@ def sdwire_update(
         time.sleep(2)
 
         result = ctrl.update_files(
-            partition, file_pairs,
+            partition,
+            file_pairs,
             renames=rename_pairs or None,
             deletes=list(deletes) or None,
         )
@@ -1034,6 +1046,7 @@ def flash_image(
         if sbc.power_plug:
             try:
                 from labctl.power import PowerController
+
                 power_ctrl = PowerController.from_plug(sbc.power_plug)
                 power_ctrl.power_off()
                 time_mod.sleep(1)
@@ -1063,9 +1076,11 @@ def flash_image(
         if post_flash_copies:
             try:
                 import subprocess
+
                 subprocess.run(
                     ["sudo", "partprobe", block_dev],
-                    capture_output=True, timeout=10,
+                    capture_output=True,
+                    timeout=10,
                 )
                 time_mod.sleep(2)
 
@@ -1090,6 +1105,7 @@ def flash_image(
         # Reboot
         if reboot and sbc.power_plug:
             from labctl.power import PowerController
+
             power_ctrl = PowerController.from_plug(sbc.power_plug)
             power_ctrl.power_on()
             parts.append(f"Powered on {sbc_name}")
@@ -1262,14 +1278,13 @@ def boot_test(
     # Build deploy function
     deploy_fn = None
     if image and dest:
+
         def deploy_fn():
             from labctl.sdwire import SDWireController
 
             if not sbc.sdwire:
                 raise RuntimeError(f"No SDWire assigned to '{sbc_name}'")
-            ctrl = SDWireController(
-                sbc.sdwire.serial_number, sbc.sdwire.device_type
-            )
+            ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
             ctrl.switch_to_host()
             time_mod.sleep(2)
             ctrl.update_files(partition, [(image, dest)])
@@ -1278,6 +1293,7 @@ def boot_test(
     # Build power cycle function
     def power_cycle_fn():
         from labctl.power import PowerController
+
         power_ctrl = PowerController.from_plug(sbc.power_plug)
         power_ctrl.power_cycle(delay=3.0)
 

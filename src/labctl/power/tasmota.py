@@ -42,7 +42,9 @@ class TasmotaController(PowerController):
             response.raise_for_status()
             return response.json()
         except Exception as e:
-            logger.warning("Tasmota command '%s' failed for %s: %s", cmnd, self.address, e)
+            logger.warning(
+                "Tasmota command '%s' failed for %s: %s", cmnd, self.address, e
+            )
             return None
 
     def _power_key(self) -> str:

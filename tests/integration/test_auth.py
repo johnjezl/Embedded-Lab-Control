@@ -5,9 +5,14 @@ from pathlib import Path
 import pytest
 from werkzeug.security import generate_password_hash
 
-from labctl.core.config import AuthConfig, Config, Ser2NetConfig, SerialConfig, UserConfig
+from labctl.core.config import (
+    AuthConfig,
+    Config,
+    Ser2NetConfig,
+    SerialConfig,
+    UserConfig,
+)
 from labctl.web.app import create_app
-
 
 TEST_PASSWORD = "testpass123"
 TEST_API_KEY = "test-api-key-abc123"
@@ -151,17 +156,13 @@ class TestApiKeyAuth:
         assert "API key required" in data["error"]
 
     def test_api_invalid_key(self, auth_client):
-        resp = auth_client.get(
-            "/api/sbcs", headers={"X-API-Key": "wrong-key"}
-        )
+        resp = auth_client.get("/api/sbcs", headers={"X-API-Key": "wrong-key"})
         assert resp.status_code == 401
         data = resp.get_json()
         assert "Invalid API key" in data["error"]
 
     def test_api_valid_key(self, auth_client):
-        resp = auth_client.get(
-            "/api/sbcs", headers={"X-API-Key": TEST_API_KEY}
-        )
+        resp = auth_client.get("/api/sbcs", headers={"X-API-Key": TEST_API_KEY})
         assert resp.status_code == 200
 
     def test_api_post_with_key(self, auth_client):

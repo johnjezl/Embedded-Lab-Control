@@ -24,9 +24,7 @@ def populated_manager(manager):
     sbc1 = manager.create_sbc(
         name="test-sbc-1", project="ProjectA", description="First test SBC"
     )
-    sbc2 = manager.create_sbc(
-        name="test-sbc-2", project="ProjectB", ssh_user="admin"
-    )
+    sbc2 = manager.create_sbc(name="test-sbc-2", project="ProjectB", ssh_user="admin")
 
     device = manager.create_serial_device(
         name="port-1", usb_path="1-10.1.3", vendor="FTDI", model="FT232R"
@@ -449,7 +447,9 @@ class TestMcpSDWireTools:
         mock_power = MagicMock()
         mock_power.get_state.return_value = PowerState.ON
 
-        with patch("labctl.power.base.PowerController.from_plug", return_value=mock_power):
+        with patch(
+            "labctl.power.base.PowerController.from_plug", return_value=mock_power
+        ):
             result = sdwire_to_host(sbc_name="test-sbc-1")
 
         assert "Error" in result
@@ -466,7 +466,9 @@ class TestMcpSDWireTools:
         mock_ctrl = MagicMock()
         mock_ctrl.get_block_device.return_value = "/dev/sdb"
 
-        with patch("labctl.power.base.PowerController.from_plug", return_value=mock_power):
+        with patch(
+            "labctl.power.base.PowerController.from_plug", return_value=mock_power
+        ):
             with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl):
                 result = sdwire_to_host(sbc_name="test-sbc-1", force=True)
 
@@ -483,7 +485,9 @@ class TestMcpSDWireTools:
         mock_ctrl = MagicMock()
         mock_ctrl.get_block_device.return_value = "/dev/sdb"
 
-        with patch("labctl.power.base.PowerController.from_plug", return_value=mock_power):
+        with patch(
+            "labctl.power.base.PowerController.from_plug", return_value=mock_power
+        ):
             with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl):
                 result = sdwire_to_host(sbc_name="test-sbc-1")
 
@@ -529,17 +533,13 @@ class TestMcpSDWireTools:
     def test_sdwire_update_not_found(self, mock_manager):
         from labctl.mcp_server import sdwire_update
 
-        result = sdwire_update(
-            sbc_name="nope", partition=1, copies=["a.bin:b.bin"]
-        )
+        result = sdwire_update(sbc_name="nope", partition=1, copies=["a.bin:b.bin"])
         assert "not found" in result
 
     def test_sdwire_update_bad_copy_format(self, mock_manager):
         from labctl.mcp_server import sdwire_update
 
-        result = sdwire_update(
-            sbc_name="test-sbc-1", partition=1, copies=["no-colon"]
-        )
+        result = sdwire_update(sbc_name="test-sbc-1", partition=1, copies=["no-colon"])
         assert "Invalid copy format" in result
 
     def test_sdwire_update_success(self, mock_manager):
@@ -549,7 +549,9 @@ class TestMcpSDWireTools:
 
         mock_ctrl_instance = MagicMock()
         mock_ctrl_instance.update_files.return_value = {
-            "copied": ["kernel.img"], "renamed": [], "deleted": [],
+            "copied": ["kernel.img"],
+            "renamed": [],
+            "deleted": [],
         }
 
         with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl_instance):
@@ -571,14 +573,18 @@ class TestMcpSDWireTools:
 
         mock_ctrl_instance = MagicMock()
         mock_ctrl_instance.update_files.return_value = {
-            "copied": ["kernel.img"], "renamed": [], "deleted": [],
+            "copied": ["kernel.img"],
+            "renamed": [],
+            "deleted": [],
         }
 
         mock_power = MagicMock()
         mock_power.power_cycle.return_value = True
 
         with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl_instance):
-            with patch("labctl.power.base.PowerController.from_plug", return_value=mock_power):
+            with patch(
+                "labctl.power.base.PowerController.from_plug", return_value=mock_power
+            ):
                 result = sdwire_update(
                     sbc_name="test-sbc-1",
                     partition=1,
@@ -638,8 +644,10 @@ class TestMcpSerialTools:
         from labctl.serial.capture import CaptureResult
 
         mock_result = CaptureResult(
-            output="boot output", lines=1,
-            pattern_matched=True, elapsed_seconds=5.0,
+            output="boot output",
+            lines=1,
+            pattern_matched=True,
+            elapsed_seconds=5.0,
         )
 
         with patch(
@@ -661,8 +669,10 @@ class TestMcpSerialTools:
         from labctl.serial.capture import CaptureResult
 
         mock_result = CaptureResult(
-            output="hello", lines=1,
-            pattern_matched=False, elapsed_seconds=15.0,
+            output="hello",
+            lines=1,
+            pattern_matched=False,
+            elapsed_seconds=15.0,
         )
 
         with patch(
@@ -717,10 +727,13 @@ class TestMcpSerialTools:
         from labctl.serial.capture import CaptureResult, SendResult
 
         mock_result = SendResult(
-            sent=True, bytes_sent=7,
+            sent=True,
+            bytes_sent=7,
             capture=CaptureResult(
-                output="response", lines=1,
-                pattern_matched=True, elapsed_seconds=2.0,
+                output="response",
+                lines=1,
+                pattern_matched=True,
+                elapsed_seconds=2.0,
             ),
         )
 
@@ -805,14 +818,17 @@ class TestMcpFlashImage:
         mock_ctrl = MagicMock()
         mock_ctrl.get_block_device.return_value = "/dev/sdb"
         mock_ctrl.flash_image.return_value = {
-            "bytes_written": 1024, "elapsed_seconds": 1.0,
+            "bytes_written": 1024,
+            "elapsed_seconds": 1.0,
             "block_device": "/dev/sdb",
         }
 
         mock_power_inst = MagicMock()
         with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl):
-            with patch("labctl.power.base.PowerController.from_plug",
-                       return_value=mock_power_inst):
+            with patch(
+                "labctl.power.base.PowerController.from_plug",
+                return_value=mock_power_inst,
+            ):
                 result = flash_image(
                     sbc_name="test-sbc-1",
                     image_path="/tmp/test.img",
@@ -1038,9 +1054,7 @@ class TestMcpDeviceCrudTools:
     def test_add_serial_device(self, mock_manager):
         from labctl.mcp_server import add_serial_device
 
-        result = add_serial_device(
-            name="new-port", usb_path="1-10.2.1", vendor="FTDI"
-        )
+        result = add_serial_device(name="new-port", usb_path="1-10.2.1", vendor="FTDI")
         assert "Registered" in result
         assert "new-port" in result
 
@@ -1067,9 +1081,7 @@ class TestMcpDeviceCrudTools:
     def test_sdwire_add(self, mock_manager):
         from labctl.mcp_server import sdwire_add
 
-        result = sdwire_add(
-            name="new-sdwire", serial_number="serial-new-123"
-        )
+        result = sdwire_add(name="new-sdwire", serial_number="serial-new-123")
         assert "Registered" in result
         assert "new-sdwire" in result
 

@@ -27,11 +27,7 @@ class CaptureResult:
 
     def to_mcp_string(self, pattern: Optional[str] = None) -> str:
         """Format as MCP tool return string."""
-        status = (
-            f"pattern '{pattern}' matched"
-            if self.pattern_matched
-            else "timeout"
-        )
+        status = f"pattern '{pattern}' matched" if self.pattern_matched else "timeout"
         header = (
             f"[Captured {self.lines} lines in {self.elapsed_seconds:.1f}s, "
             f"{status}]"
@@ -79,13 +75,9 @@ def resolve_port(manager, port_name: str):
     if sbc:
         if sbc.console_port:
             return sbc.console_port
-        raise ValueError(
-            f"SBC '{port_name}' has no console port assigned"
-        )
+        raise ValueError(f"SBC '{port_name}' has no console port assigned")
 
-    raise ValueError(
-        f"'{port_name}' is not a known port alias or SBC name"
-    )
+    raise ValueError(f"'{port_name}' is not a known port alias or SBC name")
 
 
 def capture_serial_output(
@@ -230,8 +222,11 @@ def send_serial_data(
     if capture_timeout is not None:
         # Send and capture in one connection
         return _send_and_capture(
-            tcp_host, tcp_port, raw,
-            capture_timeout, capture_until,
+            tcp_host,
+            tcp_port,
+            raw,
+            capture_timeout,
+            capture_until,
         )
 
     # Send only

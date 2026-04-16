@@ -94,9 +94,7 @@ class SDWireController:
                 return block_dev
 
             if block_dev:
-                logger.debug(
-                    "Block device %s has no media (stale node)", block_dev
-                )
+                logger.debug("Block device %s has no media (stale node)", block_dev)
 
             return None
 
@@ -140,7 +138,9 @@ class SDWireController:
 
         logger.info(
             "Flashing %s to %s via SDWire %s",
-            image_path, block_dev, self.serial_number,
+            image_path,
+            block_dev,
+            self.serial_number,
         )
 
         start = time_mod.monotonic()
@@ -153,8 +153,14 @@ class SDWireController:
                     stdout=subprocess.PIPE,
                 )
                 dd = subprocess.Popen(
-                    ["sudo", "dd", f"of={block_dev}", f"bs={block_size}",
-                     "oflag=sync", "status=progress"],
+                    [
+                        "sudo",
+                        "dd",
+                        f"of={block_dev}",
+                        f"bs={block_size}",
+                        "oflag=sync",
+                        "status=progress",
+                    ],
                     stdin=decompress.stdout,
                     stderr=subprocess.PIPE,
                 )
@@ -172,8 +178,14 @@ class SDWireController:
                     stdout=subprocess.PIPE,
                 )
                 dd = subprocess.Popen(
-                    ["sudo", "dd", f"of={block_dev}", f"bs={block_size}",
-                     "oflag=sync", "status=progress"],
+                    [
+                        "sudo",
+                        "dd",
+                        f"of={block_dev}",
+                        f"bs={block_size}",
+                        "oflag=sync",
+                        "status=progress",
+                    ],
                     stdin=decompress.stdout,
                     stderr=subprocess.PIPE,
                 )
@@ -188,7 +200,8 @@ class SDWireController:
             else:
                 subprocess.run(
                     [
-                        "sudo", "dd",
+                        "sudo",
+                        "dd",
                         f"if={image_path}",
                         f"of={block_dev}",
                         f"bs={block_size}",
@@ -210,9 +223,7 @@ class SDWireController:
                 "block_device": block_dev,
             }
         except subprocess.TimeoutExpired:
-            raise RuntimeError(
-                f"Flash timed out after {timeout}s"
-            )
+            raise RuntimeError(f"Flash timed out after {timeout}s")
         except subprocess.CalledProcessError as e:
             raise RuntimeError(f"Flash failed: {e}") from e
 
@@ -255,9 +266,12 @@ class SDWireController:
         try:
             subprocess.run(
                 [
-                    "sudo", "mount",
-                    "-o", f"uid={os.getuid()},gid={os.getgid()}",
-                    part_dev, mount_point,
+                    "sudo",
+                    "mount",
+                    "-o",
+                    f"uid={os.getuid()},gid={os.getgid()}",
+                    part_dev,
+                    mount_point,
                 ],
                 check=True,
                 capture_output=True,
@@ -265,9 +279,7 @@ class SDWireController:
             )
         except subprocess.CalledProcessError as e:
             os.rmdir(mount_point)
-            raise RuntimeError(
-                f"Failed to mount {part_dev}: {e.stderr.strip()}"
-            ) from e
+            raise RuntimeError(f"Failed to mount {part_dev}: {e.stderr.strip()}") from e
 
         real_mount = os.path.realpath(mount_point)
 
@@ -295,7 +307,7 @@ class SDWireController:
                 result["copied"].append(dest_relative)
 
             # 2. Renames
-            for old_name, new_name in (renames or []):
+            for old_name, new_name in renames or []:
                 old_path = _safe_path(old_name)
                 new_path = _safe_path(new_name)
 
@@ -317,7 +329,7 @@ class SDWireController:
                 result["renamed"].append(f"{old_name} -> {new_name}")
 
             # 3. Deletes
-            for filename in (deletes or []):
+            for filename in deletes or []:
                 file_path = _safe_path(filename)
 
                 if not os.path.exists(file_path):
@@ -375,7 +387,7 @@ def _validate_block_device(block_dev: str) -> None:
     size_bytes = sectors * 512
     max_bytes = 256 * 1024 * 1024 * 1024
     if size_bytes > max_bytes:
-        size_gb = size_bytes / (1024 ** 3)
+        size_gb = size_bytes / (1024**3)
         raise RuntimeError(
             f"Block device {block_dev} is {size_gb:.0f} GB — too large for SD card "
             f"(max 256 GB). Refusing to write for safety."
@@ -457,13 +469,15 @@ def discover_sdwire_devices() -> list[dict]:
             serial = dev.serial_string
             if serial and serial not in seen_serials:
                 seen_serials.add(serial)
-                results.append({
-                    "serial_number": serial,
-                    "device_type": "sdwire",
-                    "product": getattr(dev, "product_string", ""),
-                    "manufacturer": getattr(dev, "manufacturer_string", ""),
-                    "block_dev": getattr(dev, "block_dev", None),
-                })
+                results.append(
+                    {
+                        "serial_number": serial,
+                        "device_type": "sdwire",
+                        "product": getattr(dev, "product_string", ""),
+                        "manufacturer": getattr(dev, "manufacturer_string", ""),
+                        "block_dev": getattr(dev, "block_dev", None),
+                    }
+                )
     except Exception:
         pass
 
@@ -474,13 +488,15 @@ def discover_sdwire_devices() -> list[dict]:
             serial = dev.serial_string
             if serial and serial not in seen_serials:
                 seen_serials.add(serial)
-                results.append({
-                    "serial_number": serial,
-                    "device_type": "sdwirec",
-                    "product": getattr(dev, "product_string", ""),
-                    "manufacturer": getattr(dev, "manufacturer_string", ""),
-                    "block_dev": getattr(dev, "block_dev", None),
-                })
+                results.append(
+                    {
+                        "serial_number": serial,
+                        "device_type": "sdwirec",
+                        "product": getattr(dev, "product_string", ""),
+                        "manufacturer": getattr(dev, "manufacturer_string", ""),
+                        "block_dev": getattr(dev, "block_dev", None),
+                    }
+                )
     except Exception:
         pass
 
