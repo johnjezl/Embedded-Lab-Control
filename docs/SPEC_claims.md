@@ -59,9 +59,9 @@ doesn't survive agent restarts.
 
 ## Design
 
-### Locking Model: Hybrid Implicit + Explicit
+### Locking Model: Explicit Claims
 
-**Explicit claims** handle extended, multi-call workflows:
+Claims handle extended, multi-call workflows:
 
 ```
 labctl claim sbc=<name> duration=<30m|1h|4h> reason="<text>" [name=<agent-name>]
@@ -72,15 +72,15 @@ non-claimant returns a structured error. Read-only operations
 (`status`, `list`, health checks) pass through regardless — they
 don't mutate state.
 
-**Implicit short locks** handle single-shot operations:
-
-Every mutating tool call acquires a brief (≤30 second) implicit lock
-on the target SBC if no explicit claim is held. Prevents two rapid
-`power_cycle` calls from interleaving, without requiring explicit
-claim/release ceremony for one-off operations.
-
-If an explicit claim is held by the caller, implicit locks are a
-no-op — the claim already provides exclusion.
+Single-shot operations without a claim are not protected by any
+implicit short-lived lock: collisions between two rapid ad-hoc calls
+remain possible. The rationale is that the extra machinery (in-DB or
+in-memory short locks, cross-process coordination, wait-vs-fail
+semantics) adds complexity disproportionate to its benefit — the
+collision cases that matter are multi-step workflows, and those are
+exactly what explicit claims cover. Agents or humans performing
+higher-stakes one-shot operations (e.g. `sdwire_update`) should claim
+for the duration.
 
 ### Locking Granularity
 
@@ -98,11 +98,25 @@ Each claim records three identity fields:
 1. **Agent name** (required, agent-declared): A human-readable label
    like `"jetson-gpu-agent"` or `"pi5-smp-dispatch"`. Chosen by the
    agent; surfaces in `labctl status` output.
-2. **Session ID** (required, auto-derived): A fingerprint of the MCP
-   connection. For stdio transport, use the PID + connection start
-   timestamp. For HTTP, use the session cookie or a generated token.
-   Distinguishes two instances of the same-named agent and enables
-   dead-session detection.
+2. **Session ID** (required, auto-derived): Transport-specific, chosen
+   to be observable from inside every tool handler so dead-session
+   detection has something to check against.
+   - **MCP stdio:** Claude Code (or any MCP client) spawns the MCP
+     server as a subprocess per session, so the MCP server process
+     *is* the session. Session ID = `mcp-stdio:<pid>-<start_epoch>`
+     — stable for the subprocess's lifetime. Liveness: sweeper runs
+     `kill -0 <pid>`; if the process is gone, session is dead.
+   - **MCP HTTP (FastMCP):** use `ctx.session_id` from the FastMCP
+     `Context` parameter injected into tool handlers. Liveness:
+     FastMCP's own session expiry (absence of recent requests).
+   - **CLI:** `cli-<username>-<uuid4>`. No live-process tracking;
+     CLI claims rely purely on duration expiry and explicit
+     `labctl release`.
+
+   Web callers (Flask session / API key) use `session_kind = "web"`
+   with the Flask session cookie or API-key identity as the ID. The
+   `session_kind` column tells the sweeper which liveness strategy to
+   apply per row.
 3. **Optional context** (agent-provided metadata): git branch, worktree
    path, ticket/issue reference, user email. Not used for identity
    decisions — informational only.
@@ -124,16 +138,20 @@ claimed → (renewal) → claimed → (release) → free
 ```
 
 **Duration:** specified at claim time. Bounded minimum (e.g., 1 minute)
-and maximum (e.g., 4 hours) enforced by config. Typical demo-workflow
-durations: 15m, 30m, 1h.
+and maximum (e.g., 24 hours — covers overnight reliability runs)
+enforced by config. Typical demo-workflow durations: 15m, 30m, 1h.
 
-**Renewal:** any tool call by the claimant against the claimed SBC
-acts as an implicit heartbeat — extends `last_activity` timestamp.
-Explicit `labctl renew` allows extending duration beyond the original
-window (up to max duration per renewal).
+**Renewal:** any tool call by the claimant against the claimed SBC —
+**including read-only ops** like `serial_capture`, `get_sbc_details`,
+and health checks — acts as an implicit heartbeat that updates
+`last_activity`. Writes are too infrequent in long monitoring flows
+to carry heartbeat duty alone. Explicit `labctl renew` extends
+duration beyond the original window (up to max duration per renewal).
 
-**Expiry:** if `(now - last_activity) > (duration + grace_period)`,
-the claim is considered expired and released. Grace period: ~60s.
+**Expiry:** the effective deadline is `last_activity + duration`. A
+claim is considered expired when
+`now > last_activity + duration + grace_period`. Grace period: ~60s.
+Every heartbeat advances `last_activity` (and thereby the deadline).
 
 **Release:** explicit `labctl release` by the claimant (preferred) or
 `labctl force-release` by an operator.
@@ -155,7 +173,8 @@ expiry unless the agent reconnects and re-asserts.
 | `sdwire_to_host`, `sdwire_to_dut` | **Yes** | Physical reconnection; corrupts active flash |
 | `sdwire_update` | **Yes** | Overwrites SD card content |
 | `boot_test` | **Yes** | Multi-operation sequence; needs exclusive access throughout |
-| `add_sbc`, `remove_sbc`, `update_sbc` | No | Registry mutation, not device control — can still collide if two agents target the same SBC, but these are low-frequency |
+| `add_sbc`, `update_sbc` | No | Registry mutation, not device control |
+| `remove_sbc` | **Yes** | Would cascade-delete active claim rows and orphan the claimant's session |
 | `set_network_address`, `assign_*` | No | Configuration, not device state |
 
 Gated operations that find an active non-caller claim return a
@@ -192,19 +211,21 @@ release early. No automatic action.
 
 ```sql
 CREATE TABLE claims (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    sbc_id          INTEGER NOT NULL REFERENCES sbcs(id) ON DELETE CASCADE,
-    agent_name      TEXT    NOT NULL,
-    session_id      TEXT    NOT NULL,
-    reason          TEXT    NOT NULL,
-    context_json    TEXT,              -- optional agent-provided metadata
-    acquired_at     TIMESTAMP NOT NULL,
-    expires_at      TIMESTAMP NOT NULL,
-    last_activity   TIMESTAMP NOT NULL,
-    renewal_count   INTEGER   NOT NULL DEFAULT 0,
-    released_at     TIMESTAMP,         -- NULL while active
-    release_reason  TEXT,              -- "released", "expired", "force-released", "session-lost"
-    released_by     TEXT               -- agent name, "operator", or "system"
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    sbc_id           INTEGER NOT NULL REFERENCES sbcs(id) ON DELETE CASCADE,
+    agent_name       TEXT    NOT NULL,
+    session_id       TEXT    NOT NULL,
+    session_kind     TEXT    NOT NULL,   -- "mcp-stdio" | "mcp-http" | "cli" | "web"
+    reason           TEXT    NOT NULL,
+    context_json     TEXT,                -- optional agent-provided metadata
+    acquired_at      TIMESTAMP NOT NULL,
+    duration_seconds INTEGER   NOT NULL,  -- originally requested / last renewed duration
+    last_activity    TIMESTAMP NOT NULL,  -- bumped on every claimant tool call
+    expires_at       TIMESTAMP NOT NULL,  -- materialized = last_activity + duration_seconds; bumped alongside last_activity
+    renewal_count    INTEGER   NOT NULL DEFAULT 0,
+    released_at      TIMESTAMP,           -- NULL while active
+    release_reason   TEXT,                -- see ReleaseReason enum below
+    released_by      TEXT                 -- agent name, "operator", or "system"
 );
 
 -- At most one active (unreleased) claim per SBC
@@ -214,7 +235,21 @@ CREATE UNIQUE INDEX idx_claims_active_sbc
 -- Lookup acceleration
 CREATE INDEX idx_claims_session ON claims(session_id) WHERE released_at IS NULL;
 CREATE INDEX idx_claims_agent ON claims(agent_name) WHERE released_at IS NULL;
+CREATE INDEX idx_claims_expiry ON claims(expires_at) WHERE released_at IS NULL;
 ```
+
+`expires_at` is derived (`last_activity + duration_seconds`), stored
+materialized for efficient expiry sweeps. It is rewritten on every
+heartbeat alongside `last_activity` so the two stay consistent.
+
+**Acquisition race against stale claims:** the partial unique index
+prevents concurrent active claims, but an already-expired row that
+the sweeper hasn't yet released still counts as "active" for the
+index. `claim_sbc()` must run `expire_stale_claims()` inside the
+same transaction before INSERT, so expired rows get their
+`released_at` set before acquisition checks the index. Tests cover
+both the cooperative path (sweeper ran first) and the racy path
+(sweeper races with a new claim request).
 
 Claims are never deleted — released claims remain for audit. A retention
 policy may prune released claims older than N days.
@@ -239,20 +274,29 @@ acknowledge or act on them.
 ### Dataclass: `Claim`
 
 ```python
+class ReleaseReason(str, Enum):
+    RELEASED       = "released"        # explicit release by claimant
+    EXPIRED        = "expired"         # deadline + grace period passed
+    FORCE_RELEASED = "force-released"  # operator override
+    SESSION_LOST   = "session-lost"    # MCP session died / PID gone
+
+
 @dataclass
 class Claim:
     id: Optional[int] = None
     sbc_id: int = 0
     agent_name: str = ""
     session_id: str = ""
+    session_kind: str = ""      # "mcp-stdio" | "mcp-http" | "cli" | "web"
     reason: str = ""
     context: Optional[dict] = None
     acquired_at: Optional[datetime] = None
-    expires_at: Optional[datetime] = None
+    duration_seconds: int = 0
     last_activity: Optional[datetime] = None
+    expires_at: Optional[datetime] = None   # materialized = last_activity + duration_seconds
     renewal_count: int = 0
     released_at: Optional[datetime] = None
-    release_reason: Optional[str] = None
+    release_reason: Optional[ReleaseReason] = None
     released_by: Optional[str] = None
     pending_requests: list[ClaimRequest] = field(default_factory=list)
 
@@ -281,10 +325,9 @@ Add to `config/labctl.yaml.example`:
 claims:
   enabled: true                  # master switch
   default_duration_minutes: 30
-  max_duration_minutes: 240      # 4 hours
+  max_duration_minutes: 1440     # 24 hours (covers overnight reliability runs)
   min_duration_minutes: 1
   grace_period_seconds: 60       # after expires_at before actual release
-  implicit_lock_seconds: 30      # short-lived per-call locks
   auto_prune_released_after_days: 30
   require_agent_name: false      # if true, reject unnamed agents
 ```
@@ -381,8 +424,8 @@ def force_release_sbc(sbc_name: str, reason: str) -> str:
     release is blocked (dead agent, emergency)."""
 ```
 
-Existing mutating tools gain implicit claim checks. Signature does
-not change, but return value adds:
+Existing mutating tools gain claim-ownership checks. Signatures do
+not change, but return values add:
 
 - On success with a claim held: unchanged behavior
 - On failure due to other-agent claim: structured error response
@@ -402,6 +445,26 @@ def get_claim_resource(sbc_name: str) -> str:
 def get_claim_history_resource(sbc_name: str) -> str:
     """Historical claims (released) for an SBC."""
 ```
+
+### Web REST API
+
+Endpoints mirror the CLI surface so the existing web dashboard (and
+API-key consumers) can manage claims:
+
+```
+GET    /api/claims                          # all active claims
+GET    /api/claims/{sbc_name}               # current claim + pending requests
+GET    /api/claims/{sbc_name}/history       # released claims
+POST   /api/claims/{sbc_name}               # claim (body: duration_minutes, reason, agent_name?)
+POST   /api/claims/{sbc_name}/renew         # renew (body: duration_minutes?)
+POST   /api/claims/{sbc_name}/release       # release (caller must be claimant)
+POST   /api/claims/{sbc_name}/force-release # operator only (body: reason)
+POST   /api/claims/{sbc_name}/request-release
+```
+
+`session_kind = "web"` with session ID derived from the existing Flask
+session cookie (or API-key identity for non-browser callers). Web
+dashboard UI design (claim badges, manage-claim modal) is Phase D.
 
 ---
 
@@ -460,9 +523,11 @@ Other error codes:
 
 1. New MCP tools (`claim_sbc`, `release_sbc`, etc.)
 2. New MCP resources (`lab://claims`, etc.)
-3. Session ID derivation (stdio PID+timestamp, HTTP cookie)
-4. Implicit claim checks on mutating tools
-5. Structured conflict error responses
+3. Session ID derivation per transport: stdio `mcp-stdio:<pid>-<start_epoch>`,
+   HTTP `ctx.session_id`, CLI `cli-<user>-<uuid4>`
+4. Claim enforcement on existing mutating MCP tools — gated ops return
+   the structured conflict error when another agent holds the claim
+5. Heartbeat on every claimant tool call (reads and writes)
 6. Integration tests against a running MCP server
 
 ### Phase C: Expiry and dead-session handling
@@ -493,13 +558,16 @@ Other error codes:
 
 - Feature is **opt-in via config** (`claims.enabled: true`). When
   disabled, behavior matches current labctl exactly.
-- When enabled but no claim is held on a given SBC, implicit
-  short-locks provide safety without requiring agents to adopt the
-  claim API immediately.
+- When enabled but no claim is held on a given SBC, mutating ops
+  proceed unchanged — the feature costs nothing until agents adopt
+  the claim API. Unprotected ad-hoc collisions remain possible (same
+  as today); the feature protects multi-step workflows that claim
+  explicitly.
 - Existing tools do not change signatures — only error responses are
   extended with new conflict codes.
 - Database migration is additive (new tables only) — no existing
-  schema affected.
+  schema affected. Schema version bumps v3 → v4 via the existing
+  migration path in `core/database.py`.
 
 ## Relationship to `project` Field
 
@@ -530,18 +598,17 @@ are sufficient.
 
 ## Open Questions
 
-1. **Session ID derivation for stdio MCP:** PID + start timestamp is
-   simple but PIDs recycle. Acceptable for short-lived sessions?
-   Alternative: require explicit session registration on first tool
-   call.
-2. **Claim visibility to the web dashboard:** presumably yes, but
-   needs coordinated UI design — out of scope for Phase A.
-3. **Interaction with `/deploy-and-test` skill:** should the skill
+1. **Web dashboard UI:** REST endpoints are defined above; dashboard
+   visualisation (claim badges per SBC, manage-claim modal, banner
+   when viewing a claimed SBC) still needs UX design — Phase D.
+2. **Interaction with `/deploy-and-test` skill:** should the skill
    auto-claim for the duration of its run? Probably yes. Design
    decision for skill update alongside Phase B.
-4. **HTTP MCP session tracking:** FastMCP HTTP transport session
-   lifecycle needs inspection — where does the session token live,
-   how is disconnect detected?
+3. **PID recycling on long-lived deployments:** `mcp-stdio:<pid>-<start_epoch>`
+   is safe against recycling because `start_epoch` changes when a
+   PID is reused, but the sweeper must verify *both* match when
+   checking `kill -0` — a raw PID liveness check would be fooled by
+   an unrelated process that reused the PID. Worth a defensive test.
 
 ---
 
