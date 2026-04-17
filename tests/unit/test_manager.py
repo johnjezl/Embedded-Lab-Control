@@ -1315,6 +1315,27 @@ class TestClaimExpiryAndHeartbeat:
         manager.create_sbc(name="sbc1")
         assert manager.heartbeat_claim("sbc1", "any") is False
 
+    def test_heartbeat_prevents_expiry(self, manager):
+        """A short-duration claim survives past its original deadline
+        when heartbeats keep pushing the deadline forward."""
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=2,
+            reason="r",
+        )
+        # Heartbeat 3 times across 3 seconds — original 2s deadline
+        # would have expired, but heartbeats push it forward.
+        for _ in range(3):
+            time.sleep(1.05)
+            assert manager.heartbeat_claim("sbc1", "s1") is True
+
+        # Should still be active despite 3s elapsed on a 2s claim
+        assert manager.get_active_claim("sbc1") is not None
+
 
 class TestClaimListing:
     """list_active_claims and list_claim_history."""

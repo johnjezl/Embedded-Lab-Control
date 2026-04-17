@@ -1467,3 +1467,66 @@ class TestMcpAtexitAndSweep:
         )
         _release_session_claims()
         assert claims_env.get_active_claim("test-sbc-1") is not None
+
+
+class TestMcpClaimMetricsResource:
+    """Tests for lab://claims/metrics MCP resource."""
+
+    def test_metrics_resource_empty(self, claims_env):
+        from labctl.mcp_server import get_claim_metrics_resource
+
+        result = json.loads(get_claim_metrics_resource())
+        assert result["total"] == 0
+        assert result["active"] == 0
+
+    def test_metrics_resource_after_activity(self, claims_env):
+        from labctl.mcp_server import (
+            claim_sbc,
+            get_claim_metrics_resource,
+            release_sbc,
+        )
+
+        claim_sbc(sbc_name="test-sbc-1", reason="metrics test")
+        release_sbc(sbc_name="test-sbc-1")
+        result = json.loads(get_claim_metrics_resource())
+        assert result["total"] == 1
+        assert result["released"] == 1
+        assert result["avg_duration_seconds"] is not None
+
+
+class TestMcpClaimAdvisory:
+    """Tests that pending release requests surface in tool responses."""
+
+    def test_advisory_appended_on_claimant_success(self, claims_env):
+        from labctl.mcp_server import claim_sbc, request_sbc_release
+
+        # Claim as our session, then have someone request release
+        claim_sbc(sbc_name="test-sbc-1", reason="my claim")
+        claims_env.record_release_request(
+            "test-sbc-1",
+            requested_by="other-agent",
+            reason="need the bench",
+        )
+
+        # power_on by claimant should include advisory
+        from labctl.mcp_server import power_on
+
+        with patch("labctl.power.base.PowerController.from_plug") as m:
+            m.return_value.power_on.return_value = True
+            result = power_on(sbc_name="test-sbc-1")
+
+        assert "Power ON" in result
+        assert "[claim advisory]" in result
+        assert "other-agent" in result
+        assert "need the bench" in result
+
+    def test_no_advisory_when_no_requests(self, claims_env):
+        from labctl.mcp_server import claim_sbc, power_on
+
+        claim_sbc(sbc_name="test-sbc-1", reason="my claim")
+        with patch("labctl.power.base.PowerController.from_plug") as m:
+            m.return_value.power_on.return_value = True
+            result = power_on(sbc_name="test-sbc-1")
+
+        assert "Power ON" in result
+        assert "[claim advisory]" not in result
