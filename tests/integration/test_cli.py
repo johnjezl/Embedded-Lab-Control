@@ -142,7 +142,7 @@ def claim_runner(tmp_path, monkeypatch):
         "  default_duration_minutes: 30\n"
         "  max_duration_minutes: 60\n"
         "  min_duration_minutes: 1\n"
-        "  grace_period_seconds: 60\n"
+        "  grace_period_seconds: 0\n"
     )
 
     # Every CLI invocation creates a fresh manager from config — we
@@ -307,3 +307,25 @@ class TestClaimCommands:
         )
         assert result.exit_code == 0
         assert manager.get_sbc_by_name("pi-5-2") is None
+
+    def test_claims_expire_sweeps(self, claim_runner):
+        """labctl claims expire releases past-deadline claims."""
+        import time
+
+        runner, config, manager = claim_runner
+        manager.claim_sbc(
+            sbc_name="pi-5-1",
+            agent_name="short",
+            session_id="cli-x@h",
+            session_kind="cli",
+            duration_seconds=1,
+            reason="short",
+        )
+        time.sleep(1.2)
+        result = runner.invoke(
+            main,
+            ["-c", str(config), "claims", "expire"],
+        )
+        assert result.exit_code == 0
+        assert "expired" in result.output.lower() or "Released" in result.output
+        assert manager.get_active_claim("pi-5-1") is None

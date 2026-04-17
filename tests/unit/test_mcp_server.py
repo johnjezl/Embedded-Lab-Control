@@ -1438,3 +1438,32 @@ class TestMcpClaimEnforcement:
         result = remove_sbc(name="test-sbc-1")
         data = json.loads(result)
         assert data["error"] == "sbc_claimed"
+
+
+class TestMcpAtexitAndSweep:
+    """Tests for atexit claim release and background sweep."""
+
+    def test_release_session_claims(self, claims_env):
+        """_release_session_claims releases this session's claims."""
+        from labctl.mcp_server import _release_session_claims, claim_sbc
+
+        claim_sbc(sbc_name="test-sbc-1", reason="will exit")
+        assert claims_env.get_active_claim("test-sbc-1") is not None
+
+        _release_session_claims()
+        assert claims_env.get_active_claim("test-sbc-1") is None
+
+    def test_release_session_claims_ignores_other_sessions(self, claims_env):
+        """_release_session_claims doesn't touch other sessions' claims."""
+        from labctl.mcp_server import _release_session_claims
+
+        claims_env.claim_sbc(
+            sbc_name="test-sbc-1",
+            agent_name="other",
+            session_id="other-session",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="not mine",
+        )
+        _release_session_claims()
+        assert claims_env.get_active_claim("test-sbc-1") is not None

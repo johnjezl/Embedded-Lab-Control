@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Hardware claims expiry and dead-session handling, Phase C (2026-04-16)
+  - MCP `atexit` handler: releases this session's claims on clean exit
+  - `release_dead_sessions()`: checks `kill -0 <pid>` for mcp-stdio claims;
+    dead process + expired grace → auto-release as `session-lost`
+  - Background daemon thread in MCP server sweeps every 30s
+  - `labctl claims expire` CLI command for cron-driven sweeps
+  - Grace period respected: dead sessions within grace window are left alone
 - Hardware claims MCP integration, Phase B (2026-04-16)
   - MCP tools: `claim_sbc`, `release_sbc`, `renew_sbc_claim`, `list_claims`,
     `get_claim`, `request_sbc_release`, `force_release_sbc`

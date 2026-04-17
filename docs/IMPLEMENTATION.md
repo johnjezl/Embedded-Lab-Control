@@ -702,11 +702,17 @@ preventing destructive interference between concurrent workflows.
 
 ### Phase C: Expiry and dead-session handling
 
-- ☐ Background expiry worker (periodic sweep of stale claims)
-- ☐ MCP stdio session liveness (kill -0 <pid>)
-- ☐ MCP HTTP session liveness (FastMCP session expiry)
-- ☐ Grace period logic for auto-release
-- ☐ Logging of auto-release events
+- ✅ MCP `atexit` handler releases claims held by this session on clean exit
+- ✅ `release_dead_sessions()` checks `kill -0 <pid>` for mcp-stdio claims;
+  dead PID + past grace → release as `session-lost` with audit log
+- ✅ Background daemon thread in MCP server runs `expire_stale_claims` +
+  `release_dead_sessions` every 30s
+- ✅ `labctl claims expire` CLI command for cron/systemd-driven sweeps
+- ✅ Grace period respected: dead sessions within grace not released
+- ✅ Logging via `logger.info` for auto-release events + audit_log
+- ✅ Tests: dead PID release, alive PID skip, CLI session skipped,
+  grace period respected, atexit release, other-session ignored
+- ☐ MCP HTTP session liveness (FastMCP session expiry) — deferred
 
 ### Phase D: Operator tooling
 

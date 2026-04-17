@@ -2,9 +2,9 @@
 
 ## Current State
 
-- **Milestone**: Hardware Claims (exclusive access), Phase A — **In progress**
-- **Sub-task**: Phase A core tracking (schema, dataclasses, manager ops, CLI)
-- **Status**: Implementation + tests landed, awaiting full-suite rerun
+- **Milestone**: Hardware Claims (exclusive access), Phases A–C complete
+- **Sub-task**: Phase C expiry and dead-session handling
+- **Status**: Implementation + tests passing
 
 ## Last Session
 

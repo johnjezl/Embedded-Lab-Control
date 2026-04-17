@@ -2739,6 +2739,24 @@ def claims_history_cmd(ctx: click.Context, sbc_name: str, last: int) -> None:
             click.echo(f"      reason: {claim.reason}")
 
 
+@claims_group.command("expire")
+@click.pass_context
+def claims_expire_cmd(ctx: click.Context) -> None:
+    """Run one sweep: release expired claims and dead-session claims.
+
+    Suitable for cron / systemd timer (e.g. every 60 seconds).
+    """
+    config: Config = ctx.obj["config"]
+    manager = _get_manager(ctx)
+    grace = config.claims.grace_period_seconds
+    expired = manager.expire_stale_claims(grace_seconds=grace)
+    dead = manager.release_dead_sessions(grace_seconds=grace)
+    if expired or dead:
+        click.echo(f"Released {expired} expired + {dead} dead-session claim(s)")
+    else:
+        click.echo("No stale claims found")
+
+
 # --- Export/Import Commands ---
 
 

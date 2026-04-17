@@ -1431,3 +1431,83 @@ class TestDeleteSBCGatedByClaim:
         )
         manager.release_claim("sbc1", "s1")
         assert manager.delete_sbc(sbc.id) is True
+
+
+class TestDeadSessionRelease:
+    """Session liveness check for mcp-stdio claims."""
+
+    def test_dead_pid_releases_claim(self, manager):
+        """Claim by a dead PID gets released after grace expires."""
+        from unittest.mock import patch
+
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="dead-agent",
+            session_id="mcp-stdio:99999-1700000000",
+            session_kind="mcp-stdio",
+            duration_seconds=1,
+            reason="test",
+        )
+        time.sleep(1.2)
+
+        with patch.object(type(manager), "_is_pid_alive", return_value=False):
+            count = manager.release_dead_sessions(grace_seconds=0)
+
+        assert count == 1
+        history = manager.list_claim_history("sbc1")
+        assert history[0].release_reason == ReleaseReason.SESSION_LOST
+
+    def test_alive_pid_not_released(self, manager):
+        """Claim by a living PID is left alone."""
+        from unittest.mock import patch
+
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="live-agent",
+            session_id="mcp-stdio:1-1700000000",
+            session_kind="mcp-stdio",
+            duration_seconds=1,
+            reason="test",
+        )
+        time.sleep(1.2)
+
+        with patch.object(type(manager), "_is_pid_alive", return_value=True):
+            count = manager.release_dead_sessions(grace_seconds=0)
+
+        assert count == 0
+
+    def test_cli_session_skipped(self, manager):
+        """CLI claims are not subject to PID liveness checks."""
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="cli-user",
+            session_id="cli-john@host",
+            session_kind="cli",
+            duration_seconds=1,
+            reason="test",
+        )
+        time.sleep(1.2)
+        count = manager.release_dead_sessions(grace_seconds=0)
+        assert count == 0
+
+    def test_grace_period_respected(self, manager):
+        """Dead PID within grace period is not released."""
+        from unittest.mock import patch
+
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="dead-agent",
+            session_id="mcp-stdio:99999-1700000000",
+            session_kind="mcp-stdio",
+            duration_seconds=600,
+            reason="test",
+        )
+        # Claim still within its deadline — grace check won't trigger
+        with patch.object(type(manager), "_is_pid_alive", return_value=False):
+            count = manager.release_dead_sessions(grace_seconds=60)
+
+        assert count == 0

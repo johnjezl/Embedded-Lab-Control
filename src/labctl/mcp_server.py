@@ -1790,8 +1790,61 @@ Compile a report with:
 # ---------------------------------------------------------------------------
 
 
+def _release_session_claims():
+    """Best-effort release of claims held by this MCP session on exit."""
+    try:
+        manager = _get_manager()
+        session_id = _get_session_id()
+        for claim in manager.list_active_claims():
+            if claim.session_id == session_id:
+                try:
+                    manager.release_claim(claim.sbc_name, session_id)
+                    logger.info(
+                        "Released claim on '%s' (session exit)",
+                        claim.sbc_name,
+                    )
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+def _start_expiry_thread(interval: int = 30):
+    """Start a daemon thread that periodically sweeps expired/dead claims."""
+    import threading
+
+    def _sweep_loop():
+        while True:
+            import time as _t
+
+            _t.sleep(interval)
+            try:
+                config = _get_config()
+                manager = _get_manager()
+                grace = config.claims.grace_period_seconds
+                expired = manager.expire_stale_claims(grace_seconds=grace)
+                dead = manager.release_dead_sessions(grace_seconds=grace)
+                if expired or dead:
+                    logger.info(
+                        "Claim sweep: %d expired, %d dead-session released",
+                        expired,
+                        dead,
+                    )
+            except Exception:
+                logger.debug("Claim sweep error", exc_info=True)
+
+    t = threading.Thread(target=_sweep_loop, daemon=True, name="claim-expiry")
+    t.start()
+    return t
+
+
 def run_server(transport: str = "stdio", http_port: int = 8080):
     """Start the MCP server."""
+    import atexit
+
+    atexit.register(_release_session_claims)
+    _start_expiry_thread(interval=30)
+
     if transport == "stdio":
         mcp.run(transport="stdio")
     elif transport == "http":

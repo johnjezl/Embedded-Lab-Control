@@ -5,9 +5,13 @@ Provides CRUD operations for SBCs, serial ports, network addresses, and power pl
 """
 
 import json
+import logging
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 from labctl.core.database import Database, get_database
 from labctl.core.models import (
@@ -991,6 +995,80 @@ class ResourceManager:
             """,
             (ReleaseReason.EXPIRED.value, cutoff),
         )
+
+    @staticmethod
+    def _is_pid_alive(pid: int) -> bool:
+        """Check whether a process is alive (works on Linux/macOS)."""
+        try:
+            os.kill(pid, 0)
+            return True
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            # Process exists but we can't signal it — still alive.
+            return True
+        except OSError:
+            return False
+
+    def release_dead_sessions(self, grace_seconds: int = 60) -> int:
+        """Release claims whose MCP stdio session process has exited.
+
+        Parses ``mcp-stdio:<pid>-<epoch>`` session IDs. If the PID is no
+        longer alive **and** the claim's deadline + grace has passed, the
+        claim is released as ``session-lost``. Claims with other
+        ``session_kind`` values (cli, web) are skipped.
+        """
+        rows = self.db.execute(
+            """
+            SELECT c.*, s.name AS sbc_name
+            FROM claims c JOIN sbcs s ON s.id = c.sbc_id
+            WHERE c.released_at IS NULL AND c.session_kind = 'mcp-stdio'
+            """
+        )
+        released = 0
+        cutoff = datetime.now() - timedelta(seconds=grace_seconds)
+        for row in rows:
+            claim = Claim.from_row(row)
+            # Parse "mcp-stdio:<pid>-<epoch>"
+            try:
+                payload = claim.session_id.split(":", 1)[1]
+                pid = int(payload.split("-", 1)[0])
+            except (IndexError, ValueError):
+                continue
+
+            if self._is_pid_alive(pid):
+                continue
+
+            # PID is dead — but only release if past grace
+            if claim.expires_at and claim.expires_at > cutoff:
+                continue
+
+            self.db.execute_modify(
+                """
+                UPDATE claims
+                SET released_at = CURRENT_TIMESTAMP,
+                    release_reason = ?,
+                    released_by = 'system'
+                WHERE id = ?
+                """,
+                (ReleaseReason.SESSION_LOST.value, claim.id),
+            )
+            logger.info(
+                "Released claim on '%s' (dead session pid=%d, agent=%s)",
+                claim.sbc_name,
+                pid,
+                claim.agent_name,
+            )
+            self._audit_log(
+                "session_lost",
+                "sbc",
+                claim.sbc_id,
+                claim.sbc_name,
+                f"Session pid={pid} died, claim released "
+                f"(was held by {claim.agent_name})",
+            )
+            released += 1
+        return released
 
     def claim_sbc(
         self,
