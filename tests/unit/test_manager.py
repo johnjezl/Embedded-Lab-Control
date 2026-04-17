@@ -1511,3 +1511,83 @@ class TestDeadSessionRelease:
             count = manager.release_dead_sessions(grace_seconds=60)
 
         assert count == 0
+
+
+class TestPruneReleasedClaims:
+    """Auto-prune of old released claims."""
+
+    def test_prune_removes_old_released(self, manager):
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=60,
+            reason="r",
+        )
+        manager.release_claim("sbc1", "s1")
+        # Backdate released_at to 60 days ago
+        manager.db.execute_modify(
+            "UPDATE claims SET released_at = datetime('now', '-60 days')"
+        )
+        count = manager.prune_released_claims(older_than_days=30)
+        assert count == 1
+
+    def test_prune_keeps_recent_released(self, manager):
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=60,
+            reason="r",
+        )
+        manager.release_claim("sbc1", "s1")
+        count = manager.prune_released_claims(older_than_days=30)
+        assert count == 0
+
+    def test_prune_never_touches_active(self, manager):
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="r",
+        )
+        count = manager.prune_released_claims(older_than_days=0)
+        assert count == 0
+
+
+class TestClaimMetrics:
+    """get_claim_metrics aggregate stats."""
+
+    def test_empty_metrics(self, manager):
+        m = manager.get_claim_metrics()
+        assert m["total"] == 0
+        assert m["active"] == 0
+        assert m["avg_duration_seconds"] is None
+
+    def test_metrics_after_claim_release_cycle(self, manager):
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=60,
+            reason="r",
+        )
+        m = manager.get_claim_metrics()
+        assert m["total"] == 1
+        assert m["active"] == 1
+
+        manager.release_claim("sbc1", "s1")
+        m = manager.get_claim_metrics()
+        assert m["total"] == 1
+        assert m["active"] == 0
+        assert m["released"] == 1
+        assert m["avg_duration_seconds"] is not None

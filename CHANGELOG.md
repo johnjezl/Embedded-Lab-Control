@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Hardware claims polish, Phase E (2026-04-16)
+  - `ClaimsConfig.validate()` clamps invalid bounds at load time
+  - `prune_released_claims()` auto-deletes old released claims (wired
+    into CLI expire + MCP sweep)
+  - `get_claim_metrics()` aggregate stats — exposed via `labctl claims stats`
+    and `lab://claims/metrics` MCP resource
+  - `AGENT_RULES.md` section 11: claim workflow, naming, duration guide
 - Hardware claims operator tooling, Phase D (2026-04-16)
   - Web REST API: full claim lifecycle at `/api/claims/*`
   - Dashboard: claim badges on SBC cards (agent, time remaining, request warning)

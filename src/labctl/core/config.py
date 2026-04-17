@@ -123,6 +123,48 @@ class ClaimsConfig:
     auto_prune_released_after_days: int = 30
     require_agent_name: bool = False
 
+    def validate(self) -> list[str]:
+        """Check invariants, returning a list of warning messages.
+
+        Clamps obviously wrong values to sane defaults so the system
+        still functions. Call after construction.
+        """
+        warnings = []
+        if self.min_duration_minutes < 1:
+            warnings.append(
+                f"claims.min_duration_minutes={self.min_duration_minutes}"
+                " clamped to 1"
+            )
+            self.min_duration_minutes = 1
+        if self.max_duration_minutes < self.min_duration_minutes:
+            warnings.append(
+                f"claims.max_duration_minutes={self.max_duration_minutes}"
+                f" < min ({self.min_duration_minutes}), clamped to min"
+            )
+            self.max_duration_minutes = self.min_duration_minutes
+        if (
+            self.default_duration_minutes < self.min_duration_minutes
+            or self.default_duration_minutes > self.max_duration_minutes
+        ):
+            clamped = max(
+                self.min_duration_minutes,
+                min(self.default_duration_minutes, self.max_duration_minutes),
+            )
+            warnings.append(
+                f"claims.default_duration_minutes="
+                f"{self.default_duration_minutes}"
+                f" outside [{self.min_duration_minutes},"
+                f" {self.max_duration_minutes}], clamped to {clamped}"
+            )
+            self.default_duration_minutes = clamped
+        if self.grace_period_seconds < 0:
+            warnings.append("claims.grace_period_seconds < 0, clamped to 0")
+            self.grace_period_seconds = 0
+        if self.auto_prune_released_after_days < 1:
+            warnings.append("claims.auto_prune_released_after_days < 1, clamped to 1")
+            self.auto_prune_released_after_days = 1
+        return warnings
+
 
 @dataclass
 class Config:
@@ -226,6 +268,11 @@ class Config:
             ),
             require_agent_name=claims_data.get("require_agent_name", False),
         )
+
+        # Validate and clamp claim config bounds
+        claim_warnings = claims.validate()
+        for w in claim_warnings:
+            logger.warning("Config: %s", w)
 
         return cls(
             serial=serial,

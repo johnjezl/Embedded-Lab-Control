@@ -2,9 +2,9 @@
 
 ## Current State
 
-- **Milestone**: Hardware Claims (exclusive access), Phases A–D complete
-- **Sub-task**: Phase D operator tooling (web API, dashboard, MCP advisory)
-- **Status**: Implementation + tests passing
+- **Milestone**: Hardware Claims (exclusive access), Phases A–E complete
+- **Sub-task**: All phases done
+- **Status**: Feature complete, ready for PR
 
 ## Last Session
 

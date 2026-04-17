@@ -1507,6 +1507,13 @@ def get_claim_history_resource(sbc_name: str) -> str:
     return json.dumps([c.to_dict() for c in history], indent=2)
 
 
+@mcp.resource("lab://claims/metrics")
+def get_claim_metrics_resource() -> str:
+    """Aggregate claim statistics: totals by outcome, average duration."""
+    manager = _get_manager()
+    return json.dumps(manager.get_claim_metrics(), indent=2)
+
+
 @mcp.tool()
 def claim_sbc(
     sbc_name: str,
@@ -1867,11 +1874,15 @@ def _start_expiry_thread(interval: int = 30):
                 grace = config.claims.grace_period_seconds
                 expired = manager.expire_stale_claims(grace_seconds=grace)
                 dead = manager.release_dead_sessions(grace_seconds=grace)
-                if expired or dead:
+                pruned = manager.prune_released_claims(
+                    older_than_days=config.claims.auto_prune_released_after_days
+                )
+                if expired or dead or pruned:
                     logger.info(
-                        "Claim sweep: %d expired, %d dead-session released",
+                        "Claim sweep: %d expired, %d dead-session, " "%d pruned",
                         expired,
                         dead,
+                        pruned,
                     )
             except Exception:
                 logger.debug("Claim sweep error", exc_info=True)

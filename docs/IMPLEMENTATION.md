@@ -729,8 +729,15 @@ preventing destructive interference between concurrent workflows.
 
 ### Phase E: Polish
 
-- ☐ Config validation for bounds
-- ☐ Retention / auto-prune of released claims
-- ☐ Metrics (claim acquire/release counts, average durations)
-- ☐ Documentation updates (MCP_SERVER.md, README.md, AGENT_RULES.md)
-- ☐ Example agent onboarding flow
+- ✅ `ClaimsConfig.validate()` — clamps invalid bounds (min/max/default/
+  grace/prune_days) at load time with logged warnings
+- ✅ `prune_released_claims(older_than_days)` — deletes released claim
+  rows past retention threshold; wired into CLI `claims expire` and
+  MCP background sweep
+- ✅ `get_claim_metrics()` — aggregate totals by outcome + avg duration;
+  exposed via `labctl claims stats` CLI and `lab://claims/metrics` MCP
+  resource
+- ✅ `AGENT_RULES.md` section 11: claim workflow, naming convention,
+  duration guidelines
+- ✅ `MCP_SERVER.md` updated with claims tools/resources tables
+- ✅ Tests: config validation (7), prune (3), metrics (2)

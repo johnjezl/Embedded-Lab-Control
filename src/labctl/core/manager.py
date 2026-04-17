@@ -1070,6 +1070,70 @@ class ResourceManager:
             released += 1
         return released
 
+    def prune_released_claims(self, older_than_days: int = 30) -> int:
+        """Delete released claim rows older than the retention threshold.
+
+        Only rows with a non-NULL ``released_at`` are eligible. Active
+        (unreleased) claims are never pruned.
+        """
+        cutoff = self._fmt_ts(datetime.now() - timedelta(days=older_than_days))
+        count = self.db.execute_modify(
+            """
+            DELETE FROM claims
+            WHERE released_at IS NOT NULL AND released_at < ?
+            """,
+            (cutoff,),
+        )
+        if count:
+            logger.info(
+                "Pruned %d released claims older than %d days", count, older_than_days
+            )
+        return count
+
+    def get_claim_metrics(self) -> dict:
+        """Aggregate statistics across all claims (active and released)."""
+        rows = self.db.execute(
+            """
+            SELECT
+                COUNT(*)                                        AS total,
+                SUM(CASE WHEN released_at IS NULL THEN 1 ELSE 0 END) AS active,
+                SUM(CASE WHEN release_reason = 'released'       THEN 1 ELSE 0 END) AS released,
+                SUM(CASE WHEN release_reason = 'expired'        THEN 1 ELSE 0 END) AS expired,
+                SUM(CASE WHEN release_reason = 'force-released' THEN 1 ELSE 0 END) AS force_released,
+                SUM(CASE WHEN release_reason = 'session-lost'   THEN 1 ELSE 0 END) AS session_lost,
+                AVG(CASE WHEN released_at IS NOT NULL
+                    THEN CAST(
+                        (julianday(released_at) - julianday(acquired_at))
+                        * 86400 AS INTEGER)
+                    ELSE NULL END)                              AS avg_duration_seconds
+            FROM claims
+            """
+        )
+        row = rows[0] if rows else None
+        if not row:
+            return {
+                "total": 0,
+                "active": 0,
+                "released": 0,
+                "expired": 0,
+                "force_released": 0,
+                "session_lost": 0,
+                "avg_duration_seconds": None,
+            }
+        return {
+            "total": row["total"] or 0,
+            "active": row["active"] or 0,
+            "released": row["released"] or 0,
+            "expired": row["expired"] or 0,
+            "force_released": row["force_released"] or 0,
+            "session_lost": row["session_lost"] or 0,
+            "avg_duration_seconds": (
+                round(row["avg_duration_seconds"])
+                if row["avg_duration_seconds"] is not None
+                else None
+            ),
+        }
+
     def claim_sbc(
         self,
         sbc_name: str,

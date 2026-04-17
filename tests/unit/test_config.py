@@ -143,6 +143,58 @@ class TestClaimsConfig:
         assert restored.claims.require_agent_name is True
 
 
+class TestClaimsConfigValidation:
+    """Tests for ClaimsConfig.validate() bounds clamping."""
+
+    def test_valid_config_no_warnings(self):
+        c = ClaimsConfig()
+        assert c.validate() == []
+
+    def test_min_below_one_clamped(self):
+        c = ClaimsConfig(min_duration_minutes=0)
+        warnings = c.validate()
+        assert len(warnings) == 1
+        assert c.min_duration_minutes == 1
+
+    def test_max_below_min_clamped(self):
+        c = ClaimsConfig(min_duration_minutes=10, max_duration_minutes=5)
+        warnings = c.validate()
+        assert any("max" in w.lower() for w in warnings)
+        assert c.max_duration_minutes == 10
+
+    def test_default_outside_range_clamped(self):
+        c = ClaimsConfig(
+            min_duration_minutes=10,
+            max_duration_minutes=60,
+            default_duration_minutes=5,
+        )
+        warnings = c.validate()
+        assert any("default" in w.lower() for w in warnings)
+        assert c.default_duration_minutes == 10
+
+    def test_negative_grace_clamped(self):
+        c = ClaimsConfig(grace_period_seconds=-1)
+        warnings = c.validate()
+        assert c.grace_period_seconds == 0
+
+    def test_prune_days_below_one_clamped(self):
+        c = ClaimsConfig(auto_prune_released_after_days=0)
+        warnings = c.validate()
+        assert c.auto_prune_released_after_days == 1
+
+    def test_validation_runs_on_from_dict(self):
+        """Config.from_dict triggers validate — invalid values get clamped."""
+        data = {
+            "claims": {
+                "min_duration_minutes": 0,
+                "max_duration_minutes": -1,
+            }
+        }
+        config = Config.from_dict(data)
+        assert config.claims.min_duration_minutes == 1
+        assert config.claims.max_duration_minutes == 1
+
+
 class TestConfig:
     """Tests for main Config class."""
 

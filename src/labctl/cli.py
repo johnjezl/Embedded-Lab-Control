@@ -2751,10 +2751,40 @@ def claims_expire_cmd(ctx: click.Context) -> None:
     grace = config.claims.grace_period_seconds
     expired = manager.expire_stale_claims(grace_seconds=grace)
     dead = manager.release_dead_sessions(grace_seconds=grace)
+    pruned = manager.prune_released_claims(
+        older_than_days=config.claims.auto_prune_released_after_days
+    )
+    parts = []
     if expired or dead:
-        click.echo(f"Released {expired} expired + {dead} dead-session claim(s)")
+        parts.append(f"{expired} expired + {dead} dead-session released")
+    if pruned:
+        parts.append(f"{pruned} old claim(s) pruned")
+    if parts:
+        click.echo("; ".join(parts))
     else:
         click.echo("No stale claims found")
+
+
+@claims_group.command("stats")
+@click.pass_context
+def claims_stats_cmd(ctx: click.Context) -> None:
+    """Show aggregate claim statistics."""
+    manager = _get_manager(ctx)
+    m = manager.get_claim_metrics()
+    click.echo(f"Total claims:     {m['total']}")
+    click.echo(f"  Active:         {m['active']}")
+    click.echo(f"  Released:       {m['released']}")
+    click.echo(f"  Expired:        {m['expired']}")
+    click.echo(f"  Force-released: {m['force_released']}")
+    click.echo(f"  Session-lost:   {m['session_lost']}")
+    if m["avg_duration_seconds"] is not None:
+        avg = m["avg_duration_seconds"]
+        if avg >= 3600:
+            click.echo(f"  Avg duration:   {avg // 3600}h {(avg % 3600) // 60}m")
+        elif avg >= 60:
+            click.echo(f"  Avg duration:   {avg // 60}m {avg % 60}s")
+        else:
+            click.echo(f"  Avg duration:   {avg}s")
 
 
 # --- Export/Import Commands ---

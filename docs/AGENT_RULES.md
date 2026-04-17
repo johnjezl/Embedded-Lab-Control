@@ -543,6 +543,51 @@ git commit -m "message"
 
 ---
 
+## 11. Hardware Claims (Exclusive Access)
+
+When multiple agents work against the same lab hardware, use the claims
+system to prevent collisions. See `docs/SPEC_claims.md` for the full
+design.
+
+### 11.1 Agent Workflow
+
+1. **Claim before multi-step operations:**
+   ```
+   labctl claim <sbc> --duration 30m --reason "GPU bringup"
+   # or via MCP:
+   claim_sbc(sbc_name="...", duration_minutes=30, reason="...")
+   ```
+2. **Mutating operations are gated:** `power_on`, `serial_send`,
+   `sdwire_update`, `flash_image`, `boot_test`, etc. return structured
+   errors if another agent holds the claim.
+3. **Heartbeat is automatic:** every tool call (reads and writes) by the
+   claimant extends the deadline.
+4. **Release when done:** `labctl release <sbc>` or `release_sbc(...)`.
+   Claims also auto-expire and are released when the MCP session exits.
+5. **Check pending release requests:** if another agent needs the board,
+   they'll call `request_sbc_release`; you'll see the notice on your
+   next tool call.
+
+### 11.2 Agent Name Convention
+
+Declare a descriptive `agent_name` on first claim:
+- `"jetson-gpu-agent"`, `"pi5-smp-dispatch"`, `"boot-test-runner"`
+- Appears in `labctl status` and audit log
+- Unnamed agents get `unnamed-<session-hash>` — functional but opaque
+
+### 11.3 Duration Guidelines
+
+| Workflow | Duration |
+|----------|----------|
+| Quick power cycle / flash | 5–15m |
+| Build + deploy + boot test | 30m–1h |
+| Overnight reliability run | 8–24h |
+
+Max is configurable (default 24h). Heartbeat extends the deadline
+automatically.
+
+---
+
 ## Summary: The Golden Rules
 
 1. **Test before you commit** - All tests must pass
