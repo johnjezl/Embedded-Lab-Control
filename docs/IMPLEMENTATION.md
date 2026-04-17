@@ -716,10 +716,16 @@ preventing destructive interference between concurrent workflows.
 
 ### Phase D: Operator tooling
 
-- ☐ Audit log filter by SBC / agent / outcome
-- ☐ Web dashboard integration (claim badges, manage-claim modal)
-- ☐ Web REST API (`/api/claims/*`)
-- ☐ Claim request notifications surfaced in tool responses
+- ✅ Web REST API: `GET /api/claims`, `GET /api/claims/{sbc}`,
+  `GET /api/claims/{sbc}/history`, `POST /api/claims/{sbc}` (claim),
+  `POST .../release`, `.../renew`, `.../force-release`, `.../request-release`
+- ✅ Dashboard claim badges on SBC cards (holder, remaining time, request warning)
+- ✅ SBC detail page claim section with force-release button
+- ✅ Claim request notifications surfaced as advisory text in MCP tool
+  responses (`_claim_advisory()` appended to 10 gated tools on success)
+- ✅ CSS for claim-badge, claim-section, claim-release-request
+- ✅ Tests: 12 new (REST API CRUD, conflict, force-release, request,
+  history, dashboard badge rendering, SBC detail claim section)
 
 ### Phase E: Polish
 

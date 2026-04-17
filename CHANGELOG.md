@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Hardware claims operator tooling, Phase D (2026-04-16)
+  - Web REST API: full claim lifecycle at `/api/claims/*`
+  - Dashboard: claim badges on SBC cards (agent, time remaining, request warning)
+  - SBC detail page: claim section with holder info, pending requests,
+    and force-release button
+  - MCP tool responses: `_claim_advisory()` appends pending release request
+    notices to all 10 gated tools on success
 - Hardware claims expiry and dead-session handling, Phase C (2026-04-16)
   - MCP `atexit` handler: releases this session's claims on clean exit
   - `release_dead_sessions()`: checks `kill -0 <pid>` for mcp-stdio claims;

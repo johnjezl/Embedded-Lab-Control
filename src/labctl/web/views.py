@@ -25,10 +25,14 @@ def index():
             except Exception:
                 power_states[sbc.name] = PowerState.UNKNOWN
 
+    # Index active claims by SBC name for dashboard badges
+    claims_by_sbc = {c.sbc_name: c for c in g.manager.list_active_claims()}
+
     return render_template(
         "dashboard.html",
         sbcs=sbcs,
         power_states=power_states,
+        claims_by_sbc=claims_by_sbc,
         PowerState=PowerState,
     )
 
@@ -49,10 +53,14 @@ def sbc_detail(name: str):
         except Exception:
             power_state = PowerState.UNKNOWN
 
+    # Load active claim for this SBC
+    active_claim = g.manager.get_active_claim(sbc.name)
+
     return render_template(
         "sbc_detail.html",
         sbc=sbc,
         power_state=power_state,
+        active_claim=active_claim,
         PowerState=PowerState,
         Status=Status,
         PortType=PortType,

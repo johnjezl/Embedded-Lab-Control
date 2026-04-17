@@ -38,6 +38,27 @@
                     </span>
                 </div>
             </div>
+
+            {% set claim = claims_by_sbc.get(sbc.name) %}
+            {% if claim %}
+            <div class="claim-badge">
+                <span class="claim-indicator"></span>
+                <span class="claim-holder">{{ claim.agent_name }}</span>
+                {% if claim.time_remaining %}
+                    {% set rem = claim.time_remaining.total_seconds()|int %}
+                    {% if rem >= 3600 %}
+                        <span class="claim-time">{{ rem // 3600 }}h {{ (rem % 3600) // 60 }}m</span>
+                    {% elif rem >= 60 %}
+                        <span class="claim-time">{{ rem // 60 }}m</span>
+                    {% else %}
+                        <span class="claim-time">{{ rem }}s</span>
+                    {% endif %}
+                {% endif %}
+                {% if claim.pending_requests %}
+                    <span class="claim-warning" title="Release requested">!</span>
+                {% endif %}
+            </div>
+            {% endif %}
         </div>
 
         <div class="sbc-footer">

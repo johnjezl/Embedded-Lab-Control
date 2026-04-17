@@ -9,6 +9,47 @@
     <span class="status-badge status-{{ sbc.status.value }}">{{ sbc.status.value }}</span>
 </div>
 
+{% if active_claim %}
+<div class="claim-section">
+    <h3>Active Claim</h3>
+    <div class="info-row">
+        <span class="label">Held by:</span>
+        <span class="value">{{ active_claim.agent_name }} ({{ active_claim.session_kind }})</span>
+    </div>
+    <div class="info-row">
+        <span class="label">Reason:</span>
+        <span class="value">{{ active_claim.reason }}</span>
+    </div>
+    {% if active_claim.time_remaining %}
+        {% set rem = active_claim.time_remaining.total_seconds()|int %}
+        <div class="info-row">
+            <span class="label">Time remaining:</span>
+            <span class="value">
+                {% if rem >= 3600 %}{{ rem // 3600 }}h {{ (rem % 3600) // 60 }}m
+                {% elif rem >= 60 %}{{ rem // 60 }}m {{ rem % 60 }}s
+                {% else %}{{ rem }}s{% endif %}
+            </span>
+        </div>
+    {% endif %}
+    {% if active_claim.renewal_count %}
+    <div class="info-row">
+        <span class="label">Renewed:</span>
+        <span class="value">{{ active_claim.renewal_count }}x</span>
+    </div>
+    {% endif %}
+    {% for req in active_claim.pending_requests %}
+    <div class="claim-release-request">
+        Release requested by <strong>{{ req.requested_by }}</strong>: {{ req.reason }}
+    </div>
+    {% endfor %}
+    <form action="{{ url_for('api.force_release_claim', sbc_name=sbc.name) }}" method="post" class="mt-2" style="display:inline;">
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+        <input type="hidden" name="reason" value="force-released via web dashboard">
+        <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Force-release this claim?')">Force Release</button>
+    </form>
+</div>
+{% endif %}
+
 <div class="detail-grid">
     <!-- Basic Info with Edit Form -->
     <div class="detail-card">

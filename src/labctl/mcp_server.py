@@ -139,6 +139,29 @@ def _check_claim(manager, sbc_name: str, mutating: bool = True) -> str | None:
     return None
 
 
+def _claim_advisory(manager, sbc_name: str) -> str:
+    """Return advisory text about pending release requests, or empty string.
+
+    Called after a tool completes successfully. If the caller holds the
+    claim and there are pending release requests, returns a human-readable
+    notice the AI agent can act on.
+    """
+    from labctl.core.models import UnknownSBCError
+
+    try:
+        claim = manager.get_active_claim(sbc_name)
+    except UnknownSBCError:
+        return ""
+    if claim is None or claim.session_id != _get_session_id():
+        return ""
+    if not claim.pending_requests:
+        return ""
+    lines = ["[claim advisory] Pending release request(s):"]
+    for req in claim.pending_requests:
+        lines.append(f"  - {req.requested_by}: {req.reason}")
+    return "\n".join(lines)
+
+
 # ---------------------------------------------------------------------------
 # Resources (read-only data)
 # ---------------------------------------------------------------------------
@@ -344,7 +367,9 @@ def power_on(sbc_name: str) -> str:
     try:
         controller = PowerController.from_plug(sbc.power_plug)
         if controller.power_on():
-            return f"Power ON: {sbc_name}"
+            result = f"Power ON: {sbc_name}"
+            advisory = _claim_advisory(manager, sbc_name)
+            return f"{result}\n\n{advisory}" if advisory else result
         return f"Failed to power on {sbc_name}"
     except RuntimeError as e:
         return f"Error: {e}"
@@ -372,7 +397,9 @@ def power_off(sbc_name: str) -> str:
     try:
         controller = PowerController.from_plug(sbc.power_plug)
         if controller.power_off():
-            return f"Power OFF: {sbc_name}"
+            result = f"Power OFF: {sbc_name}"
+            advisory = _claim_advisory(manager, sbc_name)
+            return f"{result}\n\n{advisory}" if advisory else result
         return f"Failed to power off {sbc_name}"
     except RuntimeError as e:
         return f"Error: {e}"
@@ -404,7 +431,9 @@ def power_cycle(sbc_name: str, delay: float = 3.0) -> str:
     try:
         controller = PowerController.from_plug(sbc.power_plug)
         if controller.power_cycle(delay):
-            return f"Power cycled: {sbc_name} (delay: {delay}s)"
+            result = f"Power cycled: {sbc_name} (delay: {delay}s)"
+            advisory = _claim_advisory(manager, sbc_name)
+            return f"{result}\n\n{advisory}" if advisory else result
         return f"Failed to power cycle {sbc_name}"
     except RuntimeError as e:
         return f"Error: {e}"
@@ -499,7 +528,9 @@ def remove_sbc(name: str) -> str:
         return f"Error: SBC '{name}' not found"
 
     if manager.delete_sbc(sbc.id):
-        return f"Removed SBC: {name}"
+        result = f"Removed SBC: {name}"
+        advisory = _claim_advisory(manager, name)
+        return f"{result}\n\n{advisory}" if advisory else result
     return f"Failed to remove SBC: {name}"
 
 
@@ -950,7 +981,9 @@ def sdwire_to_dut(sbc_name: str) -> str:
     try:
         ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
         ctrl.switch_to_dut()
-        return f"SD card switched to DUT: {sbc_name}"
+        result = f"SD card switched to DUT: {sbc_name}"
+        advisory = _claim_advisory(manager, sbc_name)
+        return f"{result}\n\n{advisory}" if advisory else result
     except RuntimeError as e:
         return f"Error: {e}"
 
@@ -1003,7 +1036,8 @@ def sdwire_to_host(sbc_name: str, force: bool = False) -> str:
         msg = f"SD card switched to host: {sbc_name}"
         if block_dev:
             msg += f" (block device: {block_dev})"
-        return msg
+        advisory = _claim_advisory(manager, sbc_name)
+        return f"{msg}\n\n{advisory}" if advisory else msg
     except RuntimeError as e:
         return f"Error: {e}"
 
@@ -1106,7 +1140,8 @@ def sdwire_update(
             power_ctrl.power_cycle()
             summary += f". Power cycled {sbc_name}."
 
-        return summary
+        advisory = _claim_advisory(manager, sbc_name)
+        return f"{summary}\n\n{advisory}" if advisory else summary
     except RuntimeError as e:
         return f"Error: {e}"
 
@@ -1216,7 +1251,9 @@ def flash_image(
             power_ctrl.power_on()
             parts.append(f"Powered on {sbc_name}")
 
-        return ". ".join(parts)
+        result = ". ".join(parts)
+        advisory = _claim_advisory(manager, sbc_name)
+        return f"{result}\n\n{advisory}" if advisory else result
 
     except RuntimeError as e:
         if not flash_ok:
@@ -1330,7 +1367,11 @@ def serial_send(
             capture_timeout=capture_timeout,
             capture_until=capture_until,
         )
-        return result.to_mcp_string()
+        result_str = result.to_mcp_string()
+        if sbc:
+            advisory = _claim_advisory(manager, sbc.name)
+            return f"{result_str}\n\n{advisory}" if advisory else result_str
+        return result_str
     except RuntimeError as e:
         return f"Error: {e}"
 
@@ -1428,7 +1469,9 @@ def boot_test(
             partition=partition,
             output_dir=output_dir,
         )
-        return result.format_summary()
+        result_str = result.format_summary()
+        advisory = _claim_advisory(manager, sbc_name)
+        return f"{result_str}\n\n{advisory}" if advisory else result_str
     except RuntimeError as e:
         return f"Error: {e}"
 

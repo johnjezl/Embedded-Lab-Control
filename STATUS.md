@@ -2,8 +2,8 @@
 
 ## Current State
 
-- **Milestone**: Hardware Claims (exclusive access), Phases A–C complete
-- **Sub-task**: Phase C expiry and dead-session handling
+- **Milestone**: Hardware Claims (exclusive access), Phases A–D complete
+- **Sub-task**: Phase D operator tooling (web API, dashboard, MCP advisory)
 - **Status**: Implementation + tests passing
 
 ## Last Session
