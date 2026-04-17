@@ -168,11 +168,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Snapshot `clients` dict before broadcast iteration
   - Guard orphaned `create_task(self.stop())` with state check
 - ser2net generate: add /dev/lab/ prefix for bare device names (2026-04-09)
+- ser2net format string: revert to `<baud><parity><databits><stopbits>` (e.g. `115200n81`) — ser2net rejects the comma-separated form with "unknown parameter 8n1" (2026-04-16)
 - Consolidated SBC.to_dict() serialization, eliminating duplication between MCP and API (2026-04-03)
 - Atomic upsert (INSERT...ON CONFLICT) for serial ports, network addresses, power plugs, SDWire assignments (2026-04-03)
 - Config load exception now logs warning instead of silently continuing (2026-04-03)
 - SessionLogger rotation handles disk errors without leaking file handles (2026-04-03)
-- ser2net format string corrected: `115200n81` -> `115200,8n1`, extracted PARITY_CHARS constant (2026-04-03)
+- ser2net format string: extracted PARITY_CHARS constant (2026-04-03)
 - Extracted `_load_serial_device()` helper, eliminating 3x code duplication in manager (2026-04-03)
 - Removed unused `_connection` field from Database class (2026-04-03)
 - Simplified redundant `is True`/`is False` checks in Shelly controller (2026-04-03)

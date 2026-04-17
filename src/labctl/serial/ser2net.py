@@ -29,10 +29,9 @@ class Ser2NetPort:
 
     def to_ser2net_dict(self) -> dict:
         """Convert to ser2net YAML connection format."""
-        # Build the connection string
-        # Format: &name,baud,databits,parity,stopbits
+        # ser2net serial params: <baud><parity><databits><stopbits>, e.g. 115200n81
         parity_char = PARITY_CHARS.get(self.parity.lower(), "n")
-        conn_str = f"{self.baud},{self.databits}{parity_char}{self.stopbits}"
+        conn_str = f"{self.baud}{parity_char}{self.databits}{self.stopbits}"
 
         # Build options list
         options = []
@@ -91,7 +90,7 @@ def generate_ser2net_config(
     # Add each connection
     for port in ports:
         parity_char = PARITY_CHARS.get(port.parity.lower(), "n")
-        conn_str = f"{port.baud},{port.databits}{parity_char}{port.stopbits}"
+        conn_str = f"{port.baud}{parity_char}{port.databits}{port.stopbits}"
 
         # Build options - local means only localhost connections
         local_spec = "localhost," if port.local else ""
