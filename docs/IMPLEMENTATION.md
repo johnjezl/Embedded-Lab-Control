@@ -668,7 +668,7 @@ preventing destructive interference between concurrent workflows.
 - ✅ `Claim`, `ClaimRequest`, `ReleaseReason`, `SessionKind` dataclasses/enums
   in `core/models.py`
 - ✅ Structured exception hierarchy (`ClaimConflict`, `ClaimNotFoundError`,
-  `NotClaimantError`, `UnknownSBCError`, `DurationOutOfBoundsError`)
+  `NotClaimantError`, `UnknownSBCError`)
 - ✅ `ResourceManager` ops: `claim_sbc`, `release_claim`, `renew_claim`,
   `heartbeat_claim`, `get_active_claim`, `list_active_claims`,
   `list_claim_history`, `force_release_claim`, `expire_stale_claims`,

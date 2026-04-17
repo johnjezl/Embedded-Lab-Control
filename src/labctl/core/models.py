@@ -82,10 +82,6 @@ class NotClaimantError(ClaimError):
     """The calling session does not hold the active claim."""
 
 
-class DurationOutOfBoundsError(ClaimError):
-    """Requested duration is outside configured min/max bounds."""
-
-
 class SessionKind(str, Enum):
     """Transport/origin of a claim session."""
 

@@ -691,3 +691,23 @@ class TestDashboardClaims:
         response = client.get(f"/sbc/{sample_sbc.name}")
         assert response.status_code == 200
         assert b"Active Claim" not in response.data
+
+    def test_force_release_button_redirects(self, client, manager, sample_sbc):
+        """Force-release via dashboard redirects back to SBC detail."""
+        manager.claim_sbc(
+            sbc_name=sample_sbc.name,
+            agent_name="holder",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="holding",
+        )
+        response = client.post(
+            f"/sbc/{sample_sbc.name}/claim/force-release",
+            data={"reason": "dashboard override"},
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+        # Should have redirected to SBC detail and shown flash
+        assert b"Force-released" in response.data
+        assert manager.get_active_claim(sample_sbc.name) is None

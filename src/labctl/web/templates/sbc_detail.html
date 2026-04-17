@@ -42,7 +42,7 @@
         Release requested by <strong>{{ req.requested_by }}</strong>: {{ req.reason }}
     </div>
     {% endfor %}
-    <form action="{{ url_for('api.force_release_claim', sbc_name=sbc.name) }}" method="post" class="mt-2" style="display:inline;">
+    <form action="{{ url_for('views.sbc_force_release', name=sbc.name) }}" method="post" class="mt-2" style="display:inline;">
         <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
         <input type="hidden" name="reason" value="force-released via web dashboard">
         <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Force-release this claim?')">Force Release</button>

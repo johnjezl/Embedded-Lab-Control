@@ -326,6 +326,28 @@ def sbc_plug_remove(name: str):
     return redirect(url_for("views.sbc_detail", name=name))
 
 
+@views_bp.route("/sbc/<name>/claim/force-release", methods=["POST"])
+def sbc_force_release(name: str):
+    """Force-release a claim from the web dashboard."""
+    from flask import request as flask_request
+
+    from labctl.core.models import ClaimNotFoundError
+
+    sbc = g.manager.get_sbc_by_name(name)
+    if not sbc:
+        flash(f"SBC '{name}' not found", "error")
+        return redirect(url_for("views.index"))
+
+    reason = flask_request.form.get("reason", "force-released via web dashboard")
+    try:
+        g.manager.force_release_claim(name, reason, released_by="web-operator")
+        flash(f"Force-released claim on '{name}'", "success")
+    except ClaimNotFoundError:
+        flash(f"No active claim on '{name}'", "error")
+
+    return redirect(url_for("views.sbc_detail", name=name))
+
+
 @views_bp.route("/settings")
 def settings():
     """Settings page."""

@@ -517,7 +517,13 @@ def run_health_check():
 
 
 def _web_session_id() -> str:
-    """Derive a stable session ID for web callers."""
+    """Derive a stable session ID for web callers.
+
+    Falls back to a per-request UUID for unauthenticated callers so
+    different anonymous users can't collide on the same session ID.
+    """
+    import uuid
+
     sid = session.get("_id") or session.get("session_id")
     if sid:
         return f"web-{sid}"
@@ -525,7 +531,9 @@ def _web_session_id() -> str:
     api_key = request.headers.get("X-API-Key", "")
     if api_key:
         return f"web-apikey-{api_key[:12]}"
-    return "web-anonymous"
+    # Anonymous: unique per request — can claim but won't be able to
+    # release (no stable identity). Prefer enabling auth.
+    return f"web-anon-{uuid.uuid4()}"
 
 
 def _web_agent_name() -> str:
