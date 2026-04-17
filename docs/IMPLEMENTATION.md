@@ -652,3 +652,92 @@ picocom or minicom (for direct serial access)
 | Version | Date | Changes |
 |---------|------|---------|
 | 0.1 | TBD | Initial implementation plan |
+
+---
+
+## Feature: Hardware Claims (Exclusive Access Coordination)
+
+**Spec**: `docs/SPEC_claims.md`
+**Goal**: Allow AI agents and humans to reserve SBCs for extended periods,
+preventing destructive interference between concurrent workflows.
+
+### Phase A: Core claim tracking (MVP)
+
+- ✅ Schema v3→v4 migration — `claims` + `claim_requests` tables,
+  partial unique index on active claim per SBC, expiry index
+- ✅ `Claim`, `ClaimRequest`, `ReleaseReason`, `SessionKind` dataclasses/enums
+  in `core/models.py`
+- ✅ Structured exception hierarchy (`ClaimConflict`, `ClaimNotFoundError`,
+  `NotClaimantError`, `UnknownSBCError`)
+- ✅ `ResourceManager` ops: `claim_sbc`, `release_claim`, `renew_claim`,
+  `heartbeat_claim`, `get_active_claim`, `list_active_claims`,
+  `list_claim_history`, `force_release_claim`, `expire_stale_claims`,
+  `record_release_request`
+- ✅ Concurrent-acquisition race handled: expire-stale sweep runs inside
+  the acquisition transaction before INSERT
+- ✅ `delete_sbc` refuses while claim is active (`force=True` overrides)
+- ✅ `ClaimsConfig` section in `core/config.py` (enabled, durations,
+  grace period, retention, require_agent_name)
+- ✅ CLI: `labctl claim | release | renew | force-release | request-release`
+- ✅ CLI: `labctl claims list | show <sbc> | history <sbc>`
+- ✅ `labctl status` shows per-SBC claim holder and pending requests
+- ✅ Unit tests (acquisition, conflict, expiry, heartbeat, renewal,
+  force-release, delete-gating, history ordering)
+- ✅ Integration tests for CLI commands
+
+### Phase B: MCP integration
+
+- ✅ MCP tools: `claim_sbc`, `release_sbc`, `renew_sbc_claim`, `list_claims`,
+  `get_claim`, `request_sbc_release`, `force_release_sbc`
+- ✅ MCP resources: `lab://claims`, `lab://claims/{sbc_name}`,
+  `lab://claims/history/{sbc_name}`
+- ✅ Session ID derivation: stdio `mcp-stdio:<pid>-<start_epoch>` (module-level)
+- ✅ Claim enforcement via `_check_claim()` on 10 mutating MCP tools
+  (power_on/off/cycle, serial_send, sdwire_to_host/dut, sdwire_update,
+  flash_image, boot_test, remove_sbc)
+- ✅ Heartbeat on every claimant tool call (via `_check_claim`)
+- ✅ Tests: claim tools (round-trip, conflict, renew, force-release,
+  request-release, resources, claim enforcement on power_on/remove_sbc)
+- ☐ HTTP session ID via FastMCP `ctx.session_id` (deferred to Phase C)
+
+### Phase C: Expiry and dead-session handling
+
+- ✅ MCP `atexit` handler releases claims held by this session on clean exit
+- ✅ `release_dead_sessions()` checks `kill -0 <pid>` for mcp-stdio claims;
+  dead PID + past grace → release as `session-lost` with audit log
+- ✅ Background daemon thread in MCP server runs `expire_stale_claims` +
+  `release_dead_sessions` every 30s
+- ✅ `labctl claims expire` CLI command for cron/systemd-driven sweeps
+- ✅ Grace period respected: dead sessions within grace not released
+- ✅ Logging via `logger.info` for auto-release events + audit_log
+- ✅ Tests: dead PID release, alive PID skip, CLI session skipped,
+  grace period respected, atexit release, other-session ignored
+- ☐ MCP HTTP session liveness (FastMCP session expiry) — deferred
+
+### Phase D: Operator tooling
+
+- ✅ Web REST API: `GET /api/claims`, `GET /api/claims/{sbc}`,
+  `GET /api/claims/{sbc}/history`, `POST /api/claims/{sbc}` (claim),
+  `POST .../release`, `.../renew`, `.../force-release`, `.../request-release`
+- ✅ Dashboard claim badges on SBC cards (holder, remaining time, request warning)
+- ✅ SBC detail page claim section with force-release button
+- ✅ Claim request notifications surfaced as advisory text in MCP tool
+  responses (`_claim_advisory()` appended to 10 gated tools on success)
+- ✅ CSS for claim-badge, claim-section, claim-release-request
+- ✅ Tests: 12 new (REST API CRUD, conflict, force-release, request,
+  history, dashboard badge rendering, SBC detail claim section)
+
+### Phase E: Polish
+
+- ✅ `ClaimsConfig.validate()` — clamps invalid bounds (min/max/default/
+  grace/prune_days) at load time with logged warnings
+- ✅ `prune_released_claims(older_than_days)` — deletes released claim
+  rows past retention threshold; wired into CLI `claims expire` and
+  MCP background sweep
+- ✅ `get_claim_metrics()` — aggregate totals by outcome + avg duration;
+  exposed via `labctl claims stats` CLI and `lab://claims/metrics` MCP
+  resource
+- ✅ `AGENT_RULES.md` section 11: claim workflow, naming convention,
+  duration guidelines
+- ✅ `MCP_SERVER.md` updated with claims tools/resources tables
+- ✅ Tests: config validation (7), prune (3), metrics (2)

@@ -112,6 +112,61 @@ class AuthConfig:
 
 
 @dataclass
+class ClaimsConfig:
+    """Hardware claim (exclusive access) configuration."""
+
+    enabled: bool = True
+    default_duration_minutes: int = 30
+    max_duration_minutes: int = 1440  # 24h — covers overnight reliability runs
+    min_duration_minutes: int = 1
+    grace_period_seconds: int = 60
+    auto_prune_released_after_days: int = 30
+    require_agent_name: bool = False
+
+    def validate(self) -> list[str]:
+        """Check invariants, returning a list of warning messages.
+
+        Clamps obviously wrong values to sane defaults so the system
+        still functions. Call after construction.
+        """
+        warnings = []
+        if self.min_duration_minutes < 1:
+            warnings.append(
+                f"claims.min_duration_minutes={self.min_duration_minutes}"
+                " clamped to 1"
+            )
+            self.min_duration_minutes = 1
+        if self.max_duration_minutes < self.min_duration_minutes:
+            warnings.append(
+                f"claims.max_duration_minutes={self.max_duration_minutes}"
+                f" < min ({self.min_duration_minutes}), clamped to min"
+            )
+            self.max_duration_minutes = self.min_duration_minutes
+        if (
+            self.default_duration_minutes < self.min_duration_minutes
+            or self.default_duration_minutes > self.max_duration_minutes
+        ):
+            clamped = max(
+                self.min_duration_minutes,
+                min(self.default_duration_minutes, self.max_duration_minutes),
+            )
+            warnings.append(
+                f"claims.default_duration_minutes="
+                f"{self.default_duration_minutes}"
+                f" outside [{self.min_duration_minutes},"
+                f" {self.max_duration_minutes}], clamped to {clamped}"
+            )
+            self.default_duration_minutes = clamped
+        if self.grace_period_seconds < 0:
+            warnings.append("claims.grace_period_seconds < 0, clamped to 0")
+            self.grace_period_seconds = 0
+        if self.auto_prune_released_after_days < 1:
+            warnings.append("claims.auto_prune_released_after_days < 1, clamped to 1")
+            self.auto_prune_released_after_days = 1
+        return warnings
+
+
+@dataclass
 class Config:
     """Main configuration for lab controller."""
 
@@ -122,6 +177,7 @@ class Config:
     auth: AuthConfig = field(default_factory=AuthConfig)
     web: WebConfig = field(default_factory=WebConfig)
     kasa: KasaConfig = field(default_factory=KasaConfig)
+    claims: ClaimsConfig = field(default_factory=ClaimsConfig)
     database_path: Path = field(
         default_factory=lambda: DEFAULT_CONFIG_DIR / "labctl.db"
     )
@@ -137,6 +193,7 @@ class Config:
         auth_data = data.get("auth", {})
         web_data = data.get("web", {})
         kasa_data = data.get("kasa", {})
+        claims_data = data.get("claims", {})
 
         serial = SerialConfig(
             dev_dir=Path(serial_data.get("dev_dir", "/dev/lab")),
@@ -200,6 +257,23 @@ class Config:
             password=kasa_data.get("password", ""),
         )
 
+        claims = ClaimsConfig(
+            enabled=claims_data.get("enabled", True),
+            default_duration_minutes=claims_data.get("default_duration_minutes", 30),
+            max_duration_minutes=claims_data.get("max_duration_minutes", 1440),
+            min_duration_minutes=claims_data.get("min_duration_minutes", 1),
+            grace_period_seconds=claims_data.get("grace_period_seconds", 60),
+            auto_prune_released_after_days=claims_data.get(
+                "auto_prune_released_after_days", 30
+            ),
+            require_agent_name=claims_data.get("require_agent_name", False),
+        )
+
+        # Validate and clamp claim config bounds
+        claim_warnings = claims.validate()
+        for w in claim_warnings:
+            logger.warning("Config: %s", w)
+
         return cls(
             serial=serial,
             ser2net=ser2net,
@@ -208,6 +282,7 @@ class Config:
             auth=auth,
             web=web,
             kasa=kasa,
+            claims=claims,
             database_path=Path(
                 data.get("database_path", str(DEFAULT_CONFIG_DIR / "labctl.db"))
             ),
@@ -266,6 +341,15 @@ class Config:
             "kasa": {
                 "username": self.kasa.username,
                 "password": self.kasa.password,
+            },
+            "claims": {
+                "enabled": self.claims.enabled,
+                "default_duration_minutes": self.claims.default_duration_minutes,
+                "max_duration_minutes": self.claims.max_duration_minutes,
+                "min_duration_minutes": self.claims.min_duration_minutes,
+                "grace_period_seconds": self.claims.grace_period_seconds,
+                "auto_prune_released_after_days": self.claims.auto_prune_released_after_days,
+                "require_agent_name": self.claims.require_agent_name,
             },
             "database_path": str(self.database_path),
             "log_level": self.log_level,

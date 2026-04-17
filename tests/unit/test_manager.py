@@ -1,9 +1,22 @@
 """Unit tests for resource manager."""
 
+import time
+
 import pytest
 
 from labctl.core.manager import get_manager
-from labctl.core.models import AddressType, PlugType, PortType, SerialDevice, Status
+from labctl.core.models import (
+    AddressType,
+    ClaimConflict,
+    ClaimNotFoundError,
+    NotClaimantError,
+    PlugType,
+    PortType,
+    ReleaseReason,
+    SerialDevice,
+    Status,
+    UnknownSBCError,
+)
 
 
 @pytest.fixture
@@ -736,9 +749,7 @@ class TestSDWireAssignment:
     def test_list_sbcs_loads_sdwire(self, manager):
         """Test that list_sbcs populates sdwire on each SBC."""
         sbc = manager.create_sbc(name="list-sw-sbc")
-        device = manager.create_sdwire_device(
-            name="list-sw", serial_number="s-list"
-        )
+        device = manager.create_sdwire_device(name="list-sw", serial_number="s-list")
         manager.assign_sdwire(sbc.id, device.id)
 
         sbcs = manager.list_sbcs()
@@ -907,9 +918,7 @@ class TestSBCToDict:
 
     def test_to_dict_basic(self, manager):
         """Test basic SBC serialization without IDs."""
-        sbc = manager.create_sbc(
-            name="dict-sbc", project="proj", description="desc"
-        )
+        sbc = manager.create_sbc(name="dict-sbc", project="proj", description="desc")
         d = sbc.to_dict()
         assert d["name"] == "dict-sbc"
         assert d["project"] == "proj"
@@ -928,8 +937,11 @@ class TestSBCToDict:
         """Test serialization includes serial port data."""
         sbc = manager.create_sbc(name="port-sbc")
         manager.assign_serial_port(
-            sbc.id, PortType.CONSOLE, "/dev/test",
-            tcp_port=4000, alias="test-console",
+            sbc.id,
+            PortType.CONSOLE,
+            "/dev/test",
+            tcp_port=4000,
+            alias="test-console",
         )
         sbc = manager.get_sbc_by_name("port-sbc")
         d = sbc.to_dict()
@@ -942,9 +954,7 @@ class TestSBCToDict:
     def test_to_dict_with_serial_ports_ids(self, manager):
         """Test port IDs included when include_ids=True."""
         sbc = manager.create_sbc(name="port-id-sbc")
-        manager.assign_serial_port(
-            sbc.id, PortType.CONSOLE, "/dev/test", tcp_port=4000
-        )
+        manager.assign_serial_port(sbc.id, PortType.CONSOLE, "/dev/test", tcp_port=4000)
         sbc = manager.get_sbc_by_name("port-id-sbc")
         d = sbc.to_dict(include_ids=True)
         assert "id" in d["serial_ports"][0]
@@ -952,9 +962,7 @@ class TestSBCToDict:
     def test_to_dict_with_network(self, manager):
         """Test serialization includes network address data."""
         sbc = manager.create_sbc(name="net-sbc")
-        manager.set_network_address(
-            sbc.id, AddressType.ETHERNET, "192.168.1.100"
-        )
+        manager.set_network_address(sbc.id, AddressType.ETHERNET, "192.168.1.100")
         sbc = manager.get_sbc_by_name("net-sbc")
         d = sbc.to_dict()
         assert "network_addresses" in d
@@ -997,16 +1005,11 @@ class TestUpsertBehavior:
     def test_network_address_upsert(self, manager):
         """Test setting network address replaces existing."""
         sbc = manager.create_sbc(name="upsert-net")
-        manager.set_network_address(
-            sbc.id, AddressType.ETHERNET, "10.0.0.1"
-        )
-        manager.set_network_address(
-            sbc.id, AddressType.ETHERNET, "10.0.0.2"
-        )
+        manager.set_network_address(sbc.id, AddressType.ETHERNET, "10.0.0.1")
+        manager.set_network_address(sbc.id, AddressType.ETHERNET, "10.0.0.2")
         sbc = manager.get_sbc_by_name("upsert-net")
         eth_addrs = [
-            a for a in sbc.network_addresses
-            if a.address_type == AddressType.ETHERNET
+            a for a in sbc.network_addresses if a.address_type == AddressType.ETHERNET
         ]
         assert len(eth_addrs) == 1
         assert eth_addrs[0].ip_address == "10.0.0.2"
@@ -1031,3 +1034,581 @@ class TestUpsertBehavior:
         sbc = manager.get_sbc_by_name("upsert-sdwire")
         assert sbc.sdwire is not None
         assert sbc.sdwire.name == "sw-b"
+
+
+def _make_session(name: str = "agent-a", kind: str = "cli") -> tuple[str, str, str]:
+    return (name, f"{kind}-{name}-session", kind)
+
+
+class TestClaimAcquisition:
+    """Acquisition, conflict, and basic ownership semantics."""
+
+    def test_claim_sbc_success(self, manager):
+        manager.create_sbc(name="sbc1")
+        agent, sid, kind = _make_session()
+        claim = manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name=agent,
+            session_id=sid,
+            session_kind=kind,
+            duration_seconds=600,
+            reason="bringup testing",
+        )
+        assert claim.id is not None
+        assert claim.agent_name == agent
+        assert claim.session_id == sid
+        assert claim.is_active
+        assert claim.duration_seconds == 600
+        assert claim.expires_at is not None
+
+    def test_claim_conflict_raises(self, manager):
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="first",
+        )
+        with pytest.raises(ClaimConflict) as excinfo:
+            manager.claim_sbc(
+                sbc_name="sbc1",
+                agent_name="b",
+                session_id="s2",
+                session_kind="cli",
+                duration_seconds=600,
+                reason="second",
+            )
+        assert excinfo.value.claim.agent_name == "a"
+
+    def test_claim_unknown_sbc_raises(self, manager):
+        with pytest.raises(UnknownSBCError):
+            manager.claim_sbc(
+                sbc_name="missing",
+                agent_name="a",
+                session_id="s1",
+                session_kind="cli",
+                duration_seconds=60,
+                reason="r",
+            )
+
+    def test_get_active_claim_returns_none_when_free(self, manager):
+        manager.create_sbc(name="sbc1")
+        assert manager.get_active_claim("sbc1") is None
+
+    def test_context_json_roundtrip(self, manager):
+        manager.create_sbc(name="sbc1")
+        ctx = {"branch": "feat/claims", "ticket": "LAB-42"}
+        claim = manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=60,
+            reason="r",
+            context=ctx,
+        )
+        fetched = manager.get_active_claim("sbc1")
+        assert claim.context == ctx
+        assert fetched.context == ctx
+
+
+class TestClaimRelease:
+    """Explicit release, force-release, and session ownership enforcement."""
+
+    def test_release_by_claimant(self, manager):
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=60,
+            reason="r",
+        )
+        released = manager.release_claim("sbc1", "s1")
+        assert released.released_at is not None
+        assert released.release_reason == ReleaseReason.RELEASED
+        assert manager.get_active_claim("sbc1") is None
+
+    def test_release_by_non_claimant_raises(self, manager):
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=60,
+            reason="r",
+        )
+        with pytest.raises(NotClaimantError):
+            manager.release_claim("sbc1", "s2")
+
+    def test_release_with_no_claim_raises(self, manager):
+        manager.create_sbc(name="sbc1")
+        with pytest.raises(ClaimNotFoundError):
+            manager.release_claim("sbc1", "s1")
+
+    def test_force_release_bypasses_session_check(self, manager):
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=60,
+            reason="r",
+        )
+        released = manager.force_release_claim(
+            "sbc1", "stuck agent, need the bench", released_by="john"
+        )
+        assert released.released_at is not None
+        assert released.release_reason == ReleaseReason.FORCE_RELEASED
+        assert released.released_by == "john"
+        assert manager.get_active_claim("sbc1") is None
+
+    def test_allow_reclaim_after_release(self, manager):
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=60,
+            reason="r",
+        )
+        manager.release_claim("sbc1", "s1")
+        # New claim by different session should succeed
+        claim = manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="b",
+            session_id="s2",
+            session_kind="cli",
+            duration_seconds=60,
+            reason="second",
+        )
+        assert claim.is_active
+
+
+class TestClaimExpiryAndHeartbeat:
+    """Expiry sweep, renewal, and heartbeat semantics."""
+
+    def test_expire_stale_releases_past_deadline(self, manager):
+        manager.create_sbc(name="sbc1")
+        # Claim with a 1-second duration; wait longer than grace
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=1,
+            reason="short",
+        )
+        time.sleep(1.2)
+        # grace=0 lets the sweep release immediately past the deadline
+        count = manager.expire_stale_claims(grace_seconds=0)
+        assert count == 1
+        history = manager.list_claim_history("sbc1")
+        assert len(history) == 1
+        assert history[0].release_reason == ReleaseReason.EXPIRED
+        assert history[0].released_by == "system"
+
+    def test_expired_claim_not_considered_active(self, manager):
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=1,
+            reason="short",
+        )
+        time.sleep(1.2)
+        # Even before a sweep runs, is_active (deadline-based) is False
+        assert manager.get_active_claim("sbc1") is None
+
+    def test_reclaim_over_expired_without_explicit_sweep(self, manager):
+        """Acquisition must succeed when the old claim is past its deadline,
+        even if no sweep has run — claim_sbc sweeps inside the transaction."""
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=1,
+            reason="short",
+        )
+        time.sleep(1.2)
+        # grace=0 so the in-transaction sweep fires
+        claim = manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="b",
+            session_id="s2",
+            session_kind="cli",
+            duration_seconds=60,
+            reason="takeover",
+            grace_seconds=0,
+        )
+        assert claim.is_active
+        assert claim.agent_name == "b"
+
+    def test_renew_extends_deadline(self, manager):
+        manager.create_sbc(name="sbc1")
+        original = manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=60,
+            reason="r",
+        )
+        time.sleep(1.05)
+        renewed = manager.renew_claim("sbc1", "s1", duration_seconds=120)
+        assert renewed.renewal_count == original.renewal_count + 1
+        assert renewed.duration_seconds == 120
+        assert renewed.expires_at > original.expires_at
+
+    def test_renew_by_non_claimant_raises(self, manager):
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=60,
+            reason="r",
+        )
+        with pytest.raises(NotClaimantError):
+            manager.renew_claim("sbc1", "s2")
+
+    def test_heartbeat_advances_last_activity(self, manager):
+        manager.create_sbc(name="sbc1")
+        original = manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=60,
+            reason="r",
+        )
+        time.sleep(1.05)
+        assert manager.heartbeat_claim("sbc1", "s1") is True
+        fresh = manager.get_active_claim("sbc1")
+        assert fresh.last_activity > original.last_activity
+        assert fresh.expires_at > original.expires_at
+
+    def test_heartbeat_from_other_session_silent_no_op(self, manager):
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=60,
+            reason="r",
+        )
+        assert manager.heartbeat_claim("sbc1", "other-session") is False
+
+    def test_heartbeat_with_no_claim_returns_false(self, manager):
+        manager.create_sbc(name="sbc1")
+        assert manager.heartbeat_claim("sbc1", "any") is False
+
+    def test_heartbeat_prevents_expiry(self, manager):
+        """A short-duration claim survives past its original deadline
+        when heartbeats keep pushing the deadline forward."""
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=2,
+            reason="r",
+        )
+        # Heartbeat 3 times across 3 seconds — original 2s deadline
+        # would have expired, but heartbeats push it forward.
+        for _ in range(3):
+            time.sleep(1.05)
+            assert manager.heartbeat_claim("sbc1", "s1") is True
+
+        # Should still be active despite 3s elapsed on a 2s claim
+        assert manager.get_active_claim("sbc1") is not None
+
+
+class TestClaimListing:
+    """list_active_claims and list_claim_history."""
+
+    def test_list_active_claims_across_sbcs(self, manager):
+        manager.create_sbc(name="sbc1")
+        manager.create_sbc(name="sbc2")
+        manager.create_sbc(name="sbc3")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=60,
+            reason="r",
+        )
+        manager.claim_sbc(
+            sbc_name="sbc3",
+            agent_name="c",
+            session_id="s3",
+            session_kind="mcp-stdio",
+            duration_seconds=120,
+            reason="r",
+        )
+        claims = manager.list_active_claims()
+        names = {c.sbc_name for c in claims}
+        assert names == {"sbc1", "sbc3"}
+
+    def test_history_preserves_released_claims(self, manager):
+        manager.create_sbc(name="sbc1")
+        for i in range(3):
+            manager.claim_sbc(
+                sbc_name="sbc1",
+                agent_name=f"a{i}",
+                session_id=f"s{i}",
+                session_kind="cli",
+                duration_seconds=60,
+                reason=f"cycle {i}",
+            )
+            manager.release_claim("sbc1", f"s{i}")
+        history = manager.list_claim_history("sbc1")
+        assert len(history) == 3
+        # Newest first
+        assert [c.agent_name for c in history] == ["a2", "a1", "a0"]
+
+
+class TestClaimRequests:
+    """Polite release request flow."""
+
+    def test_record_request_and_surface_in_active_claim(self, manager):
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="holder",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=60,
+            reason="long run",
+        )
+        request = manager.record_release_request(
+            "sbc1", requested_by="other-agent", reason="need the board"
+        )
+        assert request.id is not None
+        claim = manager.get_active_claim("sbc1")
+        assert len(claim.pending_requests) == 1
+        assert claim.pending_requests[0].requested_by == "other-agent"
+
+    def test_request_with_no_active_claim_raises(self, manager):
+        manager.create_sbc(name="sbc1")
+        with pytest.raises(ClaimNotFoundError):
+            manager.record_release_request("sbc1", "me", "why not")
+
+
+class TestDeleteSBCGatedByClaim:
+    """Remove-SBC must refuse while a claim is active (spec gating matrix)."""
+
+    def test_delete_sbc_refuses_while_claimed(self, manager):
+        sbc = manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=60,
+            reason="r",
+        )
+        with pytest.raises(ClaimConflict):
+            manager.delete_sbc(sbc.id)
+        # SBC still exists
+        assert manager.get_sbc(sbc.id) is not None
+
+    def test_delete_sbc_force_succeeds_while_claimed(self, manager):
+        sbc = manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=60,
+            reason="r",
+        )
+        assert manager.delete_sbc(sbc.id, force=True) is True
+        assert manager.get_sbc(sbc.id) is None
+
+    def test_delete_sbc_after_release_succeeds(self, manager):
+        sbc = manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=60,
+            reason="r",
+        )
+        manager.release_claim("sbc1", "s1")
+        assert manager.delete_sbc(sbc.id) is True
+
+
+class TestDeadSessionRelease:
+    """Session liveness check for mcp-stdio claims."""
+
+    def test_dead_pid_releases_claim(self, manager):
+        """Claim by a dead PID gets released after grace expires."""
+        from unittest.mock import patch
+
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="dead-agent",
+            session_id="mcp-stdio:99999-1700000000",
+            session_kind="mcp-stdio",
+            duration_seconds=1,
+            reason="test",
+        )
+        time.sleep(1.2)
+
+        with patch.object(type(manager), "_is_pid_alive", return_value=False):
+            count = manager.release_dead_sessions(grace_seconds=0)
+
+        assert count == 1
+        history = manager.list_claim_history("sbc1")
+        assert history[0].release_reason == ReleaseReason.SESSION_LOST
+
+    def test_alive_pid_not_released(self, manager):
+        """Claim by a living PID is left alone."""
+        from unittest.mock import patch
+
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="live-agent",
+            session_id="mcp-stdio:1-1700000000",
+            session_kind="mcp-stdio",
+            duration_seconds=1,
+            reason="test",
+        )
+        time.sleep(1.2)
+
+        with patch.object(type(manager), "_is_pid_alive", return_value=True):
+            count = manager.release_dead_sessions(grace_seconds=0)
+
+        assert count == 0
+
+    def test_cli_session_skipped(self, manager):
+        """CLI claims are not subject to PID liveness checks."""
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="cli-user",
+            session_id="cli-john@host",
+            session_kind="cli",
+            duration_seconds=1,
+            reason="test",
+        )
+        time.sleep(1.2)
+        count = manager.release_dead_sessions(grace_seconds=0)
+        assert count == 0
+
+    def test_grace_period_respected(self, manager):
+        """Dead PID within grace period is not released."""
+        from unittest.mock import patch
+
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="dead-agent",
+            session_id="mcp-stdio:99999-1700000000",
+            session_kind="mcp-stdio",
+            duration_seconds=600,
+            reason="test",
+        )
+        # Claim still within its deadline — grace check won't trigger
+        with patch.object(type(manager), "_is_pid_alive", return_value=False):
+            count = manager.release_dead_sessions(grace_seconds=60)
+
+        assert count == 0
+
+
+class TestPruneReleasedClaims:
+    """Auto-prune of old released claims."""
+
+    def test_prune_removes_old_released(self, manager):
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=60,
+            reason="r",
+        )
+        manager.release_claim("sbc1", "s1")
+        # Backdate released_at to 60 days ago
+        manager.db.execute_modify(
+            "UPDATE claims SET released_at = datetime('now', '-60 days')"
+        )
+        count = manager.prune_released_claims(older_than_days=30)
+        assert count == 1
+
+    def test_prune_keeps_recent_released(self, manager):
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=60,
+            reason="r",
+        )
+        manager.release_claim("sbc1", "s1")
+        count = manager.prune_released_claims(older_than_days=30)
+        assert count == 0
+
+    def test_prune_never_touches_active(self, manager):
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="r",
+        )
+        count = manager.prune_released_claims(older_than_days=0)
+        assert count == 0
+
+
+class TestClaimMetrics:
+    """get_claim_metrics aggregate stats."""
+
+    def test_empty_metrics(self, manager):
+        m = manager.get_claim_metrics()
+        assert m["total"] == 0
+        assert m["active"] == 0
+        assert m["avg_duration_seconds"] is None
+
+    def test_metrics_after_claim_release_cycle(self, manager):
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="a",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=60,
+            reason="r",
+        )
+        m = manager.get_claim_metrics()
+        assert m["total"] == 1
+        assert m["active"] == 1
+
+        manager.release_claim("sbc1", "s1")
+        m = manager.get_claim_metrics()
+        assert m["total"] == 1
+        assert m["active"] == 0
+        assert m["released"] == 1
+        assert m["avg_duration_seconds"] is not None

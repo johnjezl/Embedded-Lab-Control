@@ -49,7 +49,9 @@ class ShellyController(PowerController):
             response.raise_for_status()
             return response.json()
         except Exception as e:
-            logger.warning("Shelly request '%s' failed for %s: %s", endpoint, self.address, e)
+            logger.warning(
+                "Shelly request '%s' failed for %s: %s", endpoint, self.address, e
+            )
             return None
 
     def power_on(self) -> bool:

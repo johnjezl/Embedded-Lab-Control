@@ -24,9 +24,7 @@ def populated_manager(manager):
     sbc1 = manager.create_sbc(
         name="test-sbc-1", project="ProjectA", description="First test SBC"
     )
-    sbc2 = manager.create_sbc(
-        name="test-sbc-2", project="ProjectB", ssh_user="admin"
-    )
+    sbc2 = manager.create_sbc(name="test-sbc-2", project="ProjectB", ssh_user="admin")
 
     device = manager.create_serial_device(
         name="port-1", usb_path="1-10.1.3", vendor="FTDI", model="FT232R"
@@ -449,7 +447,9 @@ class TestMcpSDWireTools:
         mock_power = MagicMock()
         mock_power.get_state.return_value = PowerState.ON
 
-        with patch("labctl.power.base.PowerController.from_plug", return_value=mock_power):
+        with patch(
+            "labctl.power.base.PowerController.from_plug", return_value=mock_power
+        ):
             result = sdwire_to_host(sbc_name="test-sbc-1")
 
         assert "Error" in result
@@ -466,7 +466,9 @@ class TestMcpSDWireTools:
         mock_ctrl = MagicMock()
         mock_ctrl.get_block_device.return_value = "/dev/sdb"
 
-        with patch("labctl.power.base.PowerController.from_plug", return_value=mock_power):
+        with patch(
+            "labctl.power.base.PowerController.from_plug", return_value=mock_power
+        ):
             with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl):
                 result = sdwire_to_host(sbc_name="test-sbc-1", force=True)
 
@@ -483,7 +485,9 @@ class TestMcpSDWireTools:
         mock_ctrl = MagicMock()
         mock_ctrl.get_block_device.return_value = "/dev/sdb"
 
-        with patch("labctl.power.base.PowerController.from_plug", return_value=mock_power):
+        with patch(
+            "labctl.power.base.PowerController.from_plug", return_value=mock_power
+        ):
             with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl):
                 result = sdwire_to_host(sbc_name="test-sbc-1")
 
@@ -529,17 +533,13 @@ class TestMcpSDWireTools:
     def test_sdwire_update_not_found(self, mock_manager):
         from labctl.mcp_server import sdwire_update
 
-        result = sdwire_update(
-            sbc_name="nope", partition=1, copies=["a.bin:b.bin"]
-        )
+        result = sdwire_update(sbc_name="nope", partition=1, copies=["a.bin:b.bin"])
         assert "not found" in result
 
     def test_sdwire_update_bad_copy_format(self, mock_manager):
         from labctl.mcp_server import sdwire_update
 
-        result = sdwire_update(
-            sbc_name="test-sbc-1", partition=1, copies=["no-colon"]
-        )
+        result = sdwire_update(sbc_name="test-sbc-1", partition=1, copies=["no-colon"])
         assert "Invalid copy format" in result
 
     def test_sdwire_update_success(self, mock_manager):
@@ -549,7 +549,9 @@ class TestMcpSDWireTools:
 
         mock_ctrl_instance = MagicMock()
         mock_ctrl_instance.update_files.return_value = {
-            "copied": ["kernel.img"], "renamed": [], "deleted": [],
+            "copied": ["kernel.img"],
+            "renamed": [],
+            "deleted": [],
         }
 
         with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl_instance):
@@ -571,14 +573,18 @@ class TestMcpSDWireTools:
 
         mock_ctrl_instance = MagicMock()
         mock_ctrl_instance.update_files.return_value = {
-            "copied": ["kernel.img"], "renamed": [], "deleted": [],
+            "copied": ["kernel.img"],
+            "renamed": [],
+            "deleted": [],
         }
 
         mock_power = MagicMock()
         mock_power.power_cycle.return_value = True
 
         with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl_instance):
-            with patch("labctl.power.base.PowerController.from_plug", return_value=mock_power):
+            with patch(
+                "labctl.power.base.PowerController.from_plug", return_value=mock_power
+            ):
                 result = sdwire_update(
                     sbc_name="test-sbc-1",
                     partition=1,
@@ -638,8 +644,10 @@ class TestMcpSerialTools:
         from labctl.serial.capture import CaptureResult
 
         mock_result = CaptureResult(
-            output="boot output", lines=1,
-            pattern_matched=True, elapsed_seconds=5.0,
+            output="boot output",
+            lines=1,
+            pattern_matched=True,
+            elapsed_seconds=5.0,
         )
 
         with patch(
@@ -661,8 +669,10 @@ class TestMcpSerialTools:
         from labctl.serial.capture import CaptureResult
 
         mock_result = CaptureResult(
-            output="hello", lines=1,
-            pattern_matched=False, elapsed_seconds=15.0,
+            output="hello",
+            lines=1,
+            pattern_matched=False,
+            elapsed_seconds=15.0,
         )
 
         with patch(
@@ -717,10 +727,13 @@ class TestMcpSerialTools:
         from labctl.serial.capture import CaptureResult, SendResult
 
         mock_result = SendResult(
-            sent=True, bytes_sent=7,
+            sent=True,
+            bytes_sent=7,
             capture=CaptureResult(
-                output="response", lines=1,
-                pattern_matched=True, elapsed_seconds=2.0,
+                output="response",
+                lines=1,
+                pattern_matched=True,
+                elapsed_seconds=2.0,
             ),
         )
 
@@ -805,14 +818,17 @@ class TestMcpFlashImage:
         mock_ctrl = MagicMock()
         mock_ctrl.get_block_device.return_value = "/dev/sdb"
         mock_ctrl.flash_image.return_value = {
-            "bytes_written": 1024, "elapsed_seconds": 1.0,
+            "bytes_written": 1024,
+            "elapsed_seconds": 1.0,
             "block_device": "/dev/sdb",
         }
 
         mock_power_inst = MagicMock()
         with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl):
-            with patch("labctl.power.base.PowerController.from_plug",
-                       return_value=mock_power_inst):
+            with patch(
+                "labctl.power.base.PowerController.from_plug",
+                return_value=mock_power_inst,
+            ):
                 result = flash_image(
                     sbc_name="test-sbc-1",
                     image_path="/tmp/test.img",
@@ -1038,9 +1054,7 @@ class TestMcpDeviceCrudTools:
     def test_add_serial_device(self, mock_manager):
         from labctl.mcp_server import add_serial_device
 
-        result = add_serial_device(
-            name="new-port", usb_path="1-10.2.1", vendor="FTDI"
-        )
+        result = add_serial_device(name="new-port", usb_path="1-10.2.1", vendor="FTDI")
         assert "Registered" in result
         assert "new-port" in result
 
@@ -1067,9 +1081,7 @@ class TestMcpDeviceCrudTools:
     def test_sdwire_add(self, mock_manager):
         from labctl.mcp_server import sdwire_add
 
-        result = sdwire_add(
-            name="new-sdwire", serial_number="serial-new-123"
-        )
+        result = sdwire_add(name="new-sdwire", serial_number="serial-new-123")
         assert "Registered" in result
         assert "new-sdwire" in result
 
@@ -1168,3 +1180,353 @@ class TestMcpDiscoveryTools:
         ):
             result = serial_discover()
         assert "ttyUSB0" in result
+
+
+# ---------------------------------------------------------------------------
+# Claim Tool + Resource tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def claims_env(populated_manager, tmp_path):
+    """Patch _get_manager, _get_config, and session identity for claim tests."""
+    from labctl.core.config import ClaimsConfig, Config
+
+    config = Config()
+    config.claims = ClaimsConfig(
+        enabled=True,
+        default_duration_minutes=30,
+        max_duration_minutes=60,
+        min_duration_minutes=1,
+        grace_period_seconds=60,
+    )
+    config.database_path = tmp_path / "test.db"
+
+    with (
+        patch("labctl.mcp_server._get_manager", return_value=populated_manager),
+        patch("labctl.mcp_server._get_config", return_value=config),
+        patch("labctl.mcp_server._SESSION_ID", "test-session-1"),
+        patch("labctl.mcp_server._SESSION_KIND", "mcp-stdio"),
+        patch("labctl.mcp_server._AGENT_NAME", "test-agent"),
+    ):
+        yield populated_manager
+
+
+class TestMcpClaimTools:
+    """Tests for MCP claim_sbc, release_sbc, renew_sbc_claim, etc."""
+
+    def test_claim_and_release_round_trip(self, claims_env):
+        from labctl.mcp_server import claim_sbc, list_claims, release_sbc
+
+        result = json.loads(
+            claim_sbc(sbc_name="test-sbc-1", reason="bringup", duration_minutes=10)
+        )
+        assert result["status"] == "claimed"
+        assert result["claim"]["agent_name"] == "test-agent"
+
+        claims = json.loads(list_claims())
+        assert len(claims["active_claims"]) == 1
+
+        result = json.loads(release_sbc(sbc_name="test-sbc-1"))
+        assert result["status"] == "released"
+
+        claims = json.loads(list_claims())
+        assert len(claims["active_claims"]) == 0
+
+    def test_claim_conflict(self, claims_env):
+        from labctl.mcp_server import claim_sbc
+
+        # Claim by a different session first
+        claims_env.claim_sbc(
+            sbc_name="test-sbc-1",
+            agent_name="other",
+            session_id="other-session",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="first",
+        )
+
+        result = json.loads(claim_sbc(sbc_name="test-sbc-1", reason="second"))
+        assert result["error"] == "sbc_claimed"
+        assert "hints" in result
+
+    def test_claim_unknown_sbc(self, claims_env):
+        from labctl.mcp_server import claim_sbc
+
+        result = json.loads(claim_sbc(sbc_name="ghost", reason="r"))
+        assert result["error"] == "unknown_sbc"
+
+    def test_claim_duration_out_of_bounds(self, claims_env):
+        from labctl.mcp_server import claim_sbc
+
+        result = json.loads(
+            claim_sbc(sbc_name="test-sbc-1", reason="r", duration_minutes=120)
+        )
+        assert result["error"] == "duration_out_of_bounds"
+
+    def test_renew_extends_claim(self, claims_env):
+        from labctl.mcp_server import claim_sbc, renew_sbc_claim
+
+        claim_sbc(sbc_name="test-sbc-1", reason="r", duration_minutes=10)
+        result = json.loads(renew_sbc_claim(sbc_name="test-sbc-1", duration_minutes=20))
+        assert result["status"] == "renewed"
+        assert result["claim"]["duration_seconds"] == 1200
+
+    def test_renew_non_claimant(self, claims_env):
+        from labctl.mcp_server import renew_sbc_claim
+
+        claims_env.claim_sbc(
+            sbc_name="test-sbc-1",
+            agent_name="other",
+            session_id="other-session",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="holding",
+        )
+        result = json.loads(renew_sbc_claim(sbc_name="test-sbc-1"))
+        assert result["error"] == "not_claimant"
+
+    def test_release_non_claimant(self, claims_env):
+        from labctl.mcp_server import release_sbc
+
+        claims_env.claim_sbc(
+            sbc_name="test-sbc-1",
+            agent_name="other",
+            session_id="other-session",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="holding",
+        )
+        result = json.loads(release_sbc(sbc_name="test-sbc-1"))
+        assert result["error"] == "not_claimant"
+
+    def test_get_claim_when_free(self, claims_env):
+        from labctl.mcp_server import get_claim
+
+        result = json.loads(get_claim(sbc_name="test-sbc-1"))
+        assert result["claimed"] is False
+
+    def test_get_claim_when_held(self, claims_env):
+        from labctl.mcp_server import claim_sbc, get_claim
+
+        claim_sbc(sbc_name="test-sbc-1", reason="r")
+        result = json.loads(get_claim(sbc_name="test-sbc-1"))
+        assert result["claimed"] is True
+        assert result["claim"]["agent_name"] == "test-agent"
+
+    def test_request_release_recorded(self, claims_env):
+        from labctl.mcp_server import (
+            claim_sbc,
+            get_claim,
+            request_sbc_release,
+        )
+
+        claim_sbc(sbc_name="test-sbc-1", reason="r")
+        result = json.loads(
+            request_sbc_release(sbc_name="test-sbc-1", reason="need it")
+        )
+        assert result["status"] == "request_recorded"
+
+        claim = json.loads(get_claim(sbc_name="test-sbc-1"))
+        assert len(claim["claim"]["pending_requests"]) == 1
+
+    def test_force_release(self, claims_env):
+        from labctl.mcp_server import force_release_sbc
+
+        claims_env.claim_sbc(
+            sbc_name="test-sbc-1",
+            agent_name="other",
+            session_id="other-session",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="holding",
+        )
+        result = json.loads(
+            force_release_sbc(sbc_name="test-sbc-1", reason="emergency")
+        )
+        assert result["status"] == "force_released"
+        assert result["was_held_by"] == "other"
+
+
+class TestMcpClaimResources:
+    """Tests for claim MCP resources."""
+
+    def test_list_claims_resource_empty(self, claims_env):
+        from labctl.mcp_server import list_claims_resource
+
+        result = json.loads(list_claims_resource())
+        assert result == []
+
+    def test_list_claims_resource_with_claim(self, claims_env):
+        from labctl.mcp_server import claim_sbc, list_claims_resource
+
+        claim_sbc(sbc_name="test-sbc-1", reason="r")
+        result = json.loads(list_claims_resource())
+        assert len(result) == 1
+        assert result[0]["sbc_name"] == "test-sbc-1"
+
+    def test_get_claim_resource(self, claims_env):
+        from labctl.mcp_server import claim_sbc, get_claim_resource
+
+        claim_sbc(sbc_name="test-sbc-1", reason="r")
+        result = json.loads(get_claim_resource("test-sbc-1"))
+        assert result["claimed"] is True
+
+    def test_claim_history_resource(self, claims_env):
+        from labctl.mcp_server import (
+            claim_sbc,
+            get_claim_history_resource,
+            release_sbc,
+        )
+
+        claim_sbc(sbc_name="test-sbc-1", reason="first run")
+        release_sbc(sbc_name="test-sbc-1")
+        result = json.loads(get_claim_history_resource("test-sbc-1"))
+        assert len(result) == 1
+        assert result[0]["agent_name"] == "test-agent"
+
+
+class TestMcpClaimEnforcement:
+    """Tests that mutating ops are gated by other-agent claims."""
+
+    def test_power_on_blocked_by_other_claim(self, claims_env):
+        from labctl.mcp_server import power_on
+
+        claims_env.claim_sbc(
+            sbc_name="test-sbc-1",
+            agent_name="other",
+            session_id="other-session",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="holding",
+        )
+        result = power_on(sbc_name="test-sbc-1")
+        data = json.loads(result)
+        assert data["error"] == "sbc_claimed"
+        assert "other" in data["claim"]["agent_name"]
+
+    def test_power_on_allowed_for_claimant(self, claims_env):
+        from labctl.mcp_server import claim_sbc, power_on
+
+        claim_sbc(sbc_name="test-sbc-1", reason="my claim")
+
+        # power_on will try actual power control — mock it
+        with patch("labctl.power.base.PowerController.from_plug") as m:
+            m.return_value.power_on.return_value = True
+            result = power_on(sbc_name="test-sbc-1")
+        assert "Power ON" in result
+
+    def test_power_on_allowed_when_unclaimed(self, claims_env):
+        from labctl.mcp_server import power_on
+
+        with patch("labctl.power.base.PowerController.from_plug") as m:
+            m.return_value.power_on.return_value = True
+            result = power_on(sbc_name="test-sbc-1")
+        assert "Power ON" in result
+
+    def test_remove_sbc_blocked_by_claim(self, claims_env):
+        from labctl.mcp_server import remove_sbc
+
+        claims_env.claim_sbc(
+            sbc_name="test-sbc-1",
+            agent_name="other",
+            session_id="other-session",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="holding",
+        )
+        result = remove_sbc(name="test-sbc-1")
+        data = json.loads(result)
+        assert data["error"] == "sbc_claimed"
+
+
+class TestMcpAtexitAndSweep:
+    """Tests for atexit claim release and background sweep."""
+
+    def test_release_session_claims(self, claims_env):
+        """_release_session_claims releases this session's claims."""
+        from labctl.mcp_server import _release_session_claims, claim_sbc
+
+        claim_sbc(sbc_name="test-sbc-1", reason="will exit")
+        assert claims_env.get_active_claim("test-sbc-1") is not None
+
+        _release_session_claims()
+        assert claims_env.get_active_claim("test-sbc-1") is None
+
+    def test_release_session_claims_ignores_other_sessions(self, claims_env):
+        """_release_session_claims doesn't touch other sessions' claims."""
+        from labctl.mcp_server import _release_session_claims
+
+        claims_env.claim_sbc(
+            sbc_name="test-sbc-1",
+            agent_name="other",
+            session_id="other-session",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="not mine",
+        )
+        _release_session_claims()
+        assert claims_env.get_active_claim("test-sbc-1") is not None
+
+
+class TestMcpClaimMetricsResource:
+    """Tests for lab://claims/metrics MCP resource."""
+
+    def test_metrics_resource_empty(self, claims_env):
+        from labctl.mcp_server import get_claim_metrics_resource
+
+        result = json.loads(get_claim_metrics_resource())
+        assert result["total"] == 0
+        assert result["active"] == 0
+
+    def test_metrics_resource_after_activity(self, claims_env):
+        from labctl.mcp_server import (
+            claim_sbc,
+            get_claim_metrics_resource,
+            release_sbc,
+        )
+
+        claim_sbc(sbc_name="test-sbc-1", reason="metrics test")
+        release_sbc(sbc_name="test-sbc-1")
+        result = json.loads(get_claim_metrics_resource())
+        assert result["total"] == 1
+        assert result["released"] == 1
+        assert result["avg_duration_seconds"] is not None
+
+
+class TestMcpClaimAdvisory:
+    """Tests that pending release requests surface in tool responses."""
+
+    def test_advisory_appended_on_claimant_success(self, claims_env):
+        from labctl.mcp_server import claim_sbc, request_sbc_release
+
+        # Claim as our session, then have someone request release
+        claim_sbc(sbc_name="test-sbc-1", reason="my claim")
+        claims_env.record_release_request(
+            "test-sbc-1",
+            requested_by="other-agent",
+            reason="need the bench",
+        )
+
+        # power_on by claimant should include advisory
+        from labctl.mcp_server import power_on
+
+        with patch("labctl.power.base.PowerController.from_plug") as m:
+            m.return_value.power_on.return_value = True
+            result = power_on(sbc_name="test-sbc-1")
+
+        assert "Power ON" in result
+        assert "[claim advisory]" in result
+        assert "other-agent" in result
+        assert "need the bench" in result
+
+    def test_no_advisory_when_no_requests(self, claims_env):
+        from labctl.mcp_server import claim_sbc, power_on
+
+        claim_sbc(sbc_name="test-sbc-1", reason="my claim")
+        with patch("labctl.power.base.PowerController.from_plug") as m:
+            m.return_value.power_on.return_value = True
+            result = power_on(sbc_name="test-sbc-1")
+
+        assert "Power ON" in result
+        assert "[claim advisory]" not in result

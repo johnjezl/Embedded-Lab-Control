@@ -27,6 +27,8 @@ class TestDatabase:
         assert "status_log" in table_names
         assert "audit_log" in table_names
         assert "schema_version" in table_names
+        assert "claims" in table_names
+        assert "claim_requests" in table_names
 
     def test_schema_version_recorded(self, tmp_path):
         """Test that schema version is recorded."""
@@ -148,7 +150,8 @@ class TestDatabase:
         # Manually create a v1-like database
         conn = sqlite3.connect(str(db_path))
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.executescript("""
+        conn.executescript(
+            """
             CREATE TABLE schema_version (
                 version INTEGER PRIMARY KEY,
                 applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -219,7 +222,8 @@ class TestDatabase:
             );
 
             INSERT INTO schema_version (version) VALUES (1);
-        """)
+        """
+        )
         conn.commit()
         conn.close()
 
@@ -253,7 +257,8 @@ class TestDatabase:
 
         conn = sqlite3.connect(str(db_path))
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.executescript("""
+        conn.executescript(
+            """
             CREATE TABLE schema_version (
                 version INTEGER PRIMARY KEY,
                 applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -327,7 +332,8 @@ class TestDatabase:
             INSERT INTO sbcs (name) VALUES ('existing-sbc');
             INSERT INTO serial_ports (sbc_id, port_type, device_path, tcp_port, baud_rate)
                 VALUES (1, 'console', '/dev/ttyUSB0', 4000, 115200);
-        """)
+        """
+        )
         conn.commit()
         conn.close()
 
@@ -382,7 +388,8 @@ class TestDatabase:
         # Create a v2 database (has serial_devices but no sdwire tables)
         conn = sqlite3.connect(str(db_path))
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.executescript("""
+        conn.executescript(
+            """
             CREATE TABLE schema_version (
                 version INTEGER PRIMARY KEY,
                 applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -452,7 +459,8 @@ class TestDatabase:
             );
 
             INSERT INTO schema_version (version) VALUES (2);
-        """)
+        """
+        )
         conn.commit()
         conn.close()
 
@@ -473,5 +481,138 @@ class TestDatabase:
 
         # Schema version should be current
         from labctl.core.database import SCHEMA_VERSION
+
+        row = db.execute_one("SELECT MAX(version) as v FROM schema_version")
+        assert row["v"] == SCHEMA_VERSION
+
+    def test_schema_v4_creates_claim_tables(self, tmp_path):
+        """Test that fresh init creates claims and claim_requests tables with expected columns."""
+        db_path = tmp_path / "test.db"
+        db = get_database(db_path)
+
+        cols = db.execute("PRAGMA table_info(claims)")
+        col_names = {c["name"] for c in cols}
+        required = {
+            "sbc_id",
+            "agent_name",
+            "session_id",
+            "session_kind",
+            "reason",
+            "context_json",
+            "acquired_at",
+            "duration_seconds",
+            "last_activity",
+            "expires_at",
+            "renewal_count",
+            "released_at",
+            "release_reason",
+            "released_by",
+        }
+        assert required.issubset(col_names)
+
+        cols = db.execute("PRAGMA table_info(claim_requests)")
+        col_names = {c["name"] for c in cols}
+        assert {
+            "claim_id",
+            "requested_by",
+            "reason",
+            "requested_at",
+            "acknowledged",
+        }.issubset(col_names)
+
+    def test_schema_v4_partial_unique_index_allows_multiple_released(self, tmp_path):
+        """Released claims can repeat per SBC; only active ones are constrained."""
+        db_path = tmp_path / "test.db"
+        db = get_database(db_path)
+
+        db.execute_insert("INSERT INTO sbcs (name) VALUES (?)", ("sbc1",))
+        # Three released claims on the same SBC — all allowed
+        for _ in range(3):
+            db.execute_insert(
+                """
+                INSERT INTO claims
+                  (sbc_id, agent_name, session_id, session_kind, reason,
+                   duration_seconds, expires_at, released_at, release_reason)
+                VALUES (1, 'a', 's', 'cli', 'r', 60, CURRENT_TIMESTAMP,
+                        CURRENT_TIMESTAMP, 'released')
+                """,
+            )
+
+        # One active claim is fine
+        db.execute_insert(
+            """
+            INSERT INTO claims
+              (sbc_id, agent_name, session_id, session_kind, reason,
+               duration_seconds, expires_at)
+            VALUES (1, 'a', 's', 'cli', 'r', 60, CURRENT_TIMESTAMP)
+            """,
+        )
+
+        # A second active claim on the same SBC must fail
+        with pytest.raises(Exception):
+            db.execute_insert(
+                """
+                INSERT INTO claims
+                  (sbc_id, agent_name, session_id, session_kind, reason,
+                   duration_seconds, expires_at)
+                VALUES (1, 'b', 't', 'cli', 'r', 60, CURRENT_TIMESTAMP)
+                """,
+            )
+
+    def test_migration_v3_to_v4(self, tmp_path):
+        """v3 -> v4 adds claim tables without disturbing existing data."""
+        import sqlite3
+
+        db_path = tmp_path / "test_v3_to_v4.db"
+
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE sbcs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                project TEXT, description TEXT,
+                ssh_user TEXT DEFAULT 'root',
+                status TEXT DEFAULT 'unknown',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO schema_version (version) VALUES (3);
+            INSERT INTO sbcs (name) VALUES ('pre-existing');
+        """
+        )
+        conn.commit()
+        conn.close()
+
+        db = Database(db_path)
+        db.initialize()
+
+        # Claims tables now exist
+        rows = db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='claims'"
+        )
+        assert len(rows) == 1
+        rows = db.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='claim_requests'"
+        )
+        assert len(rows) == 1
+
+        # Partial unique index is in place
+        rows = db.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='index' AND name='idx_claims_active_sbc'"
+        )
+        assert len(rows) == 1
+
+        # Existing data preserved
+        row = db.execute_one("SELECT name FROM sbcs WHERE name = 'pre-existing'")
+        assert row is not None
+
         row = db.execute_one("SELECT MAX(version) as v FROM schema_version")
         assert row["v"] == SCHEMA_VERSION

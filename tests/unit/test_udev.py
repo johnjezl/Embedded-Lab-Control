@@ -44,7 +44,14 @@ class TestGenerateUdevRules:
         result = generate_udev_rules(devices)
 
         lines = result.splitlines()
-        comment_lines = [l for l in lines if l.startswith("# ") and not l.startswith("# Lab") and not l.startswith("# Auto") and not l.startswith("# Regen")]
+        comment_lines = [
+            l
+            for l in lines
+            if l.startswith("# ")
+            and not l.startswith("# Lab")
+            and not l.startswith("# Auto")
+            and not l.startswith("# Regen")
+        ]
         assert len(comment_lines) == 3
         assert comment_lines[0] == "# a-device"
         assert comment_lines[1] == "# m-device"

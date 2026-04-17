@@ -336,7 +336,9 @@ class TestKasaRetry:
             call_count[0] += 1
             raise Exception("KLAP auth failed")
 
-        with patch.object(controller, "_get_device", new_callable=AsyncMock) as mock_dev:
+        with patch.object(
+            controller, "_get_device", new_callable=AsyncMock
+        ) as mock_dev:
             mock_device = Mock()
             mock_device.disconnect = AsyncMock()
             mock_dev.return_value = (mock_device, mock_device)
@@ -365,7 +367,9 @@ class TestKasaRetry:
                 raise Exception("Auth error")
             return True
 
-        with patch.object(controller, "_get_device", new_callable=AsyncMock) as mock_dev:
+        with patch.object(
+            controller, "_get_device", new_callable=AsyncMock
+        ) as mock_dev:
             mock_device = Mock()
             mock_device.disconnect = AsyncMock()
             mock_dev.return_value = (mock_device, mock_device)

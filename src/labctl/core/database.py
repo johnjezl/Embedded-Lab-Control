@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Generator, Optional
 
 # Current schema version
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # SQL statements for schema creation
 SCHEMA_SQL = """
@@ -123,6 +123,37 @@ CREATE TABLE IF NOT EXISTS audit_log (
     logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Hardware claims (exclusive access coordination)
+CREATE TABLE IF NOT EXISTS claims (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sbc_id INTEGER NOT NULL,
+    agent_name TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    session_kind TEXT NOT NULL,  -- mcp-stdio, mcp-http, cli, web
+    reason TEXT NOT NULL,
+    context_json TEXT,
+    acquired_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    duration_seconds INTEGER NOT NULL,
+    last_activity TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    expires_at TIMESTAMP NOT NULL,  -- materialized = last_activity + duration_seconds
+    renewal_count INTEGER NOT NULL DEFAULT 0,
+    released_at TIMESTAMP,
+    release_reason TEXT,  -- released, expired, force-released, session-lost
+    released_by TEXT,
+    FOREIGN KEY (sbc_id) REFERENCES sbcs(id) ON DELETE CASCADE
+);
+
+-- Release requests (polite nudges without forced eviction)
+CREATE TABLE IF NOT EXISTS claim_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    claim_id INTEGER NOT NULL,
+    requested_by TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    requested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    acknowledged INTEGER NOT NULL DEFAULT 0,  -- SQLite boolean
+    FOREIGN KEY (claim_id) REFERENCES claims(id) ON DELETE CASCADE
+);
+
 -- Indexes for common queries
 CREATE INDEX IF NOT EXISTS idx_sbcs_project ON sbcs(project);
 CREATE INDEX IF NOT EXISTS idx_sbcs_status ON sbcs(status);
@@ -133,6 +164,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_serial_ports_alias ON serial_ports(alias) 
 CREATE INDEX IF NOT EXISTS idx_sdwire_assignments_sbc ON sdwire_assignments(sbc_id);
 CREATE INDEX IF NOT EXISTS idx_status_log_sbc ON status_log(sbc_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_entity ON audit_log(entity_type, entity_id);
+
+-- At most one active claim per SBC (partial unique index)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_claims_active_sbc
+    ON claims(sbc_id) WHERE released_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_claims_session
+    ON claims(session_id) WHERE released_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_claims_agent
+    ON claims(agent_name) WHERE released_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_claims_expiry
+    ON claims(expires_at) WHERE released_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_claim_requests_claim
+    ON claim_requests(claim_id);
 """
 
 
@@ -177,7 +220,8 @@ class Database:
         """Apply database migrations."""
         if from_version < 2:
             # v2: Add serial_devices table, add alias/serial_device_id to serial_ports
-            conn.executescript("""
+            conn.executescript(
+                """
                 CREATE TABLE IF NOT EXISTS serial_devices (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT UNIQUE NOT NULL,
@@ -189,7 +233,8 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_serial_devices_usb_path
                     ON serial_devices(usb_path);
-            """)
+            """
+            )
             # ALTER TABLE cannot add FK constraints in SQLite, but the column works fine
             try:
                 conn.execute("ALTER TABLE serial_ports ADD COLUMN alias TEXT")
@@ -211,7 +256,8 @@ class Database:
 
         if from_version < 3:
             # v3: Add SDWire device and assignment tables
-            conn.executescript("""
+            conn.executescript(
+                """
                 CREATE TABLE IF NOT EXISTS sdwire_devices (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT UNIQUE NOT NULL,
@@ -230,7 +276,52 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_sdwire_assignments_sbc
                     ON sdwire_assignments(sbc_id);
-            """)
+            """
+            )
+
+        if from_version < 4:
+            # v4: Hardware claims (exclusive access coordination)
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS claims (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sbc_id INTEGER NOT NULL,
+                    agent_name TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    session_kind TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    context_json TEXT,
+                    acquired_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    duration_seconds INTEGER NOT NULL,
+                    last_activity TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMP NOT NULL,
+                    renewal_count INTEGER NOT NULL DEFAULT 0,
+                    released_at TIMESTAMP,
+                    release_reason TEXT,
+                    released_by TEXT,
+                    FOREIGN KEY (sbc_id) REFERENCES sbcs(id) ON DELETE CASCADE
+                );
+                CREATE TABLE IF NOT EXISTS claim_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    claim_id INTEGER NOT NULL,
+                    requested_by TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    requested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    acknowledged INTEGER NOT NULL DEFAULT 0,
+                    FOREIGN KEY (claim_id) REFERENCES claims(id) ON DELETE CASCADE
+                );
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_claims_active_sbc
+                    ON claims(sbc_id) WHERE released_at IS NULL;
+                CREATE INDEX IF NOT EXISTS idx_claims_session
+                    ON claims(session_id) WHERE released_at IS NULL;
+                CREATE INDEX IF NOT EXISTS idx_claims_agent
+                    ON claims(agent_name) WHERE released_at IS NULL;
+                CREATE INDEX IF NOT EXISTS idx_claims_expiry
+                    ON claims(expires_at) WHERE released_at IS NULL;
+                CREATE INDEX IF NOT EXISTS idx_claim_requests_claim
+                    ON claim_requests(claim_id);
+            """
+            )
 
         conn.execute(
             "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)

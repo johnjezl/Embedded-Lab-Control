@@ -14,7 +14,9 @@ Usage:
 
 import json
 import logging
+import os
 import sys
+import time as _time_mod
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -52,9 +54,112 @@ def _get_manager():
     return get_manager(config.database_path)
 
 
+def _get_config():
+    from labctl.core.config import load_config
+
+    return load_config()
+
+
 def _sbc_to_dict(sbc) -> dict:
     """Convert an SBC model to a JSON-serializable dict."""
     return sbc.to_dict(include_ids=False)
+
+
+# --- Session identity (MCP stdio: one process = one session) ---
+
+_SERVER_START_EPOCH = int(_time_mod.time())
+_SESSION_ID = f"mcp-stdio:{os.getpid()}-{_SERVER_START_EPOCH}"
+_SESSION_KIND = "mcp-stdio"
+_AGENT_NAME: str | None = None
+
+
+def _get_session_id() -> str:
+    return _SESSION_ID
+
+
+def _get_agent_name() -> str:
+    return _AGENT_NAME or f"unnamed-{_SESSION_ID[:16]}"
+
+
+# --- Claim enforcement helper ---
+
+
+def _check_claim(manager, sbc_name: str, mutating: bool = True) -> str | None:
+    """Check claim state for an SBC-targeting tool call.
+
+    - Claimant of this session → heartbeat + return None (proceed).
+    - Other-agent claim + mutating → return structured JSON error string.
+    - Other-agent claim + read-only → return None (proceed, no heartbeat).
+    - No claim → return None (proceed).
+    """
+    config = _get_config()
+    if not config.claims.enabled:
+        return None
+
+    from labctl.core.models import UnknownSBCError
+
+    try:
+        claim = manager.get_active_claim(sbc_name)
+    except UnknownSBCError:
+        return None
+
+    session_id = _get_session_id()
+
+    if claim is None:
+        return None
+
+    if claim.session_id == session_id:
+        manager.heartbeat_claim(sbc_name, session_id)
+        return None
+
+    if mutating:
+        remaining = (
+            int(claim.time_remaining.total_seconds())
+            if claim.time_remaining is not None
+            else 0
+        )
+        return json.dumps(
+            {
+                "error": "sbc_claimed",
+                "sbc_name": sbc_name,
+                "message": (
+                    f"SBC '{sbc_name}' is claimed by "
+                    f"'{claim.agent_name}' until "
+                    f"{claim.expires_at.isoformat()}"
+                ),
+                "claim": claim.to_dict(),
+                "hints": [
+                    "Wait for claim to expire or be released",
+                    "Request early release with request_sbc_release",
+                    "Operator override with force_release_sbc",
+                ],
+            }
+        )
+
+    return None
+
+
+def _claim_advisory(manager, sbc_name: str) -> str:
+    """Return advisory text about pending release requests, or empty string.
+
+    Called after a tool completes successfully. If the caller holds the
+    claim and there are pending release requests, returns a human-readable
+    notice the AI agent can act on.
+    """
+    from labctl.core.models import UnknownSBCError
+
+    try:
+        claim = manager.get_active_claim(sbc_name)
+    except UnknownSBCError:
+        return ""
+    if claim is None or claim.session_id != _get_session_id():
+        return ""
+    if not claim.pending_requests:
+        return ""
+    lines = ["[claim advisory] Pending release request(s):"]
+    for req in claim.pending_requests:
+        lines.append(f"  - {req.requested_by}: {req.reason}")
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -95,12 +200,14 @@ def get_power_state(sbc_name: str) -> str:
     try:
         controller = PowerController.from_plug(sbc.power_plug)
         state = controller.get_state()
-        return json.dumps({
-            "sbc": sbc_name,
-            "state": state.value,
-            "plug_type": sbc.power_plug.plug_type.value,
-            "address": sbc.power_plug.address,
-        })
+        return json.dumps(
+            {
+                "sbc": sbc_name,
+                "state": state.value,
+                "plug_type": sbc.power_plug.plug_type.value,
+                "address": sbc.power_plug.address,
+            }
+        )
     except RuntimeError as e:
         return json.dumps({"sbc": sbc_name, "state": "error", "error": str(e)})
 
@@ -169,30 +276,34 @@ def get_health(sbc_name: str) -> str:
     return json.dumps(
         {
             "sbc": sbc_name,
-            "ping": {
-                "success": summary.ping_result.success,
-                "message": summary.ping_result.message,
-            }
-            if summary.ping_result
-            else None,
-            "serial": {
-                "success": summary.serial_result.success,
-                "message": summary.serial_result.message,
-            }
-            if summary.serial_result
-            else None,
+            "ping": (
+                {
+                    "success": summary.ping_result.success,
+                    "message": summary.ping_result.message,
+                }
+                if summary.ping_result
+                else None
+            ),
+            "serial": (
+                {
+                    "success": summary.serial_result.success,
+                    "message": summary.serial_result.message,
+                }
+                if summary.serial_result
+                else None
+            ),
             "power": {
                 "state": summary.power_state.value if summary.power_state else None,
-                "success": summary.power_result.success
-                if summary.power_result
-                else None,
-                "message": summary.power_result.message
-                if summary.power_result
-                else None,
+                "success": (
+                    summary.power_result.success if summary.power_result else None
+                ),
+                "message": (
+                    summary.power_result.message if summary.power_result else None
+                ),
             },
-            "recommended_status": summary.recommended_status.value
-            if summary.recommended_status
-            else None,
+            "recommended_status": (
+                summary.recommended_status.value if summary.recommended_status else None
+            ),
         },
         indent=2,
     )
@@ -244,6 +355,9 @@ def power_on(sbc_name: str) -> str:
     from labctl.power import PowerController
 
     manager = _get_manager()
+    claim_err = _check_claim(manager, sbc_name, mutating=True)
+    if claim_err:
+        return claim_err
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
@@ -253,7 +367,9 @@ def power_on(sbc_name: str) -> str:
     try:
         controller = PowerController.from_plug(sbc.power_plug)
         if controller.power_on():
-            return f"Power ON: {sbc_name}"
+            result = f"Power ON: {sbc_name}"
+            advisory = _claim_advisory(manager, sbc_name)
+            return f"{result}\n\n{advisory}" if advisory else result
         return f"Failed to power on {sbc_name}"
     except RuntimeError as e:
         return f"Error: {e}"
@@ -269,6 +385,9 @@ def power_off(sbc_name: str) -> str:
     from labctl.power import PowerController
 
     manager = _get_manager()
+    claim_err = _check_claim(manager, sbc_name, mutating=True)
+    if claim_err:
+        return claim_err
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
@@ -278,7 +397,9 @@ def power_off(sbc_name: str) -> str:
     try:
         controller = PowerController.from_plug(sbc.power_plug)
         if controller.power_off():
-            return f"Power OFF: {sbc_name}"
+            result = f"Power OFF: {sbc_name}"
+            advisory = _claim_advisory(manager, sbc_name)
+            return f"{result}\n\n{advisory}" if advisory else result
         return f"Failed to power off {sbc_name}"
     except RuntimeError as e:
         return f"Error: {e}"
@@ -298,6 +419,9 @@ def power_cycle(sbc_name: str, delay: float = 3.0) -> str:
     from labctl.power import PowerController
 
     manager = _get_manager()
+    claim_err = _check_claim(manager, sbc_name, mutating=True)
+    if claim_err:
+        return claim_err
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
@@ -307,7 +431,9 @@ def power_cycle(sbc_name: str, delay: float = 3.0) -> str:
     try:
         controller = PowerController.from_plug(sbc.power_plug)
         if controller.power_cycle(delay):
-            return f"Power cycled: {sbc_name} (delay: {delay}s)"
+            result = f"Power cycled: {sbc_name} (delay: {delay}s)"
+            advisory = _claim_advisory(manager, sbc_name)
+            return f"{result}\n\n{advisory}" if advisory else result
         return f"Failed to power cycle {sbc_name}"
     except RuntimeError as e:
         return f"Error: {e}"
@@ -394,12 +520,17 @@ def remove_sbc(name: str) -> str:
         name: Name of the SBC to remove
     """
     manager = _get_manager()
+    claim_err = _check_claim(manager, name, mutating=True)
+    if claim_err:
+        return claim_err
     sbc = manager.get_sbc_by_name(name)
     if not sbc:
         return f"Error: SBC '{name}' not found"
 
     if manager.delete_sbc(sbc.id):
-        return f"Removed SBC: {name}"
+        result = f"Removed SBC: {name}"
+        advisory = _claim_advisory(manager, name)
+        return f"{result}\n\n{advisory}" if advisory else result
     return f"Failed to remove SBC: {name}"
 
 
@@ -477,7 +608,9 @@ def assign_serial_port(
             baud_rate=baud_rate,
             alias=alias,
         )
-        return f"Assigned {port_type} port to {sbc_name}: {device} (tcp:{port.tcp_port})"
+        return (
+            f"Assigned {port_type} port to {sbc_name}: {device} (tcp:{port.tcp_port})"
+        )
     except (ValueError, KeyError) as e:
         return f"Error: {e}"
 
@@ -836,6 +969,9 @@ def sdwire_to_dut(sbc_name: str) -> str:
     from labctl.sdwire import SDWireController
 
     manager = _get_manager()
+    claim_err = _check_claim(manager, sbc_name, mutating=True)
+    if claim_err:
+        return claim_err
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
@@ -845,7 +981,9 @@ def sdwire_to_dut(sbc_name: str) -> str:
     try:
         ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
         ctrl.switch_to_dut()
-        return f"SD card switched to DUT: {sbc_name}"
+        result = f"SD card switched to DUT: {sbc_name}"
+        advisory = _claim_advisory(manager, sbc_name)
+        return f"{result}\n\n{advisory}" if advisory else result
     except RuntimeError as e:
         return f"Error: {e}"
 
@@ -864,6 +1002,9 @@ def sdwire_to_host(sbc_name: str, force: bool = False) -> str:
     from labctl.sdwire import SDWireController
 
     manager = _get_manager()
+    claim_err = _check_claim(manager, sbc_name, mutating=True)
+    if claim_err:
+        return claim_err
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
@@ -874,9 +1015,11 @@ def sdwire_to_host(sbc_name: str, force: bool = False) -> str:
     if not force and sbc.power_plug:
         try:
             from labctl.power import PowerController
+
             power_ctrl = PowerController.from_plug(sbc.power_plug)
             state = power_ctrl.get_state()
             from labctl.power.base import PowerState
+
             if state == PowerState.ON:
                 return (
                     f"Error: {sbc_name} is powered on. Power off before "
@@ -893,7 +1036,8 @@ def sdwire_to_host(sbc_name: str, force: bool = False) -> str:
         msg = f"SD card switched to host: {sbc_name}"
         if block_dev:
             msg += f" (block device: {block_dev})"
-        return msg
+        advisory = _claim_advisory(manager, sbc_name)
+        return f"{msg}\n\n{advisory}" if advisory else msg
     except RuntimeError as e:
         return f"Error: {e}"
 
@@ -929,6 +1073,9 @@ def sdwire_update(
         return "Error: At least one of copies, renames, or deletes is required"
 
     manager = _get_manager()
+    claim_err = _check_claim(manager, sbc_name, mutating=True)
+    if claim_err:
+        return claim_err
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
@@ -958,6 +1105,7 @@ def sdwire_update(
         if sbc.power_plug:
             try:
                 from labctl.power import PowerController
+
                 power_ctrl = PowerController.from_plug(sbc.power_plug)
                 power_ctrl.power_off()
                 time.sleep(1)
@@ -968,7 +1116,8 @@ def sdwire_update(
         time.sleep(2)
 
         result = ctrl.update_files(
-            partition, file_pairs,
+            partition,
+            file_pairs,
             renames=rename_pairs or None,
             deletes=list(deletes) or None,
         )
@@ -991,7 +1140,8 @@ def sdwire_update(
             power_ctrl.power_cycle()
             summary += f". Power cycled {sbc_name}."
 
-        return summary
+        advisory = _claim_advisory(manager, sbc_name)
+        return f"{summary}\n\n{advisory}" if advisory else summary
     except RuntimeError as e:
         return f"Error: {e}"
 
@@ -1020,6 +1170,9 @@ def flash_image(
     from labctl.sdwire import SDWireController
 
     manager = _get_manager()
+    claim_err = _check_claim(manager, sbc_name, mutating=True)
+    if claim_err:
+        return claim_err
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
@@ -1034,6 +1187,7 @@ def flash_image(
         if sbc.power_plug:
             try:
                 from labctl.power import PowerController
+
                 power_ctrl = PowerController.from_plug(sbc.power_plug)
                 power_ctrl.power_off()
                 time_mod.sleep(1)
@@ -1063,9 +1217,11 @@ def flash_image(
         if post_flash_copies:
             try:
                 import subprocess
+
                 subprocess.run(
                     ["sudo", "partprobe", block_dev],
-                    capture_output=True, timeout=10,
+                    capture_output=True,
+                    timeout=10,
                 )
                 time_mod.sleep(2)
 
@@ -1090,11 +1246,14 @@ def flash_image(
         # Reboot
         if reboot and sbc.power_plug:
             from labctl.power import PowerController
+
             power_ctrl = PowerController.from_plug(sbc.power_plug)
             power_ctrl.power_on()
             parts.append(f"Powered on {sbc_name}")
 
-        return ". ".join(parts)
+        result = ". ".join(parts)
+        advisory = _claim_advisory(manager, sbc_name)
+        return f"{result}\n\n{advisory}" if advisory else result
 
     except RuntimeError as e:
         if not flash_ok:
@@ -1189,6 +1348,13 @@ def serial_send(
     except ValueError as e:
         return f"Error: {e}"
 
+    # Resolve port → SBC for claim enforcement
+    sbc = manager.get_sbc(port.sbc_id) if port.sbc_id else None
+    if sbc:
+        claim_err = _check_claim(manager, sbc.name, mutating=True)
+        if claim_err:
+            return claim_err
+
     if not port.tcp_port:
         return f"Error: Port '{port_name}' has no TCP port configured"
 
@@ -1201,7 +1367,11 @@ def serial_send(
             capture_timeout=capture_timeout,
             capture_until=capture_until,
         )
-        return result.to_mcp_string()
+        result_str = result.to_mcp_string()
+        if sbc:
+            advisory = _claim_advisory(manager, sbc.name)
+            return f"{result_str}\n\n{advisory}" if advisory else result_str
+        return result_str
     except RuntimeError as e:
         return f"Error: {e}"
 
@@ -1248,6 +1418,9 @@ def boot_test(
     from labctl.serial.boot_test import run_boot_test
 
     manager = _get_manager()
+    claim_err = _check_claim(manager, sbc_name, mutating=True)
+    if claim_err:
+        return claim_err
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
@@ -1262,14 +1435,13 @@ def boot_test(
     # Build deploy function
     deploy_fn = None
     if image and dest:
+
         def deploy_fn():
             from labctl.sdwire import SDWireController
 
             if not sbc.sdwire:
                 raise RuntimeError(f"No SDWire assigned to '{sbc_name}'")
-            ctrl = SDWireController(
-                sbc.sdwire.serial_number, sbc.sdwire.device_type
-            )
+            ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
             ctrl.switch_to_host()
             time_mod.sleep(2)
             ctrl.update_files(partition, [(image, dest)])
@@ -1278,6 +1450,7 @@ def boot_test(
     # Build power cycle function
     def power_cycle_fn():
         from labctl.power import PowerController
+
         power_ctrl = PowerController.from_plug(sbc.power_plug)
         power_ctrl.power_cycle(delay=3.0)
 
@@ -1296,9 +1469,326 @@ def boot_test(
             partition=partition,
             output_dir=output_dir,
         )
-        return result.format_summary()
+        result_str = result.format_summary()
+        advisory = _claim_advisory(manager, sbc_name)
+        return f"{result_str}\n\n{advisory}" if advisory else result_str
     except RuntimeError as e:
         return f"Error: {e}"
+
+
+# ---------------------------------------------------------------------------
+# Claims (exclusive access coordination)
+# ---------------------------------------------------------------------------
+
+
+@mcp.resource("lab://claims")
+def list_claims_resource() -> str:
+    """All active claims with their metadata."""
+    manager = _get_manager()
+    claims = manager.list_active_claims()
+    return json.dumps([c.to_dict() for c in claims], indent=2)
+
+
+@mcp.resource("lab://claims/{sbc_name}")
+def get_claim_resource(sbc_name: str) -> str:
+    """Current claim on a specific SBC."""
+    manager = _get_manager()
+    claim = manager.get_active_claim(sbc_name)
+    if claim is None:
+        return json.dumps({"sbc_name": sbc_name, "claimed": False})
+    return json.dumps({"sbc_name": sbc_name, "claimed": True, "claim": claim.to_dict()})
+
+
+@mcp.resource("lab://claims/history/{sbc_name}")
+def get_claim_history_resource(sbc_name: str) -> str:
+    """Historical claims (released) for an SBC."""
+    manager = _get_manager()
+    history = manager.list_claim_history(sbc_name, limit=20)
+    return json.dumps([c.to_dict() for c in history], indent=2)
+
+
+@mcp.resource("lab://claims/metrics")
+def get_claim_metrics_resource() -> str:
+    """Aggregate claim statistics: totals by outcome, average duration."""
+    manager = _get_manager()
+    return json.dumps(manager.get_claim_metrics(), indent=2)
+
+
+@mcp.tool()
+def claim_sbc(
+    sbc_name: str,
+    duration_minutes: int = 30,
+    reason: str = "",
+    agent_name: str | None = None,
+    context: dict | None = None,
+) -> str:
+    """Claim exclusive access to an SBC for a declared duration.
+
+    While claimed, mutating operations by other agents are blocked.
+
+    Args:
+        sbc_name: Name of the SBC to claim
+        duration_minutes: How long to hold (bounded by config)
+        reason: Human-readable reason (required for audit)
+        agent_name: Self-declared agent identifier
+        context: Optional metadata (git branch, ticket, etc.)
+    """
+    global _AGENT_NAME
+
+    from labctl.core.models import ClaimConflict, UnknownSBCError
+
+    if agent_name:
+        _AGENT_NAME = agent_name
+
+    config = _get_config()
+    duration_s = duration_minutes * 60
+    min_s = config.claims.min_duration_minutes * 60
+    max_s = config.claims.max_duration_minutes * 60
+    if duration_s < min_s or duration_s > max_s:
+        return json.dumps(
+            {
+                "error": "duration_out_of_bounds",
+                "message": (
+                    f"Duration {duration_minutes}m is outside "
+                    f"[{config.claims.min_duration_minutes}m, "
+                    f"{config.claims.max_duration_minutes}m]"
+                ),
+            }
+        )
+
+    manager = _get_manager()
+    try:
+        claim = manager.claim_sbc(
+            sbc_name=sbc_name,
+            agent_name=_get_agent_name(),
+            session_id=_get_session_id(),
+            session_kind=_SESSION_KIND,
+            duration_seconds=duration_s,
+            reason=reason or "no reason given",
+            context=context,
+            grace_seconds=config.claims.grace_period_seconds,
+        )
+    except UnknownSBCError:
+        return json.dumps(
+            {"error": "unknown_sbc", "message": f"SBC '{sbc_name}' not found"}
+        )
+    except ClaimConflict as exc:
+        return json.dumps(
+            {
+                "error": "sbc_claimed",
+                "sbc_name": sbc_name,
+                "message": str(exc),
+                "claim": exc.claim.to_dict(),
+                "hints": [
+                    "Wait for claim to expire or be released",
+                    "Request early release with request_sbc_release",
+                    "Operator override with force_release_sbc",
+                ],
+            }
+        )
+
+    return json.dumps(
+        {"status": "claimed", "sbc_name": sbc_name, "claim": claim.to_dict()}
+    )
+
+
+@mcp.tool()
+def release_sbc(sbc_name: str) -> str:
+    """Release a claim held by the calling session.
+
+    Only the session that created the claim can release it via this tool.
+
+    Args:
+        sbc_name: Name of the SBC to release
+    """
+    from labctl.core.models import (
+        ClaimNotFoundError,
+        NotClaimantError,
+        UnknownSBCError,
+    )
+
+    manager = _get_manager()
+    try:
+        released = manager.release_claim(sbc_name, _get_session_id())
+    except UnknownSBCError:
+        return json.dumps(
+            {"error": "unknown_sbc", "message": f"SBC '{sbc_name}' not found"}
+        )
+    except ClaimNotFoundError:
+        return json.dumps(
+            {
+                "error": "claim_not_found",
+                "message": f"No active claim on '{sbc_name}'",
+            }
+        )
+    except NotClaimantError:
+        return json.dumps(
+            {
+                "error": "not_claimant",
+                "message": f"You don't hold the claim on '{sbc_name}'",
+            }
+        )
+
+    return json.dumps({"status": "released", "sbc_name": sbc_name})
+
+
+@mcp.tool()
+def renew_sbc_claim(sbc_name: str, duration_minutes: int | None = None) -> str:
+    """Extend an active claim. Bounded by config max_duration.
+
+    Args:
+        sbc_name: Name of the SBC whose claim to renew
+        duration_minutes: New duration (omit to keep current)
+    """
+    from labctl.core.models import (
+        ClaimNotFoundError,
+        NotClaimantError,
+        UnknownSBCError,
+    )
+
+    config = _get_config()
+    duration_s = None
+    if duration_minutes is not None:
+        duration_s = duration_minutes * 60
+        max_s = config.claims.max_duration_minutes * 60
+        if duration_s > max_s:
+            return json.dumps(
+                {
+                    "error": "duration_out_of_bounds",
+                    "message": (
+                        f"Duration {duration_minutes}m exceeds "
+                        f"max {config.claims.max_duration_minutes}m"
+                    ),
+                }
+            )
+
+    manager = _get_manager()
+    try:
+        claim = manager.renew_claim(
+            sbc_name, _get_session_id(), duration_seconds=duration_s
+        )
+    except UnknownSBCError:
+        return json.dumps(
+            {"error": "unknown_sbc", "message": f"SBC '{sbc_name}' not found"}
+        )
+    except ClaimNotFoundError:
+        return json.dumps(
+            {
+                "error": "claim_not_found",
+                "message": f"No active claim on '{sbc_name}'",
+            }
+        )
+    except NotClaimantError:
+        return json.dumps(
+            {
+                "error": "not_claimant",
+                "message": f"You don't hold the claim on '{sbc_name}'",
+            }
+        )
+
+    return json.dumps(
+        {"status": "renewed", "sbc_name": sbc_name, "claim": claim.to_dict()}
+    )
+
+
+@mcp.tool()
+def list_claims() -> str:
+    """List all active claims across the lab."""
+    manager = _get_manager()
+    claims = manager.list_active_claims()
+    return json.dumps({"active_claims": [c.to_dict() for c in claims]}, indent=2)
+
+
+@mcp.tool()
+def get_claim(sbc_name: str) -> str:
+    """Get the current active claim on an SBC, including pending requests.
+
+    Args:
+        sbc_name: Name of the SBC to check
+    """
+    from labctl.core.models import UnknownSBCError
+
+    manager = _get_manager()
+    try:
+        claim = manager.get_active_claim(sbc_name)
+    except UnknownSBCError:
+        return json.dumps(
+            {"error": "unknown_sbc", "message": f"SBC '{sbc_name}' not found"}
+        )
+    if claim is None:
+        return json.dumps({"sbc_name": sbc_name, "claimed": False})
+    return json.dumps({"sbc_name": sbc_name, "claimed": True, "claim": claim.to_dict()})
+
+
+@mcp.tool()
+def request_sbc_release(sbc_name: str, reason: str) -> str:
+    """Politely ask the current claimant to release an SBC.
+
+    Non-binding — the claimant decides whether to act.
+
+    Args:
+        sbc_name: Name of the SBC
+        reason: Why you need the SBC
+    """
+    from labctl.core.models import ClaimNotFoundError, UnknownSBCError
+
+    manager = _get_manager()
+    try:
+        manager.record_release_request(
+            sbc_name, requested_by=_get_agent_name(), reason=reason
+        )
+    except UnknownSBCError:
+        return json.dumps(
+            {"error": "unknown_sbc", "message": f"SBC '{sbc_name}' not found"}
+        )
+    except ClaimNotFoundError:
+        return json.dumps(
+            {
+                "error": "claim_not_found",
+                "message": f"No active claim on '{sbc_name}'",
+            }
+        )
+
+    return json.dumps({"status": "request_recorded", "sbc_name": sbc_name})
+
+
+@mcp.tool()
+def force_release_sbc(sbc_name: str, reason: str) -> str:
+    """Operator override — forcibly release an active claim.
+
+    Should only be used when normal release is blocked (dead agent,
+    emergency).
+
+    Args:
+        sbc_name: Name of the SBC
+        reason: Why the override is needed (logged prominently)
+    """
+    from labctl.core.models import ClaimNotFoundError, UnknownSBCError
+
+    manager = _get_manager()
+    try:
+        released = manager.force_release_claim(
+            sbc_name, reason, released_by=_get_agent_name()
+        )
+    except UnknownSBCError:
+        return json.dumps(
+            {"error": "unknown_sbc", "message": f"SBC '{sbc_name}' not found"}
+        )
+    except ClaimNotFoundError:
+        return json.dumps(
+            {
+                "error": "claim_not_found",
+                "message": f"No active claim on '{sbc_name}'",
+            }
+        )
+
+    return json.dumps(
+        {
+            "status": "force_released",
+            "sbc_name": sbc_name,
+            "was_held_by": released.agent_name,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1350,8 +1840,65 @@ Compile a report with:
 # ---------------------------------------------------------------------------
 
 
+def _release_session_claims():
+    """Best-effort release of claims held by this MCP session on exit."""
+    try:
+        manager = _get_manager()
+        session_id = _get_session_id()
+        for claim in manager.list_active_claims():
+            if claim.session_id == session_id:
+                try:
+                    manager.release_claim(claim.sbc_name, session_id)
+                    logger.info(
+                        "Released claim on '%s' (session exit)",
+                        claim.sbc_name,
+                    )
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+def _start_expiry_thread(interval: int = 30):
+    """Start a daemon thread that periodically sweeps expired/dead claims."""
+    import threading
+
+    def _sweep_loop():
+        while True:
+            import time as _t
+
+            _t.sleep(interval)
+            try:
+                config = _get_config()
+                manager = _get_manager()
+                grace = config.claims.grace_period_seconds
+                expired = manager.expire_stale_claims(grace_seconds=grace)
+                dead = manager.release_dead_sessions(grace_seconds=grace)
+                pruned = manager.prune_released_claims(
+                    older_than_days=config.claims.auto_prune_released_after_days
+                )
+                if expired or dead or pruned:
+                    logger.info(
+                        "Claim sweep: %d expired, %d dead-session, " "%d pruned",
+                        expired,
+                        dead,
+                        pruned,
+                    )
+            except Exception:
+                logger.debug("Claim sweep error", exc_info=True)
+
+    t = threading.Thread(target=_sweep_loop, daemon=True, name="claim-expiry")
+    t.start()
+    return t
+
+
 def run_server(transport: str = "stdio", http_port: int = 8080):
     """Start the MCP server."""
+    import atexit
+
+    atexit.register(_release_session_claims)
+    _start_expiry_thread(interval=30)
+
     if transport == "stdio":
         mcp.run(transport="stdio")
     elif transport == "http":

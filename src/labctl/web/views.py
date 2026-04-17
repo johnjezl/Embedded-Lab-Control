@@ -25,10 +25,14 @@ def index():
             except Exception:
                 power_states[sbc.name] = PowerState.UNKNOWN
 
+    # Index active claims by SBC name for dashboard badges
+    claims_by_sbc = {c.sbc_name: c for c in g.manager.list_active_claims()}
+
     return render_template(
         "dashboard.html",
         sbcs=sbcs,
         power_states=power_states,
+        claims_by_sbc=claims_by_sbc,
         PowerState=PowerState,
     )
 
@@ -49,10 +53,14 @@ def sbc_detail(name: str):
         except Exception:
             power_state = PowerState.UNKNOWN
 
+    # Load active claim for this SBC
+    active_claim = g.manager.get_active_claim(sbc.name)
+
     return render_template(
         "sbc_detail.html",
         sbc=sbc,
         power_state=power_state,
+        active_claim=active_claim,
         PowerState=PowerState,
         Status=Status,
         PortType=PortType,
@@ -314,6 +322,28 @@ def sbc_plug_remove(name: str):
         flash("Removed power plug", "success")
     else:
         flash("No power plug to remove", "error")
+
+    return redirect(url_for("views.sbc_detail", name=name))
+
+
+@views_bp.route("/sbc/<name>/claim/force-release", methods=["POST"])
+def sbc_force_release(name: str):
+    """Force-release a claim from the web dashboard."""
+    from flask import request as flask_request
+
+    from labctl.core.models import ClaimNotFoundError
+
+    sbc = g.manager.get_sbc_by_name(name)
+    if not sbc:
+        flash(f"SBC '{name}' not found", "error")
+        return redirect(url_for("views.index"))
+
+    reason = flask_request.form.get("reason", "force-released via web dashboard")
+    try:
+        g.manager.force_release_claim(name, reason, released_by="web-operator")
+        flash(f"Force-released claim on '{name}'", "success")
+    except ClaimNotFoundError:
+        flash(f"No active claim on '{name}'", "error")
 
     return redirect(url_for("views.sbc_detail", name=name))
 

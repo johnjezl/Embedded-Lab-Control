@@ -7,6 +7,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Hardware claims polish, Phase E (2026-04-16)
+  - `ClaimsConfig.validate()` clamps invalid bounds at load time
+  - `prune_released_claims()` auto-deletes old released claims (wired
+    into CLI expire + MCP sweep)
+  - `get_claim_metrics()` aggregate stats — exposed via `labctl claims stats`
+    and `lab://claims/metrics` MCP resource
+  - `AGENT_RULES.md` section 11: claim workflow, naming, duration guide
+- Hardware claims operator tooling, Phase D (2026-04-16)
+  - Web REST API: full claim lifecycle at `/api/claims/*`
+  - Dashboard: claim badges on SBC cards (agent, time remaining, request warning)
+  - SBC detail page: claim section with holder info, pending requests,
+    and force-release button
+  - MCP tool responses: `_claim_advisory()` appends pending release request
+    notices to all 10 gated tools on success
+- Hardware claims expiry and dead-session handling, Phase C (2026-04-16)
+  - MCP `atexit` handler: releases this session's claims on clean exit
+  - `release_dead_sessions()`: checks `kill -0 <pid>` for mcp-stdio claims;
+    dead process + expired grace → auto-release as `session-lost`
+  - Background daemon thread in MCP server sweeps every 30s
+  - `labctl claims expire` CLI command for cron-driven sweeps
+  - Grace period respected: dead sessions within grace window are left alone
+- Hardware claims MCP integration, Phase B (2026-04-16)
+  - MCP tools: `claim_sbc`, `release_sbc`, `renew_sbc_claim`, `list_claims`,
+    `get_claim`, `request_sbc_release`, `force_release_sbc`
+  - MCP resources: `lab://claims`, `lab://claims/{sbc_name}`,
+    `lab://claims/history/{sbc_name}`
+  - Claim enforcement on 10 mutating MCP tools — other-agent claims
+    return structured `sbc_claimed` JSON errors with hints
+  - Session identity via `mcp-stdio:<pid>-<start_epoch>` for stdio transport
+  - Heartbeat fires on every claimant tool call (reads and writes)
+- Hardware claims (exclusive access coordination), Phase A (2026-04-16)
+  - SQLite schema v4 adds `claims` and `claim_requests` tables
+  - Partial unique index enforces at most one active claim per SBC
+  - CLI: `labctl claim`, `release`, `renew`, `force-release`, `request-release`
+  - CLI: `labctl claims list | show <sbc> | history <sbc>`
+  - `labctl status` surfaces the current claim holder and pending release requests
+  - `labctl remove <sbc>` refuses while a claim is active (use `--force` to override)
+  - Manager ops: `claim_sbc`, `release_claim`, `renew_claim`, `heartbeat_claim`,
+    `get_active_claim`, `list_active_claims`, `list_claim_history`,
+    `force_release_claim`, `expire_stale_claims`, `record_release_request`
+  - Structured exceptions: `ClaimConflict`, `ClaimNotFoundError`, `NotClaimantError`,
+    `UnknownSBCError`
+  - Acquisition runs expire-stale sweep inside the transaction so past-deadline
+    claims don't block new acquisitions even when no sweeper has run
+  - Spec: `docs/SPEC_claims.md`
 - SDWire power safety interlock (2026-04-09)
   - `sdwire_to_host` rejects if SBC is powered on (prevents SD card bus contention)
   - `--force` flag (CLI) / `force` parameter (MCP) to override when SBC is halted but power on

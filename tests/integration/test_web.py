@@ -530,3 +530,184 @@ class TestDashboardViews:
         )
         assert response.status_code == 200
         assert b"Unknown action" in response.data
+
+
+# ---------------------------------------------------------------------------
+# Claim REST API tests
+# ---------------------------------------------------------------------------
+
+
+class TestClaimApi:
+    """Tests for /api/claims/* REST endpoints."""
+
+    def test_list_claims_empty(self, client, manager, sample_sbc):
+        response = client.get("/api/claims")
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["count"] == 0
+
+    def test_claim_and_get(self, client, manager, sample_sbc):
+        # Create a claim via the API
+        response = client.post(
+            f"/api/claims/{sample_sbc.name}",
+            json={"duration_minutes": 10, "reason": "web test"},
+        )
+        assert response.status_code == 201
+        data = response.get_json()
+        assert data["status"] == "claimed"
+
+        # Verify via GET
+        response = client.get(f"/api/claims/{sample_sbc.name}")
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["claimed"] is True
+
+    def test_claim_conflict(self, client, manager, sample_sbc):
+        # Create claim via manager (different session)
+        manager.claim_sbc(
+            sbc_name=sample_sbc.name,
+            agent_name="other",
+            session_id="other-session",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="holding",
+        )
+        response = client.post(
+            f"/api/claims/{sample_sbc.name}",
+            json={"reason": "web attempt"},
+        )
+        assert response.status_code == 409
+        data = response.get_json()
+        assert data["error"] == "sbc_claimed"
+
+    def test_force_release(self, client, manager, sample_sbc):
+        manager.claim_sbc(
+            sbc_name=sample_sbc.name,
+            agent_name="other",
+            session_id="other-session",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="holding",
+        )
+        response = client.post(
+            f"/api/claims/{sample_sbc.name}/force-release",
+            json={"reason": "emergency"},
+        )
+        assert response.status_code == 200
+        data = response.get_json()
+        assert data["status"] == "force_released"
+        assert manager.get_active_claim(sample_sbc.name) is None
+
+    def test_request_release(self, client, manager, sample_sbc):
+        manager.claim_sbc(
+            sbc_name=sample_sbc.name,
+            agent_name="holder",
+            session_id="other-session",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="work",
+        )
+        response = client.post(
+            f"/api/claims/{sample_sbc.name}/request-release",
+            json={"reason": "need it"},
+        )
+        assert response.status_code == 200
+        claim = manager.get_active_claim(sample_sbc.name)
+        assert len(claim.pending_requests) == 1
+
+    def test_claim_history(self, client, manager, sample_sbc):
+        # Create and release a claim
+        manager.claim_sbc(
+            sbc_name=sample_sbc.name,
+            agent_name="a",
+            session_id="s",
+            session_kind="cli",
+            duration_seconds=60,
+            reason="r",
+        )
+        manager.release_claim(sample_sbc.name, "s")
+        response = client.get(f"/api/claims/{sample_sbc.name}/history")
+        assert response.status_code == 200
+        data = response.get_json()
+        assert len(data["history"]) == 1
+
+    def test_claim_not_found_sbc(self, client):
+        response = client.get("/api/claims/nonexistent")
+        assert response.status_code == 404
+
+    def test_list_claims_active(self, client, manager, sample_sbc):
+        manager.claim_sbc(
+            sbc_name=sample_sbc.name,
+            agent_name="web-agent",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="testing",
+        )
+        response = client.get("/api/claims")
+        data = response.get_json()
+        assert data["count"] == 1
+        assert data["claims"][0]["agent_name"] == "web-agent"
+
+
+class TestDashboardClaims:
+    """Tests that dashboard and SBC detail pages surface claims."""
+
+    def test_dashboard_shows_claim_badge(self, client, manager, sample_sbc):
+        manager.claim_sbc(
+            sbc_name=sample_sbc.name,
+            agent_name="dashboard-agent",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="visible on dashboard",
+        )
+        response = client.get("/")
+        assert response.status_code == 200
+        assert b"dashboard-agent" in response.data
+        assert b"claim-badge" in response.data
+
+    def test_dashboard_no_badge_when_free(self, client, manager, sample_sbc):
+        response = client.get("/")
+        assert response.status_code == 200
+        assert b"claim-badge" not in response.data
+
+    def test_sbc_detail_shows_claim_section(self, client, manager, sample_sbc):
+        manager.claim_sbc(
+            sbc_name=sample_sbc.name,
+            agent_name="detail-agent",
+            session_id="s1",
+            session_kind="mcp-stdio",
+            duration_seconds=600,
+            reason="bringup testing",
+        )
+        response = client.get(f"/sbc/{sample_sbc.name}")
+        assert response.status_code == 200
+        assert b"detail-agent" in response.data
+        assert b"bringup testing" in response.data
+        assert b"Active Claim" in response.data
+
+    def test_sbc_detail_no_claim_section_when_free(self, client, manager, sample_sbc):
+        response = client.get(f"/sbc/{sample_sbc.name}")
+        assert response.status_code == 200
+        assert b"Active Claim" not in response.data
+
+    def test_force_release_button_redirects(self, client, manager, sample_sbc):
+        """Force-release via dashboard redirects back to SBC detail."""
+        manager.claim_sbc(
+            sbc_name=sample_sbc.name,
+            agent_name="holder",
+            session_id="s1",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="holding",
+        )
+        response = client.post(
+            f"/sbc/{sample_sbc.name}/claim/force-release",
+            data={"reason": "dashboard override"},
+            follow_redirects=True,
+        )
+        assert response.status_code == 200
+        # Should have redirected to SBC detail and shown flash
+        assert b"Force-released" in response.data
+        assert manager.get_active_claim(sample_sbc.name) is None

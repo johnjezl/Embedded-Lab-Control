@@ -151,7 +151,11 @@ class KasaController(PowerController):
                 if attempt < retries:
                     logger.debug(
                         "Kasa %s attempt %d failed for %s[%d]: %s, retrying in 2s...",
-                        action, attempt + 1, self.address, self.plug_index, e,
+                        action,
+                        attempt + 1,
+                        self.address,
+                        self.plug_index,
+                        e,
                     )
                     time.sleep(2)
                     continue

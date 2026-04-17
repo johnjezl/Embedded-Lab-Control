@@ -2,11 +2,28 @@
 
 ## Current State
 
-- **Milestone**: All milestones complete + SDWire + MCP server + serial device management + HTTPS + Kasa strips
-- **Sub-task**: All complete
-- **Status**: Feature complete
+- **Milestone**: Hardware Claims (exclusive access), Phases A–E complete
+- **Sub-task**: All phases done
+- **Status**: Feature complete, ready for PR
 
 ## Last Session
+
+- **Date**: 2026-04-16
+- **Branch**: `worktree-agent-lock-feature`
+- **Completed so far**:
+  - `docs/SPEC_claims.md` revised after design review (committed as `6db4054`)
+  - `ClaimsConfig` dataclass wired into `Config.from_dict` / `to_dict`
+  - Schema v3→v4 migration for `claims` + `claim_requests` tables
+  - `Claim`, `ClaimRequest`, `ReleaseReason`, `SessionKind` added to models
+  - `ResourceManager` claim ops (acquire/release/renew/heartbeat/history)
+  - `delete_sbc` now refuses while claim is active (with `force=True` override)
+  - CLI: `labctl claim | release | renew | force-release | request-release`
+  - CLI: `labctl claims list | show | history`, `labctl status` shows claim column
+  - Microsecond-precision timestamps to avoid short-duration expiry false negatives
+  - Unit tests for manager claim ops, CLI integration tests, config round-trip tests
+- **Pending**: full test suite rerun, lint/format, IMPLEMENTATION.md section
+
+## Previous Session
 
 - **Date**: 2026-03-28
 - **Completed**:
