@@ -169,6 +169,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Guard orphaned `create_task(self.stop())` with state check
 - ser2net generate: add /dev/lab/ prefix for bare device names (2026-04-09)
 - ser2net format string: revert to `<baud><parity><databits><stopbits>` (e.g. `115200n81`) — ser2net rejects the comma-separated form with "unknown parameter 8n1" (2026-04-16)
+- Monitor daemon: `AlertManager.trigger()` call on power state change used kwargs instead of a single `Alert` object, raising `TypeError` each cycle. The uncaught exception aborted `run_once()` mid-iteration, preventing DB status updates for any SBCs processed after the crashing one. Added regression tests for `MonitorDaemon` (2026-04-17)
 - Consolidated SBC.to_dict() serialization, eliminating duplication between MCP and API (2026-04-03)
 - Atomic upsert (INSERT...ON CONFLICT) for serial ports, network addresses, power plugs, SDWire assignments (2026-04-03)
 - Config load exception now logs warning instead of silently continuing (2026-04-03)

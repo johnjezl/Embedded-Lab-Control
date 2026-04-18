@@ -423,3 +423,69 @@ class TestHealthConfig:
         assert "health" in data
         assert data["health"]["check_interval"] == 60
         assert data["health"]["ping_timeout"] == 2.0
+
+
+class TestMonitorDaemon:
+    """Tests for MonitorDaemon alert paths."""
+
+    def _make_daemon(self):
+        from labctl.health.daemon import MonitorDaemon
+
+        manager = MagicMock()
+        checker = MagicMock()
+        alert_manager = MagicMock(spec=AlertManager)
+        daemon = MonitorDaemon(manager, checker, alert_manager)
+        return daemon, alert_manager
+
+    def _make_summary(self, power: PowerState, status: Status = Status.ONLINE):
+        summary = HealthCheckSummary(sbc_name="sbc-x")
+        summary.power_state = power
+        summary.recommended_status = status
+        summary.ping_result = CheckResult(
+            sbc_name="sbc-x",
+            check_type=CheckType.PING,
+            success=True,
+            message="ok",
+            duration_ms=1.0,
+        )
+        return summary
+
+    def test_power_change_triggers_alert_with_alert_object(self):
+        """AlertManager.trigger() must be called with an Alert, not kwargs.
+
+        Regression: previously passed level=/sbc_name=/message=/details= kwargs,
+        causing a TypeError that crashed the daemon's run_once() iteration
+        before it could update DB statuses for remaining SBCs.
+        """
+        daemon, alert_manager = self._make_daemon()
+        daemon._last_power["sbc-x"] = "on"
+
+        daemon._process_result("sbc-x", self._make_summary(PowerState.OFF))
+
+        assert alert_manager.trigger.called, "trigger() was not called"
+        call_args = alert_manager.trigger.call_args
+        assert call_args.kwargs == {}, f"trigger() received kwargs: {call_args.kwargs}"
+        assert len(call_args.args) == 1
+        alert = call_args.args[0]
+        assert isinstance(alert, Alert)
+        assert alert.level == AlertLevel.WARNING
+        assert alert.sbc_name == "sbc-x"
+        assert "OFF" in alert.message
+
+    def test_power_on_transition_is_info_level(self):
+        daemon, alert_manager = self._make_daemon()
+        daemon._last_power["sbc-x"] = "off"
+
+        daemon._process_result("sbc-x", self._make_summary(PowerState.ON))
+
+        alert = alert_manager.trigger.call_args.args[0]
+        assert alert.level == AlertLevel.INFO
+
+    def test_no_alert_on_first_observation(self):
+        """First power reading establishes baseline — no alert."""
+        daemon, alert_manager = self._make_daemon()
+
+        daemon._process_result("sbc-x", self._make_summary(PowerState.ON))
+
+        assert not alert_manager.trigger.called
+        assert daemon._last_power["sbc-x"] == "on"

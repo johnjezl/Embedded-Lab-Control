@@ -11,7 +11,7 @@ from typing import Optional
 
 from labctl.core.manager import ResourceManager
 from labctl.core.models import Status
-from labctl.health.alerts import AlertLevel, AlertManager
+from labctl.health.alerts import Alert, AlertLevel, AlertManager
 from labctl.health.checks import HealthChecker, HealthCheckSummary
 
 logger = logging.getLogger(__name__)
@@ -138,10 +138,12 @@ class MonitorDaemon:
             if old_power and old_power != power_str:
                 level = AlertLevel.WARNING if power_str == "off" else AlertLevel.INFO
                 self.alert_manager.trigger(
-                    level=level,
-                    sbc_name=sbc_name,
-                    message=f"Power changed to {power_str.upper()}",
-                    details=f"Previous: {old_power.upper()}",
+                    Alert(
+                        level=level,
+                        sbc_name=sbc_name,
+                        message=f"Power changed to {power_str.upper()}",
+                        details=f"Previous: {old_power.upper()}",
+                    )
                 )
             self._last_power[sbc_name] = power_str
 
