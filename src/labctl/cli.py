@@ -3718,6 +3718,80 @@ def monitor_cmd(
 # --- Shell Completion ---
 
 
+@main.group("services")
+def services_group() -> None:
+    """Check the systemd services labctl depends on."""
+    pass
+
+
+@services_group.command("status")
+@click.option(
+    "--unit",
+    "extra_units",
+    multiple=True,
+    help="Additional systemd unit to check (may be repeated)",
+)
+@click.option(
+    "-v",
+    "--verbose",
+    is_flag=True,
+    help="Show recent error log lines even for healthy services",
+)
+def services_status_cmd(extra_units: tuple[str, ...], verbose: bool) -> None:
+    """Show status of labctl's services plus ser2net.
+
+    Queries the following units by default:
+
+      labctl-monitor  labctl-mcp  labctl-web  ser2net
+
+    Reports ActiveState/SubState, uptime, systemd restart counter, and
+    recent error-level journal lines when a unit is unhealthy or has
+    restarted. Exits with code 1 if any unit is not active/running.
+    """
+    from labctl.services import DEFAULT_UNITS, check_all
+
+    units = DEFAULT_UNITS + tuple(extra_units)
+    statuses = check_all(units)
+
+    click.echo(
+        f"{'UNIT':<20} {'STATE':<10} {'SUB':<10} {'UPTIME':<10} {'RESTARTS':<10} NOTES"
+    )
+    click.echo("-" * 80)
+    any_unhealthy = False
+    for s in statuses:
+        if s.error:
+            note = s.error
+            state_color = "red"
+            any_unhealthy = True
+        elif s.active_state == "failed":
+            note = f"last result: {s.result or '-'}"
+            state_color = "red"
+            any_unhealthy = True
+        elif not s.healthy:
+            note = f"sub={s.sub_state}"
+            state_color = "yellow"
+            any_unhealthy = True
+        else:
+            note = "-"
+            state_color = "green"
+
+        click.echo(
+            f"{s.unit:<20} "
+            f"{click.style(s.active_state, fg=state_color):<10} "
+            f"{s.sub_state:<10} "
+            f"{s.uptime_str():<10} "
+            f"{s.n_restarts:<10} "
+            f"{note}"
+        )
+
+        if s.recent_errors and (verbose or not s.healthy or s.n_restarts > 0):
+            for line in s.recent_errors:
+                click.echo(f"    {line}")
+
+    if any_unhealthy:
+        sys.exit(1)
+
+
 @main.group("activity")
 def activity_group() -> None:
     """View the activity stream — every state-changing action."""

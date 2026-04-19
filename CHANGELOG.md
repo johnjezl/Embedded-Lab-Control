@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- `labctl services status` — reports on systemd units labctl depends
+  on: `labctl-monitor`, `labctl-mcp`, `labctl-web`, and `ser2net`.
+  Shows ActiveState/SubState, uptime, restart counter, and recent
+  error-level journal lines for any unit that is unhealthy or has
+  restarted. Exits non-zero if anything is not running. Extend the
+  list with `--unit`. Non-privileged (uses `systemctl show` and
+  `journalctl -u`) (2026-04-19)
 - Activity stream Phase A — foundation (2026-04-19)
   - `labctl.core.audit` module: `emit()`, `activity_context()`,
     `set_context()`, redaction, millisecond timestamps
