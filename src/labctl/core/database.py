@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Generator, Optional
 
 # Current schema version
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # SQL statements for schema creation
 SCHEMA_SQL = """
@@ -112,7 +112,8 @@ CREATE TABLE IF NOT EXISTS status_log (
     FOREIGN KEY (sbc_id) REFERENCES sbcs(id) ON DELETE CASCADE
 );
 
--- Audit log for tracking changes
+-- Audit log / activity stream — records every state-changing action
+-- across CLI, MCP, web API, and the monitor daemon.
 CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     action TEXT NOT NULL,  -- create, update, delete, power_on, power_off, etc.
@@ -120,7 +121,11 @@ CREATE TABLE IF NOT EXISTS audit_log (
     entity_id INTEGER,
     entity_name TEXT,
     details TEXT,
-    logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    actor TEXT NOT NULL DEFAULT 'internal',     -- e.g. "cli:john", "mcp-stdio:12345-..."
+    source TEXT NOT NULL DEFAULT 'internal',    -- cli | mcp | api | daemon | internal
+    result TEXT NOT NULL DEFAULT 'ok',          -- ok | error | forbidden
+    claim_id INTEGER REFERENCES claims(id)
 );
 
 -- Hardware claims (exclusive access coordination)
@@ -164,6 +169,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_serial_ports_alias ON serial_ports(alias) 
 CREATE INDEX IF NOT EXISTS idx_sdwire_assignments_sbc ON sdwire_assignments(sbc_id);
 CREATE INDEX IF NOT EXISTS idx_status_log_sbc ON status_log(sbc_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_entity ON audit_log(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_logged_at ON audit_log(logged_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor, logged_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_log_source ON audit_log(source, logged_at DESC);
 
 -- At most one active claim per SBC (partial unique index)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_claims_active_sbc
@@ -321,6 +329,29 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_claim_requests_claim
                     ON claim_requests(claim_id);
             """
+            )
+
+        if from_version < 5:
+            # v5: Activity stream — extend audit_log with actor/source/result/claim_id
+            for column_sql in (
+                "ALTER TABLE audit_log ADD COLUMN actor TEXT NOT NULL DEFAULT 'internal'",
+                "ALTER TABLE audit_log ADD COLUMN source TEXT NOT NULL DEFAULT 'internal'",
+                "ALTER TABLE audit_log ADD COLUMN result TEXT NOT NULL DEFAULT 'ok'",
+                "ALTER TABLE audit_log ADD COLUMN claim_id INTEGER REFERENCES claims(id)",
+            ):
+                try:
+                    conn.execute(column_sql)
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+            conn.executescript(
+                """
+                CREATE INDEX IF NOT EXISTS idx_audit_log_logged_at
+                    ON audit_log(logged_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_audit_log_actor
+                    ON audit_log(actor, logged_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_audit_log_source
+                    ON audit_log(source, logged_at DESC);
+                """
             )
 
         conn.execute(

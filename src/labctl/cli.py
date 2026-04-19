@@ -114,6 +114,12 @@ def main(
       on     -> power on
       off    -> power off
     """
+    import getpass
+
+    from labctl.core import audit
+
+    audit.set_context(actor=f"cli:{getpass.getuser()}", source="cli")
+
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
     ctx.obj["quiet"] = quiet
@@ -1894,6 +1900,33 @@ def _get_power_controller(manager: ResourceManager, sbc_name: str) -> tuple:
         sys.exit(1)
 
 
+def _emit_power_event(
+    manager: ResourceManager,
+    sbc,
+    action: str,
+    ok: bool,
+    error: str | None = None,
+    extra: dict | None = None,
+) -> None:
+    """Record a power-operation activity event."""
+    from labctl.core import audit
+
+    details: dict = {}
+    if error:
+        details["error"] = error
+    if extra:
+        details.update(extra)
+    audit.emit(
+        manager.db,
+        action=action,
+        entity_type="sbc",
+        entity_id=sbc.id,
+        entity_name=sbc.name,
+        result="ok" if ok else "error",
+        details=details or None,
+    )
+
+
 @power_group.command("on")
 @click.argument("sbc_name")
 @click.pass_context
@@ -1904,12 +1937,15 @@ def power_on_cmd(ctx: click.Context, sbc_name: str) -> None:
 
     click.echo(f"Powering on {sbc_name}...")
     try:
-        if controller.power_on():
+        ok = controller.power_on()
+        _emit_power_event(manager, sbc, "power_on", ok)
+        if ok:
             click.echo(f"Power ON: {sbc_name}")
         else:
             click.echo(f"Error: Failed to power on {sbc_name}", err=True)
             sys.exit(1)
     except RuntimeError as e:
+        _emit_power_event(manager, sbc, "power_on", False, error=str(e))
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
@@ -1924,12 +1960,15 @@ def power_off_cmd(ctx: click.Context, sbc_name: str) -> None:
 
     click.echo(f"Powering off {sbc_name}...")
     try:
-        if controller.power_off():
+        ok = controller.power_off()
+        _emit_power_event(manager, sbc, "power_off", ok)
+        if ok:
             click.echo(f"Power OFF: {sbc_name}")
         else:
             click.echo(f"Error: Failed to power off {sbc_name}", err=True)
             sys.exit(1)
     except RuntimeError as e:
+        _emit_power_event(manager, sbc, "power_off", False, error=str(e))
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
@@ -1951,12 +1990,24 @@ def power_cycle_cmd(ctx: click.Context, sbc_name: str, delay: float) -> None:
 
     click.echo(f"Power cycling {sbc_name} (delay: {delay}s)...")
     try:
-        if controller.power_cycle(delay):
+        ok = controller.power_cycle(delay)
+        _emit_power_event(
+            manager, sbc, "power_cycle", ok, extra={"delay_seconds": delay}
+        )
+        if ok:
             click.echo(f"Power cycled: {sbc_name}")
         else:
             click.echo(f"Error: Failed to power cycle {sbc_name}", err=True)
             sys.exit(1)
     except RuntimeError as e:
+        _emit_power_event(
+            manager,
+            sbc,
+            "power_cycle",
+            False,
+            error=str(e),
+            extra={"delay_seconds": delay},
+        )
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
@@ -3665,6 +3716,134 @@ def monitor_cmd(
 
 
 # --- Shell Completion ---
+
+
+@main.group("activity")
+def activity_group() -> None:
+    """View the activity stream — every state-changing action."""
+    pass
+
+
+def _parse_since(since: str) -> str:
+    """Parse a relative time spec like "5m", "2h", "1d" into an ISO timestamp.
+
+    Returns the ISO8601 string (UTC-naive, matching CURRENT_TIMESTAMP writes).
+    Raises click.BadParameter on malformed input.
+    """
+    from datetime import datetime, timedelta
+
+    since = since.strip().lower()
+    if not since:
+        raise click.BadParameter("--since cannot be empty")
+    unit = since[-1]
+    units = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}
+    if unit not in units:
+        raise click.BadParameter(
+            f"Unknown unit '{unit}'. Use Ns, Nm, Nh, or Nd."
+        )
+    try:
+        n = int(since[:-1])
+    except ValueError as e:
+        raise click.BadParameter(f"Invalid number: {since[:-1]}") from e
+    cutoff = datetime.now() - timedelta(**{units[unit]: n})
+    return cutoff.strftime("%Y-%m-%d %H:%M:%S")
+
+
+@activity_group.command("tail")
+@click.option("--sbc", "sbc_filter", help="Filter to a single SBC name")
+@click.option("--actor", "actor_filter", help="Filter to one actor (exact match)")
+@click.option(
+    "--source",
+    "source_filter",
+    type=click.Choice(["cli", "mcp", "api", "daemon", "internal"]),
+    help="Filter to one source",
+)
+@click.option(
+    "--result",
+    "result_filter",
+    type=click.Choice(["ok", "error", "forbidden"]),
+    help="Filter to one result",
+)
+@click.option(
+    "--since",
+    help="Only show events since this relative time (e.g., 5m, 2h, 1d)",
+)
+@click.option(
+    "-n",
+    "--limit",
+    type=int,
+    default=50,
+    help="Maximum number of events to show (default: 50)",
+)
+@click.pass_context
+def activity_tail_cmd(
+    ctx: click.Context,
+    sbc_filter: str | None,
+    actor_filter: str | None,
+    source_filter: str | None,
+    result_filter: str | None,
+    since: str | None,
+    limit: int,
+) -> None:
+    """Show recent activity events.
+
+    Events are returned in reverse chronological order (newest first).
+    Phase A supports point-in-time queries; `--follow` arrives in Phase B.
+    """
+    manager = _get_manager(ctx)
+
+    where: list[str] = []
+    params: list = []
+    if sbc_filter:
+        where.append("entity_name = ?")
+        params.append(sbc_filter)
+    if actor_filter:
+        where.append("actor = ?")
+        params.append(actor_filter)
+    if source_filter:
+        where.append("source = ?")
+        params.append(source_filter)
+    if result_filter:
+        where.append("result = ?")
+        params.append(result_filter)
+    if since:
+        where.append("logged_at >= ?")
+        params.append(_parse_since(since))
+
+    sql = (
+        "SELECT logged_at, actor, source, action, entity_name, result, details "
+        "FROM audit_log"
+    )
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+
+    rows = manager.db.execute(sql, tuple(params))
+    if not rows:
+        click.echo("(no events)")
+        return
+
+    # Oldest first for readability.
+    for row in reversed(rows):
+        ts = row["logged_at"] or ""
+        actor = row["actor"] or "internal"
+        action = row["action"] or ""
+        target = row["entity_name"] or "-"
+        result = row["result"] or "ok"
+        result_color = {"ok": "green", "error": "red", "forbidden": "yellow"}.get(
+            result, "white"
+        )
+        line = (
+            f"{ts}  "
+            f"{click.style(actor, fg='cyan'):<32} "
+            f"{action:<24} "
+            f"{target:<20} "
+            f"{click.style(result, fg=result_color)}"
+        )
+        if row["details"]:
+            line += f"  {row['details']}"
+        click.echo(line)
 
 
 @main.command("completion")

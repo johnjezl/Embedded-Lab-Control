@@ -13,6 +13,7 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+from labctl.core import audit
 from labctl.core.database import Database, get_database
 from labctl.core.models import (
     SBC,
@@ -1445,14 +1446,23 @@ class ResourceManager:
         entity_id: Optional[int],
         entity_name: Optional[str],
         details: str,
+        result: str = "ok",
     ) -> None:
-        """Log an action to the audit log."""
-        self.db.execute_insert(
-            """
-            INSERT INTO audit_log (action, entity_type, entity_id, entity_name, details)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (action, entity_type, entity_id, entity_name, details),
+        """Log an action to the activity stream.
+
+        Thin wrapper over `labctl.core.audit.emit()` that preserves the
+        legacy positional-string-details calling convention used across
+        the manager. `actor`, `source`, and `claim_id` are pulled from
+        the audit contextvars.
+        """
+        audit.emit(
+            self.db,
+            action=action,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            entity_name=entity_name,
+            result=result,
+            details={"message": details} if details else None,
         )
 
 

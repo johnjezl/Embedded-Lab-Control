@@ -7,6 +7,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Activity stream Phase A — foundation (2026-04-19)
+  - `labctl.core.audit` module: `emit()`, `activity_context()`,
+    `set_context()`, redaction, millisecond timestamps
+  - Schema v5: extends `audit_log` with `actor`, `source`, `result`,
+    `claim_id` columns + indexes
+  - CLI boundary sets actor/source context in `main()`
+  - `labctl activity tail` queries the stream with
+    `--sbc/--actor/--source/--result/--since/-n` filters
+  - Power CLI commands emit activity events on success/failure
+  - Existing manager `_audit_log` calls route through `audit.emit()`
+  - 18 tests: schema migration, emit, contextvars, redaction, truncation
+  - Spec: `docs/SPEC_activity_stream.md`
+
+
 - Hardware claims polish, Phase E (2026-04-16)
   - `ClaimsConfig.validate()` clamps invalid bounds at load time
   - `prune_released_claims()` auto-deletes old released claims (wired
