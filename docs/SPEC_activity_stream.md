@@ -289,6 +289,35 @@ Phase A test coverage:
 - CLI `labctl activity` filters by SBC, actor, source, result, and
   time range.
 
+## Follow-up TODOs
+
+Tracked follow-ups discovered during or after Phase B. Not in any
+phase commitment yet — pick up as bandwidth allows.
+
+- **Reverse-chronological ordering (newest-first).**
+  - CLI `activity tail` currently prints oldest-first (tail-of-file
+    semantics); switch to newest-first so the most recent event is
+    the first thing you see. Consider `--oldest-first` as an opt-in
+    escape hatch for users who want tail-like scrolling.
+  - Web `/activity` has a subtle bug in the hydration path: the
+    server sends the last 200 events oldest-first, the JS iterates
+    newest→oldest and calls `feed.prepend()` each time, which ends
+    up with oldest at the TOP of the feed. Live events then prepend
+    above that, producing mixed ordering. Fix: build the DOM in a
+    single pass that preserves newest-at-top invariant.
+
+- **Timezone-aware timestamps.**
+  - Timestamps are stored in the server's local time without a
+    timezone marker. Browsers displaying the page may be in a
+    different timezone. Detect the browser TZ with
+    `Intl.DateTimeFormat().resolvedOptions().timeZone` and format
+    timestamps client-side in local time. Fall back to the server
+    TZ (pass it with the initial render) when the browser value is
+    unavailable.
+  - CLI keeps server TZ formatting as-is.
+  - Longer-term, consider storing UTC ISO-8601 with explicit `Z`
+    so any consumer can render without guessing.
+
 ## Open questions (resolved)
 
 1. **Daemon noise** — emit every cycle or only on status change?
