@@ -697,3 +697,74 @@ def request_release(sbc_name: str):
     except ClaimNotFoundError:
         return jsonify({"error": "claim_not_found"}), 404
     return jsonify({"status": "request_recorded"})
+
+
+# --- Activity Stream Endpoints ---
+
+
+@api_bp.route("/activity", methods=["GET"])
+def list_activity():
+    """List recent activity events, newest first.
+
+    Query params:
+      limit=N       Max events (default 50, max 1000).
+      sbc=X         Filter by entity_name.
+      actor=X       Filter by actor (exact match).
+      source=X      cli | mcp | api | daemon | internal.
+      result=X      ok | error | forbidden.
+      since=TS      ISO timestamp lower bound.
+      after_id=N    Only events with id > N (for long polling).
+    """
+    try:
+        limit = min(int(request.args.get("limit", 50)), 1000)
+    except ValueError:
+        return jsonify({"error": "limit must be an integer"}), 400
+
+    where: list[str] = []
+    params: list = []
+    for key, col in (
+        ("sbc", "entity_name"),
+        ("actor", "actor"),
+        ("source", "source"),
+        ("result", "result"),
+    ):
+        val = request.args.get(key)
+        if val:
+            where.append(f"{col} = ?")
+            params.append(val)
+    since = request.args.get("since")
+    if since:
+        where.append("logged_at >= ?")
+        params.append(since)
+    after_id = request.args.get("after_id")
+    if after_id:
+        try:
+            where.append("id > ?")
+            params.append(int(after_id))
+        except ValueError:
+            return jsonify({"error": "after_id must be an integer"}), 400
+
+    sql = "SELECT * FROM audit_log"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+
+    rows = g.manager.db.execute(sql, tuple(params))
+    events = [
+        {
+            "id": r["id"],
+            "logged_at": r["logged_at"],
+            "actor": r["actor"] or "internal",
+            "source": r["source"] or "internal",
+            "action": r["action"],
+            "entity_type": r["entity_type"],
+            "entity_id": r["entity_id"],
+            "entity_name": r["entity_name"],
+            "result": r["result"] or "ok",
+            "details": r["details"],
+            "claim_id": r["claim_id"],
+        }
+        for r in rows
+    ]
+    return jsonify({"events": events, "count": len(events)})

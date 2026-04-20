@@ -2,7 +2,17 @@
 Web views for lab controller dashboard.
 """
 
-from flask import Blueprint, flash, g, redirect, render_template, url_for
+from flask import (
+    Blueprint,
+    Response,
+    current_app,
+    flash,
+    g,
+    redirect,
+    render_template,
+    stream_with_context,
+    url_for,
+)
 
 from labctl.core.models import AddressType, PlugType, PortType, Status
 from labctl.power import PowerController, PowerState
@@ -359,3 +369,36 @@ def settings():
         "settings.html",
         config=config,
     )
+
+
+@views_bp.route("/activity")
+def activity():
+    """Live activity-stream page."""
+    broadcaster = current_app.config.get("ACTIVITY_BROADCASTER")
+    initial = broadcaster.recent() if broadcaster else []
+    return render_template(
+        "activity.html",
+        initial_events=[e.to_dict() for e in initial],
+    )
+
+
+@views_bp.route("/activity/stream")
+def activity_stream():
+    """Server-Sent Events feed of live activity events.
+
+    Sends a one-shot hydration of the last N events, then live events
+    as they arrive. Keeps alive with a comment-only frame every 15s.
+    """
+    from labctl.web.activity_broadcaster import iter_sse_frames
+
+    broadcaster = current_app.config.get("ACTIVITY_BROADCASTER")
+    if broadcaster is None:
+        return Response("Activity broadcaster not initialized", status=503)
+
+    response = Response(
+        stream_with_context(iter_sse_frames(broadcaster)),
+        mimetype="text/event-stream",
+    )
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["X-Accel-Buffering"] = "no"  # disable nginx buffering
+    return response

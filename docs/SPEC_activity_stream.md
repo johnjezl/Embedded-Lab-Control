@@ -240,10 +240,26 @@ CLI.
 
 ### Phase B — live
 
-- Flask-SocketIO broadcast from `emit()` when the web service is
-  running.
-- `/activity` web page with live feed and filter chips.
-- `labctl activity tail --follow` via SSE (falls back to DB polling).
+- Server-Sent Events (SSE) at `/activity/stream` — single long-lived
+  HTTP response that yields events as they arrive. Chose SSE over
+  Flask-SocketIO because the existing SocketIO scaffolding was never
+  wired in and integrating it cleanly would require switching the
+  WSGI runner to eventlet/gevent. SSE works with the current plain
+  `app.run()`, is natively supported by browsers via `EventSource`,
+  and is one-way (which is all the activity feed needs).
+- `ActivityBroadcaster` background thread polls `audit_log` every
+  500ms and fans new rows out to per-subscriber queues. Because the
+  broadcaster polls the DB (rather than hooking `emit()` directly),
+  events from CLI, MCP, and the daemon — which run in separate
+  processes — all reach the browser.
+- `/activity` web page with live feed, source + result filter chips,
+  pause/resume, and server-rendered hydration of the last 200 events
+  so the page is usable before the first SSE frame arrives.
+- `GET /api/activity` — JSON query endpoint for programmatic access
+  (supports the same filters as the CLI).
+- `labctl activity tail --follow` polls the DB directly (not SSE).
+  This keeps the CLI fully functional when the web service is stopped
+  and avoids baking an HTTP client into the CLI for this one feature.
 
 ### Phase C — source fidelity
 

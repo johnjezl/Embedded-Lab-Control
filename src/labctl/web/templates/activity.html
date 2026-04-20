@@ -1,0 +1,202 @@
+{% extends "base.html" %}
+
+{% block title %}Activity — Lab Controller{% endblock %}
+
+{% block head %}
+<style>
+  .activity-page { max-width: 1400px; }
+  .activity-header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 1rem; }
+  .activity-filters { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+  .filter-chip { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.2rem 0.6rem; border-radius: 999px; background: #e9ecef; cursor: pointer; font-size: 0.85rem; border: 1px solid transparent; }
+  .filter-chip.active { background: #0d6efd; color: white; }
+  .filter-chip.source-cli.active { background: #0d6efd; }
+  .filter-chip.source-mcp.active { background: #6f42c1; }
+  .filter-chip.source-api.active { background: #20c997; }
+  .filter-chip.source-daemon.active { background: #6c757d; }
+  .filter-chip.source-internal.active { background: #adb5bd; color: #212529; }
+  .activity-status { font-size: 0.8rem; color: #6c757d; margin-left: 1rem; }
+  .activity-status.live::before { content: "●"; color: #28a745; margin-right: 0.3rem; }
+  .activity-status.stale::before { content: "●"; color: #dc3545; margin-right: 0.3rem; }
+  .activity-feed { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 0.85rem; border: 1px solid #dee2e6; border-radius: 4px; background: #fafafa; max-height: 70vh; overflow-y: auto; }
+  .activity-row { display: grid; grid-template-columns: 180px 200px 80px 160px 160px 80px 1fr; gap: 0.5rem; padding: 0.35rem 0.6rem; border-bottom: 1px solid #eee; align-items: baseline; }
+  .activity-row:last-child { border-bottom: none; }
+  .activity-row.row-new { animation: flash-new 1.2s ease-out; }
+  @keyframes flash-new { from { background: #fff3cd; } to { background: transparent; } }
+  .col-ts { color: #6c757d; }
+  .col-actor { color: #0d6efd; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .col-source { font-size: 0.75rem; padding: 0.1rem 0.4rem; border-radius: 3px; background: #e9ecef; text-align: center; color: #495057; }
+  .col-source.source-cli { background: #cfe2ff; color: #084298; }
+  .col-source.source-mcp { background: #e2d9f3; color: #3d2a7e; }
+  .col-source.source-api { background: #d1f2eb; color: #0f6848; }
+  .col-source.source-daemon { background: #dee2e6; color: #495057; }
+  .col-action { font-weight: 500; }
+  .col-target { color: #495057; }
+  .col-result.result-ok { color: #28a745; }
+  .col-result.result-error { color: #dc3545; font-weight: bold; }
+  .col-result.result-forbidden { color: #fd7e14; }
+  .col-details { color: #6c757d; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .activity-empty { padding: 2rem; text-align: center; color: #6c757d; }
+  .pause-btn { font-size: 0.85rem; padding: 0.2rem 0.6rem; margin-left: 0.5rem; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="activity-page">
+  <div class="activity-header">
+    <div>
+      <h1 style="display: inline-block; margin: 0;">Activity</h1>
+      <span id="activity-status" class="activity-status">connecting…</span>
+      <button id="pause-btn" class="btn btn-sm btn-secondary pause-btn">Pause</button>
+    </div>
+    <div>
+      <span id="event-count" style="font-size: 0.85rem; color: #6c757d;">0 events</span>
+    </div>
+  </div>
+
+  <div class="activity-filters" id="filters">
+    <span style="align-self: center; font-size: 0.85rem; color: #495057;">Source:</span>
+    <span class="filter-chip source-cli" data-filter="source" data-value="cli">cli</span>
+    <span class="filter-chip source-mcp" data-filter="source" data-value="mcp">mcp</span>
+    <span class="filter-chip source-api" data-filter="source" data-value="api">api</span>
+    <span class="filter-chip source-daemon" data-filter="source" data-value="daemon">daemon</span>
+    <span class="filter-chip source-internal" data-filter="source" data-value="internal">internal</span>
+    <span style="align-self: center; font-size: 0.85rem; color: #495057; margin-left: 1rem;">Result:</span>
+    <span class="filter-chip" data-filter="result" data-value="ok">ok</span>
+    <span class="filter-chip" data-filter="result" data-value="error">error</span>
+    <span class="filter-chip" data-filter="result" data-value="forbidden">forbidden</span>
+  </div>
+
+  <div class="activity-feed" id="feed">
+    <div class="activity-empty">Loading…</div>
+  </div>
+</div>
+
+<script>
+(function() {
+  const feed = document.getElementById('feed');
+  const statusEl = document.getElementById('activity-status');
+  const countEl = document.getElementById('event-count');
+  const pauseBtn = document.getElementById('pause-btn');
+
+  // Deduplicate by id (server-rendered initial + SSE first hydration overlap).
+  const seen = new Set();
+  const maxRows = 2000;
+  let eventCount = 0;
+  let paused = false;
+  let buffered = [];  // events while paused
+
+  // Active filters: { source: Set, result: Set }
+  const filters = { source: new Set(), result: new Set() };
+
+  function matchesFilters(event) {
+    if (filters.source.size && !filters.source.has(event.source)) return false;
+    if (filters.result.size && !filters.result.has(event.result)) return false;
+    return true;
+  }
+
+  function formatDetails(detailsJson) {
+    if (!detailsJson) return '';
+    try {
+      const o = JSON.parse(detailsJson);
+      if (o.message) return o.message;
+      return Object.keys(o).map(k => `${k}=${JSON.stringify(o[k])}`).join(' ');
+    } catch (e) {
+      return detailsJson;
+    }
+  }
+
+  function renderRow(event, isNew) {
+    const row = document.createElement('div');
+    row.className = 'activity-row' + (isNew ? ' row-new' : '');
+    row.dataset.source = event.source;
+    row.dataset.result = event.result;
+    row.innerHTML = `
+      <div class="col-ts">${event.logged_at || ''}</div>
+      <div class="col-actor" title="${event.actor}">${event.actor}</div>
+      <div class="col-source source-${event.source}">${event.source}</div>
+      <div class="col-action">${event.action}</div>
+      <div class="col-target">${event.entity_name || '-'}</div>
+      <div class="col-result result-${event.result}">${event.result}</div>
+      <div class="col-details" title="${formatDetails(event.details).replace(/"/g, '&quot;')}">${formatDetails(event.details)}</div>
+    `;
+    if (!matchesFilters(event)) row.style.display = 'none';
+    return row;
+  }
+
+  function addEvent(event) {
+    if (seen.has(event.id)) return;
+    seen.add(event.id);
+    eventCount++;
+    countEl.textContent = `${eventCount} events`;
+
+    if (paused) {
+      buffered.push(event);
+      return;
+    }
+    // Clear "Loading..." placeholder on first render.
+    if (feed.querySelector('.activity-empty')) feed.innerHTML = '';
+    feed.prepend(renderRow(event, true));
+    // Trim oldest rows.
+    while (feed.children.length > maxRows) {
+      feed.removeChild(feed.lastChild);
+    }
+  }
+
+  function applyFilters() {
+    feed.querySelectorAll('.activity-row').forEach(row => {
+      const match =
+        (!filters.source.size || filters.source.has(row.dataset.source)) &&
+        (!filters.result.size || filters.result.has(row.dataset.result));
+      row.style.display = match ? '' : 'none';
+    });
+  }
+
+  // Server-rendered initial events (oldest-first → render newest-first).
+  const initial = {{ initial_events | tojson }};
+  for (let i = initial.length - 1; i >= 0; i--) addEvent(initial[i]);
+  if (initial.length === 0) {
+    feed.innerHTML = '<div class="activity-empty">No events yet.</div>';
+  }
+
+  // Filter chips.
+  document.querySelectorAll('.filter-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      const f = chip.dataset.filter;
+      const v = chip.dataset.value;
+      if (filters[f].has(v)) { filters[f].delete(v); chip.classList.remove('active'); }
+      else { filters[f].add(v); chip.classList.add('active'); }
+      applyFilters();
+    });
+  });
+
+  // Pause / resume.
+  pauseBtn.addEventListener('click', () => {
+    paused = !paused;
+    pauseBtn.textContent = paused ? `Resume (${buffered.length})` : 'Pause';
+    if (!paused) {
+      while (buffered.length) {
+        const event = buffered.shift();
+        if (feed.querySelector('.activity-empty')) feed.innerHTML = '';
+        feed.prepend(renderRow(event, true));
+      }
+      while (feed.children.length > maxRows) feed.removeChild(feed.lastChild);
+    } else {
+      setInterval(() => { if (paused) pauseBtn.textContent = `Resume (${buffered.length})`; }, 500);
+    }
+  });
+
+  // SSE connection.
+  const es = new EventSource('{{ url_for("views.activity_stream") }}');
+  es.onopen = () => { statusEl.className = 'activity-status live'; statusEl.textContent = 'live'; };
+  es.onerror = () => { statusEl.className = 'activity-status stale'; statusEl.textContent = 'reconnecting…'; };
+  es.addEventListener('activity', (ev) => {
+    try {
+      const event = JSON.parse(ev.data);
+      addEvent(event);
+    } catch (e) {
+      console.warn('bad activity event', e);
+    }
+  });
+})();
+</script>
+{% endblock %}

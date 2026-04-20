@@ -7,6 +7,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Added
+- Activity stream Phase B — live (2026-04-19)
+  - `ActivityBroadcaster` background thread polls `audit_log` every
+    500ms and fans new rows to per-subscriber queues. Cross-process:
+    events from CLI/MCP/daemon reach browsers because everyone writes
+    to the same DB.
+  - `GET /activity` — web page with live feed, source/result filter
+    chips, pause/resume, and server-rendered hydration of the last
+    200 events.
+  - `GET /activity/stream` — Server-Sent Events endpoint, session-
+    authed. 15s keepalive heartbeats.
+  - `GET /api/activity` — JSON query endpoint (API-key auth), same
+    filters as the CLI.
+  - `labctl activity tail --follow` — streams live events by polling
+    the DB directly (works when the web service is stopped).
+  - Activity link added to the nav bar.
+  - 9 broadcaster tests (no-replay semantics, fan-out, unsubscribe,
+    SSE frame format, slow-consumer drain, hydration + live).
 - `labctl services status` — reports on systemd units labctl depends
   on: `labctl-monitor`, `labctl-mcp`, `labctl-web`, and `ser2net`.
   Shows ActiveState/SubState, uptime, restart counter, and recent

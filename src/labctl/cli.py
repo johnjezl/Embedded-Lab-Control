@@ -3823,6 +3823,55 @@ def _parse_since(since: str) -> str:
     return cutoff.strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _format_activity_row(row) -> str:
+    """Render a single audit_log row as a colored line."""
+    ts = row["logged_at"] or ""
+    actor = row["actor"] or "internal"
+    action = row["action"] or ""
+    target = row["entity_name"] or "-"
+    result = row["result"] or "ok"
+    result_color = {"ok": "green", "error": "red", "forbidden": "yellow"}.get(
+        result, "white"
+    )
+    line = (
+        f"{ts}  "
+        f"{click.style(actor, fg='cyan'):<32} "
+        f"{action:<24} "
+        f"{target:<20} "
+        f"{click.style(result, fg=result_color)}"
+    )
+    if row["details"]:
+        line += f"  {row['details']}"
+    return line
+
+
+def _activity_query_clauses(
+    sbc_filter: str | None,
+    actor_filter: str | None,
+    source_filter: str | None,
+    result_filter: str | None,
+    since: str | None,
+) -> tuple[list[str], list]:
+    where: list[str] = []
+    params: list = []
+    if sbc_filter:
+        where.append("entity_name = ?")
+        params.append(sbc_filter)
+    if actor_filter:
+        where.append("actor = ?")
+        params.append(actor_filter)
+    if source_filter:
+        where.append("source = ?")
+        params.append(source_filter)
+    if result_filter:
+        where.append("result = ?")
+        params.append(result_filter)
+    if since:
+        where.append("logged_at >= ?")
+        params.append(_parse_since(since))
+    return where, params
+
+
 @activity_group.command("tail")
 @click.option("--sbc", "sbc_filter", help="Filter to a single SBC name")
 @click.option("--actor", "actor_filter", help="Filter to one actor (exact match)")
@@ -3849,6 +3898,12 @@ def _parse_since(since: str) -> str:
     default=50,
     help="Maximum number of events to show (default: 50)",
 )
+@click.option(
+    "-f",
+    "--follow",
+    is_flag=True,
+    help="Stream new events as they arrive (polls the database every 500ms)",
+)
 @click.pass_context
 def activity_tail_cmd(
     ctx: click.Context,
@@ -3858,66 +3913,67 @@ def activity_tail_cmd(
     result_filter: str | None,
     since: str | None,
     limit: int,
+    follow: bool,
 ) -> None:
     """Show recent activity events.
 
-    Events are returned in reverse chronological order (newest first).
-    Phase A supports point-in-time queries; `--follow` arrives in Phase B.
+    Events are returned in chronological order (oldest shown first).
+    Use `--follow` to stream new events live; poll the DB directly so
+    this works whether or not the web service is running.
     """
     manager = _get_manager(ctx)
 
-    where: list[str] = []
-    params: list = []
-    if sbc_filter:
-        where.append("entity_name = ?")
-        params.append(sbc_filter)
-    if actor_filter:
-        where.append("actor = ?")
-        params.append(actor_filter)
-    if source_filter:
-        where.append("source = ?")
-        params.append(source_filter)
-    if result_filter:
-        where.append("result = ?")
-        params.append(result_filter)
-    if since:
-        where.append("logged_at >= ?")
-        params.append(_parse_since(since))
+    where, params = _activity_query_clauses(
+        sbc_filter, actor_filter, source_filter, result_filter, since
+    )
 
     sql = (
-        "SELECT logged_at, actor, source, action, entity_name, result, details "
+        "SELECT id, logged_at, actor, source, action, entity_name, "
+        "result, details "
         "FROM audit_log"
     )
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY id DESC LIMIT ?"
-    params.append(limit)
+    params_initial = list(params) + [limit]
 
-    rows = manager.db.execute(sql, tuple(params))
-    if not rows:
+    rows = manager.db.execute(sql, tuple(params_initial))
+    if not rows and not follow:
         click.echo("(no events)")
         return
 
-    # Oldest first for readability.
+    last_id = 0
     for row in reversed(rows):
-        ts = row["logged_at"] or ""
-        actor = row["actor"] or "internal"
-        action = row["action"] or ""
-        target = row["entity_name"] or "-"
-        result = row["result"] or "ok"
-        result_color = {"ok": "green", "error": "red", "forbidden": "yellow"}.get(
-            result, "white"
-        )
-        line = (
-            f"{ts}  "
-            f"{click.style(actor, fg='cyan'):<32} "
-            f"{action:<24} "
-            f"{target:<20} "
-            f"{click.style(result, fg=result_color)}"
-        )
-        if row["details"]:
-            line += f"  {row['details']}"
-        click.echo(line)
+        click.echo(_format_activity_row(row))
+        last_id = max(last_id, row["id"])
+
+    if not follow:
+        return
+
+    # Follow mode: poll for new rows every 500ms.
+    follow_sql = (
+        "SELECT id, logged_at, actor, source, action, entity_name, "
+        "result, details FROM audit_log WHERE id > ?"
+    )
+    follow_where = list(where)
+    follow_params_base = list(params)
+    if follow_where:
+        follow_sql += " AND " + " AND ".join(follow_where)
+    follow_sql += " ORDER BY id ASC LIMIT 500"
+
+    import time
+
+    try:
+        while True:
+            time.sleep(0.5)
+            new_rows = manager.db.execute(
+                follow_sql, tuple([last_id] + follow_params_base)
+            )
+            for row in new_rows:
+                click.echo(_format_activity_row(row))
+                last_id = row["id"]
+    except KeyboardInterrupt:
+        pass
 
 
 @main.command("completion")

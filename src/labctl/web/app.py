@@ -53,6 +53,7 @@ def create_app(config: Config | None = None) -> Flask:
     )
 
     # Register blueprints
+    from labctl.web.activity_broadcaster import ActivityBroadcaster
     from labctl.web.api import api_bp
     from labctl.web.auth import auth_bp
     from labctl.web.views import views_bp
@@ -60,6 +61,12 @@ def create_app(config: Config | None = None) -> Flask:
     app.register_blueprint(auth_bp)
     app.register_blueprint(api_bp, url_prefix="/api")
     app.register_blueprint(views_bp)
+
+    # Start the activity-stream broadcaster thread. Polls audit_log and
+    # fans new rows out to SSE subscribers on /activity/stream.
+    mgr_for_broadcast = get_manager(config.database_path)
+    app.config["ACTIVITY_BROADCASTER"] = ActivityBroadcaster(mgr_for_broadcast.db)
+    app.config["ACTIVITY_BROADCASTER"].start()
 
     # Register csrf_token as Jinja2 template global
     app.jinja_env.globals["csrf_token"] = generate_csrf_token
