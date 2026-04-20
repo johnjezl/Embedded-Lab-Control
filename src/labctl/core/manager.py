@@ -378,6 +378,76 @@ class ResourceManager:
 
     # --- Serial Port Operations ---
 
+    def _resolve_serial_device_id(self, device_path: str) -> Optional[int]:
+        """Resolve a device_path like "/dev/lab/port-2-3" to a serial_device_id.
+
+        Returns None if the path doesn't match the /dev/lab/<name>
+        convention, or no registered device has that name.
+        """
+        if not device_path:
+            return None
+        # Accept "/dev/lab/<name>" and also bare "<name>" (legacy rows).
+        prefix = "/dev/lab/"
+        if device_path.startswith(prefix):
+            name = device_path[len(prefix) :]
+        elif "/" not in device_path:
+            name = device_path
+        else:
+            return None
+        if not name:
+            return None
+        row = self.db.execute_one(
+            "SELECT id FROM serial_devices WHERE name = ?", (name,)
+        )
+        return row["id"] if row else None
+
+    def repair_serial_port_links(self, apply: bool = False) -> list[dict]:
+        """Backfill NULL `serial_device_id` on serial_ports from device_path.
+
+        Args:
+            apply: If True, perform the UPDATE. Otherwise return the
+                planned changes without writing.
+
+        Returns:
+            List of dicts describing each repair: {port_id, sbc_id,
+            alias, device_path, resolved_device_id, resolved_name,
+            status}. Status is "repaired", "applied" (if apply=True and
+            write succeeded), "unresolvable" (no matching serial_device),
+            or "skipped" (FK was already set — included only if you
+            query via a broader scan; this method only returns rows it
+            had to consider).
+        """
+        rows = self.db.execute(
+            "SELECT id, sbc_id, alias, device_path, serial_device_id "
+            "FROM serial_ports WHERE serial_device_id IS NULL"
+        )
+        results: list[dict] = []
+        for r in rows:
+            resolved_id = self._resolve_serial_device_id(r["device_path"])
+            entry = {
+                "port_id": r["id"],
+                "sbc_id": r["sbc_id"],
+                "alias": r["alias"],
+                "device_path": r["device_path"],
+                "resolved_device_id": resolved_id,
+                "resolved_name": None,
+                "status": "unresolvable" if resolved_id is None else "repaired",
+            }
+            if resolved_id is not None:
+                name_row = self.db.execute_one(
+                    "SELECT name FROM serial_devices WHERE id = ?",
+                    (resolved_id,),
+                )
+                entry["resolved_name"] = name_row["name"] if name_row else None
+                if apply:
+                    self.db.execute_modify(
+                        "UPDATE serial_ports SET serial_device_id = ? WHERE id = ?",
+                        (resolved_id, r["id"]),
+                    )
+                    entry["status"] = "applied"
+            results.append(entry)
+        return results
+
     def assign_serial_port(
         self,
         sbc_id: int,
@@ -422,6 +492,16 @@ class ResourceManager:
             )
             if not dev:
                 raise ValueError(f"Serial device with ID {serial_device_id} not found")
+        else:
+            # Auto-resolve from device_path so callers that only provide a
+            # /dev/lab/<name> path (CLI without --serial-device, MCP tools,
+            # REST API) still populate the two-tier link. Without this, the
+            # port works at the device layer but `labctl serial list` shows
+            # the adapter as unassigned. Silently leave NULL if no match —
+            # paths outside /dev/lab (raw /dev/ttyUSB*, etc.) are legal.
+            resolved = self._resolve_serial_device_id(device_path)
+            if resolved is not None:
+                serial_device_id = resolved
 
         # Auto-assign TCP port if not specified
         if tcp_port is None:

@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+- `labctl serial list` showed registered adapters as "unassigned" when
+  their assignment rows had `serial_device_id = NULL`. Root cause:
+  `ResourceManager.assign_serial_port()` only populated the FK when
+  the caller explicitly supplied `serial_device_id`. Callers that
+  passed only a `/dev/lab/<name>` path (MCP `assign_serial_port`,
+  REST API, and CLI without `--serial-device`) left the FK NULL, so
+  the two-tier adapter→port link was broken while the port itself
+  kept working at the device layer.
+  Fix: `assign_serial_port()` now auto-resolves the FK from
+  `device_path` (expects `/dev/lab/<name>` or a bare name). New
+  `labctl serial repair [--apply]` command backfills the FK for
+  existing orphan rows (dry-run by default). 6 new regression tests
+  cover the auto-resolve and repair paths (2026-04-19)
+
 ### Added
 - Activity stream Phase B — live (2026-04-19)
   - `ActivityBroadcaster` background thread polls `audit_log` every

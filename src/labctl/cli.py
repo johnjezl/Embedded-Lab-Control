@@ -1260,6 +1260,58 @@ def serial_list_cmd(ctx: click.Context) -> None:
         click.echo(f"{d.name:<15} {d.usb_path:<15} {vendor:<18} {model:<20} {assigned}")
 
 
+@serial_group.command("repair")
+@click.option(
+    "--apply",
+    is_flag=True,
+    help="Write the repair. Without this flag, prints the plan only.",
+)
+@click.pass_context
+def serial_repair_cmd(ctx: click.Context, apply: bool) -> None:
+    """Backfill missing serial_device_id links on serial_ports rows.
+
+    When a port is assigned by device-path alone (CLI without
+    `--serial-device`, or by an older MCP tool), the FK to
+    `serial_devices` may be left NULL. The port still works, but
+    `labctl serial list` shows the adapter as unassigned.
+
+    This command scans for NULL-FK rows and repairs them by matching
+    `device_path` against registered adapter names. Dry-run by default.
+    """
+    manager = _get_manager(ctx)
+    results = manager.repair_serial_port_links(apply=apply)
+
+    if not results:
+        click.echo("No orphan serial-port links found.")
+        return
+
+    click.echo(
+        f"{'PORT':<6} {'SBC_ID':<7} {'ALIAS':<26} {'DEVICE_PATH':<24} "
+        f"{'RESOLVED':<14} STATUS"
+    )
+    click.echo("-" * 95)
+    for e in results:
+        resolved = e["resolved_name"] or "-"
+        click.echo(
+            f"{e['port_id']:<6} {e['sbc_id']:<7} "
+            f"{(e['alias'] or '-'):<26} {(e['device_path'] or '-'):<24} "
+            f"{resolved:<14} {e['status']}"
+        )
+
+    applied = sum(1 for e in results if e["status"] == "applied")
+    repaired = sum(1 for e in results if e["status"] == "repaired")
+    unresolved = sum(1 for e in results if e["status"] == "unresolvable")
+
+    click.echo()
+    if apply:
+        click.echo(f"Applied: {applied}.  Unresolvable: {unresolved}.")
+    else:
+        click.echo(
+            f"Would repair: {repaired}.  Unresolvable: {unresolved}.  "
+            f"Re-run with --apply to write."
+        )
+
+
 @serial_group.command("rename")
 @click.argument("name")
 @click.argument("new_name")

@@ -368,6 +368,115 @@ class TestSerialPortOperations:
         assert port.alias == "debug-port"
         assert port.serial_device_id == device.id
 
+    def test_assign_auto_resolves_serial_device_id_from_path(self, manager):
+        """Regression: callers that only pass /dev/lab/<name> should still
+        get the FK populated so `labctl serial list` shows assignments."""
+        sbc = manager.create_sbc(name="auto-resolve-sbc")
+        device = manager.create_serial_device(
+            name="port-auto-1",
+            usb_path="1-9.9",
+        )
+
+        port = manager.assign_serial_port(
+            sbc_id=sbc.id,
+            port_type=PortType.CONSOLE,
+            device_path="/dev/lab/port-auto-1",
+            alias="auto-resolve-console",
+            # Intentionally omit serial_device_id — the manager should
+            # resolve it from device_path.
+        )
+
+        assert port.serial_device_id == device.id
+
+    def test_assign_leaves_fk_null_for_paths_outside_dev_lab(self, manager):
+        """Paths like /dev/ttyUSB0 don't follow the two-tier convention;
+        leave FK NULL rather than guessing."""
+        sbc = manager.create_sbc(name="raw-path-sbc")
+
+        port = manager.assign_serial_port(
+            sbc_id=sbc.id,
+            port_type=PortType.CONSOLE,
+            device_path="/dev/ttyUSB0",
+        )
+
+        assert port.serial_device_id is None
+
+    def test_repair_serial_port_links_dry_run(self, manager):
+        """Dry-run returns the plan without writing."""
+        sbc = manager.create_sbc(name="repair-sbc")
+        device = manager.create_serial_device(
+            name="port-repair-1",
+            usb_path="5-5.5",
+        )
+        # Simulate a pre-fix orphan row by manually NULL-ing the FK.
+        port = manager.assign_serial_port(
+            sbc_id=sbc.id,
+            port_type=PortType.CONSOLE,
+            device_path="/dev/lab/port-repair-1",
+        )
+        manager.db.execute_modify(
+            "UPDATE serial_ports SET serial_device_id = NULL WHERE id = ?",
+            (port.id,),
+        )
+
+        results = manager.repair_serial_port_links(apply=False)
+
+        assert len(results) == 1
+        assert results[0]["status"] == "repaired"
+        assert results[0]["resolved_device_id"] == device.id
+        assert results[0]["resolved_name"] == "port-repair-1"
+
+        # Dry-run MUST not write.
+        row = manager.db.execute_one(
+            "SELECT serial_device_id FROM serial_ports WHERE id = ?",
+            (port.id,),
+        )
+        assert row["serial_device_id"] is None
+
+    def test_repair_serial_port_links_apply(self, manager):
+        """--apply writes the resolved FK back."""
+        sbc = manager.create_sbc(name="repair-apply-sbc")
+        device = manager.create_serial_device(
+            name="port-repair-2",
+            usb_path="5-5.6",
+        )
+        port = manager.assign_serial_port(
+            sbc_id=sbc.id,
+            port_type=PortType.CONSOLE,
+            device_path="/dev/lab/port-repair-2",
+        )
+        manager.db.execute_modify(
+            "UPDATE serial_ports SET serial_device_id = NULL WHERE id = ?",
+            (port.id,),
+        )
+
+        results = manager.repair_serial_port_links(apply=True)
+        assert results[0]["status"] == "applied"
+
+        row = manager.db.execute_one(
+            "SELECT serial_device_id FROM serial_ports WHERE id = ?",
+            (port.id,),
+        )
+        assert row["serial_device_id"] == device.id
+
+    def test_repair_reports_unresolvable_paths(self, manager):
+        """A device_path that doesn't match any registered adapter is
+        reported as unresolvable and left alone."""
+        sbc = manager.create_sbc(name="repair-miss-sbc")
+        port = manager.assign_serial_port(
+            sbc_id=sbc.id,
+            port_type=PortType.CONSOLE,
+            device_path="/dev/lab/ghost-device",
+        )
+        manager.db.execute_modify(
+            "UPDATE serial_ports SET serial_device_id = NULL WHERE id = ?",
+            (port.id,),
+        )
+
+        results = manager.repair_serial_port_links(apply=True)
+        assert len(results) == 1
+        assert results[0]["status"] == "unresolvable"
+
     def test_alias_uniqueness_different_sbc(self, manager):
         """Test that alias must be unique across different SBCs."""
         sbc1 = manager.create_sbc(name="sbc-alias-1")
