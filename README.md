@@ -139,11 +139,19 @@ labctl web --port 5000
 
 Partition numbers are 1-based (e.g., `-p 1` for the first partition, which maps to `/dev/sdb1`).
 
-SDWire flash/update operations require sudo access for `mount`, `umount`, `dd`, and `sync`. Add a sudoers rule:
+SDWire flash/update operations shell out to `mount`, `umount`, `dd`, `sync`, and
+`partprobe`. They do not use `sd-mux-ctrl`, and they do not require a fixed
+privileged mountpoint such as `/mnt/sdwire`.
+
+To reduce friction for interactive use and MCP/service flows, add a narrowly
+scoped sudoers rule:
 ```bash
-echo '<user> ALL=(root) NOPASSWD: /usr/bin/mount, /usr/bin/umount, /usr/bin/dd, /bin/dd, /usr/bin/sync, /bin/sync' | sudo tee /etc/sudoers.d/labctl
+echo '<user> ALL=(root) NOPASSWD: /usr/bin/mount, /usr/bin/umount, /usr/bin/dd, /bin/dd, /usr/bin/sync, /bin/sync, /usr/sbin/partprobe, /sbin/partprobe' | sudo tee /etc/sudoers.d/labctl
 sudo chmod 440 /etc/sudoers.d/labctl
 ```
+
+Keep this scoped to the exact commands above. `NOPASSWD` sudo is still privileged;
+the point here is to allow SDWire workflows without granting broader root access.
 
 ### Serial Device Management
 
