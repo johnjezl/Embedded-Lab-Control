@@ -198,6 +198,35 @@ class TestApiKeyAuth:
         assert row["actor"] == "api:admin"
         assert row["source"] == "api"
 
+    def test_api_key_claim_renew_and_release(self, auth_client, auth_manager):
+        auth_manager.create_sbc(name="api-claim-sbc")
+
+        resp = auth_client.post(
+            "/api/claims/api-claim-sbc",
+            json={"duration_minutes": 10, "reason": "api flow"},
+            headers={"X-API-Key": TEST_API_KEY},
+        )
+        assert resp.status_code == 201
+        data = resp.get_json()
+        assert data["status"] == "claimed"
+
+        resp = auth_client.post(
+            "/api/claims/api-claim-sbc/renew",
+            json={"duration_minutes": 20},
+            headers={"X-API-Key": TEST_API_KEY},
+        )
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["status"] == "renewed"
+        assert data["claim"]["duration_seconds"] == 1200
+
+        resp = auth_client.post(
+            "/api/claims/api-claim-sbc/release",
+            headers={"X-API-Key": TEST_API_KEY},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["status"] == "released"
+
 
 class TestHealthEndpointOpen:
     """Test that /api/health remains open without auth."""
@@ -249,6 +278,44 @@ class TestCsrfEnforcement:
             "SELECT actor, source FROM audit_log "
             "WHERE action = 'update' AND entity_name = ?",
             ("web-audit-sbc",),
+        )
+        assert row["actor"] == "web:admin"
+        assert row["source"] == "web"
+
+    def test_logged_in_web_force_release_claim(self, auth_client, auth_manager):
+        auth_manager.create_sbc(name="web-claim-sbc")
+        auth_manager.claim_sbc(
+            sbc_name="web-claim-sbc",
+            agent_name="holder",
+            session_id="other-session",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="holding",
+        )
+        _login(auth_client)
+
+        resp = auth_client.get("/sbc/web-claim-sbc")
+        assert resp.status_code == 200
+
+        import re
+
+        html = resp.data.decode()
+        match = re.search(r'name="_csrf_token" value="([^"]+)"', html)
+        csrf_token = match.group(1) if match else ""
+
+        resp = auth_client.post(
+            "/sbc/web-claim-sbc/claim/force-release",
+            data={"reason": "admin override", "_csrf_token": csrf_token},
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+        assert auth_manager.get_active_claim("web-claim-sbc") is None
+
+        row = auth_manager.db.execute_one(
+            "SELECT actor, source FROM audit_log "
+            "WHERE action = 'force_release' AND entity_name = ? "
+            "ORDER BY id DESC LIMIT 1",
+            ("web-claim-sbc",),
         )
         assert row["actor"] == "web:admin"
         assert row["source"] == "web"

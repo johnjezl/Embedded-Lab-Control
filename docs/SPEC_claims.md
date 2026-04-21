@@ -4,7 +4,7 @@ Specification for adding exclusive-access claim tracking to labctl.
 Allows AI agents and humans to reserve SBCs for extended periods,
 preventing destructive interference between concurrent workflows.
 
-**Status:** Specification / pending implementation
+**Status:** Phases A, B, C, D, and E implemented
 **Source request:** SLM-OS capstone project (multi-agent coordination pain)
 **Target release:** v0.x
 
@@ -463,8 +463,10 @@ POST   /api/claims/{sbc_name}/request-release
 ```
 
 `session_kind = "web"` with session ID derived from the existing Flask
-session cookie (or API-key identity for non-browser callers). Web
-dashboard UI design (claim badges, manage-claim modal) is Phase D.
+session cookie (or API-key identity for non-browser callers). When
+auth is disabled, anonymous callers can create claims but get a
+per-request session identity, so later renew/release calls will be
+treated as non-claimant unless auth or API keys are enabled.
 
 ---
 
@@ -598,13 +600,10 @@ are sufficient.
 
 ## Open Questions
 
-1. **Web dashboard UI:** REST endpoints are defined above; dashboard
-   visualisation (claim badges per SBC, manage-claim modal, banner
-   when viewing a claimed SBC) still needs UX design — Phase D.
-2. **Interaction with `/deploy-and-test` skill:** should the skill
+1. **Interaction with `/deploy-and-test` skill:** should the skill
    auto-claim for the duration of its run? Probably yes. Design
    decision for skill update alongside Phase B.
-3. **PID recycling on long-lived deployments:** `mcp-stdio:<pid>-<start_epoch>`
+2. **PID recycling on long-lived deployments:** `mcp-stdio:<pid>-<start_epoch>`
    is safe against recycling because `start_epoch` changes when a
    PID is reused, but the sweeper must verify *both* match when
    checking `kill -0` — a raw PID liveness check would be fooled by

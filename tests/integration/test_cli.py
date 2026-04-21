@@ -3,6 +3,7 @@
 import pytest
 from click.testing import CliRunner
 
+from labctl.core import audit
 from labctl.cli import main
 
 
@@ -181,6 +182,45 @@ class TestClaimCommands:
         assert result.exit_code == 0
         assert "No active claims" in result.output
 
+    def test_renew_show_history_and_stats(self, claim_runner):
+        runner, config, manager = claim_runner
+
+        result = runner.invoke(
+            main,
+            ["-c", str(config), "claim", "pi-5-1", "-d", "10m", "-r", "bringup"],
+        )
+        assert result.exit_code == 0, result.output
+
+        result = runner.invoke(
+            main,
+            ["-c", str(config), "renew", "pi-5-1", "-d", "20m"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Renewed claim on 'pi-5-1'" in result.output
+
+        result = runner.invoke(main, ["-c", str(config), "claims", "show", "pi-5-1"])
+        assert result.exit_code == 0, result.output
+        assert "held by" in result.output
+        assert "reason: bringup" in result.output
+        assert "renewed 1x" in result.output
+
+        result = runner.invoke(main, ["-c", str(config), "release", "pi-5-1"])
+        assert result.exit_code == 0, result.output
+
+        result = runner.invoke(
+            main,
+            ["-c", str(config), "claims", "history", "pi-5-1"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Last 1 claim(s) on 'pi-5-1':" in result.output
+        assert "[released]" in result.output
+        assert "reason: bringup" in result.output
+
+        result = runner.invoke(main, ["-c", str(config), "claims", "stats"])
+        assert result.exit_code == 0, result.output
+        assert "Total claims:" in result.output
+        assert "Released:" in result.output
+
     def test_claim_duration_out_of_bounds(self, claim_runner):
         runner, config, _ = claim_runner
         # Config max is 60 minutes; 4h should be rejected.
@@ -258,6 +298,11 @@ class TestClaimCommands:
         claim = manager.get_active_claim("pi-5-1")
         assert len(claim.pending_requests) == 1
 
+        result = runner.invoke(main, ["-c", str(config), "claims", "show", "pi-5-1"])
+        assert result.exit_code == 0, result.output
+        assert "request from" in result.output
+        assert "need the bench" in result.output
+
     def test_status_surfaces_claim(self, claim_runner):
         runner, config, manager = claim_runner
         manager.claim_sbc(
@@ -329,3 +374,49 @@ class TestClaimCommands:
         assert result.exit_code == 0
         assert "expired" in result.output.lower() or "Released" in result.output
         assert manager.get_active_claim("pi-5-1") is None
+
+
+@pytest.fixture
+def activity_runner(tmp_path):
+    """CLI runner with a throwaway DB for activity-tail tests."""
+    db_path = tmp_path / "labctl.db"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(f"database_path: {db_path}\n")
+
+    from labctl.core.manager import get_manager
+
+    manager = get_manager(db_path)
+    runner = CliRunner()
+    return runner, config_path, manager
+
+
+class TestActivityCommands:
+    """Integration tests for activity-stream CLI commands."""
+
+    def test_activity_tail_lists_events(self, activity_runner):
+        runner, config, manager = activity_runner
+        with audit.activity_context("cli:alice", "cli"):
+            manager.create_sbc(name="activity-pi", project="test")
+
+        result = runner.invoke(main, ["-c", str(config), "activity", "tail"])
+
+        assert result.exit_code == 0
+        assert "create" in result.output
+        assert "activity-pi" in result.output
+        assert "cli:alice" in result.output
+
+    def test_activity_tail_filters_by_actor(self, activity_runner):
+        runner, config, manager = activity_runner
+        with audit.activity_context("cli:alice", "cli"):
+            manager.create_sbc(name="alice-pi", project="test")
+        with audit.activity_context("cli:bob", "cli"):
+            manager.create_sbc(name="bob-pi", project="test")
+
+        result = runner.invoke(
+            main,
+            ["-c", str(config), "activity", "tail", "--actor", "cli:alice"],
+        )
+
+        assert result.exit_code == 0
+        assert "alice-pi" in result.output
+        assert "bob-pi" not in result.output

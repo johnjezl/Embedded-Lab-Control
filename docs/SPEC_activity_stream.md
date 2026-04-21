@@ -36,7 +36,8 @@ what is happening. Today's symptoms:
   `/activity` page on the web dashboard.
 - Historical queries filterable by SBC, actor, source, and time
   range.
-- AI agents can observe recent activity via an MCP resource.
+- AI agents can observe recent activity via future MCP resources
+  planned for a later phase.
 - Attribution: every event carries the originating actor (`cli:john`,
   `mcp-stdio:12345-...`, `web:alice`, `daemon`).
 
@@ -149,17 +150,15 @@ Human-readable line format:
 10:22:04.310  daemon           status_change    pi-5-2   ok      online -> offline
 ```
 
-`--follow` subscribes to the web server's SSE endpoint when the
-web service is running; otherwise falls back to polling the DB
-every 500 ms.
+`--follow` polls the DB every 500 ms. This keeps the CLI usable even
+when the web service is stopped.
 
 ### 2. Web dashboard
 
 New `/activity` page:
 
-- Live event feed via Flask-SocketIO (existing plumbing), room
-  `activity`.
-- Filter chips: actor, source, SBC, result.
+- Live event feed via Server-Sent Events from `/activity/stream`.
+- Filter chips: source and result.
 - Color-coded: green = ok, red = error, yellow = forbidden,
   gray = daemon.
 - Last 200 events on page load, stream after.
@@ -167,7 +166,6 @@ New `/activity` page:
 ### 3. REST API
 
 - `GET /api/activity?since=<ts>&limit=N&sbc=X&actor=X&source=X`
-- `GET /api/activity/stream` — SSE for programmatic tails.
 
 ### 4. MCP resource
 
@@ -175,11 +173,14 @@ New `/activity` page:
   just happened" snapshot).
 - `lab://activity/{sbc_name}` — last 50 events targeting that SBC.
 
+Status: not yet implemented; still planned for a later phase.
+
 ## Performance and retention
 
 - Each `emit()` is a single INSERT (~0.5 ms at lab scale ≈ 10
   events/sec sustained worst case).
-- SocketIO broadcast is fire-and-forget; no per-client state.
+- SSE fanout is queue-based per subscriber and driven by the
+  background broadcaster thread.
 - Events older than 30 days are pruned by the existing claim-sweep
   worker (one more `DELETE` each sweep).
 - `details` JSON truncated to 4 KB before insert.
@@ -211,6 +212,8 @@ def activity_context(actor: str, source: str, claim_id: int | None = None):
   Reads session ID from the existing MCP session-tracking used by
   claims.
 - **Web**: Flask `before_request` sets context from the session user.
+  When auth is disabled, anonymous mutations are attributed as
+  `web:anonymous` / `api:anonymous`.
 - **Daemon**: sets `activity_context("daemon", "daemon")` for its
   thread loop.
 - **Default**: if nothing is set (direct Python use, tests), events
@@ -222,7 +225,8 @@ def activity_context(actor: str, source: str, claim_id: int | None = None):
 
 - `labctl.audit` module: `emit()`, contextvars, `activity_context()`
   context manager, redaction.
-- Schema v5 migration (`activity_events` table + indexes).
+- Schema v5 migration (extend `audit_log` with actor/source/result and
+  claim columns + indexes).
 - Wire into `ResourceManager` mutating methods (`create_sbc`,
   `update_sbc`, `remove_sbc`, `assign_serial_port`,
   `remove_serial_port`, `set_network_address`, `remove_network_address`,
@@ -253,8 +257,8 @@ CLI.
   events from CLI, MCP, and the daemon — which run in separate
   processes — all reach the browser.
 - `/activity` web page with live feed, source + result filter chips,
-  pause/resume, and server-rendered hydration of the last 200 events
-  so the page is usable before the first SSE frame arrives.
+  and server-rendered hydration of the last 200 events so the page is
+  usable before the first SSE frame arrives.
 - `GET /api/activity` — JSON query endpoint for programmatic access
   (supports the same filters as the CLI).
 - `labctl activity tail --follow` polls the DB directly (not SSE).
@@ -267,6 +271,8 @@ CLI.
   handler so `actor` and `source` reflect the originating agent/user,
   not `internal`.
 - Tests asserting actor/source for each layer.
+
+Status: implemented.
 
 ### Phase D — polish
 
@@ -288,6 +294,8 @@ Phase A test coverage:
 - Every instrumented manager method emits on success and on failure.
 - CLI `labctl activity` filters by SBC, actor, source, result, and
   time range.
+- CLI `labctl activity tail` and web `/api/activity`, `/activity`, and
+  `/activity/stream` surfaces render the recorded events correctly.
 
 ## Follow-up TODOs
 

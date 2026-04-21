@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from labctl.core import audit
 from labctl.core.config import Config, Ser2NetConfig, SerialConfig
 from labctl.core.manager import get_manager
 from labctl.core.models import PlugType, PortType
@@ -98,6 +99,68 @@ class TestHealthEndpoints:
         data = json.loads(response.data)
         assert data["sbcs"] == []
         assert data["count"] == 0
+
+
+class TestActivityEndpoints:
+    """Tests for activity stream web/API surfaces."""
+
+    def test_activity_api_lists_events(self, client, manager):
+        with audit.activity_context("cli:alice", "cli"):
+            manager.create_sbc(name="activity-api-sbc", project="proj")
+
+        response = client.get("/api/activity")
+        assert response.status_code == 200
+
+        data = response.get_json()
+        assert data["count"] >= 1
+        assert any(
+            evt["action"] == "create"
+            and evt["entity_name"] == "activity-api-sbc"
+            and evt["actor"] == "cli:alice"
+            for evt in data["events"]
+        )
+
+    def test_activity_api_filters_by_actor(self, client, manager):
+        with audit.activity_context("cli:alice", "cli"):
+            manager.create_sbc(name="alice-activity-sbc", project="proj")
+        with audit.activity_context("cli:bob", "cli"):
+            manager.create_sbc(name="bob-activity-sbc", project="proj")
+
+        response = client.get("/api/activity?actor=cli:alice")
+        assert response.status_code == 200
+
+        data = response.get_json()
+        names = [evt["entity_name"] for evt in data["events"]]
+        assert "alice-activity-sbc" in names
+        assert "bob-activity-sbc" not in names
+
+    def test_activity_page_renders_initial_events(self, client, manager):
+        with audit.activity_context("cli:alice", "cli"):
+            manager.create_sbc(name="activity-page-sbc", project="proj")
+
+        response = client.get("/activity")
+        assert response.status_code == 200
+        assert b"activity-page-sbc" in response.data
+        assert b"cli:alice" in response.data
+
+    def test_activity_stream_emits_sse_frames(self, client, manager):
+        with audit.activity_context("cli:alice", "cli"):
+            manager.create_sbc(name="activity-stream-sbc", project="proj")
+
+        response = client.get("/activity/stream", buffered=False)
+        assert response.status_code == 200
+        assert response.mimetype == "text/event-stream"
+
+        chunks = []
+        for chunk in response.response:
+            chunks.append(chunk.decode())
+            if "activity-stream-sbc" in chunks[-1]:
+                break
+
+        body = "".join(chunks)
+        assert "retry: 2000" in body
+        assert "event: activity" in body
+        assert "activity-stream-sbc" in body
 
 
 class TestSBCEndpoints:
@@ -675,6 +738,33 @@ class TestClaimApi:
         assert response.status_code == 200
         data = response.get_json()
         assert len(data["history"]) == 1
+
+    def test_release_requires_claimant_identity(self, client, manager, sample_sbc):
+        response = client.post(
+            f"/api/claims/{sample_sbc.name}",
+            json={"duration_minutes": 10, "reason": "web test"},
+        )
+        assert response.status_code == 201
+
+        response = client.post(f"/api/claims/{sample_sbc.name}/release")
+        assert response.status_code == 403
+        data = response.get_json()
+        assert data["error"] == "not_claimant"
+
+    def test_renew_requires_claimant_identity(self, client, manager, sample_sbc):
+        response = client.post(
+            f"/api/claims/{sample_sbc.name}",
+            json={"duration_minutes": 10, "reason": "web test"},
+        )
+        assert response.status_code == 201
+
+        response = client.post(
+            f"/api/claims/{sample_sbc.name}/renew",
+            json={"duration_minutes": 20},
+        )
+        assert response.status_code == 403
+        data = response.get_json()
+        assert data["error"] == "not_claimant"
 
     def test_claim_not_found_sbc(self, client):
         response = client.get("/api/claims/nonexistent")

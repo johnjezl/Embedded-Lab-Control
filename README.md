@@ -10,6 +10,8 @@ Centralized management system for embedded development lab resources. Provides d
 - **Web Dashboard** - Browser-based monitoring and control
 - **REST API** - Programmatic access to all features
 - **Health Monitoring** - Automated ping, serial, and power checks
+- **Activity Stream** - Unified audit trail with CLI tailing, live web feed, and API queries
+- **Hardware Claims** - Exclusive-access coordination for long-running SBC workflows
 - **Session Logging** - Capture serial output with rotation and compression
 - **Authentication** - Session-based web login and API key auth (optional, disabled by default)
 - **Claude Code Skill** - `/deploy-and-test` orchestrates build, deploy, boot, and serial capture
@@ -93,6 +95,31 @@ labctl web --port 5000
 | `labctl edit <name>` | Edit SBC properties (--rename, --project, etc.) |
 | `labctl status` | Show status overview |
 | `labctl status --watch` | Continuous status monitoring |
+
+### Activity Stream
+
+| Command | Description |
+|---------|-------------|
+| `labctl activity tail` | Show recent activity events |
+| `labctl activity tail --follow` | Stream new activity events by polling the database |
+| `labctl activity tail --actor <actor>` | Filter events by actor |
+| `labctl activity tail --source <source>` | Filter events by source (`cli`, `mcp`, `api`, `web`, `daemon`) |
+| `labctl activity tail --sbc <name>` | Filter events for one SBC |
+
+### Claims (Exclusive Access Coordination)
+
+| Command | Description |
+|---------|-------------|
+| `labctl claim <sbc>` | Claim exclusive access to an SBC |
+| `labctl release <sbc>` | Release your active claim |
+| `labctl renew <sbc>` | Extend your active claim |
+| `labctl force-release <sbc>` | Operator override for an active claim |
+| `labctl request-release <sbc>` | Politely ask the claimant to release |
+| `labctl claims list` | List all active claims |
+| `labctl claims show <sbc>` | Show the active claim on one SBC |
+| `labctl claims history <sbc>` | Show released claim history for one SBC |
+| `labctl claims expire` | Run one expiry/dead-session sweep |
+| `labctl claims stats` | Show aggregate claim statistics |
 
 ### SDWire (SD Card Multiplexer)
 
@@ -258,6 +285,8 @@ Features:
 - Dashboard with SBC status overview
 - Power control buttons
 - Web-based serial console (xterm.js)
+- Live `/activity` page backed by Server-Sent Events
+- Claim badges on the dashboard and SBC detail pages
 - Settings and configuration view
 - Optional login authentication (enable `auth.enabled` in config)
 - Optional HTTPS with SSL/TLS certificates
@@ -331,6 +360,20 @@ certificate verification:
 ```bash
 curl -k -H "X-API-Key: your-api-key" https://localhost:5000/api/sbcs
 ```
+
+Key activity and claims endpoints:
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/activity` | Query recent activity events with `limit`, `actor`, `source`, `sbc`, `result`, `since`, and `after_id` filters |
+| `GET /api/claims` | List all active claims |
+| `GET /api/claims/<sbc>` | Show the current claim on one SBC |
+| `GET /api/claims/<sbc>/history` | Show released claim history for one SBC |
+| `POST /api/claims/<sbc>` | Create a claim |
+| `POST /api/claims/<sbc>/renew` | Renew a claim held by the current caller |
+| `POST /api/claims/<sbc>/release` | Release a claim held by the current caller |
+| `POST /api/claims/<sbc>/force-release` | Operator override for an active claim |
+| `POST /api/claims/<sbc>/request-release` | Record a polite release request for the current claimant |
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
