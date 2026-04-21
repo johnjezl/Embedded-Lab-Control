@@ -23,6 +23,8 @@ ENV/
 
 # Claude Code - ignore local settings, keep project settings
 .claude/settings.local.json
+.claude/worktrees/
+.codex
 
 # Testing
 .pytest_cache/
