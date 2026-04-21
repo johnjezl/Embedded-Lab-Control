@@ -4,7 +4,7 @@ Specification for a unified, structured, append-only stream of every
 state-changing action labctl performs — viewable live (CLI tail, web)
 and queryable historically.
 
-**Status:** Specification / pending implementation
+**Status:** Phase A, Phase B, and Phase C implemented
 **Source request:** observability gap surfaced during monitor-daemon
 outage triage (2026-04-17 — daemon crashed silently on every cycle for
 hours before being noticed)

@@ -205,6 +205,11 @@ For convenience, common aliases are supported:
 
 Default config location: `~/.config/labctl/config.yaml`
 
+System installs use `/etc/labctl/config.yaml`. That file contains credentials and
+is intended to be group-readable by the `labctl` group, not world-readable. Any
+user who should run `labctl` against the shared lab inventory must be added to
+the `labctl` group and start a new login session afterward.
+
 ```yaml
 serial:
   dev_dir: /dev/lab          # udev symlink directory

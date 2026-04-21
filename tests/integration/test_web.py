@@ -132,6 +132,23 @@ class TestSBCEndpoints:
         assert data["project"] == "api-test"
         assert data["description"] == "Created via API"
 
+    def test_create_sbc_records_api_anonymous_actor(self, client, manager):
+        """Default auth-disabled API writes should still carry attribution."""
+        response = client.post(
+            "/api/sbcs",
+            data=json.dumps({"name": "anon-api-sbc"}),
+            content_type="application/json",
+        )
+        assert response.status_code == 201
+
+        row = manager.db.execute_one(
+            "SELECT actor, source FROM audit_log "
+            "WHERE action = 'create' AND entity_name = ?",
+            ("anon-api-sbc",),
+        )
+        assert row["actor"] == "api:anonymous"
+        assert row["source"] == "api"
+
     def test_create_sbc_missing_name(self, client):
         """Test creating SBC without name fails."""
         response = client.post(
@@ -267,6 +284,34 @@ class TestPortEndpoints:
         assert data["count"] == 1
         assert data["ports"][0]["sbc_name"] == "test-pi"
         assert data["ports"][0]["device"] == "/dev/lab/test-pi"
+
+
+class TestWebAuditAttribution:
+    """Audit attribution for auth-disabled browser flows."""
+
+    def test_web_post_records_web_anonymous_actor(self, client, manager):
+        sbc = manager.create_sbc(name="anon-web-sbc")
+
+        response = client.post(
+            f"/sbc/{sbc.name}/edit",
+            data={
+                "name": sbc.name,
+                "project": "updated-project",
+                "description": "",
+                "ssh_user": "root",
+                "status": "",
+            },
+            follow_redirects=False,
+        )
+        assert response.status_code == 302
+
+        row = manager.db.execute_one(
+            "SELECT actor, source FROM audit_log "
+            "WHERE action = 'update' AND entity_name = ?",
+            (sbc.name,),
+        )
+        assert row["actor"] == "web:anonymous"
+        assert row["source"] == "web"
 
     def test_assign_port_via_api(self, client, sample_sbc):
         """Test assigning port via API."""

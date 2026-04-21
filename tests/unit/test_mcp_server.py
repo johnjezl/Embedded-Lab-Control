@@ -150,6 +150,23 @@ class TestMcpResources:
 class TestMcpTools:
     """Tests for MCP tool handlers."""
 
+    def test_add_sbc_records_mcp_actor_and_source(self, mock_manager):
+        from labctl.mcp_server import add_sbc
+
+        with patch("labctl.mcp_server._get_session_id", return_value="mcp-stdio:test"):
+            result = add_sbc(name="mcp-audit-sbc")
+
+        data = json.loads(result)
+        assert data["created"]["name"] == "mcp-audit-sbc"
+
+        row = mock_manager.db.execute_one(
+            "SELECT actor, source FROM audit_log "
+            "WHERE action = 'create' AND entity_name = ?",
+            ("mcp-audit-sbc",),
+        )
+        assert row["actor"] == "mcp-stdio:test"
+        assert row["source"] == "mcp"
+
     def test_add_sbc(self, mock_manager):
         from labctl.mcp_server import add_sbc
 

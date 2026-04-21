@@ -14,10 +14,42 @@ logger = logging.getLogger(__name__)
 
 import yaml
 
-# Default configuration paths
-DEFAULT_CONFIG_DIR = Path.home() / ".config" / "labctl"
-DEFAULT_CONFIG_FILE = DEFAULT_CONFIG_DIR / "config.yaml"
 SYSTEM_CONFIG_FILE = Path("/etc/labctl/config.yaml")
+
+
+def _default_config_dir() -> Path:
+    """Return the user config dir, honoring XDG_CONFIG_HOME when set."""
+    base = os.environ.get("XDG_CONFIG_HOME")
+    if base:
+        return Path(base).expanduser() / "labctl"
+    return Path.home() / ".config" / "labctl"
+
+
+def _default_config_file() -> Path:
+    """Return the default config file path for the current user."""
+    return _default_config_dir() / "config.yaml"
+
+
+def _default_data_dir() -> Path:
+    """Return the user data dir, honoring XDG_DATA_HOME when set."""
+    base = os.environ.get("XDG_DATA_HOME")
+    if base:
+        return Path(base).expanduser() / "labctl"
+    return Path.home() / ".local" / "share" / "labctl"
+
+
+def _expand_path(value: str | Path) -> Path:
+    """Expand env vars and ~ in config-provided path values."""
+    return Path(os.path.expandvars(str(value))).expanduser()
+
+
+def _path_exists(path: Path) -> bool:
+    """Best-effort existence check that tolerates unreadable paths."""
+    try:
+        return path.exists()
+    except OSError as e:
+        logger.warning("Failed to access config path %s: %s", path, e)
+        return False
 
 
 @dataclass
@@ -37,13 +69,6 @@ class Ser2NetConfig:
     enabled: bool = True
 
 
-# Default log directory for proxy sessions
-DEFAULT_LOG_DIR = Path.home() / ".local" / "share" / "labctl" / "logs"
-
-# Default alert log path
-DEFAULT_ALERT_LOG = Path.home() / ".local" / "share" / "labctl" / "alerts.log"
-
-
 @dataclass
 class ProxyConfig:
     """Multi-client serial proxy configuration."""
@@ -52,7 +77,7 @@ class ProxyConfig:
     port_base: int = 5000
     port_range: int = 100  # Ports 5000-5099 available
     write_policy: str = "first"  # first, all, queue
-    log_dir: Path = field(default_factory=lambda: DEFAULT_LOG_DIR)
+    log_dir: Path = field(default_factory=lambda: _default_data_dir() / "logs")
     log_retention_days: int = 7
     max_clients: int = 10
     idle_timeout: int = 3600  # seconds
@@ -66,7 +91,9 @@ class HealthConfig:
     ping_timeout: float = 2.0  # seconds
     serial_timeout: float = 2.0  # seconds
     status_retention_days: int = 30  # days to keep status history
-    alert_log_path: Path = field(default_factory=lambda: DEFAULT_ALERT_LOG)
+    alert_log_path: Path = field(
+        default_factory=lambda: _default_data_dir() / "alerts.log"
+    )
     alert_on_offline: bool = True
     alert_on_power_change: bool = True
     update_status_on_check: bool = True  # auto-update SBC status
@@ -179,7 +206,7 @@ class Config:
     kasa: KasaConfig = field(default_factory=KasaConfig)
     claims: ClaimsConfig = field(default_factory=ClaimsConfig)
     database_path: Path = field(
-        default_factory=lambda: DEFAULT_CONFIG_DIR / "labctl.db"
+        default_factory=lambda: _default_config_dir() / "labctl.db"
     )
     log_level: str = "WARNING"
 
@@ -196,13 +223,15 @@ class Config:
         claims_data = data.get("claims", {})
 
         serial = SerialConfig(
-            dev_dir=Path(serial_data.get("dev_dir", "/dev/lab")),
+            dev_dir=_expand_path(serial_data.get("dev_dir", "/dev/lab")),
             base_tcp_port=serial_data.get("base_tcp_port", 4000),
             default_baud=serial_data.get("default_baud", 115200),
         )
 
         ser2net = Ser2NetConfig(
-            config_file=Path(ser2net_data.get("config_file", "/etc/ser2net.yaml")),
+            config_file=_expand_path(
+                ser2net_data.get("config_file", "/etc/ser2net.yaml")
+            ),
             enabled=ser2net_data.get("enabled", True),
         )
 
@@ -211,7 +240,9 @@ class Config:
             port_base=proxy_data.get("port_base", 5000),
             port_range=proxy_data.get("port_range", 100),
             write_policy=proxy_data.get("write_policy", "first"),
-            log_dir=Path(proxy_data.get("log_dir", str(DEFAULT_LOG_DIR))),
+            log_dir=_expand_path(
+                proxy_data.get("log_dir", str(_default_data_dir() / "logs"))
+            ),
             log_retention_days=proxy_data.get("log_retention_days", 7),
             max_clients=proxy_data.get("max_clients", 10),
             idle_timeout=proxy_data.get("idle_timeout", 3600),
@@ -222,8 +253,11 @@ class Config:
             ping_timeout=health_data.get("ping_timeout", 2.0),
             serial_timeout=health_data.get("serial_timeout", 2.0),
             status_retention_days=health_data.get("status_retention_days", 30),
-            alert_log_path=Path(
-                health_data.get("alert_log_path", str(DEFAULT_ALERT_LOG))
+            alert_log_path=_expand_path(
+                health_data.get(
+                    "alert_log_path",
+                    str(_default_data_dir() / "alerts.log"),
+                )
             ),
             alert_on_offline=health_data.get("alert_on_offline", True),
             alert_on_power_change=health_data.get("alert_on_power_change", True),
@@ -283,8 +317,8 @@ class Config:
             web=web,
             kasa=kasa,
             claims=claims,
-            database_path=Path(
-                data.get("database_path", str(DEFAULT_CONFIG_DIR / "labctl.db"))
+            database_path=_expand_path(
+                data.get("database_path", str(_default_config_dir() / "labctl.db"))
             ),
             log_level=data.get("log_level", "WARNING"),
         )
@@ -390,13 +424,13 @@ def load_config(
         env_path = os.environ.get("LABCTL_CONFIG")
         paths_to_try = []
         if env_path:
-            paths_to_try.append(Path(env_path))
-        paths_to_try.extend([DEFAULT_CONFIG_FILE, SYSTEM_CONFIG_FILE])
+            paths_to_try.append(_expand_path(env_path))
+        paths_to_try.extend([_default_config_file(), SYSTEM_CONFIG_FILE])
 
     # Try to load from file
     config_data = {}
     for path in paths_to_try:
-        if path.exists():
+        if _path_exists(path):
             try:
                 with open(path) as f:
                     config_data = yaml.safe_load(f) or {}
@@ -412,8 +446,8 @@ def load_config(
     config = _apply_env_overrides(config)
 
     # Create default config file if requested and none exists
-    if create_if_missing and not any(p.exists() for p in paths_to_try):
-        save_config(config, DEFAULT_CONFIG_FILE)
+    if create_if_missing and not any(_path_exists(p) for p in paths_to_try):
+        save_config(config, _default_config_file())
 
     return config
 
@@ -421,7 +455,7 @@ def load_config(
 def _apply_env_overrides(config: Config) -> Config:
     """Apply environment variable overrides to config."""
     if "LABCTL_DEV_DIR" in os.environ:
-        config.serial.dev_dir = Path(os.environ["LABCTL_DEV_DIR"])
+        config.serial.dev_dir = _expand_path(os.environ["LABCTL_DEV_DIR"])
 
     if "LABCTL_BASE_TCP_PORT" in os.environ:
         try:
@@ -430,7 +464,7 @@ def _apply_env_overrides(config: Config) -> Config:
             pass
 
     if "LABCTL_DATABASE_PATH" in os.environ:
-        config.database_path = Path(os.environ["LABCTL_DATABASE_PATH"])
+        config.database_path = _expand_path(os.environ["LABCTL_DATABASE_PATH"])
 
     if "LABCTL_LOG_LEVEL" in os.environ:
         config.log_level = os.environ["LABCTL_LOG_LEVEL"]
@@ -455,7 +489,7 @@ def _apply_env_overrides(config: Config) -> Config:
             config.proxy.write_policy = policy
 
     if "LABCTL_PROXY_LOG_DIR" in os.environ:
-        config.proxy.log_dir = Path(os.environ["LABCTL_PROXY_LOG_DIR"])
+        config.proxy.log_dir = _expand_path(os.environ["LABCTL_PROXY_LOG_DIR"])
 
     return config
 
@@ -485,5 +519,6 @@ def get_default_config() -> Config:
 
 def ensure_config_dir() -> Path:
     """Ensure config directory exists and return its path."""
-    DEFAULT_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    return DEFAULT_CONFIG_DIR
+    config_dir = _default_config_dir()
+    config_dir.mkdir(parents=True, exist_ok=True)
+    return config_dir

@@ -7,7 +7,7 @@ After=network.target ser2net.service
 Type=simple
 User=labctl
 Group=labctl
-ExecStart=/opt/labctl/venv/bin/labctl monitor
+ExecStart=/opt/labctl/venv/bin/labctl -c /etc/labctl/config.yaml monitor
 Restart=on-failure
 RestartSec=10
 

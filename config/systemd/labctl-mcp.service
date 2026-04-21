@@ -7,7 +7,7 @@ After=network.target
 Type=simple
 User=labctl
 Group=labctl
-ExecStart=/opt/labctl/venv/bin/labctl mcp --http 8080
+ExecStart=/opt/labctl/venv/bin/labctl -c /etc/labctl/config.yaml mcp --http 8080
 Restart=on-failure
 RestartSec=10
 

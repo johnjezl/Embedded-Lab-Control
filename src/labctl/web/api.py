@@ -538,7 +538,7 @@ def _web_session_id() -> str:
 
 def _web_agent_name() -> str:
     """Agent name for web-originated claims."""
-    return session.get("username", "web-operator")
+    return session.get("user", "web-operator")
 
 
 @api_bp.route("/claims", methods=["GET"])

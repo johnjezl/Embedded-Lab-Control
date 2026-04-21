@@ -8,6 +8,7 @@ from pathlib import Path
 
 from flask import Flask, g, jsonify, redirect, request, session, url_for
 
+from labctl.core import audit
 from labctl.core.config import Config, load_config
 from labctl.core.manager import ResourceManager, get_manager
 from labctl.web.auth import (
@@ -71,12 +72,43 @@ def create_app(config: Config | None = None) -> Flask:
     # Register csrf_token as Jinja2 template global
     app.jinja_env.globals["csrf_token"] = generate_csrf_token
 
+    def _request_activity_identity() -> tuple[str, str]:
+        """Derive audit actor/source for the current Flask request."""
+        source = (
+            "api" if request.endpoint and request.endpoint.startswith("api.") else "web"
+        )
+
+        user = getattr(g, "audit_user", None)
+        if not user:
+            user = session.get("user")
+        if not user:
+            user = "anonymous"
+
+        return f"{source}:{user}", source
+
     @app.before_request
     def before_request():
         """Set up manager and enforce auth for each request."""
         config = app.config["LABCTL_CONFIG"]
         g.manager = get_manager(config.database_path)
         g.config = config
+
+        api_request = bool(request.endpoint and request.endpoint.startswith("api."))
+        api_user = None
+
+        if api_request and config.auth.enabled:
+            api_key = request.headers.get("X-API-Key", "")
+            if api_key:
+                api_user = get_user_by_api_key(config.auth, api_key)
+                if api_user:
+                    g.audit_user = api_user.username
+        elif "user" in session:
+            g.audit_user = session["user"]
+
+        actor, source = _request_activity_identity()
+        ctx = audit.activity_context(actor, source)
+        ctx.__enter__()
+        g._activity_context = ctx
 
         # Skip auth enforcement if auth is disabled
         if not config.auth.enabled:
@@ -92,18 +124,25 @@ def create_app(config: Config | None = None) -> Flask:
             return
 
         # API requests: check X-API-Key header
-        if request.endpoint and request.endpoint.startswith("api."):
+        if api_request:
             api_key = request.headers.get("X-API-Key", "")
             if not api_key:
                 return jsonify({"error": "API key required"}), 401
-            user = get_user_by_api_key(config.auth, api_key)
-            if not user:
+            if not api_user:
                 return jsonify({"error": "Invalid API key"}), 401
-            return
 
         # Web requests: check session
         if "user" not in session:
-            return redirect(url_for("auth.login", next=request.path))
+            if not api_request:
+                if request.endpoint not in ("auth.login", "auth.logout", "static"):
+                    return redirect(url_for("auth.login", next=request.path))
+
+    @app.teardown_request
+    def teardown_request(exc):
+        """Reset per-request audit attribution context."""
+        ctx = getattr(g, "_activity_context", None)
+        if ctx is not None:
+            ctx.__exit__(type(exc) if exc else None, exc, exc.__traceback__ if exc else None)
 
     @app.before_request
     def enforce_csrf():

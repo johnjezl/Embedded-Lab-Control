@@ -2,6 +2,8 @@
 
 import asyncio
 import logging
+import types
+import sys
 from unittest.mock import Mock, patch
 
 import pytest
@@ -379,3 +381,32 @@ class TestKasaRetry:
         assert result is True
         assert call_count[0] == 2
         mock_sleep.assert_called_once_with(2)
+
+
+class TestKasaCredentials:
+    """Tests for Kasa credential loading behavior."""
+
+    def test_kasa_credentials_loaded_once_per_process(self):
+        """Repeated lookups should reuse cached credentials."""
+        from labctl.power import kasa as kasa_module
+        from labctl.power.kasa import KasaController
+
+        kasa_module._get_cached_kasa_credentials.cache_clear()
+
+        mock_config = Mock()
+        mock_config.kasa.username = "user@example.com"
+        mock_config.kasa.password = "secret"
+
+        fake_kasa = types.SimpleNamespace(
+            Credentials=lambda username, password: (username, password)
+        )
+
+        with patch.dict(sys.modules, {"kasa": fake_kasa}):
+            with patch("labctl.power.kasa.load_config", return_value=mock_config) as mock_load:
+                c1 = KasaController("192.168.1.100")
+                c2 = KasaController("192.168.1.101")
+
+                assert c1._load_credentials() == ("user@example.com", "secret")
+                assert c2._load_credentials() == ("user@example.com", "secret")
+
+        assert mock_load.call_count == 1

@@ -8,10 +8,28 @@ Supports single-outlet plugs and multi-outlet strips (e.g., HS300, KP303, EP40).
 import asyncio
 import logging
 import time
+from functools import lru_cache
 
+from labctl.core.config import load_config
 from labctl.power.base import PowerController, PowerState
 
 logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=1)
+def _get_cached_kasa_credentials():
+    """Load Kasa credentials once per process."""
+    try:
+        from kasa import Credentials
+
+        config = load_config()
+        if config.kasa.username and config.kasa.password:
+            logger.debug("Loaded Kasa credentials for user: %s", config.kasa.username)
+            return Credentials(config.kasa.username, config.kasa.password)
+        logger.debug("No Kasa credentials configured")
+    except Exception as e:
+        logger.warning("Failed to load Kasa credentials: %s", e)
+    return None
 
 
 class KasaController(PowerController):
@@ -31,22 +49,7 @@ class KasaController(PowerController):
 
     def _load_credentials(self):
         """Load Kasa credentials from config, returning Credentials or None."""
-        try:
-            from kasa import Credentials
-
-            from labctl.core.config import load_config
-
-            config = load_config()
-            if config.kasa.username and config.kasa.password:
-                logger.debug(
-                    "Loaded Kasa credentials for user: %s", config.kasa.username
-                )
-                return Credentials(config.kasa.username, config.kasa.password)
-            else:
-                logger.debug("No Kasa credentials configured")
-        except Exception as e:
-            logger.warning("Failed to load Kasa credentials: %s", e)
-        return None
+        return _get_cached_kasa_credentials()
 
     async def _get_device(self):
         """

@@ -3,6 +3,7 @@
 import logging
 from pathlib import Path
 
+import labctl.core.config as config_module
 from labctl.core.config import (
     ClaimsConfig,
     Config,
@@ -305,6 +306,59 @@ log_level: WARNING
         config = load_config()
         assert config.serial.base_tcp_port == 4000  # Default
 
+    def test_expands_tilde_database_path_from_config(self, tmp_path, monkeypatch):
+        """Config file paths should expand '~' against the active HOME."""
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text("database_path: ~/.config/labctl/shared.db\n")
+
+        config = load_config(config_file)
+
+        assert config.database_path == home / ".config" / "labctl" / "shared.db"
+
+    def test_system_config_used_when_user_config_missing(self, tmp_path, monkeypatch):
+        """Users without personal config should fall back to the system config."""
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+
+        system_config = tmp_path / "etc" / "labctl" / "config.yaml"
+        system_config.parent.mkdir(parents=True)
+        system_config.write_text(
+            "database_path: /var/lib/labctl/.config/labctl/labctl.db\n"
+        )
+
+        monkeypatch.setattr(
+            config_module,
+            "SYSTEM_CONFIG_FILE",
+            system_config,
+        )
+        monkeypatch.setattr(
+            config_module,
+            "_default_config_file",
+            lambda: home / ".config" / "labctl" / "config.yaml",
+        )
+
+        config = load_config()
+
+        assert config.database_path == Path(
+            "/var/lib/labctl/.config/labctl/labctl.db"
+        )
+
+    def test_env_override_database_path_expands_tilde(self, tmp_path, monkeypatch):
+        """Environment overrides should normalize '~' paths too."""
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("LABCTL_DATABASE_PATH", "~/.config/labctl/override.db")
+
+        config = load_config()
+
+        assert config.database_path == home / ".config" / "labctl" / "override.db"
+
 
 class TestSaveConfig:
     """Tests for save_config function."""
@@ -364,3 +418,35 @@ class TestConfigLoadLogging:
         assert any("Failed to load config" in r.message for r in caplog.records)
         # Should return defaults since the config file failed
         assert isinstance(config, Config)
+
+    def test_unreadable_system_config_logs_warning_and_falls_back(
+        self, monkeypatch, caplog
+    ):
+        """Unreadable config candidates should not crash config discovery."""
+        denied = PermissionError(13, "Permission denied", "/etc/labctl/config.yaml")
+
+        monkeypatch.setattr(
+            config_module,
+            "_default_config_file",
+            lambda: Path("/nonexistent/user-config.yaml"),
+        )
+        monkeypatch.setattr(
+            config_module,
+            "SYSTEM_CONFIG_FILE",
+            Path("/etc/labctl/config.yaml"),
+        )
+
+        original_exists = Path.exists
+
+        def fake_exists(path: Path) -> bool:
+            if path == Path("/etc/labctl/config.yaml"):
+                raise denied
+            return original_exists(path)
+
+        monkeypatch.setattr(Path, "exists", fake_exists)
+
+        with caplog.at_level(logging.WARNING, logger="labctl.core.config"):
+            config = load_config()
+
+        assert isinstance(config, Config)
+        assert any("Failed to access config path" in r.message for r in caplog.records)

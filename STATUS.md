@@ -2,26 +2,25 @@
 
 ## Current State
 
-- **Milestone**: Hardware Claims (exclusive access), Phases A–E complete
-- **Sub-task**: All phases done
-- **Status**: Feature complete, ready for PR
+- **Milestone**: Activity Stream
+- **Sub-task**: Phase C — source fidelity complete
+- **Status**: Phase A, Phase B, and Phase C complete
 
 ## Last Session
 
-- **Date**: 2026-04-16
-- **Branch**: `worktree-agent-lock-feature`
+- **Date**: 2026-04-20
+- **Branch**: current working tree
 - **Completed so far**:
-  - `docs/SPEC_claims.md` revised after design review (committed as `6db4054`)
-  - `ClaimsConfig` dataclass wired into `Config.from_dict` / `to_dict`
-  - Schema v3→v4 migration for `claims` + `claim_requests` tables
-  - `Claim`, `ClaimRequest`, `ReleaseReason`, `SessionKind` added to models
-  - `ResourceManager` claim ops (acquire/release/renew/heartbeat/history)
-  - `delete_sbc` now refuses while claim is active (with `force=True` override)
-  - CLI: `labctl claim | release | renew | force-release | request-release`
-  - CLI: `labctl claims list | show | history`, `labctl status` shows claim column
-  - Microsecond-precision timestamps to avoid short-duration expiry false negatives
-  - Unit tests for manager claim ops, CLI integration tests, config round-trip tests
-- **Pending**: full test suite rerun, lint/format, IMPLEMENTATION.md section
+  - Activity stream Phase A: `audit.emit()`, contextvars, schema v5, CLI query command
+  - Activity stream Phase B: SSE broadcaster, `/activity` page, `/activity/stream`, `/api/activity`, CLI `--follow`
+  - Activity stream Phase C: MCP mutating tools now run under audit context (`source=mcp`)
+  - Activity stream Phase C: Flask request lifecycle now sets audit actor/source for API and web mutations
+  - Regression tests added for MCP, API-key, and logged-in web attribution
+  - Config-path fixes for shared `/etc/labctl/config.yaml`, including `~` expansion and unreadable-path handling
+  - Installer/update scripts now preserve existing config contents and repair shared-config permissions
+- **Pending**:
+  - Rerun broader test slices in `.venv`
+  - Update implementation notes for completed Phase C work once merged
 
 ## Previous Session
 

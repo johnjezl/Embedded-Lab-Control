@@ -7,7 +7,7 @@ After=network.target ser2net.service
 Type=simple
 User=labctl
 Group=labctl
-ExecStart=/opt/labctl/venv/bin/labctl web --host 0.0.0.0 --port 5000
+ExecStart=/opt/labctl/venv/bin/labctl -c /etc/labctl/config.yaml web --host 0.0.0.0 --port 5000
 Restart=on-failure
 RestartSec=10
 

@@ -12,6 +12,7 @@ from labctl.core.config import (
     SerialConfig,
     UserConfig,
 )
+from labctl.core.manager import get_manager
 from labctl.web.app import create_app
 
 TEST_PASSWORD = "testpass123"
@@ -59,6 +60,14 @@ def auth_app(auth_config):
 def auth_client(auth_app):
     """Create test client for auth-enabled app."""
     return auth_app.test_client()
+
+
+@pytest.fixture
+def auth_manager(auth_app):
+    """Get resource manager for the auth-enabled test database."""
+    with auth_app.app_context():
+        config = auth_app.config["LABCTL_CONFIG"]
+        return get_manager(config.database_path)
 
 
 def _login(client, username="admin", password=TEST_PASSWORD):
@@ -173,6 +182,22 @@ class TestApiKeyAuth:
         )
         assert resp.status_code == 201
 
+    def test_api_post_records_api_actor(self, auth_client, auth_manager):
+        resp = auth_client.post(
+            "/api/sbcs",
+            json={"name": "api-audit-sbc"},
+            headers={"X-API-Key": TEST_API_KEY},
+        )
+        assert resp.status_code == 201
+
+        row = auth_manager.db.execute_one(
+            "SELECT actor, source FROM audit_log "
+            "WHERE action = 'create' AND entity_name = ?",
+            ("api-audit-sbc",),
+        )
+        assert row["actor"] == "api:admin"
+        assert row["source"] == "api"
+
 
 class TestHealthEndpointOpen:
     """Test that /api/health remains open without auth."""
@@ -192,6 +217,41 @@ class TestCsrfEnforcement:
         # POST without CSRF token should redirect
         resp = auth_client.post("/logout", follow_redirects=False)
         assert resp.status_code == 302
+
+    def test_web_post_records_web_actor(self, auth_client, auth_manager):
+        auth_manager.create_sbc(name="web-audit-sbc")
+        _login(auth_client)
+
+        resp = auth_client.get("/sbc/web-audit-sbc")
+        assert resp.status_code == 200
+
+        import re
+
+        html = resp.data.decode()
+        match = re.search(r'name="_csrf_token" value="([^"]+)"', html)
+        csrf_token = match.group(1) if match else ""
+
+        resp = auth_client.post(
+            "/sbc/web-audit-sbc/edit",
+            data={
+                "name": "web-audit-sbc",
+                "project": "updated-project",
+                "description": "",
+                "ssh_user": "root",
+                "status": "",
+                "_csrf_token": csrf_token,
+            },
+            follow_redirects=False,
+        )
+        assert resp.status_code == 302
+
+        row = auth_manager.db.execute_one(
+            "SELECT actor, source FROM audit_log "
+            "WHERE action = 'update' AND entity_name = ?",
+            ("web-audit-sbc",),
+        )
+        assert row["actor"] == "web:admin"
+        assert row["source"] == "web"
 
 
 class TestAuthDisabledByDefault:

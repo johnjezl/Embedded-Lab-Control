@@ -17,6 +17,7 @@ import logging
 import os
 import sys
 import time as _time_mod
+from functools import wraps
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
@@ -160,6 +161,18 @@ def _claim_advisory(manager, sbc_name: str) -> str:
     for req in claim.pending_requests:
         lines.append(f"  - {req.requested_by}: {req.reason}")
     return "\n".join(lines)
+
+
+def _with_mcp_activity(func):
+    """Scope audit attribution to the active MCP session for one tool call."""
+    from labctl.core import audit
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        with audit.activity_context(_get_session_id(), "mcp"):
+            return func(*args, **kwargs)
+
+    return wrapper
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +359,7 @@ def get_status_overview() -> str:
 
 
 @mcp.tool()
+@_with_mcp_activity
 def power_on(sbc_name: str) -> str:
     """Turn on power to an SBC.
 
@@ -376,6 +390,7 @@ def power_on(sbc_name: str) -> str:
 
 
 @mcp.tool()
+@_with_mcp_activity
 def power_off(sbc_name: str) -> str:
     """Turn off power to an SBC.
 
@@ -406,6 +421,7 @@ def power_off(sbc_name: str) -> str:
 
 
 @mcp.tool()
+@_with_mcp_activity
 def power_cycle(sbc_name: str, delay: float = 3.0) -> str:
     """Power cycle an SBC (turn off, wait, turn on).
 
@@ -440,6 +456,7 @@ def power_cycle(sbc_name: str, delay: float = 3.0) -> str:
 
 
 @mcp.tool()
+@_with_mcp_activity
 def run_health_check(sbc_name: Optional[str] = None) -> str:
     """Run health checks on one or all SBCs and return results.
 
@@ -484,6 +501,7 @@ def run_health_check(sbc_name: Optional[str] = None) -> str:
 
 
 @mcp.tool()
+@_with_mcp_activity
 def add_sbc(
     name: str,
     project: Optional[str] = None,
@@ -513,6 +531,7 @@ def add_sbc(
 
 
 @mcp.tool()
+@_with_mcp_activity
 def remove_sbc(name: str) -> str:
     """Remove an SBC and all its assignments from the lab inventory.
 
@@ -535,6 +554,7 @@ def remove_sbc(name: str) -> str:
 
 
 @mcp.tool()
+@_with_mcp_activity
 def update_sbc(
     name: str,
     rename: Optional[str] = None,
@@ -577,6 +597,7 @@ def update_sbc(
 
 
 @mcp.tool()
+@_with_mcp_activity
 def assign_serial_port(
     sbc_name: str,
     port_type: str,
@@ -616,6 +637,7 @@ def assign_serial_port(
 
 
 @mcp.tool()
+@_with_mcp_activity
 def assign_power_plug(
     sbc_name: str,
     plug_type: str,
@@ -651,6 +673,7 @@ def assign_power_plug(
 
 
 @mcp.tool()
+@_with_mcp_activity
 def set_network_address(
     sbc_name: str,
     address_type: str,
@@ -693,6 +716,7 @@ def set_network_address(
 
 
 @mcp.tool()
+@_with_mcp_activity
 def remove_serial_port(sbc_name: str, port_type: str = "console") -> str:
     """Remove a serial port assignment from an SBC.
 
@@ -716,6 +740,7 @@ def remove_serial_port(sbc_name: str, port_type: str = "console") -> str:
 
 
 @mcp.tool()
+@_with_mcp_activity
 def remove_network_address(sbc_name: str, address_type: str = "ethernet") -> str:
     """Remove a network address from an SBC.
 
@@ -739,6 +764,7 @@ def remove_network_address(sbc_name: str, address_type: str = "ethernet") -> str
 
 
 @mcp.tool()
+@_with_mcp_activity
 def remove_power_plug(sbc_name: str) -> str:
     """Remove power plug assignment from an SBC.
 
@@ -761,6 +787,7 @@ def remove_power_plug(sbc_name: str) -> str:
 
 
 @mcp.tool()
+@_with_mcp_activity
 def add_serial_device(
     name: str,
     usb_path: str,
@@ -792,6 +819,7 @@ def add_serial_device(
 
 
 @mcp.tool()
+@_with_mcp_activity
 def remove_serial_device(name: str) -> str:
     """Unregister a USB-serial adapter.
 
@@ -816,6 +844,7 @@ def remove_serial_device(name: str) -> str:
 
 
 @mcp.tool()
+@_with_mcp_activity
 def sdwire_add(
     name: str,
     serial_number: str,
@@ -841,6 +870,7 @@ def sdwire_add(
 
 
 @mcp.tool()
+@_with_mcp_activity
 def sdwire_remove(name: str) -> str:
     """Unregister an SDWire device.
 
@@ -860,6 +890,7 @@ def sdwire_remove(name: str) -> str:
 
 
 @mcp.tool()
+@_with_mcp_activity
 def sdwire_assign(sbc_name: str, device_name: str) -> str:
     """Assign an SDWire device to an SBC.
 
@@ -884,6 +915,7 @@ def sdwire_assign(sbc_name: str, device_name: str) -> str:
 
 
 @mcp.tool()
+@_with_mcp_activity
 def sdwire_unassign(sbc_name: str) -> str:
     """Remove SDWire assignment from an SBC.
 
@@ -901,6 +933,7 @@ def sdwire_unassign(sbc_name: str) -> str:
 
 
 @mcp.tool()
+@_with_mcp_activity
 def sdwire_discover() -> str:
     """Discover connected SDWire devices.
 
@@ -919,6 +952,7 @@ def sdwire_discover() -> str:
 
 
 @mcp.tool()
+@_with_mcp_activity
 def serial_discover() -> str:
     """Discover connected USB-serial adapters.
 
@@ -960,6 +994,7 @@ def list_sdwire_devices() -> str:
 
 
 @mcp.tool()
+@_with_mcp_activity
 def sdwire_to_dut(sbc_name: str) -> str:
     """Switch an SBC's SD card to DUT mode (SBC boots from the SD card).
 
@@ -989,6 +1024,7 @@ def sdwire_to_dut(sbc_name: str) -> str:
 
 
 @mcp.tool()
+@_with_mcp_activity
 def sdwire_to_host(sbc_name: str, force: bool = False) -> str:
     """Switch an SBC's SD card to host mode (dev machine can read/write the SD card).
 
@@ -1043,6 +1079,7 @@ def sdwire_to_host(sbc_name: str, force: bool = False) -> str:
 
 
 @mcp.tool()
+@_with_mcp_activity
 def sdwire_update(
     sbc_name: str,
     partition: int,
@@ -1147,6 +1184,7 @@ def sdwire_update(
 
 
 @mcp.tool()
+@_with_mcp_activity
 def flash_image(
     sbc_name: str,
     image_path: str,
@@ -1271,6 +1309,7 @@ def flash_image(
 
 
 @mcp.tool()
+@_with_mcp_activity
 def serial_capture(
     port_name: str,
     timeout: float = 15.0,
@@ -1317,6 +1356,7 @@ def serial_capture(
 
 
 @mcp.tool()
+@_with_mcp_activity
 def serial_send(
     port_name: str,
     data: str,
@@ -1382,6 +1422,7 @@ def serial_send(
 
 
 @mcp.tool()
+@_with_mcp_activity
 def boot_test(
     sbc_name: str,
     expect_pattern: str,
@@ -1515,6 +1556,7 @@ def get_claim_metrics_resource() -> str:
 
 
 @mcp.tool()
+@_with_mcp_activity
 def claim_sbc(
     sbc_name: str,
     duration_minutes: int = 30,
@@ -1593,6 +1635,7 @@ def claim_sbc(
 
 
 @mcp.tool()
+@_with_mcp_activity
 def release_sbc(sbc_name: str) -> str:
     """Release a claim held by the calling session.
 
@@ -1633,6 +1676,7 @@ def release_sbc(sbc_name: str) -> str:
 
 
 @mcp.tool()
+@_with_mcp_activity
 def renew_sbc_claim(sbc_name: str, duration_minutes: int | None = None) -> str:
     """Extend an active claim. Bounded by config max_duration.
 
@@ -1692,6 +1736,7 @@ def renew_sbc_claim(sbc_name: str, duration_minutes: int | None = None) -> str:
 
 
 @mcp.tool()
+@_with_mcp_activity
 def list_claims() -> str:
     """List all active claims across the lab."""
     manager = _get_manager()
@@ -1700,6 +1745,7 @@ def list_claims() -> str:
 
 
 @mcp.tool()
+@_with_mcp_activity
 def get_claim(sbc_name: str) -> str:
     """Get the current active claim on an SBC, including pending requests.
 
@@ -1721,6 +1767,7 @@ def get_claim(sbc_name: str) -> str:
 
 
 @mcp.tool()
+@_with_mcp_activity
 def request_sbc_release(sbc_name: str, reason: str) -> str:
     """Politely ask the current claimant to release an SBC.
 
@@ -1753,6 +1800,7 @@ def request_sbc_release(sbc_name: str, reason: str) -> str:
 
 
 @mcp.tool()
+@_with_mcp_activity
 def force_release_sbc(sbc_name: str, reason: str) -> str:
     """Operator override — forcibly release an active claim.
 

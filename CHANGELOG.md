@@ -22,6 +22,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   cover the auto-resolve and repair paths (2026-04-19)
 
 ### Added
+- Activity stream Phase C — source fidelity (2026-04-20)
+  - MCP mutating tools now run inside `activity_context()` so audit
+    events record `source=mcp` and the active MCP session ID as `actor`
+    instead of falling back to `internal`
+  - Flask request lifecycle now sets per-request audit attribution for
+    authenticated REST API and web dashboard mutations (`api:<user>` /
+    `web:<user>`)
+  - Web claim endpoints now derive the claimant name from the correct
+    session key (`session["user"]`)
+  - Regression tests added for MCP, API-key, and logged-in web
+    mutation attribution
 - Activity stream Phase B — live (2026-04-19)
   - `ActivityBroadcaster` background thread polls `audit_log` every
     500ms and fans new rows to per-subscriber queues. Cross-process:

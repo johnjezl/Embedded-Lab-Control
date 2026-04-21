@@ -16,6 +16,8 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIG_DIR="$PROJECT_DIR/config/systemd"
 LABCTL_HOME="/var/lib/labctl"
 LABCTL_CONFIG="$LABCTL_HOME/.config/labctl"
+SYSTEM_CONFIG_DIR="/etc/labctl"
+SYSTEM_CONFIG_FILE="$SYSTEM_CONFIG_DIR/config.yaml"
 LABCTL_VENV="/opt/labctl/venv"
 
 # Check root
@@ -72,13 +74,27 @@ fi
 # 3. Set up config directory
 echo "[+] Setting up config in $LABCTL_CONFIG..."
 mkdir -p "$LABCTL_CONFIG"
+mkdir -p "$SYSTEM_CONFIG_DIR"
 
 if [ -f "$LABCTL_CONFIG/config.yaml" ]; then
     echo "[ok] config.yaml already exists, skipping"
 else
     cp "$PROJECT_DIR/config/labctl.yaml.example" "$LABCTL_CONFIG/config.yaml"
+    sed -i "s|^database_path: ~/.config/labctl/labctl.db|database_path: $LABCTL_CONFIG/labctl.db|" "$LABCTL_CONFIG/config.yaml"
     echo "[ok] Copied example config to $LABCTL_CONFIG/config.yaml"
 fi
+
+if [ -f "$SYSTEM_CONFIG_FILE" ]; then
+    echo "[ok] $SYSTEM_CONFIG_FILE already exists, skipping"
+else
+    cp "$LABCTL_CONFIG/config.yaml" "$SYSTEM_CONFIG_FILE"
+    echo "[ok] Installed system config at $SYSTEM_CONFIG_FILE"
+fi
+
+chown root:labctl "$SYSTEM_CONFIG_DIR" "$SYSTEM_CONFIG_FILE"
+chmod 750 "$SYSTEM_CONFIG_DIR"
+chmod 640 "$SYSTEM_CONFIG_FILE"
+echo "[ok] Secured shared config: $SYSTEM_CONFIG_FILE (root:labctl, 640)"
 
 chown -R labctl:labctl "$LABCTL_HOME"
 
@@ -128,6 +144,13 @@ echo "     To enable: sudo systemctl enable --now labctl-mcp"
 echo ""
 echo "=== Installation Complete ==="
 echo ""
+echo "System config: $SYSTEM_CONFIG_FILE"
+echo "Service config: $LABCTL_CONFIG/config.yaml"
+
+if ! cmp -s "$LABCTL_CONFIG/config.yaml" "$SYSTEM_CONFIG_FILE"; then
+    echo "[!] $LABCTL_CONFIG/config.yaml and $SYSTEM_CONFIG_FILE differ"
+    echo "    Update /etc/labctl/config.yaml if CLI users should share the service database"
+fi
 
 # Show status
 systemctl --no-pager status labctl-monitor labctl-web || true
