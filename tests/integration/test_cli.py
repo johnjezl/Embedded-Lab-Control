@@ -420,3 +420,20 @@ class TestActivityCommands:
         assert result.exit_code == 0
         assert "alice-pi" in result.output
         assert "bob-pi" not in result.output
+
+    def test_activity_export_ndjson(self, activity_runner):
+        runner, config, manager = activity_runner
+        with audit.activity_context("cli:alice", "cli"):
+            manager.create_sbc(name="export-pi", project="test")
+
+        result = runner.invoke(
+            main,
+            ["-c", str(config), "activity", "export", "--format", "ndjson"],
+        )
+
+        assert result.exit_code == 0
+        lines = [line for line in result.output.splitlines() if line.strip()]
+        assert lines
+        payload = __import__("json").loads(lines[-1])
+        assert payload["entity_name"] == "export-pi"
+        assert payload["actor"] == "cli:alice"

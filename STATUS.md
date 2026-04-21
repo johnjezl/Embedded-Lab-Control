@@ -3,8 +3,8 @@
 ## Current State
 
 - **Milestone**: Activity Stream
-- **Sub-task**: Phase C — source fidelity complete
-- **Status**: Phase A, Phase B, and Phase C complete
+- **Sub-task**: Phase D — polish complete
+- **Status**: Phase A, Phase B, Phase C, and Phase D complete
 
 ## Last Session
 
@@ -16,11 +16,14 @@
   - Activity stream Phase C: MCP mutating tools now run under audit context (`source=mcp`)
   - Activity stream Phase C: Flask request lifecycle now sets audit actor/source for API and web mutations
   - Regression tests added for MCP, API-key, and logged-in web attribution
+  - Activity stream Phase D: `lab://activity/recent` and `lab://activity/{sbc_name}` MCP resources
+  - Activity stream Phase D: `labctl activity export --format ndjson`
+  - Activity stream Phase D: 30-day activity retention sweep wired into the existing claim-sweep loop
   - Config-path fixes for shared `/etc/labctl/config.yaml`, including `~` expansion and unreadable-path handling
   - Installer/update scripts now preserve existing config contents and repair shared-config permissions
 - **Pending**:
-  - Rerun broader test slices in `.venv`
-  - Update implementation notes for completed Phase C work once merged
+  - Activity stream follow-up polish: newest-first ordering cleanup
+  - Activity stream follow-up polish: timezone-aware timestamp rendering
 
 ## Previous Session
 

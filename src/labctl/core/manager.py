@@ -1171,6 +1171,17 @@ class ResourceManager:
             )
         return count
 
+    def prune_activity_events(self, older_than_days: int = 30) -> int:
+        """Delete audit events older than the retention threshold."""
+        count = audit.prune_old_events(self.db, older_than_days=older_than_days)
+        if count:
+            logger.info(
+                "Pruned %d activity events older than %d days",
+                count,
+                older_than_days,
+            )
+        return count
+
     def get_claim_metrics(self) -> dict:
         """Aggregate statistics across all claims (active and released)."""
         rows = self.db.execute(

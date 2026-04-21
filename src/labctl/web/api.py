@@ -6,6 +6,7 @@ import time
 
 from flask import Blueprint, g, jsonify, request, session
 
+from labctl.core import audit
 from labctl.core.models import PortType, Status
 from labctl.power import PowerController
 
@@ -710,7 +711,7 @@ def list_activity():
       limit=N       Max events (default 50, max 1000).
       sbc=X         Filter by entity_name.
       actor=X       Filter by actor (exact match).
-      source=X      cli | mcp | api | daemon | internal.
+      source=X      cli | mcp | api | web | daemon | internal.
       result=X      ok | error | forbidden.
       since=TS      ISO timestamp lower bound.
       after_id=N    Only events with id > N (for long polling).
@@ -720,51 +721,24 @@ def list_activity():
     except ValueError:
         return jsonify({"error": "limit must be an integer"}), 400
 
-    where: list[str] = []
-    params: list = []
-    for key, col in (
-        ("sbc", "entity_name"),
-        ("actor", "actor"),
-        ("source", "source"),
-        ("result", "result"),
-    ):
-        val = request.args.get(key)
-        if val:
-            where.append(f"{col} = ?")
-            params.append(val)
     since = request.args.get("since")
-    if since:
-        where.append("logged_at >= ?")
-        params.append(since)
     after_id = request.args.get("after_id")
     if after_id:
         try:
-            where.append("id > ?")
-            params.append(int(after_id))
+            after_id_int = int(after_id)
         except ValueError:
             return jsonify({"error": "after_id must be an integer"}), 400
+    else:
+        after_id_int = None
 
-    sql = "SELECT * FROM audit_log"
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += " ORDER BY id DESC LIMIT ?"
-    params.append(limit)
-
-    rows = g.manager.db.execute(sql, tuple(params))
-    events = [
-        {
-            "id": r["id"],
-            "logged_at": r["logged_at"],
-            "actor": r["actor"] or "internal",
-            "source": r["source"] or "internal",
-            "action": r["action"],
-            "entity_type": r["entity_type"],
-            "entity_id": r["entity_id"],
-            "entity_name": r["entity_name"],
-            "result": r["result"] or "ok",
-            "details": r["details"],
-            "claim_id": r["claim_id"],
-        }
-        for r in rows
-    ]
+    events = audit.query_events(
+        g.manager.db,
+        limit=limit,
+        sbc=request.args.get("sbc"),
+        actor=request.args.get("actor"),
+        source=request.args.get("source"),
+        result=request.args.get("result"),
+        since=since,
+        after_id=after_id_int,
+    )
     return jsonify({"events": events, "count": len(events)})

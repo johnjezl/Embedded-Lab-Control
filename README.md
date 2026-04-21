@@ -105,6 +105,7 @@ labctl web --port 5000
 | `labctl activity tail --actor <actor>` | Filter events by actor |
 | `labctl activity tail --source <source>` | Filter events by source (`cli`, `mcp`, `api`, `web`, `daemon`) |
 | `labctl activity tail --sbc <name>` | Filter events for one SBC |
+| `labctl activity export --format ndjson` | Export activity events as NDJSON |
 
 ### Claims (Exclusive Access Coordination)
 

@@ -15,7 +15,7 @@ import json
 import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, Iterator, Optional
 
 if TYPE_CHECKING:
@@ -137,6 +137,77 @@ def _serialize_details(details: Optional[dict]) -> Optional[str]:
 def _now_ms() -> str:
     """ISO8601 timestamp with millisecond precision."""
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S.") + f"{datetime.now().microsecond // 1000:03d}"
+
+
+def row_to_event_dict(row) -> dict[str, Any]:
+    """Convert an audit_log row to the public event representation."""
+    return {
+        "id": row["id"],
+        "logged_at": row["logged_at"],
+        "actor": row["actor"] or "internal",
+        "source": row["source"] or "internal",
+        "action": row["action"],
+        "entity_type": row["entity_type"],
+        "entity_id": row["entity_id"],
+        "entity_name": row["entity_name"],
+        "result": row["result"] or "ok",
+        "details": row["details"],
+        "claim_id": row["claim_id"],
+    }
+
+
+def query_events(
+    db: "Database",
+    *,
+    limit: int = 50,
+    sbc: Optional[str] = None,
+    actor: Optional[str] = None,
+    source: Optional[str] = None,
+    result: Optional[str] = None,
+    since: Optional[str] = None,
+    after_id: Optional[int] = None,
+    order_desc: bool = True,
+) -> list[dict[str, Any]]:
+    """Query audit_log rows with the standard activity filters."""
+    where: list[str] = []
+    params: list[Any] = []
+    for value, column in (
+        (sbc, "entity_name"),
+        (actor, "actor"),
+        (source, "source"),
+        (result, "result"),
+    ):
+        if value:
+            where.append(f"{column} = ?")
+            params.append(value)
+    if since:
+        where.append("logged_at >= ?")
+        params.append(since)
+    if after_id is not None:
+        where.append("id > ?")
+        params.append(int(after_id))
+
+    sql = "SELECT * FROM audit_log"
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    sql += " ORDER BY id DESC" if order_desc else " ORDER BY id ASC"
+    sql += " LIMIT ?"
+    params.append(int(limit))
+    return [row_to_event_dict(r) for r in db.execute(sql, tuple(params))]
+
+
+def prune_old_events(db: "Database", *, older_than_days: int = 30) -> int:
+    """Delete audit events older than the given retention window."""
+    cutoff = (datetime.now() - timedelta(days=int(older_than_days))).strftime(
+        "%Y-%m-%d %H:%M:%S.%f"
+    )[:-3]
+    return db.execute_modify(
+        """
+        DELETE FROM audit_log
+        WHERE logged_at < ?
+        """,
+        (cutoff,),
+    )
 
 
 def emit(

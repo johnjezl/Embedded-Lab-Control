@@ -22,6 +22,8 @@ from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
+from labctl.core import audit
+
 # All logging must go to stderr (stdout is the JSON-RPC channel for stdio transport)
 logging.basicConfig(
     level=logging.WARNING,
@@ -1555,6 +1557,23 @@ def get_claim_metrics_resource() -> str:
     return json.dumps(manager.get_claim_metrics(), indent=2)
 
 
+@mcp.resource("lab://activity/recent")
+def get_recent_activity_resource() -> str:
+    """Recent activity events across the lab."""
+    manager = _get_manager()
+    return json.dumps(audit.query_events(manager.db, limit=50), indent=2)
+
+
+@mcp.resource("lab://activity/{sbc_name}")
+def get_activity_for_sbc_resource(sbc_name: str) -> str:
+    """Recent activity events for a specific SBC."""
+    manager = _get_manager()
+    return json.dumps(
+        audit.query_events(manager.db, limit=50, sbc=sbc_name),
+        indent=2,
+    )
+
+
 @mcp.tool()
 @_with_mcp_activity
 def claim_sbc(
@@ -1925,12 +1944,15 @@ def _start_expiry_thread(interval: int = 30):
                 pruned = manager.prune_released_claims(
                     older_than_days=config.claims.auto_prune_released_after_days
                 )
-                if expired or dead or pruned:
+                activity_pruned = manager.prune_activity_events(older_than_days=30)
+                if expired or dead or pruned or activity_pruned:
                     logger.info(
-                        "Claim sweep: %d expired, %d dead-session, " "%d pruned",
+                        "Claim sweep: %d expired, %d dead-session, "
+                        "%d claims pruned, %d activity events pruned",
                         expired,
                         dead,
                         pruned,
+                        activity_pruned,
                     )
             except Exception:
                 logger.debug("Claim sweep error", exc_info=True)

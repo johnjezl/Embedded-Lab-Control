@@ -22,6 +22,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   cover the auto-resolve and repair paths (2026-04-19)
 
 ### Added
+- Activity stream Phase D — polish (2026-04-20)
+  - MCP resources `lab://activity/recent` and
+    `lab://activity/{sbc_name}` now expose the most recent activity
+    events as JSON
+  - `labctl activity export --format ndjson` exports activity events
+    for downstream processing
+  - The existing claim-sweep worker now also prunes activity events
+    older than 30 days
+  - Regression coverage added for MCP resources, CLI export, and
+    activity retention pruning
 - Activity stream Phase C — source fidelity (2026-04-20)
   - MCP mutating tools now run inside `activity_context()` so audit
     events record `source=mcp` and the active MCP session ID as `actor`

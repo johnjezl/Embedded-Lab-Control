@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from labctl.core import audit
 from labctl.core.database import get_database
 from labctl.core.manager import ResourceManager
 from labctl.core.models import AddressType, PlugType, PortType
@@ -1197,6 +1198,29 @@ class TestMcpDiscoveryTools:
         ):
             result = serial_discover()
         assert "ttyUSB0" in result
+
+    def test_recent_activity_resource(self, mock_manager, populated_manager):
+        from labctl.mcp_server import get_recent_activity_resource
+
+        with audit.activity_context("cli:alice", "cli"):
+            populated_manager.create_sbc(name="activity-mcp-sbc", project="proj")
+
+        result = json.loads(get_recent_activity_resource())
+        assert any(
+            evt["entity_name"] == "activity-mcp-sbc" and evt["actor"] == "cli:alice"
+            for evt in result
+        )
+
+    def test_activity_for_sbc_resource(self, mock_manager, populated_manager):
+        from labctl.mcp_server import get_activity_for_sbc_resource
+
+        with audit.activity_context("cli:alice", "cli"):
+            populated_manager.create_sbc(name="activity-filter-a", project="proj")
+            populated_manager.create_sbc(name="activity-filter-b", project="proj")
+
+        result = json.loads(get_activity_for_sbc_resource("activity-filter-a"))
+        assert result
+        assert all(evt["entity_name"] == "activity-filter-a" for evt in result)
 
 
 # ---------------------------------------------------------------------------

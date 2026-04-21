@@ -177,6 +177,8 @@ to understand the current state before taking action.
 | `lab://claims/{sbc_name}` | SBC name | Current claim on an SBC |
 | `lab://claims/history/{sbc_name}` | SBC name | Past (released) claims for an SBC |
 | `lab://claims/metrics` | — | Aggregate claim statistics (totals by outcome, avg duration) |
+| `lab://activity/recent` | — | Last 50 activity events across the lab |
+| `lab://activity/{sbc_name}` | SBC name | Last 50 activity events for one SBC |
 
 ### Resource Output Format
 

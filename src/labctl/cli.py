@@ -6,6 +6,7 @@ Provides commands for managing serial ports, connections, and lab resources.
 
 import logging
 import os
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -13,6 +14,7 @@ from pathlib import Path
 import click
 
 from labctl import __version__
+from labctl.core import audit
 from labctl.core.config import Config, load_config
 from labctl.core.manager import ResourceManager, get_manager
 from labctl.core.models import AddressType, PlugType, PortType, Status
@@ -3930,7 +3932,7 @@ def _activity_query_clauses(
 @click.option(
     "--source",
     "source_filter",
-    type=click.Choice(["cli", "mcp", "api", "daemon", "internal"]),
+    type=click.Choice(["cli", "mcp", "api", "web", "daemon", "internal"]),
     help="Filter to one source",
 )
 @click.option(
@@ -4026,6 +4028,68 @@ def activity_tail_cmd(
                 last_id = row["id"]
     except KeyboardInterrupt:
         pass
+
+
+@activity_group.command("export")
+@click.option("--sbc", "sbc_filter", help="Filter to a single SBC name")
+@click.option("--actor", "actor_filter", help="Filter to one actor (exact match)")
+@click.option(
+    "--source",
+    "source_filter",
+    type=click.Choice(["cli", "mcp", "api", "web", "daemon", "internal"]),
+    help="Filter to one source",
+)
+@click.option(
+    "--result",
+    "result_filter",
+    type=click.Choice(["ok", "error", "forbidden"]),
+    help="Filter to one result",
+)
+@click.option(
+    "--since",
+    help="Only export events since this relative time (e.g., 5m, 2h, 1d)",
+)
+@click.option(
+    "-n",
+    "--limit",
+    type=int,
+    default=1000,
+    help="Maximum number of events to export (default: 1000)",
+)
+@click.option(
+    "--format",
+    "export_format",
+    type=click.Choice(["ndjson"]),
+    default="ndjson",
+    show_default=True,
+    help="Export format",
+)
+@click.pass_context
+def activity_export_cmd(
+    ctx: click.Context,
+    sbc_filter: str | None,
+    actor_filter: str | None,
+    source_filter: str | None,
+    result_filter: str | None,
+    since: str | None,
+    limit: int,
+    export_format: str,
+) -> None:
+    """Export activity events for downstream processing."""
+    manager = _get_manager(ctx)
+    events = audit.query_events(
+        manager.db,
+        limit=limit,
+        sbc=sbc_filter,
+        actor=actor_filter,
+        source=source_filter,
+        result=result_filter,
+        since=_parse_since(since) if since else None,
+        order_desc=False,
+    )
+    if export_format == "ndjson":
+        for event in events:
+            click.echo(json.dumps(event, separators=(",", ":")))
 
 
 @main.command("completion")

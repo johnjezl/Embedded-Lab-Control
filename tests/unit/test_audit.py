@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+from datetime import datetime
 
 import pytest
 
@@ -15,6 +16,13 @@ def db(tmp_path):
     d = Database(tmp_path / "test.db")
     d.initialize()
     return d
+
+
+@pytest.fixture(autouse=True)
+def reset_audit_context():
+    audit.set_context("internal", "internal", claim_id=None)
+    yield
+    audit.set_context("internal", "internal", claim_id=None)
 
 
 @pytest.fixture
@@ -255,3 +263,71 @@ class TestManagerIntegration:
         assert events[0]["source"] == "cli"
         assert events[0]["entity_name"] == "integration-sbc"
         assert events[0]["result"] == "ok"
+
+
+class TestQueryAndPrune:
+    def test_query_events_filters_and_ordering(self, db):
+        with audit.activity_context("cli:alice", "cli"):
+            audit.emit(db, action="first", entity_type="sbc", entity_name="pi-a")
+        with audit.activity_context("mcp-1", "mcp"):
+            audit.emit(db, action="second", entity_type="sbc", entity_name="pi-b")
+
+        events = audit.query_events(db, actor="cli:alice", order_desc=False)
+        assert len(events) == 1
+        assert events[0]["action"] == "first"
+        assert events[0]["actor"] == "cli:alice"
+
+        all_desc = audit.query_events(db, limit=10)
+        assert [e["action"] for e in all_desc] == ["second", "first"]
+
+    def test_prune_old_events(self, db):
+        db.execute_insert(
+            """
+            INSERT INTO audit_log (
+                action, entity_type, entity_name, details, logged_at,
+                actor, source, result, claim_id
+            ) VALUES (?, ?, ?, ?, datetime('now', '-40 days'), ?, ?, ?, ?)
+            """,
+            ("old", "sbc", "old-pi", None, "internal", "internal", "ok", None),
+        )
+        audit.emit(db, action="new", entity_type="sbc", entity_name="new-pi")
+
+        pruned = audit.prune_old_events(db, older_than_days=30)
+        assert pruned == 1
+
+        events = audit.query_events(db, limit=10, order_desc=False)
+        assert len(events) == 1
+        assert events[0]["action"] == "new"
+
+    def test_prune_uses_local_wall_clock_cutoff(self, db, monkeypatch):
+        class FixedDateTime:
+            @staticmethod
+            def now():
+                return datetime(2026, 4, 20, 0, 30, 0)
+
+        monkeypatch.setattr(audit, "datetime", FixedDateTime)
+        db.execute_insert(
+            """
+            INSERT INTO audit_log (
+                action, entity_type, entity_name, details, logged_at,
+                actor, source, result, claim_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "boundary",
+                "sbc",
+                "boundary-pi",
+                None,
+                "2026-03-21 01:00:00.000",
+                "internal",
+                "internal",
+                "ok",
+                None,
+            ),
+        )
+
+        pruned = audit.prune_old_events(db, older_than_days=30)
+        assert pruned == 0
+        events = audit.query_events(db, limit=10)
+        assert len(events) == 1
+        assert events[0]["action"] == "boundary"

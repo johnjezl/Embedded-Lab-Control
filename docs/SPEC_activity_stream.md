@@ -4,7 +4,7 @@ Specification for a unified, structured, append-only stream of every
 state-changing action labctl performs — viewable live (CLI tail, web)
 and queryable historically.
 
-**Status:** Phase A, Phase B, and Phase C implemented
+**Status:** Phase A, Phase B, Phase C, and Phase D implemented
 **Source request:** observability gap surfaced during monitor-daemon
 outage triage (2026-04-17 — daemon crashed silently on every cycle for
 hours before being noticed)
@@ -36,8 +36,7 @@ what is happening. Today's symptoms:
   `/activity` page on the web dashboard.
 - Historical queries filterable by SBC, actor, source, and time
   range.
-- AI agents can observe recent activity via future MCP resources
-  planned for a later phase.
+- AI agents can observe recent activity via MCP resources.
 - Attribution: every event carries the originating actor (`cli:john`,
   `mcp-stdio:12345-...`, `web:alice`, `daemon`).
 
@@ -173,7 +172,7 @@ New `/activity` page:
   just happened" snapshot).
 - `lab://activity/{sbc_name}` — last 50 events targeting that SBC.
 
-Status: not yet implemented; still planned for a later phase.
+Status: implemented.
 
 ## Performance and retention
 
@@ -280,6 +279,8 @@ Status: implemented.
 - 30-day retention sweep.
 - NDJSON export: `labctl activity export --format ndjson --since Xd`.
 
+Status: implemented.
+
 ## Testing
 
 Phase A test coverage:
@@ -296,6 +297,10 @@ Phase A test coverage:
   time range.
 - CLI `labctl activity tail` and web `/api/activity`, `/activity`, and
   `/activity/stream` surfaces render the recorded events correctly.
+- MCP `lab://activity/recent` and `lab://activity/{sbc_name}` resources
+  return the expected event windows.
+- CLI `labctl activity export --format ndjson` emits newline-delimited
+  JSON records suitable for downstream processing.
 
 ## Follow-up TODOs
 
