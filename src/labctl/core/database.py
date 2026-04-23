@@ -213,7 +213,7 @@ class Database:
             cursor = conn.execute(query)
             if cursor.fetchone() is None:
                 # Fresh database - apply full schema
-                conn.executescript(SCHEMA_SQL)
+                _executescript_atomic(conn, SCHEMA_SQL)
                 conn.execute(
                     "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
                 )
@@ -228,7 +228,8 @@ class Database:
         """Apply database migrations."""
         if from_version < 2:
             # v2: Add serial_devices table, add alias/serial_device_id to serial_ports
-            conn.executescript(
+            _executescript_atomic(
+                conn,
                 """
                 CREATE TABLE IF NOT EXISTS serial_devices (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -264,7 +265,8 @@ class Database:
 
         if from_version < 3:
             # v3: Add SDWire device and assignment tables
-            conn.executescript(
+            _executescript_atomic(
+                conn,
                 """
                 CREATE TABLE IF NOT EXISTS sdwire_devices (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -289,7 +291,8 @@ class Database:
 
         if from_version < 4:
             # v4: Hardware claims (exclusive access coordination)
-            conn.executescript(
+            _executescript_atomic(
+                conn,
                 """
                 CREATE TABLE IF NOT EXISTS claims (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -333,6 +336,26 @@ class Database:
 
         if from_version < 5:
             # v5: Activity stream — extend audit_log with actor/source/result/claim_id
+            _executescript_atomic(
+                conn,
+                """
+                CREATE TABLE IF NOT EXISTS audit_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    action TEXT NOT NULL,
+                    entity_type TEXT NOT NULL,
+                    entity_id INTEGER,
+                    entity_name TEXT,
+                    details TEXT,
+                    logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    actor TEXT NOT NULL DEFAULT 'internal',
+                    source TEXT NOT NULL DEFAULT 'internal',
+                    result TEXT NOT NULL DEFAULT 'ok',
+                    claim_id INTEGER REFERENCES claims(id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_audit_log_entity
+                    ON audit_log(entity_type, entity_id);
+                """,
+            )
             for column_sql in (
                 "ALTER TABLE audit_log ADD COLUMN actor TEXT NOT NULL DEFAULT 'internal'",
                 "ALTER TABLE audit_log ADD COLUMN source TEXT NOT NULL DEFAULT 'internal'",
@@ -343,7 +366,8 @@ class Database:
                     conn.execute(column_sql)
                 except sqlite3.OperationalError:
                     pass  # Column already exists
-            conn.executescript(
+            _executescript_atomic(
+                conn,
                 """
                 CREATE INDEX IF NOT EXISTS idx_audit_log_logged_at
                     ON audit_log(logged_at DESC);
@@ -469,3 +493,8 @@ def get_database(db_path: Path) -> Database:
     db = Database(db_path)
     db.initialize()
     return db
+
+
+def _executescript_atomic(conn: sqlite3.Connection, sql: str) -> None:
+    """Run DDL in one explicit transaction to avoid slow statement commits."""
+    conn.executescript(f"BEGIN;\n{sql}\nCOMMIT;")

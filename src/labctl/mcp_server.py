@@ -177,6 +177,55 @@ def _with_mcp_activity(func):
     return wrapper
 
 
+def _sdwire_read_error(error: str, message: str, **extra) -> str:
+    payload = {"error": error, "message": message}
+    payload.update(extra)
+    return json.dumps(payload)
+
+
+def _structured_claim_advisory(manager, sbc_name: str) -> list[dict]:
+    """Return pending release requests in structured form for JSON tools."""
+    from labctl.core.models import UnknownSBCError
+
+    try:
+        claim = manager.get_active_claim(sbc_name)
+    except UnknownSBCError:
+        return []
+    if claim is None or claim.session_id != _get_session_id():
+        return []
+    return [
+        {"requested_by": req.requested_by, "reason": req.reason}
+        for req in claim.pending_requests
+    ]
+
+
+def _sdwire_host_switch_guard_mcp(
+    sbc_name: str, sbc, force: bool = False, allow_force_override: bool = False
+) -> str | None:
+    """Refuse host-mode switching when the SBC is still powered on."""
+    if force or not sbc.power_plug:
+        return None
+
+    try:
+        from labctl.power import PowerController
+        from labctl.power.base import PowerState
+
+        power_ctrl = PowerController.from_plug(sbc.power_plug)
+        state = power_ctrl.get_state()
+        if state == PowerState.ON:
+            message = (
+                f"Error: {sbc_name} is powered on. Power off before "
+                f"switching SD to host mode."
+            )
+            if allow_force_override:
+                message += " Use force=true to override (risks SD card corruption)."
+            return message
+    except Exception:
+        return None
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Resources (read-only data)
 # ---------------------------------------------------------------------------
@@ -1049,23 +1098,11 @@ def sdwire_to_host(sbc_name: str, force: bool = False) -> str:
     if not sbc.sdwire:
         return f"Error: No SDWire assigned to '{sbc_name}'"
 
-    # Power safety check
-    if not force and sbc.power_plug:
-        try:
-            from labctl.power import PowerController
-
-            power_ctrl = PowerController.from_plug(sbc.power_plug)
-            state = power_ctrl.get_state()
-            from labctl.power.base import PowerState
-
-            if state == PowerState.ON:
-                return (
-                    f"Error: {sbc_name} is powered on. Power off before "
-                    f"switching SD to host mode. Use force=true to override "
-                    f"(risks SD card corruption)."
-                )
-        except Exception:
-            pass  # Power state unknown — allow operation
+    guard_err = _sdwire_host_switch_guard_mcp(
+        sbc_name, sbc, force=force, allow_force_override=True
+    )
+    if guard_err:
+        return guard_err
 
     try:
         ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
@@ -1183,6 +1220,239 @@ def sdwire_update(
         return f"{summary}\n\n{advisory}" if advisory else summary
     except RuntimeError as e:
         return f"Error: {e}"
+
+
+@mcp.tool()
+@_with_mcp_activity
+def sdwire_ls(
+    sbc_name: str,
+    partition: int,
+    path: str = "/",
+    recursive: bool = False,
+    max_entries: int = 1000,
+) -> str:
+    """List directory contents on an SBC SD card partition."""
+    import time
+
+    from labctl.sdwire import SDWireController
+
+    manager = _get_manager()
+    claim_err = _check_claim(manager, sbc_name, mutating=True)
+    if claim_err:
+        return claim_err
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return _sdwire_read_error("sbc_not_found", f"SBC '{sbc_name}' not found")
+    if not sbc.sdwire:
+        return _sdwire_read_error("no_sdwire", f"No SDWire assigned to '{sbc_name}'")
+    guard_err = _sdwire_host_switch_guard_mcp(sbc_name, sbc)
+    if guard_err:
+        return _sdwire_read_error("powered_on", guard_err.removeprefix("Error: "))
+
+    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    host_switched = False
+    cleanup_error: RuntimeError | None = None
+    response: str
+
+    try:
+        ctrl.switch_to_host()
+        host_switched = True
+        time.sleep(2)
+        result = ctrl.list_files(
+            partition=partition,
+            path=path,
+            recursive=recursive,
+            max_entries=max_entries,
+        )
+        payload = {
+            "sbc_name": sbc_name,
+            "partition": partition,
+            "path": path,
+            "claim_advisory": _structured_claim_advisory(manager, sbc_name),
+            **result,
+        }
+        response = json.dumps(payload)
+    except FileNotFoundError:
+        response = _sdwire_read_error("path_not_found", f"Path not found: {path}")
+    except PermissionError:
+        response = _sdwire_read_error("permission_denied", f"Permission denied: {path}")
+    except NotADirectoryError:
+        response = _sdwire_read_error("not_a_directory", f"Not a directory: {path}")
+    except RuntimeError as e:
+        msg = str(e)
+        if "Failed to mount" in msg:
+            response = _sdwire_read_error("fs_unsupported", msg)
+        else:
+            response = _sdwire_read_error("read_failed", msg)
+    finally:
+        if host_switched:
+            try:
+                ctrl.switch_to_dut()
+            except RuntimeError as e:
+                cleanup_error = e
+
+    if cleanup_error:
+        return _sdwire_read_error(
+            "cleanup_failed",
+            f"Failed to restore SD card to DUT mode: {cleanup_error}",
+            prior_response=json.loads(response),
+        )
+    return response
+
+
+@mcp.tool()
+@_with_mcp_activity
+def sdwire_cat(
+    sbc_name: str,
+    partition: int,
+    path: str,
+    max_bytes: int = 1024 * 1024,
+    encoding: str = "text",
+) -> str:
+    """Read a file from an SBC SD card partition."""
+    import time
+
+    from labctl.sdwire import SDWireController
+    from labctl.sdwire.controller import SDWireSymlinkError
+
+    manager = _get_manager()
+    claim_err = _check_claim(manager, sbc_name, mutating=True)
+    if claim_err:
+        return claim_err
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return _sdwire_read_error("sbc_not_found", f"SBC '{sbc_name}' not found")
+    if not sbc.sdwire:
+        return _sdwire_read_error("no_sdwire", f"No SDWire assigned to '{sbc_name}'")
+    guard_err = _sdwire_host_switch_guard_mcp(sbc_name, sbc)
+    if guard_err:
+        return _sdwire_read_error("powered_on", guard_err.removeprefix("Error: "))
+
+    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    host_switched = False
+    cleanup_error: RuntimeError | None = None
+    response: str
+
+    try:
+        ctrl.switch_to_host()
+        host_switched = True
+        time.sleep(2)
+        result = ctrl.read_file(
+            partition=partition,
+            path=path,
+            max_bytes=max_bytes,
+            encoding=encoding,
+        )
+        payload = json.dumps(
+            {
+                "sbc_name": sbc_name,
+                "partition": partition,
+                "path": path,
+                "claim_advisory": _structured_claim_advisory(manager, sbc_name),
+                **result,
+            }
+        )
+        response = payload
+    except FileNotFoundError:
+        response = _sdwire_read_error("path_not_found", f"Path not found: {path}")
+    except PermissionError:
+        response = _sdwire_read_error("permission_denied", f"Permission denied: {path}")
+    except IsADirectoryError:
+        response = _sdwire_read_error("not_a_file", f"Not a file: {path}")
+    except ValueError as e:
+        if str(e) == "binary_content":
+            response = _sdwire_read_error(
+                "binary_content",
+                f"File is not valid UTF-8: {path}",
+                suggestion="Retry with encoding='base64'",
+            )
+        else:
+            response = _sdwire_read_error("read_failed", str(e))
+    except SDWireSymlinkError as e:
+        response = _sdwire_read_error(
+            "not_a_file",
+            f"Refusing to follow symlink: {path}",
+            symlink_target=e.target,
+        )
+    except RuntimeError as e:
+        msg = str(e)
+        if "exceeds max_bytes" in msg:
+            response = _sdwire_read_error("size_limit_exceeded", msg)
+        elif "Failed to mount" in msg:
+            response = _sdwire_read_error("fs_unsupported", msg)
+        else:
+            response = _sdwire_read_error("read_failed", msg)
+    finally:
+        if host_switched:
+            try:
+                ctrl.switch_to_dut()
+            except RuntimeError as e:
+                cleanup_error = e
+
+    if cleanup_error:
+        return _sdwire_read_error(
+            "cleanup_failed",
+            f"Failed to restore SD card to DUT mode: {cleanup_error}",
+            prior_response=json.loads(response),
+        )
+    return response
+
+
+@mcp.tool()
+@_with_mcp_activity
+def sdwire_info(sbc_name: str) -> str:
+    """Return partition-table metadata for an SBC SD card."""
+    import time
+
+    from labctl.sdwire import SDWireController
+
+    manager = _get_manager()
+    claim_err = _check_claim(manager, sbc_name, mutating=True)
+    if claim_err:
+        return claim_err
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return _sdwire_read_error("sbc_not_found", f"SBC '{sbc_name}' not found")
+    if not sbc.sdwire:
+        return _sdwire_read_error("no_sdwire", f"No SDWire assigned to '{sbc_name}'")
+    guard_err = _sdwire_host_switch_guard_mcp(sbc_name, sbc)
+    if guard_err:
+        return _sdwire_read_error("powered_on", guard_err.removeprefix("Error: "))
+
+    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    host_switched = False
+    cleanup_error: RuntimeError | None = None
+    response: str
+
+    try:
+        ctrl.switch_to_host()
+        host_switched = True
+        time.sleep(2)
+        result = ctrl.get_disk_info()
+        payload = json.dumps(
+            {
+                "sbc_name": sbc_name,
+                "claim_advisory": _structured_claim_advisory(manager, sbc_name),
+                **result,
+            }
+        )
+        response = payload
+    except RuntimeError as e:
+        response = _sdwire_read_error("read_failed", str(e))
+    finally:
+        if host_switched:
+            try:
+                ctrl.switch_to_dut()
+            except RuntimeError as e:
+                cleanup_error = e
+
+    if cleanup_error:
+        return _sdwire_read_error(
+            "cleanup_failed",
+            f"Failed to restore SD card to DUT mode: {cleanup_error}",
+            prior_response=json.loads(response),
+        )
+    return response
 
 
 @mcp.tool()

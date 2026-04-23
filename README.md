@@ -136,6 +136,9 @@ labctl web --port 5000
 | `labctl sdwire host <sbc>` | Switch SD card to host (for flashing) |
 | `labctl sdwire flash <sbc> <image>` | Flash full image to SD card and reboot SBC |
 | `labctl sdwire update <sbc> -p N -c src:dest -r old:new -d file` | Copy, rename, or delete files on a partition |
+| `labctl sdwire ls <sbc> -p N [--path /] [--recursive]` | List directory contents on a partition |
+| `labctl sdwire cat <sbc> -p N --path /file [--encoding text|base64|hex]` | Read a file from a partition |
+| `labctl sdwire info <sbc>` | Show partition table and filesystem metadata |
 
 Partition numbers are 1-based (e.g., `-p 1` for the first partition, which maps to `/dev/sdb1`).
 

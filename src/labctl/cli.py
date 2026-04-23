@@ -79,6 +79,33 @@ def _get_manager(ctx: click.Context) -> ResourceManager:
     return ctx.obj["manager"]
 
 
+def _sdwire_host_switch_guard_cli(
+    sbc_name: str, sbc, force: bool = False, allow_force_override: bool = False
+) -> str | None:
+    """Refuse host-mode switching when the SBC still appears powered on."""
+    if force or not sbc.power_plug:
+        return None
+
+    try:
+        from labctl.power import PowerController
+        from labctl.power.base import PowerState
+
+        power_ctrl = PowerController.from_plug(sbc.power_plug)
+        state = power_ctrl.get_state()
+        if state == PowerState.ON:
+            message = (
+                f"Error: {sbc_name} is powered on. Power off before "
+                f"switching SD to host mode."
+            )
+            if allow_force_override:
+                message += "\nUse --force to override (risks SD card corruption)."
+            return message
+    except Exception:
+        return None
+
+    return None
+
+
 @click.group(cls=AliasedGroup)
 @click.version_option(version=__version__, prog_name="labctl")
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose output")
@@ -788,24 +815,12 @@ def sdwire_host_cmd(ctx: click.Context, sbc_name: str, force: bool) -> None:
         click.echo(f"Error: No SDWire assigned to '{sbc_name}'", err=True)
         sys.exit(1)
 
-    # Power safety check
-    if not force and sbc.power_plug:
-        try:
-            from labctl.power import PowerController
-            from labctl.power.base import PowerState
-
-            power_ctrl = PowerController.from_plug(sbc.power_plug)
-            state = power_ctrl.get_state()
-            if state == PowerState.ON:
-                click.echo(
-                    f"Error: {sbc_name} is powered on. Power off before "
-                    f"switching SD to host mode.\n"
-                    f"Use --force to override (risks SD card corruption).",
-                    err=True,
-                )
-                sys.exit(1)
-        except Exception:
-            pass  # Power state unknown — allow operation
+    guard_err = _sdwire_host_switch_guard_cli(
+        sbc_name, sbc, force=force, allow_force_override=True
+    )
+    if guard_err:
+        click.echo(guard_err, err=True)
+        sys.exit(1)
 
     try:
         ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
@@ -1121,6 +1136,280 @@ def sdwire_update_cmd(
     except RuntimeError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
+
+
+@sdwire_group.command("ls")
+@click.argument("sbc_name")
+@click.option(
+    "--partition",
+    "-p",
+    type=int,
+    required=True,
+    help="Partition number (e.g., 1 for first partition)",
+)
+@click.option(
+    "--path",
+    "target_path",
+    default="/",
+    show_default=True,
+    help="Absolute path within the partition",
+)
+@click.option("--recursive", "-r", is_flag=True, help="Recurse into subdirectories")
+@click.option(
+    "--max-entries",
+    type=int,
+    default=1000,
+    show_default=True,
+    help="Safety cap on returned entries",
+)
+@click.pass_context
+def sdwire_ls_cmd(
+    ctx: click.Context,
+    sbc_name: str,
+    partition: int,
+    target_path: str,
+    recursive: bool,
+    max_entries: int,
+) -> None:
+    """List directory contents on an SBC SD card partition."""
+    from labctl.sdwire.controller import SDWireController
+
+    manager = _get_manager(ctx)
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
+        sys.exit(1)
+    if not sbc.sdwire:
+        click.echo(f"Error: No SDWire assigned to '{sbc_name}'", err=True)
+        sys.exit(1)
+    guard_err = _sdwire_host_switch_guard_cli(sbc_name, sbc)
+    if guard_err:
+        click.echo(guard_err, err=True)
+        sys.exit(1)
+
+    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    host_switched = False
+    cleanup_error: RuntimeError | None = None
+    output: str
+
+    try:
+        ctrl.switch_to_host()
+        host_switched = True
+        import time
+
+        time.sleep(2)
+        result = ctrl.list_files(
+            partition=partition,
+            path=target_path,
+            recursive=recursive,
+            max_entries=max_entries,
+        )
+        output = json.dumps(
+            {
+                "sbc_name": sbc_name,
+                "partition": partition,
+                "path": target_path,
+                **result,
+            },
+            indent=2,
+        )
+    except FileNotFoundError:
+        click.echo(f"Error: Path not found: {target_path}", err=True)
+        sys.exit(1)
+    except PermissionError:
+        click.echo(f"Error: Permission denied: {target_path}", err=True)
+        sys.exit(1)
+    except NotADirectoryError:
+        click.echo(f"Error: Not a directory: {target_path}", err=True)
+        sys.exit(1)
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    finally:
+        if host_switched:
+            try:
+                ctrl.switch_to_dut()
+            except RuntimeError as e:
+                cleanup_error = e
+
+    if cleanup_error:
+        click.echo(
+            f"Error: Failed to restore SD card to DUT mode: {cleanup_error}",
+            err=True,
+        )
+        sys.exit(1)
+    click.echo(output)
+
+
+@sdwire_group.command("cat")
+@click.argument("sbc_name")
+@click.option(
+    "--partition",
+    "-p",
+    type=int,
+    required=True,
+    help="Partition number (e.g., 1 for first partition)",
+)
+@click.option("--path", "target_path", required=True, help="Absolute file path")
+@click.option(
+    "--max-bytes",
+    type=int,
+    default=1024 * 1024,
+    show_default=True,
+    help="Maximum bytes to read",
+)
+@click.option(
+    "--encoding",
+    type=click.Choice(["text", "base64", "hex"]),
+    default="text",
+    show_default=True,
+    help="Output encoding",
+)
+@click.pass_context
+def sdwire_cat_cmd(
+    ctx: click.Context,
+    sbc_name: str,
+    partition: int,
+    target_path: str,
+    max_bytes: int,
+    encoding: str,
+) -> None:
+    """Read a file from an SBC SD card partition."""
+    from labctl.sdwire.controller import SDWireController, SDWireSymlinkError
+
+    manager = _get_manager(ctx)
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
+        sys.exit(1)
+    if not sbc.sdwire:
+        click.echo(f"Error: No SDWire assigned to '{sbc_name}'", err=True)
+        sys.exit(1)
+    guard_err = _sdwire_host_switch_guard_cli(sbc_name, sbc)
+    if guard_err:
+        click.echo(guard_err, err=True)
+        sys.exit(1)
+
+    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    host_switched = False
+    cleanup_error: RuntimeError | None = None
+    output: str
+
+    try:
+        ctrl.switch_to_host()
+        host_switched = True
+        import time
+
+        time.sleep(2)
+        result = ctrl.read_file(
+            partition=partition,
+            path=target_path,
+            max_bytes=max_bytes,
+            encoding=encoding,
+        )
+        output = json.dumps(
+            {
+                "sbc_name": sbc_name,
+                "partition": partition,
+                "path": target_path,
+                **result,
+            },
+            indent=2,
+        )
+    except FileNotFoundError:
+        click.echo(f"Error: Path not found: {target_path}", err=True)
+        sys.exit(1)
+    except PermissionError:
+        click.echo(f"Error: Permission denied: {target_path}", err=True)
+        sys.exit(1)
+    except IsADirectoryError:
+        click.echo(f"Error: Not a file: {target_path}", err=True)
+        sys.exit(1)
+    except ValueError as e:
+        if str(e) == "binary_content":
+            click.echo(
+                f"Error: File is not valid UTF-8: {target_path}. "
+                "Retry with --encoding base64.",
+                err=True,
+            )
+        else:
+            click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    except SDWireSymlinkError as e:
+        click.echo(
+            f"Error: Refusing to follow symlink: {target_path} -> {e.target}",
+            err=True,
+        )
+        sys.exit(1)
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    finally:
+        if host_switched:
+            try:
+                ctrl.switch_to_dut()
+            except RuntimeError as e:
+                cleanup_error = e
+
+    if cleanup_error:
+        click.echo(
+            f"Error: Failed to restore SD card to DUT mode: {cleanup_error}",
+            err=True,
+        )
+        sys.exit(1)
+    click.echo(output)
+
+
+@sdwire_group.command("info")
+@click.argument("sbc_name")
+@click.pass_context
+def sdwire_info_cmd(ctx: click.Context, sbc_name: str) -> None:
+    """Show partition metadata for an SBC SD card."""
+    from labctl.sdwire.controller import SDWireController
+
+    manager = _get_manager(ctx)
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
+        sys.exit(1)
+    if not sbc.sdwire:
+        click.echo(f"Error: No SDWire assigned to '{sbc_name}'", err=True)
+        sys.exit(1)
+    guard_err = _sdwire_host_switch_guard_cli(sbc_name, sbc)
+    if guard_err:
+        click.echo(guard_err, err=True)
+        sys.exit(1)
+
+    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    host_switched = False
+    cleanup_error: RuntimeError | None = None
+    output: str
+
+    try:
+        ctrl.switch_to_host()
+        host_switched = True
+        import time
+
+        time.sleep(2)
+        result = ctrl.get_disk_info()
+        output = json.dumps({"sbc_name": sbc_name, **result}, indent=2)
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    finally:
+        if host_switched:
+            try:
+                ctrl.switch_to_dut()
+            except RuntimeError as e:
+                cleanup_error = e
+
+    if cleanup_error:
+        click.echo(
+            f"Error: Failed to restore SD card to DUT mode: {cleanup_error}",
+            err=True,
+        )
+        sys.exit(1)
+    click.echo(output)
 
 
 @main.group("serial")

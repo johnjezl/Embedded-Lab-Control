@@ -457,6 +457,18 @@ class TestMcpSDWireTools:
         assert "/dev/sdb" in result
         mock_ctrl_instance.switch_to_host.assert_called_once()
 
+    def test_sdwire_to_host_uses_mutating_claim_check(self, mock_manager):
+        from labctl.mcp_server import sdwire_to_host
+
+        claim_check = MagicMock(return_value=None)
+        mock_ctrl = MagicMock()
+
+        with patch("labctl.mcp_server._check_claim", claim_check):
+            with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl):
+                sdwire_to_host(sbc_name="test-sbc-1", force=True)
+
+        claim_check.assert_called_once_with(mock_manager, "test-sbc-1", mutating=True)
+
     def test_sdwire_to_host_rejects_powered_on(self, mock_manager):
         """Test that sdwire_to_host rejects when SBC is powered on."""
         from labctl.mcp_server import sdwire_to_host
@@ -571,18 +583,49 @@ class TestMcpSDWireTools:
             "renamed": [],
             "deleted": [],
         }
+        mock_power = MagicMock()
 
         with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl_instance):
-            result = sdwire_update(
-                sbc_name="test-sbc-1",
-                partition=1,
-                copies=["local.bin:kernel.img"],
-            )
+            with patch(
+                "labctl.power.base.PowerController.from_plug",
+                return_value=mock_power,
+            ):
+                result = sdwire_update(
+                    sbc_name="test-sbc-1",
+                    partition=1,
+                    copies=["local.bin:kernel.img"],
+                )
 
         assert "Copied" in result
         assert "kernel.img" in result
         mock_ctrl_instance.switch_to_host.assert_called_once()
         mock_ctrl_instance.switch_to_dut.assert_called_once()
+
+    def test_sdwire_update_uses_mutating_claim_check(self, mock_manager):
+        from labctl.mcp_server import sdwire_update
+
+        claim_check = MagicMock(return_value=None)
+        mock_ctrl = MagicMock()
+        mock_ctrl.update_files.return_value = {
+            "copied": [],
+            "renamed": [],
+            "deleted": [],
+        }
+        mock_power = MagicMock()
+
+        with patch("labctl.mcp_server._check_claim", claim_check):
+            with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl):
+                with patch(
+                    "labctl.power.base.PowerController.from_plug",
+                    return_value=mock_power,
+                ):
+                    sdwire_update(
+                        sbc_name="test-sbc-1",
+                        partition=1,
+                        copies=["local.bin:kernel.img"],
+                    )
+
+        claim_check.assert_called_once_with(mock_manager, "test-sbc-1", mutating=True)
 
     def test_sdwire_update_with_reboot(self, mock_manager):
         from unittest.mock import MagicMock
@@ -620,16 +663,336 @@ class TestMcpSDWireTools:
 
         mock_ctrl_instance = MagicMock()
         mock_ctrl_instance.update_files.side_effect = RuntimeError("mount failed")
+        mock_power = MagicMock()
 
         with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl_instance):
-            result = sdwire_update(
-                sbc_name="test-sbc-1",
-                partition=1,
-                copies=["a.bin:b.bin"],
-            )
+            with patch(
+                "labctl.power.base.PowerController.from_plug",
+                return_value=mock_power,
+            ):
+                result = sdwire_update(
+                    sbc_name="test-sbc-1",
+                    partition=1,
+                    copies=["a.bin:b.bin"],
+                )
 
         assert "Error" in result
         assert "mount failed" in result
+
+    def test_sdwire_ls_success(self):
+        from labctl.mcp_server import sdwire_ls
+
+        manager = MagicMock()
+        sbc = MagicMock()
+        sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
+        sbc.sdwire.device_type = "sdwirec"
+        manager.get_sbc_by_name.return_value = sbc
+        mock_ctrl = MagicMock()
+        mock_ctrl.list_files.return_value = {
+            "entries": [{"path": "/boot", "name": "boot", "type": "dir"}],
+            "truncated": False,
+            "_truncated": False,
+        }
+
+        with patch("labctl.mcp_server._get_manager", return_value=manager):
+            with patch("labctl.mcp_server._check_claim", return_value=None):
+                with patch("labctl.mcp_server._claim_advisory", return_value=""):
+                    with patch(
+                        "labctl.sdwire.SDWireController", return_value=mock_ctrl
+                    ):
+                        result = json.loads(sdwire_ls("test-sbc-1", partition=1))
+
+        assert result["partition"] == 1
+        assert result["entries"][0]["path"] == "/boot"
+        assert result["_truncated"] is False
+        mock_ctrl.switch_to_host.assert_called_once()
+        mock_ctrl.switch_to_dut.assert_called_once()
+
+    def test_sdwire_ls_uses_mutating_claim_check(self):
+        from labctl.mcp_server import sdwire_ls
+
+        manager = MagicMock()
+        sbc = MagicMock()
+        sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
+        sbc.sdwire.device_type = "sdwirec"
+        manager.get_sbc_by_name.return_value = sbc
+        claim_check = MagicMock(return_value=None)
+        mock_ctrl = MagicMock()
+        mock_ctrl.list_files.return_value = {
+            "entries": [],
+            "truncated": False,
+            "_truncated": False,
+        }
+
+        with patch("labctl.mcp_server._get_manager", return_value=manager):
+            with patch("labctl.mcp_server._check_claim", claim_check):
+                with patch("labctl.mcp_server._claim_advisory", return_value=""):
+                    with patch(
+                        "labctl.sdwire.SDWireController", return_value=mock_ctrl
+                    ):
+                        with patch("time.sleep") as mock_sleep:
+                            sdwire_ls("test-sbc-1", partition=1)
+
+        claim_check.assert_called_once_with(manager, "test-sbc-1", mutating=True)
+        mock_sleep.assert_called_once_with(2)
+
+    def test_sdwire_ls_rejects_powered_on(self):
+        from labctl.mcp_server import sdwire_ls
+        from labctl.power.base import PowerState
+
+        manager = MagicMock()
+        sbc = MagicMock()
+        sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
+        sbc.sdwire.device_type = "sdwirec"
+        sbc.power_plug = MagicMock()
+        manager.get_sbc_by_name.return_value = sbc
+        mock_power = MagicMock()
+        mock_power.get_state.return_value = PowerState.ON
+
+        with patch("labctl.mcp_server._get_manager", return_value=manager):
+            with patch("labctl.mcp_server._check_claim", return_value=None):
+                with patch(
+                    "labctl.power.base.PowerController.from_plug",
+                    return_value=mock_power,
+                ):
+                    result = json.loads(sdwire_ls("test-sbc-1", partition=1))
+
+        assert result["error"] == "powered_on"
+        assert "powered on" in result["message"]
+
+    def test_sdwire_cat_binary_content_error(self):
+        from labctl.mcp_server import sdwire_cat
+
+        manager = MagicMock()
+        sbc = MagicMock()
+        sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
+        sbc.sdwire.device_type = "sdwirec"
+        manager.get_sbc_by_name.return_value = sbc
+        mock_ctrl = MagicMock()
+        mock_ctrl.read_file.side_effect = ValueError("binary_content")
+
+        with patch("labctl.mcp_server._get_manager", return_value=manager):
+            with patch("labctl.mcp_server._check_claim", return_value=None):
+                with patch(
+                    "labctl.sdwire.SDWireController", return_value=mock_ctrl
+                ):
+                    result = json.loads(
+                        sdwire_cat("test-sbc-1", partition=1, path="/kernel8.img")
+                    )
+
+        assert result["error"] == "binary_content"
+        assert "base64" in result["suggestion"]
+        mock_ctrl.switch_to_dut.assert_called_once()
+
+    def test_sdwire_cat_uses_mutating_claim_check(self):
+        from labctl.mcp_server import sdwire_cat
+
+        manager = MagicMock()
+        sbc = MagicMock()
+        sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
+        sbc.sdwire.device_type = "sdwirec"
+        manager.get_sbc_by_name.return_value = sbc
+        claim_check = MagicMock(return_value=None)
+        mock_ctrl = MagicMock()
+        mock_ctrl.read_file.return_value = {
+            "content": "x",
+            "encoding": "text",
+            "size": 1,
+            "mtime": "2026-04-23T00:00:00Z",
+            "mode": "0644",
+            "truncated": False,
+        }
+
+        with patch("labctl.mcp_server._get_manager", return_value=manager):
+            with patch("labctl.mcp_server._check_claim", claim_check):
+                with patch("labctl.mcp_server._claim_advisory", return_value=""):
+                    with patch(
+                        "labctl.sdwire.SDWireController", return_value=mock_ctrl
+                    ):
+                        with patch("time.sleep") as mock_sleep:
+                            sdwire_cat("test-sbc-1", partition=1, path="/file.txt")
+
+        claim_check.assert_called_once_with(manager, "test-sbc-1", mutating=True)
+        mock_sleep.assert_called_once_with(2)
+
+    def test_sdwire_info_rejects_powered_on(self):
+        from labctl.mcp_server import sdwire_info
+        from labctl.power.base import PowerState
+
+        manager = MagicMock()
+        sbc = MagicMock()
+        sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
+        sbc.sdwire.device_type = "sdwirec"
+        sbc.power_plug = MagicMock()
+        manager.get_sbc_by_name.return_value = sbc
+        mock_power = MagicMock()
+        mock_power.get_state.return_value = PowerState.ON
+
+        with patch("labctl.mcp_server._get_manager", return_value=manager):
+            with patch("labctl.mcp_server._check_claim", return_value=None):
+                with patch(
+                    "labctl.power.base.PowerController.from_plug",
+                    return_value=mock_power,
+                ):
+                    result = json.loads(sdwire_info("test-sbc-1"))
+
+        assert result["error"] == "powered_on"
+        assert "powered on" in result["message"]
+
+    def test_sdwire_info_success(self):
+        from labctl.mcp_server import sdwire_info
+
+        manager = MagicMock()
+        sbc = MagicMock()
+        sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
+        sbc.sdwire.device_type = "sdwirec"
+        manager.get_sbc_by_name.return_value = sbc
+        mock_ctrl = MagicMock()
+        mock_ctrl.get_disk_info.return_value = {
+            "device_total_bytes": 1024,
+            "disklabel_type": "msdos",
+            "partitions": [],
+            "free_space_regions": [],
+        }
+
+        with patch("labctl.mcp_server._get_manager", return_value=manager):
+            with patch("labctl.mcp_server._check_claim", return_value=None):
+                with patch("labctl.mcp_server._claim_advisory", return_value=""):
+                    with patch(
+                        "labctl.sdwire.SDWireController", return_value=mock_ctrl
+                    ):
+                        result = json.loads(sdwire_info("test-sbc-1"))
+
+        assert result["device_total_bytes"] == 1024
+        assert result["disklabel_type"] == "msdos"
+        mock_ctrl.switch_to_host.assert_called_once()
+        mock_ctrl.switch_to_dut.assert_called_once()
+
+    def test_sdwire_info_uses_mutating_claim_check(self):
+        from labctl.mcp_server import sdwire_info
+
+        manager = MagicMock()
+        sbc = MagicMock()
+        sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
+        sbc.sdwire.device_type = "sdwirec"
+        manager.get_sbc_by_name.return_value = sbc
+        claim_check = MagicMock(return_value=None)
+        mock_ctrl = MagicMock()
+        mock_ctrl.get_disk_info.return_value = {
+            "device_total_bytes": 1024,
+            "disklabel_type": "msdos",
+            "partitions": [],
+            "free_space_regions": [],
+        }
+
+        with patch("labctl.mcp_server._get_manager", return_value=manager):
+            with patch("labctl.mcp_server._check_claim", claim_check):
+                with patch("labctl.mcp_server._claim_advisory", return_value=""):
+                    with patch(
+                        "labctl.sdwire.SDWireController", return_value=mock_ctrl
+                    ):
+                        with patch("time.sleep") as mock_sleep:
+                            sdwire_info("test-sbc-1")
+
+        claim_check.assert_called_once_with(manager, "test-sbc-1", mutating=True)
+        mock_sleep.assert_called_once_with(2)
+
+    def test_sdwire_ls_preserves_json_with_claim_advisory(self):
+        from labctl.mcp_server import sdwire_ls
+
+        manager = MagicMock()
+        sbc = MagicMock()
+        sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
+        sbc.sdwire.device_type = "sdwirec"
+        manager.get_sbc_by_name.return_value = sbc
+        mock_ctrl = MagicMock()
+        mock_ctrl.list_files.return_value = {
+            "entries": [],
+            "truncated": False,
+            "_truncated": False,
+        }
+
+        with patch("labctl.mcp_server._get_manager", return_value=manager):
+            with patch("labctl.mcp_server._check_claim", return_value=None):
+                with patch(
+                    "labctl.mcp_server._structured_claim_advisory",
+                    return_value=[{"requested_by": "other", "reason": "please release"}],
+                ):
+                    with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl):
+                        with patch("time.sleep"):
+                            result = json.loads(sdwire_ls("test-sbc-1", partition=1))
+
+        assert result["claim_advisory"] == [
+            {"requested_by": "other", "reason": "please release"}
+        ]
+
+    def test_sdwire_ls_reports_cleanup_failure(self):
+        from labctl.mcp_server import sdwire_ls
+
+        manager = MagicMock()
+        sbc = MagicMock()
+        sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
+        sbc.sdwire.device_type = "sdwirec"
+        manager.get_sbc_by_name.return_value = sbc
+        mock_ctrl = MagicMock()
+        mock_ctrl.list_files.return_value = {
+            "entries": [],
+            "truncated": False,
+            "_truncated": False,
+        }
+        mock_ctrl.switch_to_dut.side_effect = RuntimeError("switch back failed")
+
+        with patch("labctl.mcp_server._get_manager", return_value=manager):
+            with patch("labctl.mcp_server._check_claim", return_value=None):
+                with patch(
+                    "labctl.sdwire.SDWireController", return_value=mock_ctrl
+                ):
+                    with patch("time.sleep"):
+                        result = json.loads(sdwire_ls("test-sbc-1", partition=1))
+
+        assert result["error"] == "cleanup_failed"
+        assert "switch back failed" in result["message"]
+        assert result["prior_response"]["partition"] == 1
+
+    def test_sdwire_ls_permission_denied(self):
+        from labctl.mcp_server import sdwire_ls
+
+        manager = MagicMock()
+        sbc = MagicMock()
+        sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
+        sbc.sdwire.device_type = "sdwirec"
+        manager.get_sbc_by_name.return_value = sbc
+        mock_ctrl = MagicMock()
+        mock_ctrl.list_files.side_effect = PermissionError("/root")
+
+        with patch("labctl.mcp_server._get_manager", return_value=manager):
+            with patch("labctl.mcp_server._check_claim", return_value=None):
+                with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl):
+                    with patch("time.sleep"):
+                        result = json.loads(sdwire_ls("test-sbc-1", partition=1))
+
+        assert result["error"] == "permission_denied"
+
+    def test_sdwire_cat_permission_denied(self):
+        from labctl.mcp_server import sdwire_cat
+
+        manager = MagicMock()
+        sbc = MagicMock()
+        sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
+        sbc.sdwire.device_type = "sdwirec"
+        manager.get_sbc_by_name.return_value = sbc
+        mock_ctrl = MagicMock()
+        mock_ctrl.read_file.side_effect = PermissionError("/etc/shadow")
+
+        with patch("labctl.mcp_server._get_manager", return_value=manager):
+            with patch("labctl.mcp_server._check_claim", return_value=None):
+                with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl):
+                    with patch("time.sleep"):
+                        result = json.loads(
+                            sdwire_cat("test-sbc-1", partition=1, path="/etc/shadow")
+                        )
+
+        assert result["error"] == "permission_denied"
 
 
 # ---------------------------------------------------------------------------

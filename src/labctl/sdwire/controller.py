@@ -13,9 +13,20 @@ import os
 import shutil
 import subprocess
 import tempfile
+from contextlib import contextmanager
+from datetime import UTC, datetime
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+class SDWireSymlinkError(RuntimeError):
+    """Raised when a read operation encounters a symlink."""
+
+    def __init__(self, path: str, target: str):
+        super().__init__(f"Refusing to read symlink: {path}")
+        self.path = path
+        self.target = target
 
 
 class SDWireController:
@@ -258,45 +269,11 @@ class SDWireController:
                 "Is the SD card switched to host mode?"
             )
 
-        part_dev = f"{block_dev}{partition}"
-        mount_point = tempfile.mkdtemp(prefix="labctl-sdwire-")
-
-        logger.info("Mounting %s at %s", part_dev, mount_point)
-
-        try:
-            subprocess.run(
-                [
-                    "sudo",
-                    "mount",
-                    "-o",
-                    f"uid={os.getuid()},gid={os.getgid()}",
-                    part_dev,
-                    mount_point,
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        except subprocess.CalledProcessError as e:
-            os.rmdir(mount_point)
-            raise RuntimeError(f"Failed to mount {part_dev}: {e.stderr.strip()}") from e
-
-        real_mount = os.path.realpath(mount_point)
-
-        def _safe_path(relative: str) -> str:
-            """Resolve path and verify it stays under mount_point."""
-            full = os.path.realpath(os.path.join(mount_point, relative))
-            if not full.startswith(real_mount + "/") and full != real_mount:
-                raise RuntimeError(
-                    f"Path traversal rejected: '{relative}' escapes partition"
-                )
-            return full
-
         result = {"copied": [], "renamed": [], "deleted": []}
-        try:
+        with self.host_mount(partition, mode="rw", owner_mount=True) as mount:
             # 1. Copies
             for src, dest_relative in file_pairs:
-                dest = _safe_path(dest_relative)
+                dest = mount.resolve_path(dest_relative)
 
                 dest_dir = os.path.dirname(dest)
                 if dest_dir and not os.path.exists(dest_dir):
@@ -308,8 +285,8 @@ class SDWireController:
 
             # 2. Renames
             for old_name, new_name in renames or []:
-                old_path = _safe_path(old_name)
-                new_path = _safe_path(new_name)
+                old_path = mount.resolve_path(old_name)
+                new_path = mount.resolve_path(new_name)
 
                 if not os.path.exists(old_path):
                     raise RuntimeError(
@@ -330,7 +307,7 @@ class SDWireController:
 
             # 3. Deletes
             for filename in deletes or []:
-                file_path = _safe_path(filename)
+                file_path = mount.resolve_path(filename)
 
                 if not os.path.exists(file_path):
                     raise RuntimeError(
@@ -345,6 +322,54 @@ class SDWireController:
                 os.remove(file_path)
                 result["deleted"].append(filename)
 
+        subprocess.run(["sudo", "sync"], check=True)
+        return result
+
+    @contextmanager
+    def host_mount(self, partition: int, mode: str = "ro", owner_mount: bool = False):
+        """Mount a partition on the SD card and yield a safe mount helper."""
+        if mode not in {"ro", "rw"}:
+            raise ValueError("mode must be 'ro' or 'rw'")
+
+        block_dev = self.get_block_device()
+        if not block_dev:
+            raise RuntimeError(
+                "Cannot determine block device. "
+                "Is the SD card switched to host mode?"
+            )
+
+        part_dev = f"{block_dev}{partition}"
+        mount_point = tempfile.mkdtemp(prefix="labctl-sdwire-")
+        options = ["nosuid", "nodev", "noexec", "noatime"]
+        if mode == "ro":
+            options.insert(0, "ro")
+        else:
+            options.insert(0, f"uid={os.getuid()},gid={os.getgid()}")
+
+        logger.info("Mounting %s at %s (%s)", part_dev, mount_point, mode)
+
+        try:
+            subprocess.run(
+                [
+                    "sudo",
+                    "mount",
+                    "-o",
+                    ",".join(options),
+                    part_dev,
+                    mount_point,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as e:
+            os.rmdir(mount_point)
+            stderr = (e.stderr or "").strip()
+            raise RuntimeError(f"Failed to mount {part_dev}: {stderr}") from e
+
+        mount = _MountedPartition(mount_point, owner_mount=owner_mount)
+        try:
+            yield mount
         finally:
             logger.info("Unmounting %s", mount_point)
             subprocess.run(
@@ -356,8 +381,326 @@ class SDWireController:
             except OSError:
                 pass
 
-        subprocess.run(["sudo", "sync"], check=True)
-        return result
+    def list_files(
+        self,
+        partition: int,
+        path: str = "/",
+        recursive: bool = False,
+        max_entries: int = 1000,
+    ) -> dict:
+        """List entries on a partition with bounded output."""
+        if max_entries <= 0:
+            raise RuntimeError("max_entries must be greater than 0")
+
+        with self.host_mount(partition, mode="ro") as mount:
+            target = mount.resolve_path(path)
+            if not os.path.exists(target):
+                raise FileNotFoundError(path)
+            if not os.path.isdir(target):
+                raise NotADirectoryError(path)
+
+            entries: list[dict] = []
+            truncated = False
+            pending = [(target, path.rstrip("/") or "/")]
+
+            while pending:
+                current_fs_path, current_display_path = pending.pop(0)
+                try:
+                    with os.scandir(current_fs_path) as it:
+                        for entry in it:
+                            if len(entries) >= max_entries:
+                                truncated = True
+                                break
+
+                            entry_path = (
+                                f"{current_display_path.rstrip('/')}/{entry.name}"
+                                if current_display_path != "/"
+                                else f"/{entry.name}"
+                            )
+                            entries.append(
+                                _serialize_dir_entry(
+                                    entry,
+                                    path=entry_path,
+                                    root=target,
+                                )
+                            )
+
+                            if recursive and entry.is_dir(follow_symlinks=False):
+                                pending.append((entry.path, entry_path))
+                except PermissionError as e:
+                    raise PermissionError(path) from e
+
+                if truncated:
+                    break
+
+            return {
+                "entries": entries,
+                "truncated": truncated,
+                "_truncated": truncated,
+            }
+
+    def read_file(
+        self,
+        partition: int,
+        path: str,
+        max_bytes: int = 1024 * 1024,
+        encoding: str = "text",
+    ) -> dict:
+        """Read a file from a partition with size and encoding guards."""
+        if max_bytes <= 0:
+            raise RuntimeError("max_bytes must be greater than 0")
+        if encoding not in {"text", "base64", "hex"}:
+            raise RuntimeError("encoding must be one of: text, base64, hex")
+
+        with self.host_mount(partition, mode="ro") as mount:
+            target = mount.resolve_path(path)
+            if not os.path.lexists(target):
+                raise FileNotFoundError(path)
+            if os.path.islink(target):
+                raise SDWireSymlinkError(path, os.readlink(target))
+            if not os.path.isfile(target):
+                raise IsADirectoryError(path)
+
+            stat_result = os.stat(target)
+            if stat_result.st_size > max_bytes:
+                raise RuntimeError(
+                    f"File exceeds max_bytes ({stat_result.st_size} > {max_bytes})"
+                )
+
+            try:
+                with open(target, "rb") as f:
+                    data = f.read(max_bytes + 1)
+            except PermissionError as e:
+                raise PermissionError(path) from e
+
+            if len(data) > max_bytes:
+                raise RuntimeError(
+                    f"File exceeds max_bytes ({len(data)} > {max_bytes})"
+                )
+
+            metadata = _serialize_stat(stat_result, owner_mount=False)
+
+            if encoding == "text":
+                try:
+                    content = data.decode("utf-8")
+                except UnicodeDecodeError as e:
+                    raise ValueError("binary_content") from e
+            elif encoding == "base64":
+                import base64
+
+                content = base64.b64encode(data).decode("ascii")
+            else:
+                content = data.hex()
+
+            return {
+                "content": content,
+                "encoding": encoding,
+                **metadata,
+                "truncated": False,
+            }
+
+    def get_disk_info(self) -> dict:
+        """Return partition and filesystem metadata for the current SD card."""
+        block_dev = self.get_block_device()
+        if not block_dev:
+            raise RuntimeError(
+                "Cannot determine block device. "
+                "Is the SD card switched to host mode?"
+            )
+
+        try:
+            parted = subprocess.run(
+                ["sudo", "parted", "-s", "-m", block_dev, "unit", "MiB", "print", "free"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except OSError as e:
+            raise RuntimeError(f"Failed to read partition table: {e}") from e
+        except subprocess.CalledProcessError as e:
+            stderr = (e.stderr or "").strip()
+            raise RuntimeError(f"Failed to read partition table: {stderr}") from e
+
+        return _parse_parted_output(block_dev, parted.stdout)
+
+
+class _MountedPartition:
+    def __init__(self, mount_point: str, owner_mount: bool = False):
+        self.mount_point = mount_point
+        self.owner_mount = owner_mount
+        self._real_mount = os.path.realpath(mount_point)
+
+    def resolve_path(self, path: str) -> str:
+        relative = path.lstrip("/")
+        full = os.path.normpath(os.path.join(self.mount_point, relative))
+        if os.path.commonpath([self.mount_point, full]) != self.mount_point:
+            raise RuntimeError(f"Path traversal rejected: '{path}' escapes partition")
+
+        parent = full if full == self.mount_point else os.path.dirname(full)
+        real_parent = os.path.realpath(parent)
+        if not real_parent.startswith(self._real_mount + "/") and real_parent != self._real_mount:
+            raise RuntimeError(
+                f"Path traversal rejected: '{path}' escapes partition via symlink"
+            )
+        if os.path.lexists(full):
+            real_full = os.path.realpath(full)
+            if not real_full.startswith(self._real_mount + "/") and real_full != self._real_mount:
+                raise RuntimeError(
+                    f"Path traversal rejected: '{path}' target escapes partition"
+                )
+        return full
+
+
+def _serialize_mtime(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp, UTC).isoformat().replace("+00:00", "Z")
+
+
+def _serialize_stat(stat_result, owner_mount: bool) -> dict:
+    mode = stat_result.st_mode & 0o7777
+    if owner_mount:
+        mode &= ~0o200
+    return {
+        "size": stat_result.st_size,
+        "mtime": _serialize_mtime(stat_result.st_mtime),
+        "mode": f"{mode:04o}",
+    }
+
+
+def _serialize_dir_entry(entry, path: str, root: str) -> dict:
+    stat_result = entry.stat(follow_symlinks=False)
+    if entry.is_file(follow_symlinks=False):
+        entry_type = "file"
+    elif entry.is_dir(follow_symlinks=False):
+        entry_type = "dir"
+    elif entry.is_symlink():
+        entry_type = "symlink"
+    else:
+        entry_type = "other"
+
+    rel_path = os.path.relpath(entry.path, root)
+    return {
+        "path": path,
+        "name": entry.name,
+        "relative_path": "." if rel_path == "." else rel_path,
+        "type": entry_type,
+        **_serialize_stat(stat_result, owner_mount=False),
+    }
+
+
+def _parse_parted_output(block_dev: str, output: str) -> dict:
+    try:
+        blkid = subprocess.run(
+            ["sudo", "blkid", "-o", "export", block_dev],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        base_device_meta = _parse_blkid_export(blkid.stdout)
+    except Exception:
+        base_device_meta = {}
+
+    partitions = []
+    free_regions = []
+    device_total_bytes = None
+    disklabel_type = None
+
+    for raw_line in output.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("BYT;"):
+            continue
+        parts = [segment.strip('"') for segment in line.split(":")]
+        if line.startswith(block_dev + ":"):
+            if len(parts) >= 6:
+                device_total_bytes = _mib_to_bytes(parts[1])
+                disklabel_type = parts[5] or None
+            continue
+        if parts[0] in {"Number", "Model", "Disk", "Sector", "Partition", ""}:
+            continue
+        if len(parts) < 5:
+            continue
+
+        start_mib = _parse_mib(parts[1])
+        end_mib = _parse_mib(parts[2])
+        size_mib = _parse_mib(parts[3])
+        if parts[4].rstrip(";") == "free":
+            free_regions.append(
+                {
+                    "start_mib": start_mib,
+                    "end_mib": end_mib,
+                    "size_mib": size_mib,
+                }
+            )
+            continue
+
+        part_num = int(parts[0])
+        part_dev = f"{block_dev}{part_num}"
+        try:
+            blkid_part = subprocess.run(
+                ["sudo", "blkid", "-o", "export", part_dev],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            part_meta = _parse_blkid_export(blkid_part.stdout)
+        except Exception:
+            part_meta = {}
+
+        partitions.append(
+            {
+                "num": part_num,
+                "start_mib": start_mib,
+                "end_mib": end_mib,
+                "size_mib": size_mib,
+                "type": parts[4] or None,
+                "label": parts[5] or part_meta.get("LABEL"),
+                "flags": [flag for flag in parts[6].rstrip(";").split(",") if flag]
+                if len(parts) > 6 and parts[6].rstrip(";")
+                else [],
+                "partuuid": part_meta.get("PARTUUID"),
+                "filesystem_uuid": part_meta.get("UUID"),
+                "mount_status": "mounted" if _is_mounted(part_dev) else "clean",
+            }
+        )
+
+    if device_total_bytes is None:
+        raise RuntimeError("Unable to parse partition table")
+
+    return {
+        "device_total_bytes": device_total_bytes,
+        "disklabel_type": disklabel_type or base_device_meta.get("PTTYPE"),
+        "partitions": partitions,
+        "free_space_regions": free_regions,
+    }
+
+
+def _parse_blkid_export(output: str) -> dict[str, str]:
+    result = {}
+    for line in output.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        result[key.strip()] = value.strip()
+    return result
+
+
+def _parse_mib(value: str) -> float:
+    return float(value.removesuffix("MiB"))
+
+
+def _mib_to_bytes(value: str) -> int:
+    return int(round(_parse_mib(value) * 1024 * 1024))
+
+
+def _is_mounted(device: str) -> bool:
+    try:
+        with open("/proc/mounts") as f:
+            for line in f:
+                mount_dev = line.split()[0] if line.strip() else ""
+                if mount_dev == device:
+                    return True
+    except OSError:
+        return False
+    return False
 
 
 def _validate_block_device(block_dev: str) -> None:

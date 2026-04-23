@@ -2,6 +2,7 @@
 
 import pytest
 from click.testing import CliRunner
+from unittest.mock import MagicMock, patch
 
 from labctl.core import audit
 from labctl.cli import main
@@ -129,6 +130,235 @@ class TestConnectCommand:
         result = runner.invoke(main, ["connect", "nonexistent-port"])
         assert result.exit_code != 0
         assert "not found" in result.output.lower()
+
+
+class TestSdwireReadSafety:
+    """Safety checks for SDWire read commands."""
+
+    def test_sdwire_cat_rejects_powered_on(self, runner):
+        from labctl.power.base import PowerState
+
+        sbc = MagicMock()
+        sbc.name = "test-sbc-1"
+        sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
+        sbc.sdwire.device_type = "sdwirec"
+        sbc.power_plug = MagicMock()
+        manager = MagicMock()
+        manager.get_sbc_by_name.return_value = sbc
+        mock_power = MagicMock()
+        mock_power.get_state.return_value = PowerState.ON
+        mock_ctrl = MagicMock()
+
+        with patch("labctl.cli._get_manager", return_value=manager):
+            with patch(
+                "labctl.power.base.PowerController.from_plug",
+                return_value=mock_power,
+            ):
+                with patch("labctl.sdwire.controller.SDWireController", return_value=mock_ctrl):
+                    result = runner.invoke(
+                        main,
+                        ["sdwire", "cat", "test-sbc-1", "-p", "1", "--path", "/test.txt"],
+                    )
+
+        assert result.exit_code != 0
+        assert "powered on" in result.output
+        assert "--force" not in result.output
+        mock_ctrl.switch_to_host.assert_not_called()
+
+    def test_sdwire_info_rejects_powered_on(self, runner):
+        from labctl.power.base import PowerState
+
+        sbc = MagicMock()
+        sbc.name = "test-sbc-1"
+        sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
+        sbc.sdwire.device_type = "sdwirec"
+        sbc.power_plug = MagicMock()
+        manager = MagicMock()
+        manager.get_sbc_by_name.return_value = sbc
+        mock_power = MagicMock()
+        mock_power.get_state.return_value = PowerState.ON
+        mock_ctrl = MagicMock()
+
+        with patch("labctl.cli._get_manager", return_value=manager):
+            with patch(
+                "labctl.power.base.PowerController.from_plug",
+                return_value=mock_power,
+            ):
+                with patch("labctl.sdwire.controller.SDWireController", return_value=mock_ctrl):
+                    result = runner.invoke(main, ["sdwire", "info", "test-sbc-1"])
+
+        assert result.exit_code != 0
+        assert "powered on" in result.output
+        assert "--force" not in result.output
+        mock_ctrl.switch_to_host.assert_not_called()
+
+    def test_sdwire_cat_waits_for_host_settle(self, runner):
+        sbc = MagicMock()
+        sbc.name = "test-sbc-1"
+        sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
+        sbc.sdwire.device_type = "sdwirec"
+        sbc.power_plug = None
+        manager = MagicMock()
+        manager.get_sbc_by_name.return_value = sbc
+        mock_ctrl = MagicMock()
+        mock_ctrl.read_file.return_value = {
+            "content": "x",
+            "encoding": "text",
+            "size": 1,
+            "mtime": "2026-04-23T00:00:00Z",
+            "mode": "0644",
+            "truncated": False,
+        }
+
+        with patch("labctl.cli._get_manager", return_value=manager):
+            with patch("labctl.sdwire.controller.SDWireController", return_value=mock_ctrl):
+                with patch("time.sleep") as mock_sleep:
+                    result = runner.invoke(
+                        main,
+                        ["sdwire", "cat", "test-sbc-1", "-p", "1", "--path", "/test.txt"],
+                    )
+
+        assert result.exit_code == 0, result.output
+        mock_sleep.assert_called_once_with(2)
+
+    def test_sdwire_cat_reports_cleanup_failure(self, runner):
+        sbc = MagicMock()
+        sbc.name = "test-sbc-1"
+        sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
+        sbc.sdwire.device_type = "sdwirec"
+        sbc.power_plug = None
+        manager = MagicMock()
+        manager.get_sbc_by_name.return_value = sbc
+        mock_ctrl = MagicMock()
+        mock_ctrl.read_file.return_value = {
+            "content": "x",
+            "encoding": "text",
+            "size": 1,
+            "mtime": "2026-04-23T00:00:00Z",
+            "mode": "0644",
+            "truncated": False,
+        }
+        mock_ctrl.switch_to_dut.side_effect = RuntimeError("switch back failed")
+
+        with patch("labctl.cli._get_manager", return_value=manager):
+            with patch("labctl.sdwire.controller.SDWireController", return_value=mock_ctrl):
+                with patch("time.sleep"):
+                    result = runner.invoke(
+                        main,
+                        ["sdwire", "cat", "test-sbc-1", "-p", "1", "--path", "/test.txt"],
+                    )
+
+        assert result.exit_code != 0
+        assert "Failed to restore SD card to DUT mode" in result.output
+
+    def test_sdwire_info_reports_cleanup_failure(self, runner):
+        sbc = MagicMock()
+        sbc.name = "test-sbc-1"
+        sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
+        sbc.sdwire.device_type = "sdwirec"
+        sbc.power_plug = None
+        manager = MagicMock()
+        manager.get_sbc_by_name.return_value = sbc
+        mock_ctrl = MagicMock()
+        mock_ctrl.get_disk_info.return_value = {
+            "device_total_bytes": 1024,
+            "disklabel_type": "msdos",
+            "partitions": [],
+            "free_space_regions": [],
+        }
+        mock_ctrl.switch_to_dut.side_effect = RuntimeError("switch back failed")
+
+        with patch("labctl.cli._get_manager", return_value=manager):
+            with patch("labctl.sdwire.controller.SDWireController", return_value=mock_ctrl):
+                with patch("time.sleep"):
+                    result = runner.invoke(main, ["sdwire", "info", "test-sbc-1"])
+
+        assert result.exit_code != 0
+        assert "Failed to restore SD card to DUT mode" in result.output
+
+
+class TestSdwireWritePowerFlow:
+    """Write commands should still attempt power-off before host switching."""
+
+    def test_sdwire_flash_still_powers_off_before_switch(self, runner, tmp_path):
+        image = tmp_path / "image.img"
+        image.write_bytes(b"img")
+
+        sbc = MagicMock()
+        sbc.name = "test-sbc-1"
+        sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
+        sbc.sdwire.device_type = "sdwirec"
+        sbc.power_plug = MagicMock()
+        manager = MagicMock()
+        manager.get_sbc_by_name.return_value = sbc
+        mock_power = MagicMock()
+        mock_ctrl = MagicMock()
+        mock_ctrl.get_block_device.return_value = "/dev/sdb"
+        mock_ctrl.flash_image.return_value = {
+            "bytes_written": 3,
+            "elapsed_seconds": 0.1,
+        }
+
+        with patch("labctl.cli._get_manager", return_value=manager):
+            with patch(
+                "labctl.power.base.PowerController.from_plug",
+                return_value=mock_power,
+            ):
+                with patch(
+                    "labctl.sdwire.controller.SDWireController", return_value=mock_ctrl
+                ):
+                    result = runner.invoke(
+                        main,
+                        ["sdwire", "flash", "test-sbc-1", str(image), "--no-reboot"],
+                    )
+
+        assert result.exit_code == 0, result.output
+        mock_power.power_off.assert_called_once()
+        mock_ctrl.switch_to_host.assert_called_once()
+
+    def test_sdwire_update_still_powers_off_before_switch(self, runner, tmp_path):
+        source = tmp_path / "kernel.img"
+        source.write_bytes(b"img")
+
+        sbc = MagicMock()
+        sbc.name = "test-sbc-1"
+        sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
+        sbc.sdwire.device_type = "sdwirec"
+        sbc.power_plug = MagicMock()
+        manager = MagicMock()
+        manager.get_sbc_by_name.return_value = sbc
+        mock_power = MagicMock()
+        mock_ctrl = MagicMock()
+        mock_ctrl.update_files.return_value = {
+            "copied": ["kernel.img"],
+            "renamed": [],
+            "deleted": [],
+        }
+
+        with patch("labctl.cli._get_manager", return_value=manager):
+            with patch(
+                "labctl.power.base.PowerController.from_plug",
+                return_value=mock_power,
+            ):
+                with patch(
+                    "labctl.sdwire.controller.SDWireController", return_value=mock_ctrl
+                ):
+                    result = runner.invoke(
+                        main,
+                        [
+                            "sdwire",
+                            "update",
+                            "test-sbc-1",
+                            "-p",
+                            "1",
+                            "--copy",
+                            f"{source}:kernel.img",
+                        ],
+                    )
+
+        assert result.exit_code == 0, result.output
+        mock_power.power_off.assert_called_once()
+        mock_ctrl.switch_to_host.assert_called_once()
 
 
 @pytest.fixture

@@ -270,6 +270,9 @@ Tools perform mutations — the AI assistant calls these to take action.
 | `sdwire_to_dut` | `sbc_name` | Switch SD card to SBC (boot from SD) |
 | `sdwire_to_host` | `sbc_name` | Switch SD card to host (for flashing) |
 | `sdwire_update` | `sbc_name`, `partition`, `copies`, `renames`, `deletes`, `reboot` | Copy, rename, or delete files on SD card partition (atomic: mount, operate, unmount) |
+| `sdwire_ls` | `sbc_name`, `partition`, `path`, `recursive`, `max_entries` | List directory contents on an SD card partition using a read-only mount |
+| `sdwire_cat` | `sbc_name`, `partition`, `path`, `max_bytes`, `encoding` | Read a file from an SD card partition with size and encoding guards |
+| `sdwire_info` | `sbc_name` | Return partition-table and filesystem metadata for the SD card |
 | `sdwire_add` | `name`, `serial_number`, `device_type` | Register an SDWire device |
 | `sdwire_remove` | `name` | Unregister an SDWire device |
 | `sdwire_assign` | `sbc_name`, `device_name` | Assign SDWire device to SBC |

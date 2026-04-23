@@ -1,5 +1,7 @@
 """Unit tests for SDWire controller."""
 
+from contextlib import contextmanager
+
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -92,7 +94,10 @@ class TestSDWireController:
         mock_dev.block_dev = "/dev/sdb"
 
         with patch.object(ctrl, "_get_device", return_value=mock_dev):
-            result = ctrl.get_block_device()
+            with patch(
+                "labctl.sdwire.controller._block_device_has_media", return_value=True
+            ):
+                result = ctrl.get_block_device()
 
         assert result == "/dev/sdb"
 
@@ -808,3 +813,217 @@ class TestValidation:
             f = tmp_path / f"test{ext}"
             f.touch()
             _validate_image_file(str(f))  # Should not raise
+
+
+class TestReadAccess:
+    """Tests for read-only SDWire operations."""
+
+    def test_list_files_recursive(self, tmp_path):
+        ctrl = SDWireController("test_serial")
+        root = tmp_path / "mount"
+        root.mkdir()
+        (root / "config.txt").write_text("hello")
+        subdir = root / "nested"
+        subdir.mkdir()
+        (subdir / "cmdline.txt").write_text("root=/dev/mmcblk0p2")
+
+        @contextmanager
+        def fake_mount(*args, **kwargs):
+            from labctl.sdwire.controller import _MountedPartition
+
+            yield _MountedPartition(str(root))
+
+        with patch.object(ctrl, "host_mount", fake_mount):
+            result = ctrl.list_files(partition=1, path="/", recursive=True)
+
+        assert result["truncated"] is False
+        assert result["_truncated"] is False
+        paths = {entry["path"] for entry in result["entries"]}
+        assert "/config.txt" in paths
+        assert "/nested" in paths
+        assert "/nested/cmdline.txt" in paths
+
+    def test_list_files_truncates(self, tmp_path):
+        ctrl = SDWireController("test_serial")
+        root = tmp_path / "mount"
+        root.mkdir()
+        for idx in range(3):
+            (root / f"file{idx}.txt").write_text("x")
+
+        @contextmanager
+        def fake_mount(*args, **kwargs):
+            from labctl.sdwire.controller import _MountedPartition
+
+            yield _MountedPartition(str(root))
+
+        with patch.object(ctrl, "host_mount", fake_mount):
+            result = ctrl.list_files(partition=1, max_entries=2)
+
+        assert result["truncated"] is True
+        assert result["_truncated"] is True
+        assert len(result["entries"]) == 2
+
+    def test_read_file_text(self, tmp_path):
+        ctrl = SDWireController("test_serial")
+        root = tmp_path / "mount"
+        root.mkdir()
+        file_path = root / "autoboot.txt"
+        file_path.write_text("BOOT_UART=1\n")
+
+        @contextmanager
+        def fake_mount(*args, **kwargs):
+            from labctl.sdwire.controller import _MountedPartition
+
+            yield _MountedPartition(str(root))
+
+        with patch.object(ctrl, "host_mount", fake_mount):
+            result = ctrl.read_file(partition=1, path="/autoboot.txt")
+
+        assert result["content"] == "BOOT_UART=1\n"
+        assert result["encoding"] == "text"
+        assert result["truncated"] is False
+        assert result["size"] == len("BOOT_UART=1\n")
+
+    def test_read_file_binary_requires_non_text_encoding(self, tmp_path):
+        ctrl = SDWireController("test_serial")
+        root = tmp_path / "mount"
+        root.mkdir()
+        (root / "kernel8.img").write_bytes(b"\xff\x00")
+
+        @contextmanager
+        def fake_mount(*args, **kwargs):
+            from labctl.sdwire.controller import _MountedPartition
+
+            yield _MountedPartition(str(root))
+
+        with patch.object(ctrl, "host_mount", fake_mount):
+            with pytest.raises(ValueError, match="binary_content"):
+                ctrl.read_file(partition=1, path="/kernel8.img")
+
+    def test_read_file_size_limit(self, tmp_path):
+        ctrl = SDWireController("test_serial")
+        root = tmp_path / "mount"
+        root.mkdir()
+        (root / "large.bin").write_bytes(b"123456")
+
+        @contextmanager
+        def fake_mount(*args, **kwargs):
+            from labctl.sdwire.controller import _MountedPartition
+
+            yield _MountedPartition(str(root))
+
+        with patch.object(ctrl, "host_mount", fake_mount):
+            with pytest.raises(RuntimeError, match="exceeds max_bytes"):
+                ctrl.read_file(partition=1, path="/large.bin", max_bytes=4)
+
+    def test_read_file_rejects_symlink(self, tmp_path):
+        ctrl = SDWireController("test_serial")
+        root = tmp_path / "mount"
+        root.mkdir()
+        (root / "target.txt").write_text("secret")
+        (root / "link.txt").symlink_to(root / "target.txt")
+
+        @contextmanager
+        def fake_mount(*args, **kwargs):
+            from labctl.sdwire.controller import _MountedPartition
+
+            yield _MountedPartition(str(root))
+
+        with patch.object(ctrl, "host_mount", fake_mount):
+            with pytest.raises(RuntimeError, match="symlink"):
+                ctrl.read_file(partition=1, path="/link.txt", encoding="base64")
+
+    def test_list_files_permission_denied(self, tmp_path):
+        ctrl = SDWireController("test_serial")
+        root = tmp_path / "mount"
+        root.mkdir()
+
+        @contextmanager
+        def fake_mount(*args, **kwargs):
+            from labctl.sdwire.controller import _MountedPartition
+
+            yield _MountedPartition(str(root))
+
+        with patch.object(ctrl, "host_mount", fake_mount):
+            with patch("os.scandir", side_effect=PermissionError("denied")):
+                with pytest.raises(PermissionError, match="/"):
+                    ctrl.list_files(partition=1, path="/")
+
+    def test_read_file_permission_denied(self, tmp_path):
+        ctrl = SDWireController("test_serial")
+        root = tmp_path / "mount"
+        root.mkdir()
+        (root / "shadow").write_text("x")
+
+        @contextmanager
+        def fake_mount(*args, **kwargs):
+            from labctl.sdwire.controller import _MountedPartition
+
+            yield _MountedPartition(str(root))
+
+        with patch.object(ctrl, "host_mount", fake_mount):
+            with patch("builtins.open", side_effect=PermissionError("denied")):
+                with pytest.raises(PermissionError, match="/shadow"):
+                    ctrl.read_file(partition=1, path="/shadow")
+
+    def test_resolve_path_rejects_leaf_symlink_to_outside(self, tmp_path):
+        from labctl.sdwire.controller import _MountedPartition
+
+        root = tmp_path / "mount"
+        root.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "host.txt").write_text("host")
+        (root / "linkdir").symlink_to(outside)
+
+        mount = _MountedPartition(str(root))
+        with pytest.raises(RuntimeError, match="escapes partition|target escapes"):
+            mount.resolve_path("/linkdir")
+
+    def test_parse_parted_output_free_regions(self):
+        from labctl.sdwire.controller import _parse_parted_output
+
+        output = """BYT;
+/dev/sdb:1024MiB:scsi:512:512:msdos:Test Disk:;
+1:0.02MiB:1.00MiB:0.98MiB:free;
+1:1.00MiB:257.00MiB:256.00MiB:fat32:BOOT:lba;
+2:257.00MiB:1023.00MiB:766.00MiB:ext4:rootfs:;
+3:1023.00MiB:1024.00MiB:1.00MiB:free;
+"""
+
+        blkid_outputs = {
+            "/dev/sdb": "PTTYPE=msdos\n",
+            "/dev/sdb1": "PARTUUID=abcd-01\nUUID=54D4-4272\nLABEL=BOOT\n",
+            "/dev/sdb2": "PARTUUID=abcd-02\nUUID=root-uuid\nLABEL=rootfs\n",
+        }
+
+        def fake_run(cmd, check=False, capture_output=True, text=True):
+            mock = MagicMock()
+            mock.stdout = blkid_outputs.get(cmd[-1], "")
+            return mock
+
+        with patch("labctl.sdwire.controller.subprocess.run", side_effect=fake_run):
+            with patch("labctl.sdwire.controller._is_mounted", return_value=False):
+                result = _parse_parted_output("/dev/sdb", output)
+
+        assert result["disklabel_type"] == "msdos"
+        assert len(result["partitions"]) == 2
+        assert result["partitions"][0]["num"] == 1
+        assert result["partitions"][0]["flags"] == ["lba"]
+        assert result["partitions"][1]["num"] == 2
+        assert result["partitions"][1]["flags"] == []
+        assert result["free_space_regions"] == [
+            {"start_mib": 0.02, "end_mib": 1.0, "size_mib": 0.98},
+            {"start_mib": 1023.0, "end_mib": 1024.0, "size_mib": 1.0},
+        ]
+
+    def test_get_disk_info_reports_missing_parted(self):
+        ctrl = SDWireController("test_serial")
+
+        with patch.object(ctrl, "get_block_device", return_value="/dev/sdb"):
+            with patch(
+                "labctl.sdwire.controller.subprocess.run",
+                side_effect=FileNotFoundError("parted"),
+            ):
+                with pytest.raises(RuntimeError, match="Failed to read partition table"):
+                    ctrl.get_disk_info()
