@@ -657,7 +657,7 @@ picocom or minicom (for direct serial access)
 
 ## Feature: Hardware Claims (Exclusive Access Coordination)
 
-**Spec**: `docs/SPEC_claims.md`
+**Spec**: `docs/RESOLVED_SPEC_claims.md`
 **Goal**: Allow AI agents and humans to reserve SBCs for extended periods,
 preventing destructive interference between concurrent workflows.
 

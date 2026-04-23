@@ -6,7 +6,7 @@ Each call to `emit()` writes one row to `audit_log`. The `actor`,
 the originating front-end (CLI, MCP, web, daemon) via the
 `activity_context()` context manager.
 
-See docs/SPEC_activity_stream.md for the full design.
+See docs/RESOLVED_SPEC_activity_stream.md for the full design.
 """
 
 from __future__ import annotations

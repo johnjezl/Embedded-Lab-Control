@@ -78,7 +78,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Power CLI commands emit activity events on success/failure
   - Existing manager `_audit_log` calls route through `audit.emit()`
   - 18 tests: schema migration, emit, contextvars, redaction, truncation
-  - Spec: `docs/SPEC_activity_stream.md`
+  - Spec: `docs/RESOLVED_SPEC_activity_stream.md`
 
 
 - Hardware claims polish, Phase E (2026-04-16)
@@ -125,7 +125,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     `UnknownSBCError`
   - Acquisition runs expire-stale sweep inside the transaction so past-deadline
     claims don't block new acquisitions even when no sweeper has run
-  - Spec: `docs/SPEC_claims.md`
+  - Spec: `docs/RESOLVED_SPEC_claims.md`
 - SDWire power safety interlock (2026-04-09)
   - `sdwire_to_host` rejects if SBC is powered on (prevents SD card bus contention)
   - `--force` flag (CLI) / `force` parameter (MCP) to override when SBC is halted but power on

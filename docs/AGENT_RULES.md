@@ -546,7 +546,7 @@ git commit -m "message"
 ## 11. Hardware Claims (Exclusive Access)
 
 When multiple agents work against the same lab hardware, use the claims
-system to prevent collisions. See `docs/SPEC_claims.md` for the full
+system to prevent collisions. See `docs/RESOLVED_SPEC_claims.md` for the full
 design.
 
 ### 11.1 Agent Workflow
