@@ -150,6 +150,90 @@ class ResourceManager:
         if row:
             sbc.sdwire = SDWireDevice.from_row(row)
 
+    def _load_sbc_relations_batch(self, sbcs: list[SBC]) -> None:
+        """Load related objects for many SBCs using batched queries."""
+        if not sbcs:
+            return
+
+        sbc_by_id = {sbc.id: sbc for sbc in sbcs if sbc.id is not None}
+        if not sbc_by_id:
+            return
+
+        for sbc in sbcs:
+            sbc.serial_ports = []
+            sbc.network_addresses = []
+            sbc.power_plug = None
+            sbc.sdwire = None
+
+        placeholders = ",".join("?" for _ in sbc_by_id)
+        sbc_ids = tuple(sbc_by_id.keys())
+
+        serial_ports_by_device_id: dict[int, list[SerialPort]] = {}
+        port_rows = self.db.execute(
+            f"""
+            SELECT * FROM serial_ports
+            WHERE sbc_id IN ({placeholders})
+            ORDER BY sbc_id, id
+            """,
+            sbc_ids,
+        )
+        for row in port_rows:
+            port = SerialPort.from_row(row)
+            sbc_by_id[port.sbc_id].serial_ports.append(port)
+            if port.serial_device_id is not None:
+                serial_ports_by_device_id.setdefault(port.serial_device_id, []).append(
+                    port
+                )
+
+        if serial_ports_by_device_id:
+            device_placeholders = ",".join("?" for _ in serial_ports_by_device_id)
+            device_rows = self.db.execute(
+                f"""
+                SELECT * FROM serial_devices
+                WHERE id IN ({device_placeholders})
+                """,
+                tuple(serial_ports_by_device_id.keys()),
+            )
+            for row in device_rows:
+                device = SerialDevice.from_row(row)
+                for port in serial_ports_by_device_id.get(device.id, []):
+                    port.serial_device = device
+
+        address_rows = self.db.execute(
+            f"""
+            SELECT * FROM network_addresses
+            WHERE sbc_id IN ({placeholders})
+            ORDER BY sbc_id, id
+            """,
+            sbc_ids,
+        )
+        for row in address_rows:
+            address = NetworkAddress.from_row(row)
+            sbc_by_id[address.sbc_id].network_addresses.append(address)
+
+        power_rows = self.db.execute(
+            f"""
+            SELECT * FROM power_plugs
+            WHERE sbc_id IN ({placeholders})
+            """,
+            sbc_ids,
+        )
+        for row in power_rows:
+            plug = PowerPlug.from_row(row)
+            sbc_by_id[plug.sbc_id].power_plug = plug
+
+        sdwire_rows = self.db.execute(
+            f"""
+            SELECT sd.*, sa.sbc_id AS assigned_sbc_id
+            FROM sdwire_devices sd
+            JOIN sdwire_assignments sa ON sa.sdwire_device_id = sd.id
+            WHERE sa.sbc_id IN ({placeholders})
+            """,
+            sbc_ids,
+        )
+        for row in sdwire_rows:
+            sbc_by_id[row["assigned_sbc_id"]].sdwire = SDWireDevice.from_row(row)
+
     def list_sbcs(
         self,
         project: Optional[str] = None,
@@ -179,12 +263,8 @@ class ResourceManager:
         sql += " ORDER BY name"
 
         rows = self.db.execute(sql, tuple(params))
-        sbcs = []
-        for row in rows:
-            sbc = SBC.from_row(row)
-            self._load_sbc_relations(sbc)
-            sbcs.append(sbc)
-
+        sbcs = [SBC.from_row(row) for row in rows]
+        self._load_sbc_relations_batch(sbcs)
         return sbcs
 
     def update_sbc(

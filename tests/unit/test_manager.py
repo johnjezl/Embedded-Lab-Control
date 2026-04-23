@@ -83,6 +83,45 @@ class TestSBCOperations:
         proj1_sbcs = manager.list_sbcs(project="proj1")
         assert len(proj1_sbcs) == 2
 
+    def test_list_sbcs_batches_relation_queries(self, manager, monkeypatch):
+        """Test listing SBCs avoids per-SBC relation lookups."""
+        sbc1 = manager.create_sbc(name="batch-sbc-1", project="proj")
+        sbc2 = manager.create_sbc(name="batch-sbc-2", project="proj")
+        dev = manager.create_serial_device(name="batch-serial", usb_path="1-2.3")
+        manager.assign_serial_port(sbc1.id, PortType.CONSOLE, "/dev/ttyUSB0")
+        manager.assign_serial_port(
+            sbc2.id,
+            PortType.DEBUG,
+            "/dev/ttyUSB1",
+            serial_device_id=dev.id,
+        )
+        manager.set_network_address(sbc1.id, AddressType.ETHERNET, "192.168.1.10")
+        manager.assign_power_plug(sbc1.id, PlugType.TASMOTA, "plug-a")
+        sdwire = manager.create_sdwire_device(name="batch-sdwire", serial_number="sw-1")
+        manager.assign_sdwire(sbc2.id, sdwire.id)
+
+        execute_calls = []
+        execute_one_calls = []
+        original_execute = manager.db.execute
+        original_execute_one = manager.db.execute_one
+
+        def tracked_execute(sql, params=()):
+            execute_calls.append(" ".join(sql.split()))
+            return original_execute(sql, params)
+
+        def tracked_execute_one(sql, params=()):
+            execute_one_calls.append(" ".join(sql.split()))
+            return original_execute_one(sql, params)
+
+        monkeypatch.setattr(manager.db, "execute", tracked_execute)
+        monkeypatch.setattr(manager.db, "execute_one", tracked_execute_one)
+
+        sbcs = manager.list_sbcs(project="proj")
+
+        assert len(sbcs) == 2
+        assert len(execute_calls) == 6
+        assert execute_one_calls == []
+
     def test_update_sbc(self, manager):
         """Test updating SBC."""
         sbc = manager.create_sbc(name="update-test")
