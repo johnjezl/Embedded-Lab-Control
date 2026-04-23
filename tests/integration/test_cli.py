@@ -1,11 +1,15 @@
 """Integration tests for labctl CLI."""
 
+import time
+from types import SimpleNamespace
+
 import pytest
 from click.testing import CliRunner
 from unittest.mock import MagicMock, patch
 
 from labctl.core import audit
 from labctl.cli import main
+from labctl.core.models import Status
 
 
 @pytest.fixture
@@ -87,6 +91,96 @@ class TestDelayOption:
         """Test that invalid delay value shows error."""
         result = runner.invoke(main, ["--delay", "abc", "ports"])
         assert result.exit_code != 0
+
+
+class TestStatusCommand:
+    """Tests for the status command."""
+
+    @pytest.fixture(autouse=True)
+    def clear_status_power_cache(self):
+        from labctl import cli
+
+        cli._status_power_cache.clear()
+        yield
+        cli._status_power_cache.clear()
+
+    def _make_sbc(self, name: str, plug=None):
+        sbc = MagicMock()
+        sbc.name = name
+        sbc.project = "proj"
+        sbc.status = Status.ONLINE
+        sbc.primary_ip = "192.168.1.10"
+        sbc.power_plug = plug
+        return sbc
+
+    def test_status_fetches_power_in_parallel(self, runner):
+        from labctl.power.base import PowerState
+
+        class SlowController:
+            def __init__(self, state):
+                self._state = state
+
+            def get_state(self):
+                time.sleep(0.2)
+                return self._state
+
+        plugs = [
+            SimpleNamespace(plug_type="tasmota", address=f"plug-{i}", plug_index=1)
+            for i in range(3)
+        ]
+        sbcs = [
+            self._make_sbc(f"sbc-{i}", plug) for i, plug in enumerate(plugs, start=1)
+        ]
+        manager = MagicMock()
+        manager.list_sbcs.return_value = sbcs
+        manager.list_active_claims.return_value = []
+
+        states = {
+            "plug-0": PowerState.ON,
+            "plug-1": PowerState.OFF,
+            "plug-2": PowerState.UNKNOWN,
+        }
+
+        def make_controller(plug):
+            return SlowController(states[plug.address])
+
+        start = time.monotonic()
+        with patch("labctl.cli._get_manager", return_value=manager):
+            with patch(
+                "labctl.cli.PowerController.from_plug",
+                side_effect=make_controller,
+            ):
+                result = runner.invoke(main, ["status"])
+        elapsed = time.monotonic() - start
+
+        assert result.exit_code == 0, result.output
+        assert elapsed < 0.5
+
+    def test_status_reuses_recent_power_cache(self, runner):
+        from labctl.power.base import PowerState
+
+        plug = SimpleNamespace(plug_type="tasmota", address="plug-1", plug_index=1)
+        manager = MagicMock()
+        manager.list_sbcs.return_value = [self._make_sbc("sbc-1", plug)]
+        manager.list_active_claims.return_value = []
+        mock_controller = MagicMock()
+        mock_controller.get_state.return_value = PowerState.ON
+
+        with patch("labctl.cli._get_manager", return_value=manager):
+            with patch(
+                "labctl.cli.PowerController.from_plug",
+                return_value=mock_controller,
+            ) as mock_factory:
+                with patch(
+                    "labctl.cli.time.monotonic",
+                    side_effect=[100.0, 100.1, 100.5],
+                ):
+                    first = runner.invoke(main, ["status"])
+                    second = runner.invoke(main, ["status"])
+
+        assert first.exit_code == 0, first.output
+        assert second.exit_code == 0, second.output
+        assert mock_factory.call_count == 1
 
 
 class TestPortsCommand:

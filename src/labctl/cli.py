@@ -4,11 +4,14 @@ Command-line interface for lab controller.
 Provides commands for managing serial ports, connections, and lab resources.
 """
 
+import concurrent.futures
+import json
 import logging
 import os
-import json
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 
 import click
@@ -30,6 +33,10 @@ ALIASES = {
     "on": "power on",
     "off": "power off",
 }
+
+STATUS_POWER_CACHE_TTL = 2.0
+_status_power_cache: dict[tuple[str, str, int], tuple[float, str]] = {}
+_status_power_cache_lock = threading.Lock()
 
 
 class AliasedGroup(click.Group):
@@ -77,6 +84,75 @@ def _get_manager(ctx: click.Context) -> ResourceManager:
         config: Config = ctx.obj["config"]
         ctx.obj["manager"] = get_manager(config.database_path)
     return ctx.obj["manager"]
+
+
+def _status_power_cache_key(plug) -> tuple[str, str, int]:
+    """Build a stable cache key for power status lookups."""
+    plug_type = getattr(plug.plug_type, "value", str(plug.plug_type))
+    return (plug_type, plug.address, plug.plug_index)
+
+
+def _get_cached_status_power(plug, ttl: float = STATUS_POWER_CACHE_TTL) -> str | None:
+    """Return a recent cached power display value if still fresh."""
+    key = _status_power_cache_key(plug)
+    now = time.monotonic()
+    with _status_power_cache_lock:
+        cached = _status_power_cache.get(key)
+        if cached is None:
+            return None
+        cached_at, power = cached
+        if now - cached_at > ttl:
+            _status_power_cache.pop(key, None)
+            return None
+        return power
+
+
+def _store_cached_status_power(plug, power: str) -> str:
+    """Store a power display value and return it unchanged."""
+    key = _status_power_cache_key(plug)
+    with _status_power_cache_lock:
+        _status_power_cache[key] = (time.monotonic(), power)
+    return power
+
+
+def _probe_status_power(plug, reset: str) -> str:
+    """Fetch one power state, using a short cache to limit repeat probes."""
+    cached = _get_cached_status_power(plug)
+    if cached is not None:
+        return cached
+
+    try:
+        controller = PowerController.from_plug(plug)
+        state = controller.get_state()
+        if state == PowerState.ON:
+            power = f"\033[32mON{reset}"
+        elif state == PowerState.OFF:
+            power = f"\033[31mOFF{reset}"
+        else:
+            power = "?"
+    except Exception:
+        power = "err"
+
+    return _store_cached_status_power(plug, power)
+
+
+def _collect_status_power_states(sbcs, reset: str) -> dict[str, str]:
+    """Resolve power states for all SBCs concurrently."""
+    power_by_sbc = {sbc.name: "-" for sbc in sbcs}
+    power_targets = [(sbc.name, sbc.power_plug) for sbc in sbcs if sbc.power_plug]
+    if not power_targets:
+        return power_by_sbc
+
+    max_workers = min(len(power_targets), 16)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_map = {
+            executor.submit(_probe_status_power, plug, reset): sbc_name
+            for sbc_name, plug in power_targets
+        }
+        for future in concurrent.futures.as_completed(future_map):
+            power_by_sbc[future_map[future]] = future.result()
+
+    return power_by_sbc
 
 
 def _sdwire_host_switch_guard_cli(
@@ -2719,8 +2795,6 @@ def status_cmd(
       labctl status -w           # Watch mode (updates every 5s)
       labctl status -w -i 10     # Watch mode with 10s interval
     """
-    import time
-
     def display_status():
         manager = _get_manager(ctx)
         sbcs = manager.list_sbcs(project=project)
@@ -2742,6 +2816,7 @@ def status_cmd(
 
         # Index active claims by sbc_name for O(1) per-row lookup.
         claims_by_sbc = {c.sbc_name: c for c in manager.list_active_claims()}
+        power_by_sbc = _collect_status_power_states(sbcs, reset)
 
         click.echo(
             f"{'NAME':<15} {'PROJECT':<12} {'STATUS':<12} {'IP':<15} "
@@ -2754,21 +2829,7 @@ def status_cmd(
             status_str = f"{color}{sbc.status.value:<12}{reset}"
             ip = sbc.primary_ip or "-"
             project_name = sbc.project or "-"
-
-            # Get power state if plug assigned
-            power = "-"
-            if sbc.power_plug:
-                try:
-                    controller = PowerController.from_plug(sbc.power_plug)
-                    state = controller.get_state()
-                    if state == PowerState.ON:
-                        power = f"\033[32mON{reset}"
-                    elif state == PowerState.OFF:
-                        power = f"\033[31mOFF{reset}"
-                    else:
-                        power = "?"
-                except Exception:
-                    power = "err"
+            power = power_by_sbc.get(sbc.name, "-")
 
             claim = claims_by_sbc.get(sbc.name)
             if claim is None:
