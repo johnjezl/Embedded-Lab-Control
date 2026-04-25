@@ -350,6 +350,9 @@ def connect_cmd(ctx: click.Context, port_name: str, baud: int | None) -> None:
     # 1. Try alias lookup from database
     port = manager.get_serial_port_by_alias(port_name)
     if port and port.tcp_port:
+        blocked = _find_proxy_blocking_sbc(manager, config, port=port)
+        if blocked:
+            _refuse_when_proxy_active(blocked[0], blocked[1], "connect")
         if verbose:
             click.echo(
                 f"Connecting to alias '{port_name}' via TCP port {port.tcp_port}..."
@@ -360,6 +363,9 @@ def connect_cmd(ctx: click.Context, port_name: str, baud: int | None) -> None:
     # 2. Try SBC name lookup (use console port)
     sbc = manager.get_sbc_by_name(port_name)
     if sbc and sbc.console_port and sbc.console_port.tcp_port:
+        blocked = _find_proxy_blocking_sbc(manager, config, sbc_name=sbc.name)
+        if blocked:
+            _refuse_when_proxy_active(blocked[0], blocked[1], "connect")
         if verbose:
             click.echo(
                 f"Connecting to {port_name} console via TCP port "
@@ -384,10 +390,16 @@ def connect_cmd(ctx: click.Context, port_name: str, baud: int | None) -> None:
     tcp_port = _get_tcp_port(port_name, config)
 
     if tcp_port and config.ser2net.enabled:
+        blocked = _find_proxy_blocking_sbc(manager, config, port_path=port_path)
+        if blocked:
+            _refuse_when_proxy_active(blocked[0], blocked[1], "connect")
         if verbose:
             click.echo(f"Connecting to {port_name} via TCP port {tcp_port}...")
         _connect_tcp("localhost", tcp_port)
     else:
+        blocked = _find_proxy_blocking_sbc(manager, config, port_path=port_path)
+        if blocked:
+            _refuse_when_proxy_active(blocked[0], blocked[1], "connect")
         if verbose:
             click.echo(f"Connecting directly to {port_path}...")
         _connect_direct(port_path, baud or config.serial.default_baud)
@@ -433,6 +445,69 @@ def _connect_direct(port_path: Path, baud: int) -> None:
             click.echo("Error: Neither 'picocom' nor 'minicom' found", err=True)
             click.echo("Install with: sudo apt install picocom", err=True)
             sys.exit(1)
+
+
+def _find_proxy_blocking_sbc(
+    manager,
+    config: Config,
+    *,
+    sbc_name: str | None = None,
+    port=None,
+    port_path: Path | None = None,
+) -> tuple[str, dict] | None:
+    """Return active proxy state for an SBC targeted by a direct console command."""
+    from labctl.serial.proxy import read_proxy_state
+
+    target_sbc = None
+    target_port = None
+    if sbc_name:
+        target_sbc = manager.get_sbc_by_name(sbc_name)
+    elif port is not None:
+        target_port = port
+        target_sbc = manager.get_sbc(port.sbc_id)
+    elif port_path is not None:
+        try:
+            resolved = port_path.resolve(strict=False)
+        except OSError:
+            resolved = port_path
+        for candidate in manager.list_serial_ports():
+            if candidate.port_type != PortType.CONSOLE:
+                continue
+            try:
+                candidate_path = Path(candidate.device_path).resolve(strict=False)
+            except OSError:
+                candidate_path = Path(candidate.device_path)
+            if candidate_path == resolved:
+                target_port = candidate
+                target_sbc = manager.get_sbc(candidate.sbc_id)
+                break
+
+    if not target_sbc:
+        return None
+    if target_port is not None and target_port.port_type != PortType.CONSOLE:
+        return None
+
+    state = read_proxy_state(target_sbc.name, config.proxy.log_dir)
+    if not state:
+        return None
+    return target_sbc.name, state
+
+
+def _refuse_when_proxy_active(sbc_name: str, proxy_state: dict, command_name: str) -> None:
+    """Exit with a clear message when a shared proxy already owns the console path."""
+    proxy_port = proxy_state.get("proxy_port")
+    click.echo(
+        f"Error: Shared proxy is active for '{sbc_name}' on port {proxy_port}.",
+        err=True,
+    )
+    click.echo(
+        f"Refusing direct '{command_name}' access while the proxy is running.",
+        err=True,
+    )
+    click.echo("Use the shared proxy instead:", err=True)
+    click.echo(f"  nc localhost {proxy_port}", err=True)
+    click.echo(f"  telnet localhost {proxy_port}", err=True)
+    sys.exit(1)
 
 
 # --- SBC Management Commands ---
@@ -2725,8 +2800,14 @@ def console_cmd(ctx: click.Context, sbc_name: str, port_type: str) -> None:
 
     # Connect via TCP if available
     if port.tcp_port and config.ser2net.enabled:
+        blocked = _find_proxy_blocking_sbc(manager, config, port=port)
+        if blocked:
+            _refuse_when_proxy_active(blocked[0], blocked[1], "console")
         _connect_tcp("localhost", port.tcp_port)
     else:
+        blocked = _find_proxy_blocking_sbc(manager, config, port=port)
+        if blocked:
+            _refuse_when_proxy_active(blocked[0], blocked[1], "console")
         _connect_direct(Path(port.device_path), port.baud_rate)
 
 
@@ -3541,7 +3622,7 @@ def _get_proxy_manager(ctx: click.Context):
 
 @main.group("proxy")
 def proxy_group() -> None:
-    """Manage serial proxy for multi-client access."""
+    """Share one SBC's serial console with multiple viewers."""
     pass
 
 
@@ -3550,15 +3631,40 @@ def proxy_group() -> None:
 @click.option(
     "--port", "-p", type=int, help="Proxy port (auto-assigned if not specified)"
 )
+@click.option(
+    "--allow-write",
+    is_flag=True,
+    help="Allow proxy clients to send input upstream. Default is read-only viewing.",
+)
+@click.option(
+    "--reconnect/--exit-on-disconnect",
+    default=True,
+    show_default=True,
+    help=(
+        "Reconnect after upstream serial drops such as SBC reboots, or exit "
+        "immediately when the upstream console disconnects."
+    ),
+)
 @click.option("--foreground", "-f", is_flag=True, help="Run in foreground (default)")
 @click.pass_context
 def proxy_start_cmd(
-    ctx: click.Context, sbc_name: str, port: int | None, foreground: bool
+    ctx: click.Context,
+    sbc_name: str,
+    port: int | None,
+    allow_write: bool,
+    reconnect: bool,
+    foreground: bool,
 ) -> None:
     """Start a serial proxy for an SBC.
 
-    Allows multiple clients to connect to the same serial console.
-    First client to send data gets write access, others are read-only.
+    Use this when you want multiple terminals or browsers to watch the
+    same SBC serial output without fighting over the direct console port.
+
+    The proxy connects upstream to the SBC's serial console TCP port and
+    fans the output out to all connected clients. Multiple clients can
+    watch at once. By default the proxy is read-only; pass
+    ``--allow-write`` to permit input, in which case the first client to
+    send data gets write access and the others remain read-only.
     """
     import asyncio
 
@@ -3591,10 +3697,27 @@ def proxy_start_cmd(
     click.echo(f"Starting proxy for {sbc_name}...")
     click.echo(f"  ser2net port: {console_port.tcp_port}")
     click.echo(f"  proxy port:   {port}")
-    click.echo(f"  write policy: {config.proxy.write_policy}")
+    click.echo(
+        f"  write access: {'enabled' if allow_write else 'disabled (read-only)'}"
+    )
+    if allow_write:
+        click.echo(f"  write policy: {config.proxy.write_policy}")
+    click.echo(f"  reconnect:    {'on' if reconnect else 'off'}")
     if config.proxy.log_dir:
         click.echo(f"  session logs: {config.proxy.log_dir}")
     click.echo()
+    click.echo("Use this proxy port for shared serial viewing:")
+    click.echo(f"  nc localhost {port}")
+    click.echo(f"  telnet localhost {port}")
+    click.echo()
+    if allow_write:
+        click.echo(
+            "Multiple readers can watch simultaneously. The first client to type"
+        )
+        click.echo("gets write access; the rest remain read-only.")
+    else:
+        click.echo("Multiple readers can watch simultaneously.")
+        click.echo("This proxy is read-only; no connected client can write upstream.")
     click.echo("Press Ctrl+C to stop the proxy")
     click.echo("-" * 40)
 
@@ -3609,16 +3732,27 @@ def proxy_start_cmd(
             log_dir=config.proxy.log_dir if config.proxy.log_dir else None,
             write_policy=config.proxy.write_policy,
             max_clients=config.proxy.max_clients,
+            allow_write=allow_write,
+            reconnect_on_disconnect=reconnect,
         )
 
         try:
             await proxy.start()
             click.echo(f"Proxy running on port {port}")
-            click.echo("Connect with: nc localhost {port}")
+            click.echo(f"Connect with: nc localhost {port}")
 
             # Keep running until cancelled
             while proxy.is_running:
                 await asyncio.sleep(1)
+        except OSError as e:
+            if e.errno == 98:
+                click.echo(
+                    f"Error: Proxy port {port} is already in use. "
+                    "Use --port to choose a different port.",
+                    err=True,
+                )
+                sys.exit(1)
+            raise
         except ConnectionError as e:
             click.echo(f"Error: {e}", err=True)
             sys.exit(1)
@@ -3637,13 +3771,16 @@ def proxy_start_cmd(
 @proxy_group.command("list")
 @click.pass_context
 def proxy_list_cmd(ctx: click.Context) -> None:
-    """List running proxies.
+    """Describe the shared serial proxy workflow.
 
-    Note: This only shows proxies started in daemon mode (not implemented yet).
-    For foreground proxies, they run until Ctrl+C.
+    Proxies are the multi-client serial-console path: one upstream
+    serial connection, many local viewers. The current implementation
+    runs them in the foreground, so there is nothing persistent to
+    enumerate after the command exits.
     """
     # In the current implementation, proxies run in foreground
     # A proper daemon mode would require a separate process or service
+    click.echo("Shared serial-console path: one SBC console, multiple viewers.")
     click.echo("Note: Proxy daemon mode not yet implemented.")
     click.echo("Use 'labctl proxy start <sbc>' to run a proxy in foreground.")
     click.echo("Each proxy runs until Ctrl+C.")
@@ -3655,19 +3792,20 @@ def proxy_list_cmd(ctx: click.Context) -> None:
 def sessions_cmd(ctx: click.Context, sbc_name: str | None) -> None:
     """List connected proxy sessions.
 
-    Shows clients connected to each SBC's proxy.
-    If SBC_NAME is provided, shows only that SBC's sessions.
-
-    Note: Currently only works for proxies started with daemon mode.
+    This is for the shared serial proxy, not direct console or
+    serial_capture connections. Once proxy daemon mode exists, it will
+    show who is currently attached to each SBC's shared serial feed.
     """
     # This would query a running proxy daemon for session info
     # For now, just show a placeholder message
+    click.echo("Shared serial proxy only: this does not track direct console or serial_capture.")
     click.echo(
         "Note: Session listing requires proxy daemon mode (not yet implemented)."
     )
     click.echo()
-    click.echo("When running a proxy in foreground ('labctl proxy start <sbc>'),")
-    click.echo("client connections are logged to the console and session log files.")
+    click.echo("For now, use 'labctl proxy start <sbc>' for shared serial viewing.")
+    click.echo("While it runs in foreground, client connects/disconnects are shown")
+    click.echo("in the terminal and in the proxy session log files.")
 
 
 # --- MCP Server ---

@@ -454,7 +454,8 @@ This document outlines the phased implementation of the Lab Controller System. E
 
 #### 6.4 CLI Integration
 - ⏸️ Update `labctl connect` to use proxy when multiple clients - deferred
-- ✅ Add `labctl proxy start <sbc>` - start proxy for SBC
+- ✅ Add `labctl proxy start <sbc>` - start proxy for SBC, reconnecting across upstream serial drops by default; proxy is read-only unless `--allow-write` is set, with `--exit-on-disconnect` available for one-shot sessions
+- ✅ Direct `labctl connect` / `labctl console` refuse while a shared proxy is active for that SBC
 - ✅ Add `labctl proxy list` - list running proxies
 - ✅ Add `labctl sessions <sbc>` - list connected clients
 

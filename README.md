@@ -200,11 +200,17 @@ the point here is to allow SDWire workflows without granting broader root access
 
 ### Multi-Client Access
 
+Use `labctl proxy start <sbc>` when several people need to watch the same
+console. The proxy keeps viewers attached across normal SBC restarts and is
+view-only unless you opt in with `--allow-write`. While a proxy is active,
+`labctl connect` and `labctl console` refuse direct access for that SBC so
+people do not silently bypass the shared session.
+
 | Command | Description |
 |---------|-------------|
-| `labctl proxy start <sbc>` | Start serial proxy |
-| `labctl proxy list` | List running proxies |
-| `labctl sessions <sbc>` | Show connected clients |
+| `labctl proxy start <sbc>` | Start a shared serial-console proxy for one SBC; reconnects across SBC restarts and is read-only by default (`--allow-write` to enable input, `--exit-on-disconnect` to stop instead) |
+| `labctl proxy list` | Explain the current shared-console proxy mode |
+| `labctl sessions <sbc>` | Show shared-console clients once proxy daemon mode exists |
 
 ### Health Monitoring
 

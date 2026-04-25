@@ -74,8 +74,8 @@ class ProxyConfig:
     """Multi-client serial proxy configuration."""
 
     enabled: bool = True
-    port_base: int = 5000
-    port_range: int = 100  # Ports 5000-5099 available
+    port_base: int = 5500
+    port_range: int = 100  # Ports 5500-5599 available
     write_policy: str = "first"  # first, all, queue
     log_dir: Path = field(default_factory=lambda: _default_data_dir() / "logs")
     log_retention_days: int = 7
@@ -237,7 +237,7 @@ class Config:
 
         proxy = ProxyConfig(
             enabled=proxy_data.get("enabled", True),
-            port_base=proxy_data.get("port_base", 5000),
+            port_base=proxy_data.get("port_base", 5500),
             port_range=proxy_data.get("port_range", 100),
             write_policy=proxy_data.get("write_policy", "first"),
             log_dir=_expand_path(

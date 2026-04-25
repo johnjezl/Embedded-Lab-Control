@@ -11,7 +11,10 @@ Use cases:
 """
 
 import asyncio
+import json
 import logging
+import os
+import socket
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -19,6 +22,80 @@ from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _proxy_state_dir(log_dir: Optional[Path]) -> Path:
+    """Return the directory used for persistent proxy state files."""
+    base = log_dir.parent if log_dir else (Path.home() / ".local" / "share" / "labctl")
+    return base / "proxy-state"
+
+
+def _proxy_state_path(name: str, log_dir: Optional[Path]) -> Path:
+    """Return the state-file path for a named proxy."""
+    return _proxy_state_dir(log_dir) / f"{name}.json"
+
+
+def _pid_is_alive(pid: int) -> bool:
+    """Return True when the process is still alive."""
+    try:
+        os.kill(pid, 0)
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def write_proxy_state(
+    *,
+    name: str,
+    log_dir: Optional[Path],
+    proxy_port: int,
+    ser2net_port: int,
+    allow_write: bool,
+) -> Path:
+    """Persist a foreground proxy's runtime metadata for other processes."""
+    state_dir = _proxy_state_dir(log_dir)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    path = _proxy_state_path(name, log_dir)
+    payload = {
+        "name": name,
+        "pid": os.getpid(),
+        "proxy_port": proxy_port,
+        "ser2net_port": ser2net_port,
+        "allow_write": allow_write,
+        "started_at": datetime.now().isoformat(),
+    }
+    path.write_text(json.dumps(payload, indent=2))
+    return path
+
+
+def remove_proxy_state(name: str, log_dir: Optional[Path]) -> None:
+    """Remove a proxy state file if present."""
+    path = _proxy_state_path(name, log_dir)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def read_proxy_state(name: str, log_dir: Optional[Path]) -> Optional[dict]:
+    """Read proxy state for an SBC, pruning stale files automatically."""
+    path = _proxy_state_path(name, log_dir)
+    if not path.exists():
+        return None
+
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    pid = payload.get("pid")
+    if not isinstance(pid, int) or not _pid_is_alive(pid):
+        remove_proxy_state(name, log_dir)
+        return None
+
+    return payload
 
 
 @dataclass
@@ -259,6 +336,9 @@ class SerialProxy:
         log_dir: Optional[Path] = None,
         write_policy: str = "first",
         max_clients: int = 10,
+        allow_write: bool = False,
+        reconnect_on_disconnect: bool = True,
+        reconnect_delay: float = 1.0,
     ):
         """
         Initialize serial proxy.
@@ -271,6 +351,9 @@ class SerialProxy:
             log_dir: Directory for session logs (None to disable)
             write_policy: Write policy - "first", "all", or "queue"
             max_clients: Maximum concurrent clients
+            allow_write: Whether proxy clients may write upstream
+            reconnect_on_disconnect: Reconnect after upstream serial drops
+            reconnect_delay: Seconds to wait between reconnect attempts
         """
         self.name = name
         self.ser2net_host = ser2net_host
@@ -279,6 +362,9 @@ class SerialProxy:
         self.log_dir = log_dir
         self.write_policy = write_policy
         self.max_clients = max_clients
+        self.allow_write = allow_write
+        self.reconnect_on_disconnect = reconnect_on_disconnect
+        self.reconnect_delay = reconnect_delay
 
         self.clients: dict[str, ProxyClient] = {}
         self.writer_client_id: Optional[str] = None
@@ -289,6 +375,7 @@ class SerialProxy:
         self._running = False
         self._read_task: Optional[asyncio.Task] = None
         self._session_logger: Optional[SessionLogger] = None
+        self._stopping = False
 
     @property
     def client_count(self) -> int:
@@ -305,15 +392,7 @@ class SerialProxy:
         if self._running:
             raise RuntimeError("Proxy already running")
 
-        # Connect to ser2net
-        logger.info(f"Connecting to ser2net at {self.ser2net_host}:{self.ser2net_port}")
-        try:
-            self._ser2net_reader, self._ser2net_writer = await asyncio.open_connection(
-                self.ser2net_host, self.ser2net_port
-            )
-        except Exception as e:
-            host_port = f"{self.ser2net_host}:{self.ser2net_port}"
-            raise ConnectionError(f"Failed to connect to ser2net at {host_port}: {e}")
+        await self._connect_upstream()
 
         # Start session logger
         if self.log_dir:
@@ -328,6 +407,13 @@ class SerialProxy:
             self.proxy_port,
         )
         self._running = True
+        write_proxy_state(
+            name=self.name,
+            log_dir=self.log_dir,
+            proxy_port=self.proxy_port,
+            ser2net_port=self.ser2net_port,
+            allow_write=self.allow_write,
+        )
 
         # Start reading from ser2net
         self._read_task = asyncio.create_task(self._read_serial_loop())
@@ -336,42 +422,98 @@ class SerialProxy:
 
     async def stop(self) -> None:
         """Stop the proxy server gracefully."""
-        if not self._running:
+        if self._stopping:
+            return
+        if (
+            not self._running
+            and self._server is None
+            and self._ser2net_writer is None
+            and self._read_task is None
+        ):
             return
 
+        self._stopping = True
         self._running = False
         logger.info(f"Stopping proxy '{self.name}'")
+        remove_proxy_state(self.name, self.log_dir)
 
         # Cancel read task
-        if self._read_task:
+        current_task = asyncio.current_task()
+        if self._read_task and self._read_task is not current_task:
             self._read_task.cancel()
             try:
                 await self._read_task
             except asyncio.CancelledError:
                 pass
+        self._read_task = None
 
         # Disconnect all clients
         for client in list(self.clients.values()):
             await self._disconnect_client(client, "Proxy shutting down")
 
-        # Close ser2net connection
-        if self._ser2net_writer:
-            self._ser2net_writer.close()
-            try:
-                await self._ser2net_writer.wait_closed()
-            except Exception:
-                pass
+        await self._close_upstream()
 
         # Stop server
         if self._server:
             self._server.close()
             await self._server.wait_closed()
+            self._server = None
 
         # Stop session logger
         if self._session_logger:
             self._session_logger.stop()
+            self._session_logger = None
 
         logger.info(f"Proxy '{self.name}' stopped")
+        self._stopping = False
+
+    async def _connect_upstream(self) -> None:
+        """Connect to the upstream ser2net TCP socket."""
+        logger.info(f"Connecting to ser2net at {self.ser2net_host}:{self.ser2net_port}")
+        try:
+            self._ser2net_reader, self._ser2net_writer = await asyncio.open_connection(
+                self.ser2net_host, self.ser2net_port
+            )
+        except Exception as e:
+            host_port = f"{self.ser2net_host}:{self.ser2net_port}"
+            raise ConnectionError(f"Failed to connect to ser2net at {host_port}: {e}")
+
+    async def _close_upstream(self) -> None:
+        """Close the upstream ser2net TCP connection."""
+        writer = self._ser2net_writer
+        self._ser2net_reader = None
+        self._ser2net_writer = None
+        if writer:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:
+                pass
+
+    async def _broadcast_notice(self, message: str) -> None:
+        """Broadcast a proxy status line to all connected clients."""
+        if not self.clients:
+            return
+        await self._broadcast(f"\r\n[Proxy: {message}]\r\n".encode())
+
+    async def _handle_upstream_disconnect(self, reason: str) -> bool:
+        """Handle loss of the upstream serial connection.
+
+        Returns True if the proxy should keep running and try to reconnect.
+        """
+        logger.warning(reason)
+        await self._close_upstream()
+
+        if not self._running:
+            return False
+
+        if not self.reconnect_on_disconnect:
+            logger.error("ser2net connection lost, stopping proxy")
+            asyncio.create_task(self.stop())
+            return False
+
+        await self._broadcast_notice("Serial connection lost; retrying...")
+        return True
 
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -399,7 +541,9 @@ class SerialProxy:
 
         # Send welcome message
         writer.write(f"\r\n[Proxy: Connected to {self.name}".encode())
-        if self.writer_client_id:
+        if not self.allow_write:
+            writer.write(b" (read-only)]")
+        elif self.writer_client_id:
             writer.write(b" (read-only, another client has write lock)]")
         else:
             writer.write(b" (you have write access)]")
@@ -425,6 +569,8 @@ class SerialProxy:
 
                 # Check write permission
                 if not self._can_write(client.client_id):
+                    if not self.allow_write:
+                        continue  # Read-only proxy: silently ignore client input
                     # Try to acquire write lock (atomic via asyncio.Lock)
                     async with self._lock:
                         if self.writer_client_id is None:
@@ -458,6 +604,8 @@ class SerialProxy:
 
     def _can_write(self, client_id: str) -> bool:
         """Check if client can write based on policy."""
+        if not self.allow_write:
+            return False
         if self.write_policy == "all":
             return True
         elif self.write_policy == "first":
@@ -468,14 +616,30 @@ class SerialProxy:
 
     async def _read_serial_loop(self) -> None:
         """Read from ser2net and broadcast to all clients."""
-        while self._running and self._ser2net_reader:
+        while self._running:
+            if self._ser2net_reader is None:
+                try:
+                    await self._connect_upstream()
+                except ConnectionError as e:
+                    logger.warning(f"Reconnect to ser2net failed: {e}")
+                    await asyncio.sleep(self.reconnect_delay)
+                    continue
+
+                logger.info("ser2net connection restored")
+                await self._broadcast_notice("Serial connection restored")
+
             try:
                 data = await asyncio.wait_for(
                     self._ser2net_reader.read(4096), timeout=1.0
                 )
                 if not data:
-                    logger.warning("ser2net connection closed")
-                    break
+                    should_retry = await self._handle_upstream_disconnect(
+                        "ser2net connection closed"
+                    )
+                    if not should_retry:
+                        break
+                    await asyncio.sleep(self.reconnect_delay)
+                    continue
 
                 # Log output
                 if self._session_logger:
@@ -489,14 +653,12 @@ class SerialProxy:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Serial read error: {e}")
-                break
-
-        # Ser2net disconnected, stop proxy
-        if self._running:
-            logger.error("ser2net connection lost, stopping proxy")
-            self._running = False
-            asyncio.ensure_future(self.stop())
+                should_retry = await self._handle_upstream_disconnect(
+                    f"Serial read error: {e}"
+                )
+                if not should_retry:
+                    break
+                await asyncio.sleep(self.reconnect_delay)
 
     async def _broadcast(self, data: bytes) -> None:
         """Send data to all connected clients."""
@@ -555,13 +717,24 @@ class ProxyManager:
     def __init__(self, log_dir: Optional[Path] = None):
         self.proxies: dict[str, SerialProxy] = {}
         self.log_dir = log_dir
-        self._port_counter = 5000
+        self._port_counter = 5500
 
-    def get_next_port(self, base: int = 5000, range_size: int = 100) -> int:
+    @staticmethod
+    def _port_is_available(port: int, host: str = "127.0.0.1") -> bool:
+        """Return True if the TCP port can be bound on the given host."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind((host, port))
+            except OSError:
+                return False
+        return True
+
+    def get_next_port(self, base: int = 5500, range_size: int = 100) -> int:
         """Get next available proxy port."""
         used_ports = {p.proxy_port for p in self.proxies.values()}
         for port in range(base, base + range_size):
-            if port not in used_ports:
+            if port not in used_ports and self._port_is_available(port):
                 return port
         raise RuntimeError("No available proxy ports")
 
@@ -573,6 +746,7 @@ class ProxyManager:
         proxy_port: Optional[int] = None,
         write_policy: str = "first",
         max_clients: int = 10,
+        allow_write: bool = False,
     ) -> SerialProxy:
         """Create and start a new proxy."""
         if name in self.proxies:
@@ -589,6 +763,7 @@ class ProxyManager:
             log_dir=self.log_dir,
             write_policy=write_policy,
             max_clients=max_clients,
+            allow_write=allow_write,
         )
 
         await proxy.start()

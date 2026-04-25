@@ -1,6 +1,8 @@
 """Integration tests for labctl CLI."""
 
+import errno
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -8,6 +10,7 @@ from click.testing import CliRunner
 from unittest.mock import MagicMock, patch
 
 from labctl.core import audit
+from labctl.core.models import PortType
 from labctl.cli import main
 from labctl.core.models import Status
 
@@ -453,6 +456,357 @@ class TestSdwireWritePowerFlow:
         assert result.exit_code == 0, result.output
         mock_power.power_off.assert_called_once()
         mock_ctrl.switch_to_host.assert_called_once()
+class TestProxyCommands:
+    """Tests for proxy-related CLI help and guidance text."""
+
+    @staticmethod
+    def _proxy_config(tmp_path):
+        db_path = tmp_path / "labctl.db"
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            f"database_path: {db_path}\n"
+            "proxy:\n"
+            "  port_base: 5500\n"
+        )
+        return db_path, config_path
+
+    @staticmethod
+    def _seed_proxy_sbc(
+        db_path,
+        device_path="/dev/lab/proxy-sbc",
+        *,
+        add_debug_port: bool = False,
+    ):
+        from labctl.core.manager import get_manager
+
+        manager = get_manager(db_path)
+        manager.create_sbc(name="proxy-sbc", project="test")
+        sbc = manager.get_sbc_by_name("proxy-sbc")
+        manager.assign_serial_port(
+            sbc_id=sbc.id,
+            port_type=PortType.CONSOLE,
+            device_path=str(device_path),
+            tcp_port=4004,
+            baud_rate=115200,
+            alias="proxy-console",
+        )
+        if add_debug_port:
+            manager.assign_serial_port(
+                sbc_id=sbc.id,
+                port_type=PortType.DEBUG,
+                device_path=str(Path(device_path).with_name("proxy-debug")),
+                tcp_port=4014,
+                baud_rate=115200,
+                alias="proxy-debug",
+            )
+        return manager
+
+    def test_proxy_group_help(self, runner):
+        result = runner.invoke(main, ["proxy", "--help"])
+        assert result.exit_code == 0
+        assert "Share one SBC's serial console with multiple viewers" in result.output
+        assert "start" in result.output
+        assert "list" in result.output
+
+    def test_proxy_start_help(self, runner):
+        result = runner.invoke(main, ["proxy", "start", "--help"])
+        assert result.exit_code == 0
+        assert "serial output" in result.output
+        assert "direct console port" in result.output
+        assert "write access" in result.output
+        assert "--allow-write" in result.output
+        assert "--exit-on-disconnect" in result.output
+        assert "--reconnect" in result.output
+
+    def test_proxy_list_explains_foreground_workflow(self, runner):
+        result = runner.invoke(main, ["proxy", "list"])
+        assert result.exit_code == 0
+        assert "Shared serial-console path" in result.output
+        assert "proxy start <sbc>" in result.output
+
+    def test_sessions_explains_proxy_scope(self, runner):
+        result = runner.invoke(main, ["sessions"])
+        assert result.exit_code == 0
+        assert "Shared serial proxy only" in result.output
+        assert "serial_capture" in result.output
+        assert "proxy start <sbc>" in result.output
+
+    def test_proxy_start_reports_port_in_use_cleanly(self, tmp_path, monkeypatch):
+        db_path, config_path = self._proxy_config(tmp_path)
+        self._seed_proxy_sbc(db_path)
+
+        class FakeProxy:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def start(self):
+                raise OSError(errno.EADDRINUSE, "address already in use")
+
+            async def stop(self):
+                return None
+
+        monkeypatch.setattr("labctl.serial.proxy.SerialProxy", FakeProxy)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            main,
+            ["-c", str(config_path), "proxy", "start", "proxy-sbc", "--port", "5500"],
+        )
+
+        assert result.exit_code != 0
+        assert "already in use" in result.output
+        assert "--port" in result.output
+
+    def test_proxy_start_is_read_only_by_default(self, runner, tmp_path, monkeypatch):
+        db_path, config_path = self._proxy_config(tmp_path)
+        self._seed_proxy_sbc(db_path)
+
+        class FakeProxy:
+            def __init__(self, *args, **kwargs):
+                self.is_running = False
+
+            async def start(self):
+                return None
+
+            async def stop(self):
+                return None
+
+        monkeypatch.setattr("labctl.serial.proxy.SerialProxy", FakeProxy)
+
+        result = runner.invoke(
+            main, ["-c", str(config_path), "proxy", "start", "proxy-sbc", "--port", "5500"]
+        )
+
+        assert result.exit_code == 0
+        assert "write access: disabled (read-only)" in result.output
+        assert "This proxy is read-only" in result.output
+
+    def test_proxy_start_allow_write_changes_guidance(self, runner, tmp_path, monkeypatch):
+        db_path, config_path = self._proxy_config(tmp_path)
+        self._seed_proxy_sbc(db_path)
+
+        class FakeProxy:
+            def __init__(self, *args, **kwargs):
+                self.is_running = False
+
+            async def start(self):
+                return None
+
+            async def stop(self):
+                return None
+
+        monkeypatch.setattr("labctl.serial.proxy.SerialProxy", FakeProxy)
+
+        result = runner.invoke(
+            main,
+            [
+                "-c",
+                str(config_path),
+                "proxy",
+                "start",
+                "proxy-sbc",
+                "--port",
+                "5500",
+                "--allow-write",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "write access: enabled" in result.output
+        assert "write policy: first" in result.output
+        assert "The first client to type" in result.output
+
+    def test_connect_refuses_when_proxy_is_active(self, runner, tmp_path):
+        from labctl.serial.proxy import write_proxy_state
+
+        db_path, config_path = self._proxy_config(tmp_path)
+        log_dir = tmp_path / "logs"
+        config_path.write_text(f"database_path: {db_path}\nproxy:\n  log_dir: {log_dir}\n")
+
+        self._seed_proxy_sbc(db_path)
+        write_proxy_state(
+            name="proxy-sbc",
+            log_dir=log_dir,
+            proxy_port=5500,
+            ser2net_port=4004,
+            allow_write=False,
+        )
+
+        result = runner.invoke(main, ["-c", str(config_path), "connect", "proxy-console"])
+
+        assert result.exit_code != 0
+        assert "Shared proxy is active" in result.output
+        assert "Refusing direct 'connect' access" in result.output
+        assert "nc localhost 5500" in result.output
+
+    def test_connect_refuses_when_proxy_is_active_for_sbc_name(self, runner, tmp_path):
+        from labctl.serial.proxy import write_proxy_state
+
+        db_path, config_path = self._proxy_config(tmp_path)
+        log_dir = tmp_path / "logs"
+        config_path.write_text(f"database_path: {db_path}\nproxy:\n  log_dir: {log_dir}\n")
+
+        self._seed_proxy_sbc(db_path)
+        write_proxy_state(
+            name="proxy-sbc",
+            log_dir=log_dir,
+            proxy_port=5500,
+            ser2net_port=4004,
+            allow_write=False,
+        )
+
+        result = runner.invoke(main, ["-c", str(config_path), "connect", "proxy-sbc"])
+
+        assert result.exit_code != 0
+        assert "Refusing direct 'connect' access" in result.output
+        assert "nc localhost 5500" in result.output
+
+    def test_connect_refuses_when_proxy_is_active_for_device_path(self, runner, tmp_path):
+        from labctl.serial.proxy import write_proxy_state
+
+        db_path, config_path = self._proxy_config(tmp_path)
+        log_dir = tmp_path / "logs"
+        device_path = tmp_path / "proxy-sbc"
+        real_device_path = tmp_path / "ttyUSB0"
+        real_device_path.write_text("")
+        device_path.symlink_to(real_device_path)
+        config_path.write_text(f"database_path: {db_path}\nproxy:\n  log_dir: {log_dir}\n")
+
+        self._seed_proxy_sbc(db_path, device_path=device_path)
+        write_proxy_state(
+            name="proxy-sbc",
+            log_dir=log_dir,
+            proxy_port=5500,
+            ser2net_port=4004,
+            allow_write=False,
+        )
+
+        result = runner.invoke(
+            main, ["-c", str(config_path), "connect", str(real_device_path)]
+        )
+
+        assert result.exit_code != 0
+        assert "Refusing direct 'connect' access" in result.output
+        assert "nc localhost 5500" in result.output
+
+    def test_connect_allows_non_console_alias_when_proxy_is_active(
+        self, runner, tmp_path, monkeypatch
+    ):
+        from labctl.serial.proxy import write_proxy_state
+
+        db_path, config_path = self._proxy_config(tmp_path)
+        log_dir = tmp_path / "logs"
+        config_path.write_text(f"database_path: {db_path}\nproxy:\n  log_dir: {log_dir}\n")
+
+        self._seed_proxy_sbc(db_path, add_debug_port=True)
+        write_proxy_state(
+            name="proxy-sbc",
+            log_dir=log_dir,
+            proxy_port=5500,
+            ser2net_port=4004,
+            allow_write=False,
+        )
+
+        calls = []
+
+        def fake_connect_tcp(host, port):
+            calls.append((host, port))
+
+        monkeypatch.setattr("labctl.cli._connect_tcp", fake_connect_tcp)
+
+        result = runner.invoke(main, ["-c", str(config_path), "connect", "proxy-debug"])
+
+        assert result.exit_code == 0
+        assert calls == [("localhost", 4014)]
+        assert "Refusing direct 'connect' access" not in result.output
+
+    def test_console_refuses_when_proxy_is_active(self, runner, tmp_path):
+        from labctl.serial.proxy import write_proxy_state
+
+        db_path, config_path = self._proxy_config(tmp_path)
+        log_dir = tmp_path / "logs"
+        config_path.write_text(f"database_path: {db_path}\nproxy:\n  log_dir: {log_dir}\n")
+
+        self._seed_proxy_sbc(db_path)
+        write_proxy_state(
+            name="proxy-sbc",
+            log_dir=log_dir,
+            proxy_port=5500,
+            ser2net_port=4004,
+            allow_write=False,
+        )
+
+        result = runner.invoke(main, ["-c", str(config_path), "console", "proxy-sbc"])
+
+        assert result.exit_code != 0
+        assert "Shared proxy is active" in result.output
+        assert "Refusing direct 'console' access" in result.output
+        assert "telnet localhost 5500" in result.output
+
+    def test_console_refuses_when_proxy_is_active_and_ser2net_disabled(
+        self, runner, tmp_path
+    ):
+        from labctl.serial.proxy import write_proxy_state
+
+        db_path, _ = self._proxy_config(tmp_path)
+        log_dir = tmp_path / "logs"
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            f"database_path: {db_path}\n"
+            "ser2net:\n"
+            "  enabled: false\n"
+            "proxy:\n"
+            f"  log_dir: {log_dir}\n"
+        )
+
+        self._seed_proxy_sbc(db_path)
+        write_proxy_state(
+            name="proxy-sbc",
+            log_dir=log_dir,
+            proxy_port=5500,
+            ser2net_port=4004,
+            allow_write=False,
+        )
+
+        result = runner.invoke(main, ["-c", str(config_path), "console", "proxy-sbc"])
+
+        assert result.exit_code != 0
+        assert "Shared proxy is active" in result.output
+        assert "Refusing direct 'console' access" in result.output
+        assert "telnet localhost 5500" in result.output
+
+    def test_console_allows_non_console_type_when_proxy_is_active(
+        self, runner, tmp_path, monkeypatch
+    ):
+        from labctl.serial.proxy import write_proxy_state
+
+        db_path, config_path = self._proxy_config(tmp_path)
+        log_dir = tmp_path / "logs"
+        config_path.write_text(f"database_path: {db_path}\nproxy:\n  log_dir: {log_dir}\n")
+
+        self._seed_proxy_sbc(db_path, add_debug_port=True)
+        write_proxy_state(
+            name="proxy-sbc",
+            log_dir=log_dir,
+            proxy_port=5500,
+            ser2net_port=4004,
+            allow_write=False,
+        )
+
+        calls = []
+
+        def fake_connect_tcp(host, port):
+            calls.append((host, port))
+
+        monkeypatch.setattr("labctl.cli._connect_tcp", fake_connect_tcp)
+
+        result = runner.invoke(
+            main, ["-c", str(config_path), "console", "proxy-sbc", "--type", "debug"]
+        )
+
+        assert result.exit_code == 0
+        assert calls == [("localhost", 4014)]
+        assert "Refusing direct 'console' access" not in result.output
 
 
 @pytest.fixture
