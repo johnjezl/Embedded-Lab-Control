@@ -405,13 +405,68 @@ def connect_cmd(ctx: click.Context, port_name: str, baud: int | None) -> None:
         _connect_direct(port_path, baud or config.serial.default_baud)
 
 
+# Escape sequence for the interactive TCP console: Ctrl+] (matches nc).
+# Press Ctrl+] then 'q' / Ctrl+\ to exit, Ctrl+] then Ctrl+] to send a literal.
+TCP_ESCAPE_CHAR = b"\x1d"  # ASCII 29 = Ctrl+]
+TCP_EXIT_CHARS = (b"q", b"Q", b"\x1c")  # 'q', 'Q', or Ctrl+\
+
+
+def _process_keystrokes(
+    data: bytes, in_escape: bool
+) -> tuple[bytes, bool, bool]:
+    """Drive the Ctrl+] escape state machine across a chunk of input.
+
+    Returns ``(bytes_to_send_upstream, new_in_escape_state, should_exit)``.
+
+    Rules:
+      - Ctrl+] then 'q'/'Q'/Ctrl+\\  → exit (rest of chunk dropped).
+      - Ctrl+] then Ctrl+]            → forward one literal Ctrl+].
+      - Ctrl+] then any other byte X  → forward Ctrl+] then X.
+      - Trailing Ctrl+] in a chunk    → set in_escape=True for the next chunk.
+    """
+    out = bytearray()
+    i = 0
+    while i < len(data):
+        byte = data[i : i + 1]
+        if in_escape:
+            in_escape = False
+            if byte in TCP_EXIT_CHARS:
+                return bytes(out), False, True
+            if byte == TCP_ESCAPE_CHAR:
+                out.extend(TCP_ESCAPE_CHAR)
+            else:
+                out.extend(TCP_ESCAPE_CHAR + byte)
+            i += 1
+            continue
+        if byte == TCP_ESCAPE_CHAR:
+            in_escape = True
+            i += 1
+            continue
+        out.extend(byte)
+        i += 1
+    return bytes(out), in_escape, False
+
+
 def _connect_tcp(host: str, port: int) -> None:
-    """Connect to serial port via TCP using nc or telnet."""
+    """Connect to serial console via TCP.
+
+    On an interactive TTY, runs a native raw-mode loop so each keystroke
+    is forwarded immediately — required for boot menus with short
+    timeouts (~3s). When stdin is piped or redirected, falls back to
+    `nc`/`telnet` so non-interactive use still works.
+    """
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        _connect_tcp_raw(host, port)
+        return
+    _connect_tcp_subprocess(host, port)
+
+
+def _connect_tcp_subprocess(host: str, port: int) -> None:
+    """Fallback for non-TTY stdin: shell out to nc, then telnet."""
     click.echo(f"Connecting to {host}:{port}...")
     click.echo("Press Ctrl+] then 'q' to disconnect (nc) or Ctrl+C to exit")
     click.echo("-" * 40)
 
-    # Try nc first, then telnet
     try:
         subprocess.run(["nc", host, str(port)], check=False)
     except FileNotFoundError:
@@ -421,6 +476,80 @@ def _connect_tcp(host: str, port: int) -> None:
             click.echo("Error: Neither 'nc' nor 'telnet' found", err=True)
             click.echo("Install with: sudo apt install netcat-openbsd", err=True)
             sys.exit(1)
+
+
+def _connect_tcp_raw(host: str, port: int) -> None:
+    """Interactive raw-mode TCP serial console (picocom-equivalent UX)."""
+    import select
+    import socket
+    import termios
+    import tty
+
+    click.echo(f"Connecting to {host}:{port}...")
+    click.echo("Escape: Ctrl+] then 'q' to disconnect")
+    click.echo("-" * 40)
+
+    try:
+        sock = socket.create_connection((host, port), timeout=5.0)
+    except OSError as e:
+        click.echo(f"Error connecting to {host}:{port}: {e}", err=True)
+        sys.exit(1)
+
+    sock.settimeout(None)
+    try:
+        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except OSError:
+        pass  # best-effort; some kernels reject on unix sockets etc.
+
+    stdin_fd = sys.stdin.fileno()
+    stdout_fd = sys.stdout.fileno()
+    old_settings = termios.tcgetattr(stdin_fd)
+    in_escape = False
+    exit_reason = "[Disconnected]"
+    try:
+        tty.setraw(stdin_fd)
+        while True:
+            try:
+                rlist, _, _ = select.select([sock, sys.stdin], [], [])
+            except InterruptedError:
+                continue
+            if sock in rlist:
+                try:
+                    data = sock.recv(4096)
+                except OSError as e:
+                    exit_reason = f"[Connection error: {e}]"
+                    break
+                if not data:
+                    exit_reason = "[Remote closed connection]"
+                    break
+                os.write(stdout_fd, data)
+            if sys.stdin in rlist:
+                try:
+                    data = os.read(stdin_fd, 1024)
+                except OSError:
+                    break
+                if not data:
+                    break
+                to_send, in_escape, should_exit = _process_keystrokes(
+                    data, in_escape
+                )
+                if to_send:
+                    try:
+                        sock.sendall(to_send)
+                    except OSError as e:
+                        exit_reason = f"[Send error: {e}]"
+                        break
+                if should_exit:
+                    break
+    finally:
+        termios.tcsetattr(stdin_fd, termios.TCSADRAIN, old_settings)
+        try:
+            sock.close()
+        except OSError:
+            pass
+        # Newline so the shell prompt lands on a fresh line after raw mode.
+        click.echo("")
+        click.echo(exit_reason)
 
 
 def _connect_direct(port_path: Path, baud: int) -> None:

@@ -1115,3 +1115,144 @@ class TestActivityCommands:
         payload = __import__("json").loads(lines[-1])
         assert payload["entity_name"] == "export-pi"
         assert payload["actor"] == "cli:alice"
+
+
+# ---------------------------------------------------------------------------
+# `labctl connect` raw-mode TTY / Ctrl+] escape state machine
+# ---------------------------------------------------------------------------
+
+
+class TestConnectEscapeStateMachine:
+    """Pure-function tests for the Ctrl+] escape parser used by raw-mode
+    `labctl connect`. No sockets, no terminals — just byte handling."""
+
+    def setup_method(self):
+        from labctl.cli import _process_keystrokes
+
+        self.process = _process_keystrokes
+
+    def test_plain_input_passes_through(self):
+        out, escape, exit_ = self.process(b"hello", False)
+        assert out == b"hello"
+        assert escape is False
+        assert exit_ is False
+
+    def test_single_escape_sets_pending_state(self):
+        """A trailing Ctrl+] in a chunk must set in_escape for the next read."""
+        out, escape, exit_ = self.process(b"\x1d", False)
+        assert out == b""
+        assert escape is True
+        assert exit_ is False
+
+    def test_escape_then_q_exits(self):
+        """Ctrl+] q in one chunk → exit."""
+        out, escape, exit_ = self.process(b"\x1dq", False)
+        assert exit_ is True
+
+    def test_escape_then_q_split_across_chunks(self):
+        """Common boot-menu typing pattern: keys arrive byte-by-byte."""
+        out1, escape1, exit1 = self.process(b"\x1d", False)
+        assert escape1 is True and exit1 is False
+        out2, escape2, exit2 = self.process(b"q", escape1)
+        assert exit2 is True
+        assert escape2 is False
+
+    def test_escape_then_ctrl_backslash_also_exits(self):
+        out, escape, exit_ = self.process(b"\x1d\x1c", False)
+        assert exit_ is True
+
+    def test_doubled_escape_sends_one_literal(self):
+        """Ctrl+] Ctrl+] → forward one literal Ctrl+] to the remote."""
+        out, escape, exit_ = self.process(b"\x1d\x1d", False)
+        assert out == b"\x1d"
+        assert escape is False
+        assert exit_ is False
+
+    def test_escape_then_other_byte_forwards_both(self):
+        """Ctrl+] X (X != q/Q/Ctrl+\\/Ctrl+]) → forward Ctrl+] then X."""
+        out, escape, exit_ = self.process(b"\x1da", False)
+        assert out == b"\x1da"
+        assert escape is False
+        assert exit_ is False
+
+    def test_text_before_and_after_escape_in_one_chunk(self):
+        """Ensure the parser reads bytes left-to-right within a chunk."""
+        out, escape, exit_ = self.process(b"hi\x1dabye", False)
+        assert out == b"hi\x1dabye"
+        assert escape is False
+        assert exit_ is False
+
+    def test_typing_before_escape_then_q_in_next_chunk(self):
+        """Pre-escape text is forwarded; q in next chunk still exits."""
+        out1, escape1, exit1 = self.process(b"foo\x1d", False)
+        assert out1 == b"foo"
+        assert escape1 is True and exit1 is False
+        out2, escape2, exit2 = self.process(b"q", escape1)
+        assert out2 == b""
+        assert exit2 is True
+
+
+class TestConnectTcpDispatch:
+    """`_connect_tcp` picks raw mode for TTYs, subprocess fallback otherwise."""
+
+    def test_non_tty_stdin_falls_back_to_subprocess(self, monkeypatch):
+        from labctl import cli
+
+        calls = []
+        monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: False)
+        monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True)
+        monkeypatch.setattr(
+            cli.subprocess, "run", lambda *a, **k: calls.append(("run", a, k))
+        )
+
+        # Sentinel that fails the test if the raw path is taken.
+        def boom(*a, **k):
+            raise AssertionError("Should not enter raw mode for non-TTY stdin")
+
+        monkeypatch.setattr(cli, "_connect_tcp_raw", boom)
+        cli._connect_tcp("localhost", 4007)
+
+        assert calls, "subprocess fallback should have been invoked"
+        # First positional arg is the argv list.
+        argv = calls[0][1][0]
+        assert argv == ["nc", "localhost", "4007"]
+
+    def test_non_tty_stdout_also_falls_back(self, monkeypatch):
+        """If stdout is redirected to a file, raw mode is unsafe."""
+        from labctl import cli
+
+        calls = []
+        monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: False)
+        monkeypatch.setattr(
+            cli.subprocess, "run", lambda *a, **k: calls.append(("run", a, k))
+        )
+        monkeypatch.setattr(
+            cli, "_connect_tcp_raw",
+            lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError("Should not enter raw mode")
+            ),
+        )
+
+        cli._connect_tcp("localhost", 4007)
+        assert calls
+
+    def test_tty_stdio_uses_raw_mode(self, monkeypatch):
+        from labctl import cli
+
+        called = []
+        monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
+        monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True)
+        monkeypatch.setattr(
+            cli, "_connect_tcp_raw", lambda h, p: called.append((h, p))
+        )
+        # Should NOT be invoked.
+        monkeypatch.setattr(
+            cli.subprocess, "run",
+            lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError("Should not call subprocess from TTY path")
+            ),
+        )
+
+        cli._connect_tcp("localhost", 4007)
+        assert called == [("localhost", 4007)]

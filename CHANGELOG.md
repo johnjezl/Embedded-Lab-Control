@@ -7,6 +7,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Fixed
+- `labctl connect` now puts the local TTY in raw mode for the duration
+  of the session, so each keystroke is forwarded immediately. Previously
+  it shelled out to `nc`/`telnet`, which left the local terminal in
+  cooked/line-buffered mode — boot menus with ~3s timeouts (Jetson
+  U-Boot, Raspberry Pi, etc.) silently dropped keystrokes because they
+  sat in the kernel until the user hit Enter. Native loop with select()
+  + tty.setraw + TCP_NODELAY; non-TTY stdin/stdout still falls back to
+  `nc`. New escape sequence: Ctrl+] then 'q' (or Ctrl+\) to disconnect,
+  Ctrl+] then Ctrl+] to send a literal Ctrl+]. 12 regression tests
+  cover the escape state machine and TTY/non-TTY dispatch (2026-04-26)
+
 - `labctl serial list` showed registered adapters as "unassigned" when
   their assignment rows had `serial_device_id = NULL`. Root cause:
   `ResourceManager.assign_serial_port()` only populated the FK when
