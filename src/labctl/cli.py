@@ -155,6 +155,79 @@ def _collect_status_power_states(sbcs, reset: str) -> dict[str, str]:
     return power_by_sbc
 
 
+# Readings older than this are dimmed in --fast output. Default monitor
+# interval is 60s, so 2× that is the staleness threshold.
+STATUS_FAST_STALE_SECONDS = 120
+
+
+def _parse_db_timestamp(value):
+    """Parse a SQLite TIMESTAMP string into a naive datetime.
+
+    SQLite stores CURRENT_TIMESTAMP as 'YYYY-MM-DD HH:MM:SS' in UTC.
+    Accept ISO-8601 with milliseconds too. Returns None on failure.
+    """
+    if not value:
+        return None
+    if hasattr(value, "year"):  # already a datetime
+        return value
+    text = str(value).replace("T", " ")
+    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
+        try:
+            from datetime import datetime as _dt
+
+            return _dt.strptime(text, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _cached_status_power_states(sbcs, reset: str) -> dict[str, str]:
+    """Read the daemon-cached power state for each SBC. Never probes the network.
+
+    Returns a display string per SBC name:
+      - "-"           SBC has no power plug, or no observation yet
+      - colored ON    fresh observation (≤ 2× monitor interval ago)
+      - colored OFF   fresh observation
+      - "?"           fresh "unknown" observation
+      - dimmed copy   reading older than the staleness threshold
+    """
+    from datetime import datetime as _dt
+    from datetime import timezone as _tz
+
+    GREEN = "\033[32m"
+    RED = "\033[31m"
+    DIM = "\033[2m"
+
+    def render(state, age_seconds):
+        # Pick the base label and color.
+        s = (state or "").lower()
+        if s == "on":
+            base = f"{GREEN}ON{reset}"
+        elif s == "off":
+            base = f"{RED}OFF{reset}"
+        else:
+            base = "?"
+        if age_seconds is not None and age_seconds > STATUS_FAST_STALE_SECONDS:
+            return f"{DIM}{base}{reset}"
+        return base
+
+    out: dict[str, str] = {}
+    # SQLite CURRENT_TIMESTAMP is naive UTC; compare against naive UTC.
+    now = _dt.now(_tz.utc).replace(tzinfo=None)
+    for sbc in sbcs:
+        if not sbc.power_plug:
+            out[sbc.name] = "-"
+            continue
+        state = sbc.last_power_state
+        ts = _parse_db_timestamp(sbc.last_power_at)
+        if state is None or ts is None:
+            out[sbc.name] = "-"
+            continue
+        age = max(0, int((now - ts).total_seconds()))
+        out[sbc.name] = render(state, age)
+    return out
+
+
 def _sdwire_host_switch_guard_cli(
     sbc_name: str, sbc, force: bool = False, allow_force_override: bool = False
 ) -> str | None:
@@ -2990,12 +3063,23 @@ def ssh_cmd(ctx: click.Context, sbc_name: str, user: str | None) -> None:
     default=5,
     help="Watch interval in seconds (default: 5)",
 )
+@click.option(
+    "--fast",
+    "-f",
+    is_flag=True,
+    help=(
+        "Skip live power probes; show the cached value written by the "
+        "monitor daemon. Renders instantly even if a power plug is slow "
+        "or unreachable. Stale readings (older than 2 minutes) are dimmed."
+    ),
+)
 @click.pass_context
 def status_cmd(
     ctx: click.Context,
     project: str | None,
     watch: bool,
     interval: int,
+    fast: bool,
 ) -> None:
     """Show status overview of all SBCs.
 
@@ -3026,7 +3110,10 @@ def status_cmd(
 
         # Index active claims by sbc_name for O(1) per-row lookup.
         claims_by_sbc = {c.sbc_name: c for c in manager.list_active_claims()}
-        power_by_sbc = _collect_status_power_states(sbcs, reset)
+        if fast:
+            power_by_sbc = _cached_status_power_states(sbcs, reset)
+        else:
+            power_by_sbc = _collect_status_power_states(sbcs, reset)
 
         click.echo(
             f"{'NAME':<15} {'PROJECT':<12} {'STATUS':<12} {'IP':<15} "

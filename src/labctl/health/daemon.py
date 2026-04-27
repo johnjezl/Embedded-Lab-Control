@@ -88,6 +88,7 @@ class MonitorDaemon:
         )
 
         # Update status in database if enabled
+        sbc = None
         if self.update_status and new_status:
             sbc = self.manager.get_sbc_by_name(sbc_name)
             if sbc and sbc.status != new_status:
@@ -103,6 +104,22 @@ class MonitorDaemon:
 
                 self.manager.update_sbc(sbc.id, status=new_status)
                 self.manager.log_status(sbc.id, new_status, details)
+
+        # Cache the power observation so `labctl status --fast` can read
+        # it without making live network calls. Stamp every cycle (even
+        # when the value is unchanged) so freshness is meaningful.
+        if self.update_status and summary.power_state is not None:
+            if sbc is None:
+                sbc = self.manager.get_sbc_by_name(sbc_name)
+            if sbc is not None:
+                try:
+                    self.manager.update_power_observation(
+                        sbc.id, summary.power_state.value
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(
+                        "Failed to cache power observation for %s: %s", sbc_name, e
+                    )
 
         # Check for status change alerts
         if self.alert_on_offline and new_status:

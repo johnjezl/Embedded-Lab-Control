@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- `labctl status --fast` (alias `-f`) renders from the daemon's cached
+  power observation instead of probing every plug live. Boot times go
+  from "stuck on the slowest plug" to instant: 6.6s → 0.15s on a 6-SBC
+  lab. Stale observations (older than 2× the monitor interval, default
+  120s) render dimmed so it's obvious when the daemon is behind. The
+  default mode still does live probing — `--fast` is opt-in. Schema v6
+  adds `last_power_state` and `last_power_at` columns to `sbcs`; the
+  monitor daemon UPDATEs them every cycle. 11 new tests cover the
+  schema migration, manager observation API, and `--fast` rendering
+  including staleness dimming and the no-observation-yet case
+  (2026-04-27)
+
 ### Fixed
 - `labctl connect` now puts the local TTY in raw mode for the duration
   of the session, so each keystroke is forwarded immediately. Previously

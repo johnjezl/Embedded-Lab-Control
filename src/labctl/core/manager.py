@@ -885,6 +885,32 @@ class ResourceManager:
 
     # --- Status Log ---
 
+    def update_power_observation(
+        self,
+        sbc_id: int,
+        power_state: Optional[str],
+    ) -> None:
+        """Record the daemon's most recent power observation for an SBC.
+
+        Stamps `last_power_at` with the current time even when the
+        observed state hasn't changed, so `status --fast` can report
+        freshness. A `power_state` of None records "unknown" so callers
+        can distinguish "no plug / never observed" (NULL in the column)
+        from "observed but indeterminate".
+        """
+        normalized = (power_state or "unknown").lower()
+        if normalized not in {"on", "off", "unknown"}:
+            normalized = "unknown"
+        self.db.execute_modify(
+            """
+            UPDATE sbcs
+            SET last_power_state = ?,
+                last_power_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (normalized, sbc_id),
+        )
+
     def log_status(
         self,
         sbc_id: int,

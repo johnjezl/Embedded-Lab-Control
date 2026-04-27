@@ -1256,3 +1256,149 @@ class TestConnectTcpDispatch:
 
         cli._connect_tcp("localhost", 4007)
         assert called == [("localhost", 4007)]
+
+
+# ---------------------------------------------------------------------------
+# `labctl status --fast` reads cached power state, never hits the network
+# ---------------------------------------------------------------------------
+
+
+class TestStatusFastMode:
+    """`--fast` renders from sbcs.last_power_state without live probes."""
+
+    def _write_config(self, tmp_path, db_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(f"database_path: {db_path}\n")
+        return config_path
+
+    def _seed_sbc(
+        self,
+        db_path,
+        *,
+        name="fast-sbc",
+        plug=True,
+        last_power_state=None,
+        age_seconds=None,
+    ):
+        from labctl.core.database import Database
+        from labctl.core.manager import ResourceManager
+        from labctl.core.models import PlugType
+
+        d = Database(db_path)
+        d.initialize()
+        m = ResourceManager(d)
+        sbc = m.create_sbc(name=name)
+        if plug:
+            m.assign_power_plug(sbc.id, PlugType.TASMOTA, address="10.0.0.1")
+        if last_power_state is not None:
+            m.update_power_observation(sbc.id, last_power_state)
+            if age_seconds is not None:
+                # Backdate the cached timestamp so we can assert staleness.
+                from datetime import datetime, timedelta, timezone
+
+                ts = (
+                    datetime.now(timezone.utc).replace(tzinfo=None)
+                    - timedelta(seconds=age_seconds)
+                ).strftime("%Y-%m-%d %H:%M:%S")
+                d.execute_modify(
+                    "UPDATE sbcs SET last_power_at = ? WHERE id = ?", (ts, sbc.id)
+                )
+        return sbc
+
+    def test_fast_does_not_call_live_probe(self, runner, tmp_path, monkeypatch):
+        from labctl import cli
+
+        db_path = tmp_path / "labctl.db"
+        config_path = self._write_config(tmp_path, db_path)
+        self._seed_sbc(db_path, last_power_state="on")
+
+        # Sentinel: live probe would break the test.
+        def boom(*a, **k):
+            raise AssertionError("Live probe must not run in --fast mode")
+
+        monkeypatch.setattr(cli, "_collect_status_power_states", boom)
+
+        result = runner.invoke(
+            cli.main, ["-c", str(config_path), "status", "--fast"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "fast-sbc" in result.output
+        assert "ON" in result.output
+
+    def test_fast_renders_cached_off(self, runner, tmp_path):
+        from labctl import cli
+
+        db_path = tmp_path / "labctl.db"
+        config_path = self._write_config(tmp_path, db_path)
+        self._seed_sbc(db_path, last_power_state="off")
+
+        result = runner.invoke(
+            cli.main, ["-c", str(config_path), "status", "--fast"]
+        )
+        assert result.exit_code == 0
+        assert "OFF" in result.output
+
+    def test_fast_marks_stale_observation_dim(self, runner, tmp_path):
+        """Readings older than 2× monitor interval are dimmed."""
+        from labctl import cli
+
+        db_path = tmp_path / "labctl.db"
+        config_path = self._write_config(tmp_path, db_path)
+        # 5 minutes old → well past the 2-minute threshold
+        self._seed_sbc(db_path, last_power_state="on", age_seconds=300)
+
+        # color=True so CliRunner preserves the ANSI escape we assert on.
+        result = runner.invoke(
+            cli.main, ["-c", str(config_path), "status", "--fast"], color=True
+        )
+        assert result.exit_code == 0
+        # Dim attribute is ANSI \x1b[2m
+        assert "\x1b[2m" in result.output
+
+    def test_fast_shows_dash_when_no_observation(self, runner, tmp_path, monkeypatch):
+        from labctl import cli
+
+        db_path = tmp_path / "labctl.db"
+        config_path = self._write_config(tmp_path, db_path)
+        self._seed_sbc(db_path, last_power_state=None)
+
+        # Make sure live probe doesn't run.
+        monkeypatch.setattr(
+            cli,
+            "_collect_status_power_states",
+            lambda *a, **k: pytest.fail("should not probe"),
+        )
+
+        result = runner.invoke(
+            cli.main, ["-c", str(config_path), "status", "--fast"]
+        )
+        assert result.exit_code == 0
+        # SBC line present, but POWER column should be "-"
+        line = next(ln for ln in result.output.splitlines() if "fast-sbc" in ln)
+        # The POWER column sits between the IP column and the CLAIM column.
+        # Strip ANSI to make the assertion robust.
+        import re
+
+        clean = re.sub(r"\x1b\[[0-9;]*m", "", line)
+        # Anything other than ON/OFF/? in the POWER column is fine; require dash.
+        assert " - " in clean
+
+    def test_default_mode_still_calls_live_probe(self, runner, tmp_path, monkeypatch):
+        """Sanity: omitting --fast falls through to the live path."""
+        from labctl import cli
+
+        db_path = tmp_path / "labctl.db"
+        config_path = self._write_config(tmp_path, db_path)
+        self._seed_sbc(db_path, last_power_state="on")
+
+        called: list = []
+
+        def fake_collect(sbcs, reset):
+            called.append(len(list(sbcs)))
+            return {sbc.name: "ON" for sbc in sbcs}
+
+        monkeypatch.setattr(cli, "_collect_status_power_states", fake_collect)
+
+        result = runner.invoke(cli.main, ["-c", str(config_path), "status"])
+        assert result.exit_code == 0, result.output
+        assert called, "live probe path should run without --fast"

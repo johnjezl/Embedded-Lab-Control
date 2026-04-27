@@ -35,9 +35,6 @@ def _all_events(db: Database):
 
 
 class TestSchemaV5:
-    def test_schema_version_is_5(self):
-        assert SCHEMA_VERSION == 5
-
     def test_fresh_db_has_audit_columns(self, db):
         cols = {r["name"] for r in db.execute("PRAGMA table_info(audit_log)")}
         for expected in ("actor", "source", "result", "claim_id"):
@@ -331,3 +328,109 @@ class TestQueryAndPrune:
         events = audit.query_events(db, limit=10)
         assert len(events) == 1
         assert events[0]["action"] == "boundary"
+
+
+# ---------------------------------------------------------------------------
+# Schema v6 + power-cache plumbing for `labctl status --fast`
+# ---------------------------------------------------------------------------
+
+
+class TestSchemaV6:
+    def test_schema_version_is_6(self):
+        from labctl.core.database import SCHEMA_VERSION
+
+        assert SCHEMA_VERSION == 6
+
+    def test_fresh_db_has_power_cache_columns(self, db):
+        cols = {r["name"] for r in db.execute("PRAGMA table_info(sbcs)")}
+        assert "last_power_state" in cols
+        assert "last_power_at" in cols
+
+    def test_migration_from_v5_to_v6(self, tmp_path):
+        """A pre-v6 database must gain the new columns and be readable."""
+        path = tmp_path / "v5.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE sbcs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                project TEXT,
+                description TEXT,
+                ssh_user TEXT DEFAULT 'root',
+                status TEXT DEFAULT 'unknown',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id INTEGER,
+                entity_name TEXT,
+                details TEXT,
+                logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                actor TEXT NOT NULL DEFAULT 'internal',
+                source TEXT NOT NULL DEFAULT 'internal',
+                result TEXT NOT NULL DEFAULT 'ok',
+                claim_id INTEGER
+            );
+            CREATE TABLE claims (id INTEGER PRIMARY KEY);
+            INSERT INTO schema_version (version) VALUES (5);
+            INSERT INTO sbcs (name, project) VALUES ('legacy-sbc', 'p');
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        from labctl.core.database import Database
+
+        Database(path).initialize()
+
+        d2 = Database(path)
+        cols = {r["name"] for r in d2.execute("PRAGMA table_info(sbcs)")}
+        assert "last_power_state" in cols
+        assert "last_power_at" in cols
+
+        # Pre-existing rows survive with NULL columns.
+        row = d2.execute_one("SELECT * FROM sbcs WHERE name = ?", ("legacy-sbc",))
+        assert row["last_power_state"] is None
+        assert row["last_power_at"] is None
+
+
+class TestPowerObservationPersistence:
+    def test_update_power_observation_writes_state_and_timestamp(self, manager):
+        sbc = manager.create_sbc(name="cache-sbc", project="x")
+        manager.update_power_observation(sbc.id, "on")
+
+        fresh = manager.get_sbc(sbc.id)
+        assert fresh.last_power_state == "on"
+        assert fresh.last_power_at is not None
+
+    def test_update_power_observation_normalizes_unknown(self, manager):
+        sbc = manager.create_sbc(name="cache-unknown", project="x")
+        manager.update_power_observation(sbc.id, None)
+        fresh = manager.get_sbc(sbc.id)
+        assert fresh.last_power_state == "unknown"
+
+        manager.update_power_observation(sbc.id, "garbage")
+        fresh = manager.get_sbc(sbc.id)
+        assert fresh.last_power_state == "unknown"
+
+    def test_update_stamps_timestamp_each_call(self, manager):
+        """`last_power_at` must move forward even when the value is unchanged."""
+        import time
+
+        sbc = manager.create_sbc(name="cache-bump", project="x")
+        manager.update_power_observation(sbc.id, "on")
+        first = manager.get_sbc(sbc.id).last_power_at
+
+        time.sleep(1.1)  # SQLite CURRENT_TIMESTAMP has 1-second resolution
+        manager.update_power_observation(sbc.id, "on")
+        second = manager.get_sbc(sbc.id).last_power_at
+
+        assert second != first  # advanced

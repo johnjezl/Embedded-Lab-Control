@@ -238,6 +238,11 @@ class SBC:
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
+    # Cached power observation written by the monitor daemon every cycle.
+    # Read by `labctl status --fast` to avoid live network probes.
+    last_power_state: Optional[str] = None  # "on" | "off" | "unknown"
+    last_power_at: Optional[str] = None
+
     # Related objects (populated by manager)
     serial_ports: list[SerialPort] = field(default_factory=list)
     network_addresses: list[NetworkAddress] = field(default_factory=list)
@@ -247,6 +252,15 @@ class SBC:
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "SBC":
         """Create SBC from database row."""
+        # Pre-v6 rows may not have the cached-power columns; tolerate that.
+        try:
+            last_power_state = row["last_power_state"]
+        except (IndexError, KeyError):
+            last_power_state = None
+        try:
+            last_power_at = row["last_power_at"]
+        except (IndexError, KeyError):
+            last_power_at = None
         return cls(
             id=row["id"],
             name=row["name"],
@@ -256,6 +270,8 @@ class SBC:
             status=Status(row["status"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
+            last_power_state=last_power_state,
+            last_power_at=last_power_at,
         )
 
     @property

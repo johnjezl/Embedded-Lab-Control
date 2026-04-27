@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Generator, Optional
 
 # Current schema version
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # SQL statements for schema creation
 SCHEMA_SQL = """
@@ -29,7 +29,11 @@ CREATE TABLE IF NOT EXISTS sbcs (
     ssh_user TEXT DEFAULT 'root',
     status TEXT DEFAULT 'unknown',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    -- Cached power observation written by the monitor daemon every cycle.
+    -- Read by `labctl status --fast` to avoid live network probes.
+    last_power_state TEXT,         -- on | off | unknown
+    last_power_at TIMESTAMP        -- when the daemon last observed power
 );
 
 -- Registered USB-serial adapters
@@ -377,6 +381,18 @@ class Database:
                     ON audit_log(source, logged_at DESC);
                 """
             )
+
+        if from_version < 6:
+            # v6: cache the daemon's most recent power observation on each
+            # SBC so `labctl status --fast` can render without live probes.
+            for column_sql in (
+                "ALTER TABLE sbcs ADD COLUMN last_power_state TEXT",
+                "ALTER TABLE sbcs ADD COLUMN last_power_at TIMESTAMP",
+            ):
+                try:
+                    conn.execute(column_sql)
+                except sqlite3.OperationalError:
+                    pass  # column already exists
 
         conn.execute(
             "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
