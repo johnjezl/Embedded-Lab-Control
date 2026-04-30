@@ -6,6 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+- Monitor daemon now runs two cadences (2026-04-30):
+  - **Fast track (`health.check_interval`, default 10 s)** — ping +
+    serial probes, parallelized across SBCs via a thread pool. Sets
+    `sbcs.status` more responsively.
+  - **Slow track (`health.power_check_interval`, default 60 s)** —
+    power probes, also parallelized. Stays at 60 s by default to limit
+    pressure on plug controllers (Kasa KLAP especially).
+  - **`health.min_sleep_seconds` (default 1.0)** — floor on the
+    between-cycle sleep so a runaway cycle (elapsed ≥ interval) can't
+    pin a CPU spinning.
+  - **Default `check_interval` 60 s → 10 s** for fresh installs;
+    existing configs keep their explicit value. Set
+    `power_check_interval: 10` in config to also tighten power
+    polling once Phase 2 lands (Kasa broadcast discovery).
+- `HealthChecker.check_all` is now parallel (ThreadPoolExecutor,
+  max 16 workers). Wall time is the *max* of per-SBC probe latencies
+  rather than the sum. Per-SBC failures isolate; one bad probe
+  returns an empty summary instead of dropping the row.
+- `labctl status --fast` staleness threshold derives from
+  `2 × power_check_interval` (was hardcoded 120 s) so it adapts when
+  you change the cadence.
+
 ### Added
 - `labctl status --fast` (alias `-f`) renders from the daemon's cached
   power observation instead of probing every plug live. Boot times go

@@ -379,7 +379,9 @@ class TestHealthConfig:
 
         config = HealthConfig()
 
-        assert config.check_interval == 60
+        assert config.check_interval == 10
+        assert config.power_check_interval == 60
+        assert config.min_sleep_seconds == 1.0
         assert config.ping_timeout == 2.0
         assert config.serial_timeout == 2.0
         assert config.status_retention_days == 30
@@ -393,7 +395,8 @@ class TestHealthConfig:
         config = Config()
 
         assert hasattr(config, "health")
-        assert config.health.check_interval == 60
+        assert config.health.check_interval == 10
+        assert config.health.power_check_interval == 60
 
     def test_health_config_from_dict(self):
         """Test loading health config from dictionary."""
@@ -421,7 +424,9 @@ class TestHealthConfig:
         data = config.to_dict()
 
         assert "health" in data
-        assert data["health"]["check_interval"] == 60
+        assert data["health"]["check_interval"] == 10
+        assert data["health"]["power_check_interval"] == 60
+        assert data["health"]["min_sleep_seconds"] == 1.0
         assert data["health"]["ping_timeout"] == 2.0
 
 
@@ -489,3 +494,142 @@ class TestMonitorDaemon:
 
         assert not alert_manager.trigger.called
         assert daemon._last_power["sbc-x"] == "on"
+
+
+class TestSplitCadence:
+    """Tests for the fast/slow split-cadence behavior in `run_once`."""
+
+    def _daemon(self, **kwargs):
+        from labctl.health.daemon import MonitorDaemon
+
+        manager = MagicMock()
+        manager.list_sbcs.return_value = []
+        checker = MagicMock()
+        checker.check_all.return_value = {}
+        alerts = MagicMock(spec=AlertManager)
+        kwargs.setdefault("interval", 10)
+        kwargs.setdefault("power_check_interval", 60)
+        kwargs.setdefault("min_sleep_seconds", 1.0)
+        return MonitorDaemon(manager, checker, alerts, **kwargs), checker
+
+    def test_fast_tick_omits_power(self):
+        from labctl.health.checks import CheckType
+
+        daemon, checker = self._daemon()
+        daemon.run_once(include_power=False)
+
+        kwargs = checker.check_all.call_args.kwargs
+        assert kwargs["check_types"] == [CheckType.PING, CheckType.SERIAL]
+
+    def test_slow_tick_includes_power(self):
+        from labctl.health.checks import CheckType
+
+        daemon, checker = self._daemon()
+        daemon.run_once(include_power=True)
+
+        kwargs = checker.check_all.call_args.kwargs
+        assert kwargs["check_types"] == [
+            CheckType.PING,
+            CheckType.SERIAL,
+            CheckType.POWER,
+        ]
+
+    def test_first_run_includes_power(self):
+        """`_last_power_check` starts at 0, so the first auto-tick should
+        include power (every Nth tick where N=power/interval)."""
+        from labctl.health.checks import CheckType
+
+        daemon, checker = self._daemon(interval=10, power_check_interval=60)
+        # `include_power=None` defers to the elapsed-time decision.
+        daemon.run_once()
+        assert CheckType.POWER in checker.check_all.call_args.kwargs["check_types"]
+
+    def test_subsequent_fast_ticks_skip_power(self):
+        """After a power probe runs, the next several fast ticks should
+        skip power until power_check_interval elapses again."""
+        from labctl.health.checks import CheckType
+
+        daemon, checker = self._daemon(interval=10, power_check_interval=60)
+        # First call records last_power_check = monotonic now.
+        daemon.run_once()  # power probed
+        checker.check_all.reset_mock()
+
+        # The very next auto-tick (no time passing in test) must NOT
+        # include power.
+        daemon.run_once()
+        kwargs = checker.check_all.call_args.kwargs
+        assert CheckType.POWER not in kwargs["check_types"]
+
+
+class TestParallelCheckAll:
+    """`HealthChecker.check_all` should run probes concurrently."""
+
+    def test_parallel_check_all_returns_all_sbcs(self):
+        from labctl.health.checks import HealthChecker
+
+        # Three fake SBCs; checker probes overlap in time.
+        checker = HealthChecker()
+        sbcs = []
+        for i in range(3):
+            sbc = MagicMock()
+            sbc.name = f"sbc-{i}"
+            sbc.primary_ip = None
+            sbc.serial_ports = []
+            sbc.power_plug = None
+            sbcs.append(sbc)
+
+        results = checker.check_all(sbcs, check_types=[])
+        assert set(results.keys()) == {"sbc-0", "sbc-1", "sbc-2"}
+
+    def test_parallel_isolates_per_sbc_failures(self):
+        """If one SBC's check_sbc raises, the others still return."""
+        from labctl.health.checks import HealthChecker
+
+        checker = HealthChecker()
+
+        def fake_check_sbc(sbc, check_types=None):
+            if sbc.name == "boom":
+                raise RuntimeError("probe blew up")
+            from labctl.health.checks import HealthCheckSummary
+
+            return HealthCheckSummary(sbc_name=sbc.name)
+
+        with patch.object(HealthChecker, "check_sbc", side_effect=fake_check_sbc):
+            sbcs = []
+            for name in ("ok-1", "boom", "ok-2"):
+                sbc = MagicMock()
+                sbc.name = name
+                sbcs.append(sbc)
+            results = checker.check_all(sbcs)
+
+        assert set(results.keys()) == {"ok-1", "boom", "ok-2"}
+        # Failed SBC gets a placeholder summary, not a missing key.
+        assert results["boom"] is not None
+
+    def test_parallel_speedup_over_serial(self):
+        """With sleeping probes, parallel cycle ≈ max latency, not sum."""
+        import time as _time
+
+        from labctl.health.checks import HealthChecker, HealthCheckSummary
+
+        checker = HealthChecker()
+        per_probe = 0.25  # seconds
+
+        def slow_check(sbc, check_types=None):
+            _time.sleep(per_probe)
+            return HealthCheckSummary(sbc_name=sbc.name)
+
+        sbcs = []
+        for i in range(4):
+            sbc = MagicMock()
+            sbc.name = f"sbc-{i}"
+            sbcs.append(sbc)
+
+        with patch.object(HealthChecker, "check_sbc", side_effect=slow_check):
+            t0 = _time.monotonic()
+            checker.check_all(sbcs)
+            elapsed = _time.monotonic() - t0
+
+        # Serial would be 4 × 0.25 = 1.0s; parallel should be ~0.25-0.5s.
+        # Generous bound to avoid flakes on slow CI: < 0.7s.
+        assert elapsed < 0.7, f"expected parallel speedup but took {elapsed:.2f}s"

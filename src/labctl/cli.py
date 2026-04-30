@@ -155,9 +155,18 @@ def _collect_status_power_states(sbcs, reset: str) -> dict[str, str]:
     return power_by_sbc
 
 
-# Readings older than this are dimmed in --fast output. Default monitor
-# interval is 60s, so 2× that is the staleness threshold.
+# Default staleness floor for `--fast`. The actual threshold is
+# computed from config (2 × power_check_interval); this constant is the
+# fallback when no config is available.
 STATUS_FAST_STALE_SECONDS = 120
+
+
+def _status_fast_stale_threshold(config) -> int:
+    """Compute the dim-threshold from config: 2 × power_check_interval."""
+    try:
+        return max(STATUS_FAST_STALE_SECONDS, 2 * int(config.health.power_check_interval))
+    except (AttributeError, TypeError, ValueError):
+        return STATUS_FAST_STALE_SECONDS
 
 
 def _parse_db_timestamp(value):
@@ -181,12 +190,14 @@ def _parse_db_timestamp(value):
     return None
 
 
-def _cached_status_power_states(sbcs, reset: str) -> dict[str, str]:
+def _cached_status_power_states(
+    sbcs, reset: str, stale_threshold: int = STATUS_FAST_STALE_SECONDS
+) -> dict[str, str]:
     """Read the daemon-cached power state for each SBC. Never probes the network.
 
     Returns a display string per SBC name:
       - "-"           SBC has no power plug, or no observation yet
-      - colored ON    fresh observation (≤ 2× monitor interval ago)
+      - colored ON    fresh observation (≤ stale_threshold ago)
       - colored OFF   fresh observation
       - "?"           fresh "unknown" observation
       - dimmed copy   reading older than the staleness threshold
@@ -207,7 +218,7 @@ def _cached_status_power_states(sbcs, reset: str) -> dict[str, str]:
             base = f"{RED}OFF{reset}"
         else:
             base = "?"
-        if age_seconds is not None and age_seconds > STATUS_FAST_STALE_SECONDS:
+        if age_seconds is not None and age_seconds > stale_threshold:
             return f"{DIM}{base}{reset}"
         return base
 
@@ -3111,7 +3122,8 @@ def status_cmd(
         # Index active claims by sbc_name for O(1) per-row lookup.
         claims_by_sbc = {c.sbc_name: c for c in manager.list_active_claims()}
         if fast:
-            power_by_sbc = _cached_status_power_states(sbcs, reset)
+            stale = _status_fast_stale_threshold(ctx.obj["config"])
+            power_by_sbc = _cached_status_power_states(sbcs, reset, stale)
         else:
             power_by_sbc = _collect_status_power_states(sbcs, reset)
 
@@ -4456,12 +4468,17 @@ def monitor_cmd(
         checker=checker,
         alert_manager=alert_manager,
         interval=check_interval,
+        power_check_interval=config.health.power_check_interval,
+        min_sleep_seconds=config.health.min_sleep_seconds,
         update_status=not no_update,
         alert_on_offline=config.health.alert_on_offline,
         alert_on_power_change=config.health.alert_on_power_change,
     )
 
-    click.echo(f"Starting monitor daemon (interval: {check_interval}s)")
+    click.echo(
+        f"Starting monitor daemon "
+        f"(fast: {check_interval}s, power: {config.health.power_check_interval}s)"
+    )
     click.echo("Press Ctrl+C to stop\n")
 
     try:

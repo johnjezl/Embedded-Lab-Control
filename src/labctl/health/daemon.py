@@ -29,7 +29,9 @@ class MonitorDaemon:
         manager: ResourceManager,
         checker: HealthChecker,
         alert_manager: AlertManager,
-        interval: int = 60,
+        interval: int = 10,
+        power_check_interval: int = 60,
+        min_sleep_seconds: float = 1.0,
         update_status: bool = True,
         alert_on_offline: bool = True,
         alert_on_power_change: bool = True,
@@ -37,11 +39,25 @@ class MonitorDaemon:
         """
         Initialize monitoring daemon.
 
+        The daemon runs two cadences:
+
+          - Fast track (`interval`, default 10 s): ping + serial probe.
+            These are cheap localhost / ICMP operations, safe to run
+            frequently.
+          - Slow track (`power_check_interval`, default 60 s): power
+            probe. Network-bound and sometimes slow (Kasa KLAP retries
+            can take seconds), so it runs less often. Power is included
+            on every Nth fast tick where N = ceil(power_check_interval
+            / interval).
+
         Args:
             manager: Resource manager for SBC access
             checker: Health checker instance
             alert_manager: Alert manager for notifications
-            interval: Check interval in seconds
+            interval: Fast-track cycle interval (ping + serial), seconds
+            power_check_interval: Slow-track cadence (power), seconds
+            min_sleep_seconds: Floor on between-cycle sleep so a runaway
+                cycle (elapsed >= interval) can't pin a CPU spinning.
             update_status: Whether to update SBC status in database
             alert_on_offline: Alert when SBC goes offline
             alert_on_power_change: Alert on power state changes
@@ -50,6 +66,8 @@ class MonitorDaemon:
         self.checker = checker
         self.alert_manager = alert_manager
         self.interval = interval
+        self.power_check_interval = power_check_interval
+        self.min_sleep_seconds = min_sleep_seconds
         self.update_status = update_status
         self.alert_on_offline = alert_on_offline
         self.alert_on_power_change = alert_on_power_change
@@ -57,16 +75,38 @@ class MonitorDaemon:
         self._running = False
         self._last_status: dict[str, Status] = {}
         self._last_power: dict[str, str] = {}
+        self._last_power_check: float = 0.0  # monotonic time of last power probe
 
-    def run_once(self) -> dict[str, HealthCheckSummary]:
+    def _should_check_power(self, now_monotonic: float) -> bool:
+        """Return True if this tick should include the power probe."""
+        return (now_monotonic - self._last_power_check) >= self.power_check_interval
+
+    def run_once(self, include_power: Optional[bool] = None) -> dict[str, HealthCheckSummary]:
         """
         Run a single health check pass.
 
+        Args:
+            include_power: When True, probe power; when False, skip it
+                (cheap fast-track cycle). When None, decide based on
+                elapsed time since the last power probe.
+
         Returns:
-            Dictionary of SBC names to health check summaries
+            Dictionary of SBC names to health check summaries.
         """
+        from labctl.health.checks import CheckType
+
+        if include_power is None:
+            include_power = self._should_check_power(time.monotonic())
+
+        check_types = [CheckType.PING, CheckType.SERIAL]
+        if include_power:
+            check_types.append(CheckType.POWER)
+
         sbcs = self.manager.list_sbcs()
-        results = self.checker.check_all(sbcs)
+        results = self.checker.check_all(sbcs, check_types=check_types)
+
+        if include_power:
+            self._last_power_check = time.monotonic()
 
         for sbc_name, summary in results.items():
             self._process_result(sbc_name, summary)
@@ -184,7 +224,12 @@ class MonitorDaemon:
         signal.signal(signal.SIGTERM, signal_handler)
         signal.signal(signal.SIGINT, signal_handler)
 
-        logger.info(f"Starting monitor daemon with {self.interval}s interval")
+        logger.info(
+            "Starting monitor daemon: fast=%ds, power=%ds, min_sleep=%.1fs",
+            self.interval,
+            self.power_check_interval,
+            self.min_sleep_seconds,
+        )
 
         # Initialize last known states
         sbcs = self.manager.list_sbcs()
@@ -193,24 +238,26 @@ class MonitorDaemon:
 
         while self._running:
             try:
-                start_time = time.time()
+                start_time = time.monotonic()
                 results = self.run_once()
-                elapsed = time.time() - start_time
+                elapsed = time.monotonic() - start_time
 
                 logger.debug(
                     f"Health check completed for {len(results)} SBCs "
                     f"in {elapsed:.2f}s"
                 )
 
-                # Sleep for remaining interval time
-                sleep_time = max(0, self.interval - elapsed)
-                if sleep_time > 0 and self._running:
+                # Sleep until the next tick. Apply min_sleep_seconds floor
+                # so a cycle that overruns the interval can't pin a CPU
+                # in a tight loop.
+                sleep_time = max(self.min_sleep_seconds, self.interval - elapsed)
+                if self._running:
                     time.sleep(sleep_time)
 
             except Exception as e:
                 logger.error(f"Error during health check: {e}")
                 if self._running:
-                    time.sleep(self.interval)
+                    time.sleep(max(self.min_sleep_seconds, self.interval))
 
         logger.info("Monitor daemon stopped")
 

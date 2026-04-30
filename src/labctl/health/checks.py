@@ -488,18 +488,46 @@ class HealthChecker:
         self,
         sbcs: list[SBC],
         check_types: Optional[list[CheckType]] = None,
+        max_workers: int = 16,
     ) -> dict[str, HealthCheckSummary]:
         """
-        Run health checks on multiple SBCs.
+        Run health checks on multiple SBCs in parallel.
+
+        The probes are network-I/O bound (ICMP ping, TCP serial open,
+        plug HTTP/UDP) so a small thread pool gives near-linear speedup:
+        total wall time becomes the *max* probe latency rather than the
+        sum, which is what makes it safe to run more frequently.
 
         Args:
             sbcs: List of SBCs to check
             check_types: List of check types to run (default: all applicable)
+            max_workers: Cap on concurrent probes. The pool is sized to
+                ``min(len(sbcs), max_workers)``.
 
         Returns:
             Dictionary mapping SBC names to their check summaries
         """
-        results = {}
-        for sbc in sbcs:
-            results[sbc.name] = self.check_sbc(sbc, check_types)
+        if not sbcs:
+            return {}
+
+        import concurrent.futures
+
+        results: dict[str, HealthCheckSummary] = {}
+        workers = min(len(sbcs), max_workers)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(self.check_sbc, sbc, check_types): sbc.name
+                for sbc in sbcs
+            }
+            for future in concurrent.futures.as_completed(futures):
+                sbc_name = futures[future]
+                try:
+                    results[sbc_name] = future.result()
+                except Exception:  # noqa: BLE001
+                    # One SBC's probe failing must not silently drop it
+                    # from the result; record an empty summary so the
+                    # daemon still sees the row and can flag UNKNOWN.
+                    summary = HealthCheckSummary(sbc_name=sbc_name)
+                    summary.recommended_status = summary.determine_status()
+                    results[sbc_name] = summary
         return results

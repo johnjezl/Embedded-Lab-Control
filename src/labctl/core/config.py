@@ -85,9 +85,21 @@ class ProxyConfig:
 
 @dataclass
 class HealthConfig:
-    """Health check and monitoring configuration."""
+    """Health check and monitoring configuration.
 
-    check_interval: int = 60  # seconds between checks
+    The daemon runs two cadences:
+      - Fast track (`check_interval`): ping + serial probe.
+      - Slow track (`power_check_interval`): power probe (network-bound,
+        sometimes slow). Power runs on every Nth fast tick where
+        N = ceil(power_check_interval / check_interval).
+
+    `min_sleep_seconds` is the floor on between-cycle sleep so a runaway
+    cycle can't pin a CPU spinning when elapsed >= check_interval.
+    """
+
+    check_interval: int = 10  # seconds between fast (ping+serial) cycles
+    power_check_interval: int = 60  # seconds between power probes
+    min_sleep_seconds: float = 1.0  # floor on between-cycle sleep
     ping_timeout: float = 2.0  # seconds
     serial_timeout: float = 2.0  # seconds
     status_retention_days: int = 30  # days to keep status history
@@ -249,7 +261,9 @@ class Config:
         )
 
         health = HealthConfig(
-            check_interval=health_data.get("check_interval", 60),
+            check_interval=health_data.get("check_interval", 10),
+            power_check_interval=health_data.get("power_check_interval", 60),
+            min_sleep_seconds=health_data.get("min_sleep_seconds", 1.0),
             ping_timeout=health_data.get("ping_timeout", 2.0),
             serial_timeout=health_data.get("serial_timeout", 2.0),
             status_retention_days=health_data.get("status_retention_days", 30),
@@ -347,6 +361,8 @@ class Config:
             },
             "health": {
                 "check_interval": self.health.check_interval,
+                "power_check_interval": self.health.power_check_interval,
+                "min_sleep_seconds": self.health.min_sleep_seconds,
                 "ping_timeout": self.health.ping_timeout,
                 "serial_timeout": self.health.serial_timeout,
                 "status_retention_days": self.health.status_retention_days,
