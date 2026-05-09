@@ -160,6 +160,9 @@ def _collect_status_power_states(sbcs, reset: str) -> dict[str, str]:
 # fallback when no config is available.
 STATUS_FAST_STALE_SECONDS = 120
 
+# Floor + default for `power cycle --delay` when an SBC has no override.
+DEFAULT_POWER_CYCLE_DELAY_SECONDS = 3.0
+
 
 def _status_fast_stale_threshold(config) -> int:
     """Compute the dim-threshold from config: 2 × power_check_interval."""
@@ -237,6 +240,32 @@ def _cached_status_power_states(
         age = max(0, int((now - ts).total_seconds()))
         out[sbc.name] = render(state, age)
     return out
+
+
+def _display_recent_activity(manager, *, limit: int = 5) -> None:
+    """Print a compact tail of the most recent audit_log entries.
+
+    Used by `labctl status` to give an at-a-glance recent-actions view.
+    Silently no-ops only on a missing/incompatible audit_log table
+    (pre-v5 DBs); other errors propagate so real bugs aren't masked.
+    """
+    import sqlite3
+
+    sql = (
+        "SELECT id, logged_at, actor, source, action, entity_name, "
+        "result, details FROM audit_log ORDER BY id DESC LIMIT ?"
+    )
+    try:
+        rows = list(manager.db.execute(sql, (int(limit),)))
+    except sqlite3.OperationalError:
+        return
+    if not rows:
+        return
+
+    click.echo()
+    click.echo(f"Recent activity (last {len(rows)}):")
+    for row in reversed(rows):  # show oldest first so newest is closest to prompt
+        click.echo("  " + _format_activity_row(row))
 
 
 def _sdwire_host_switch_guard_cli(
@@ -883,6 +912,12 @@ def info_cmd(ctx: click.Context, name: str) -> None:
         click.echo(f"  {plug.plug_type.value}: {plug.address}{idx}")
     else:
         click.echo("  (none)")
+    if sbc.power_cycle_delay_seconds is not None:
+        click.echo(f"  cycle delay: {sbc.power_cycle_delay_seconds}s (per-SBC)")
+    else:
+        click.echo(
+            f"  cycle delay: {DEFAULT_POWER_CYCLE_DELAY_SECONDS}s (default)"
+        )
 
     # SDWire
     click.echo("\nSDWire:")
@@ -903,6 +938,17 @@ def info_cmd(ctx: click.Context, name: str) -> None:
 @click.option(
     "--status", "-s", type=click.Choice([s.value for s in Status]), help="Set status"
 )
+@click.option(
+    "--cycle-delay",
+    type=float,
+    default=None,
+    help=(
+        "Per-SBC power-cycle off→on delay (seconds). Used as both the "
+        "default and the floor for `power cycle --delay`. Pass a negative "
+        "number to clear the override and fall back to the global default "
+        f"({DEFAULT_POWER_CYCLE_DELAY_SECONDS}s)."
+    ),
+)
 @click.pass_context
 def edit_cmd(
     ctx: click.Context,
@@ -912,6 +958,7 @@ def edit_cmd(
     description: str | None,
     ssh_user: str | None,
     status: str | None,
+    cycle_delay: float | None,
 ) -> None:
     """Edit an SBC's properties."""
     manager = _get_manager(ctx)
@@ -922,10 +969,14 @@ def edit_cmd(
         sys.exit(1)
 
     # Check if any changes requested
-    if all(v is None for v in [new_name, project, description, ssh_user, status]):
+    if all(
+        v is None
+        for v in [new_name, project, description, ssh_user, status, cycle_delay]
+    ):
         click.echo(
             "No changes specified. "
-            "Use --rename, --project, --description, --ssh-user, or --status."
+            "Use --rename, --project, --description, --ssh-user, --status, "
+            "or --cycle-delay."
         )
         return
 
@@ -938,6 +989,7 @@ def edit_cmd(
         description=description,
         ssh_user=ssh_user,
         status=status_enum,
+        power_cycle_delay_seconds=cycle_delay,
     )
     if new_name:
         click.echo(f"Renamed SBC: {name} -> {new_name}")
@@ -2680,26 +2732,68 @@ def power_off_cmd(ctx: click.Context, sbc_name: str) -> None:
         sys.exit(1)
 
 
+def _resolve_cycle_delay(sbc, requested: float | None) -> tuple[float, str | None]:
+    """Resolve the effective power-cycle delay for an SBC.
+
+    The per-SBC value (if set) is used as both the default when the
+    user omits ``--delay`` *and* the floor when they pass a smaller
+    value. Falls back to ``DEFAULT_POWER_CYCLE_DELAY_SECONDS`` when the
+    SBC has no override.
+
+    Returns a tuple ``(delay, warning)``. ``warning`` is a human-readable
+    string when the requested value was raised to the floor, else None.
+    """
+    sbc_value = getattr(sbc, "power_cycle_delay_seconds", None)
+    floor = float(sbc_value) if sbc_value is not None else DEFAULT_POWER_CYCLE_DELAY_SECONDS
+
+    if requested is None:
+        return floor, None
+
+    requested = float(requested)
+    if requested < floor:
+        source = "SBC minimum" if sbc_value is not None else "default minimum"
+        return (
+            floor,
+            f"--delay {requested}s is below the {source} of {floor}s; using {floor}s",
+        )
+    return requested, None
+
+
 @power_group.command("cycle")
 @click.argument("sbc_name")
 @click.option(
     "--delay",
     "-d",
     type=float,
-    default=2.0,
-    help="Delay between off and on (default: 2s)",
+    default=None,
+    help=(
+        "Delay between off and on (seconds). If omitted, the SBC's stored "
+        f"value is used; otherwise {DEFAULT_POWER_CYCLE_DELAY_SECONDS}s. "
+        "The stored value also acts as a floor — smaller values are raised "
+        "with a warning."
+    ),
 )
 @click.pass_context
-def power_cycle_cmd(ctx: click.Context, sbc_name: str, delay: float) -> None:
+def power_cycle_cmd(
+    ctx: click.Context, sbc_name: str, delay: float | None
+) -> None:
     """Power cycle an SBC (off, wait, on)."""
     manager = _get_manager(ctx)
     controller, sbc = _get_power_controller(manager, sbc_name)
 
-    click.echo(f"Power cycling {sbc_name} (delay: {delay}s)...")
+    effective_delay, warning = _resolve_cycle_delay(sbc, delay)
+    if warning:
+        click.echo(f"Warning: {warning}", err=True)
+
+    click.echo(f"Power cycling {sbc_name} (delay: {effective_delay}s)...")
     try:
-        ok = controller.power_cycle(delay)
+        ok = controller.power_cycle(effective_delay)
         _emit_power_event(
-            manager, sbc, "power_cycle", ok, extra={"delay_seconds": delay}
+            manager,
+            sbc,
+            "power_cycle",
+            ok,
+            extra={"delay_seconds": effective_delay},
         )
         if ok:
             click.echo(f"Power cycled: {sbc_name}")
@@ -2713,7 +2807,7 @@ def power_cycle_cmd(ctx: click.Context, sbc_name: str, delay: float) -> None:
             "power_cycle",
             False,
             error=str(e),
-            extra={"delay_seconds": delay},
+            extra={"delay_seconds": effective_delay},
         )
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -3158,6 +3252,8 @@ def status_cmd(
                 f"{sbc.name:<15} {project_name:<12} {status_str} {ip:<15} "
                 f"{power:<6} {claim_str:<30}"
             )
+
+        _display_recent_activity(manager, limit=5)
 
         return True
 

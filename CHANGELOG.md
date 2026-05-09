@@ -6,7 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- `labctl status` now appends the last 5 audit-log events under the SBC
+  table for at-a-glance recent-action context (oldest first so the newest
+  sits closest to the prompt).
+- Per-SBC `power_cycle_delay_seconds` (schema v7). Acts as both the
+  default when `labctl power cycle --delay` is omitted *and* the floor
+  when a smaller value is passed (the CLI raises it with a warning).
+  Set/clear with `labctl edit <name> --cycle-delay <seconds>`
+  (negative value clears the override). Global fallback default is 3 s.
+
 ### Changed
+- Kasa retry path now logs at WARNING for each retry attempt (was DEBUG,
+  invisible at default log levels), logs at INFO when a retry succeeds,
+  and logs at ERROR on final failure. Default retry count bumped from 1
+  to 2 (3 total attempts) to absorb intermittent KLAP auth flakes.
+- `labctl power cycle --delay` is now optional. Default and floor are
+  resolved per-SBC: SBC value if set, otherwise 3 s. Help text corrected
+  (was "default: 2s", code default was 2.0 — now 3.0).
 - Monitor daemon now runs two cadences (2026-04-30):
   - **Fast track (`health.check_interval`, default 10 s)** — ping +
     serial probes, parallelized across SBCs via a thread pool. Sets

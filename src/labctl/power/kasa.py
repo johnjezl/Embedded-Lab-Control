@@ -99,17 +99,27 @@ class KasaController(PowerController):
 
         return device, device
 
-    def _run(self, coro_func, action: str, retries: int = 1):
+    def _run(self, coro_func, action: str, retries: int = 2):
         """
         Run an async power operation with error handling and retries.
 
-        Retries on authentication errors, which occur intermittently
-        with HS300 firmware using the KLAP protocol.
+        Retries on authentication / transient errors, which occur
+        intermittently with HS300 firmware using the KLAP protocol.
+
+        Logging policy:
+          - Retry attempts are logged at WARNING so they show in default
+            (INFO) logs — these are evidence of intermittent KLAP issues
+            we want to track without enabling debug.
+          - A successful retry logs at INFO so the recovery is visible.
+          - Final failure logs at ERROR (in addition to raising), so the
+            full attempt history is captured even when the caller only
+            surfaces the exception text.
 
         Args:
             coro_func: Async callable that takes (device, target) and performs the action.
             action: Human-readable action name for logging (e.g. "power_on").
-            retries: Number of retry attempts on transient errors.
+            retries: Number of retry attempts on transient errors. Total
+                attempts = 1 + retries.
 
         Returns:
             The return value of coro_func.
@@ -118,7 +128,8 @@ class KasaController(PowerController):
             RuntimeError: On ImportError, authentication, connection, or device errors.
         """
         last_error = None
-        for attempt in range(1 + retries):
+        total_attempts = 1 + retries
+        for attempt in range(total_attempts):
             try:
 
                 async def _exec():
@@ -139,10 +150,20 @@ class KasaController(PowerController):
                     with concurrent.futures.ThreadPoolExecutor() as pool:
                         future = pool.submit(asyncio.run, _exec())
                         result = future.result(timeout=self.timeout + 10)
-                    return result
                 except RuntimeError:
                     # No running loop — normal sync context
-                    return asyncio.run(_exec())
+                    result = asyncio.run(_exec())
+
+                if attempt > 0:
+                    logger.info(
+                        "Kasa %s for %s[%d] succeeded on attempt %d/%d",
+                        action,
+                        self.address,
+                        self.plug_index,
+                        attempt + 1,
+                        total_attempts,
+                    )
+                return result
             except ImportError:
                 raise RuntimeError(
                     "python-kasa not installed. Install with: pip install python-kasa"
@@ -152,12 +173,14 @@ class KasaController(PowerController):
             except Exception as e:
                 last_error = e
                 if attempt < retries:
-                    logger.debug(
-                        "Kasa %s attempt %d failed for %s[%d]: %s, retrying in 2s...",
+                    logger.warning(
+                        "Kasa %s attempt %d/%d failed for %s[%d]: %s: %s — retrying in 2s",
                         action,
                         attempt + 1,
+                        total_attempts,
                         self.address,
                         self.plug_index,
+                        type(e).__name__,
                         e,
                     )
                     time.sleep(2)
@@ -167,9 +190,10 @@ class KasaController(PowerController):
         error_type = type(last_error).__name__
         msg = (
             f"Kasa {action} failed for {self.address} "
-            f"[{self.plug_index}]: {error_type}: {last_error}"
+            f"[{self.plug_index}] after {total_attempts} attempts: "
+            f"{error_type}: {last_error}"
         )
-        logger.debug(msg)
+        logger.error(msg)
         raise RuntimeError(msg) from last_error
 
     def power_on(self) -> bool:

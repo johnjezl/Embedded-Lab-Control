@@ -135,6 +135,42 @@ class TestSBCOperations:
         assert updated.project == "new-project"
         assert updated.status == Status.ONLINE
 
+    def test_update_sbc_sets_cycle_delay(self, manager):
+        """Setting cycle_delay persists a positive float to the row."""
+        sbc = manager.create_sbc(name="cycle-set")
+
+        updated = manager.update_sbc(sbc.id, power_cycle_delay_seconds=5.0)
+
+        assert updated.power_cycle_delay_seconds == 5.0
+
+    def test_update_sbc_clears_cycle_delay_with_negative_sentinel(self, manager):
+        """A negative value clears the per-SBC override back to NULL."""
+        sbc = manager.create_sbc(name="cycle-clear")
+        manager.update_sbc(sbc.id, power_cycle_delay_seconds=7.5)
+        assert manager.get_sbc(sbc.id).power_cycle_delay_seconds == 7.5
+
+        cleared = manager.update_sbc(sbc.id, power_cycle_delay_seconds=-1.0)
+
+        assert cleared.power_cycle_delay_seconds is None
+
+    def test_update_sbc_audit_detail_lists_changed_fields(self, manager):
+        """Audit detail string names the fields that changed."""
+        sbc = manager.create_sbc(name="audit-detail")
+
+        manager.update_sbc(
+            sbc.id, project="newproj", power_cycle_delay_seconds=4.0
+        )
+
+        rows = manager.db.execute(
+            "SELECT details FROM audit_log "
+            "WHERE entity_type='sbc' AND action='update' "
+            "ORDER BY id DESC LIMIT 1"
+        )
+        assert rows, "expected an update audit row"
+        detail = rows[0]["details"]
+        assert "project='newproj'" in detail
+        assert "cycle_delay=4.0s" in detail
+
     def test_delete_sbc(self, manager):
         """Test deleting SBC."""
         sbc = manager.create_sbc(name="delete-test")

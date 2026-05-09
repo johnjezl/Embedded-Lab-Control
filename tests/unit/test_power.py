@@ -326,7 +326,7 @@ class TestKasaRetry:
 
     @patch("labctl.power.kasa.time.sleep")
     def test_retry_on_auth_error_with_delay(self, mock_sleep):
-        """Test that Kasa retries with 2s delay on auth failure."""
+        """Test that Kasa retries twice with 2s delay on auth failure."""
         from unittest.mock import AsyncMock
 
         from labctl.power.kasa import KasaController
@@ -348,10 +348,78 @@ class TestKasaRetry:
             with pytest.raises(RuntimeError, match="KLAP auth failed"):
                 controller._run(_failing_coro, "power_on")
 
-        # Should have retried once (2 total attempts)
-        assert call_count[0] == 2
-        # Should have slept 2s between attempts
-        mock_sleep.assert_called_once_with(2)
+        # Default retries=2 → 3 total attempts, 2 sleeps between them.
+        assert call_count[0] == 3
+        assert mock_sleep.call_count == 2
+        for call in mock_sleep.call_args_list:
+            assert call.args == (2,)
+
+    @patch("labctl.power.kasa.time.sleep")
+    def test_retry_logs_warning_and_final_error(self, mock_sleep, caplog):
+        """Retry attempts log at WARNING; exhausted retries log at ERROR."""
+        import logging
+        from unittest.mock import AsyncMock
+
+        from labctl.power.kasa import KasaController
+
+        controller = KasaController("192.168.1.100")
+
+        async def _failing_coro(device, target):
+            raise Exception("KLAP auth failed")
+
+        with patch.object(
+            controller, "_get_device", new_callable=AsyncMock
+        ) as mock_dev:
+            mock_device = Mock()
+            mock_device.disconnect = AsyncMock()
+            mock_dev.return_value = (mock_device, mock_device)
+
+            with caplog.at_level(logging.WARNING, logger="labctl.power.kasa"):
+                with pytest.raises(RuntimeError):
+                    controller._run(_failing_coro, "power_on")
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        # 2 retry attempts → 2 warnings; final failure → 1 error.
+        assert len(warnings) == 2
+        assert len(errors) == 1
+        assert "retrying" in warnings[0].getMessage()
+        assert "after 3 attempts" in errors[0].getMessage()
+
+    @patch("labctl.power.kasa.time.sleep")
+    def test_retry_success_logs_info(self, mock_sleep, caplog):
+        """A retry that ultimately succeeds logs an INFO recovery line."""
+        import logging
+        from unittest.mock import AsyncMock
+
+        from labctl.power.kasa import KasaController
+
+        controller = KasaController("192.168.1.100")
+        call_count = [0]
+
+        async def _flaky_coro(device, target):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise Exception("Auth error")
+            return True
+
+        with patch.object(
+            controller, "_get_device", new_callable=AsyncMock
+        ) as mock_dev:
+            mock_device = Mock()
+            mock_device.disconnect = AsyncMock()
+            mock_dev.return_value = (mock_device, mock_device)
+
+            with caplog.at_level(logging.INFO, logger="labctl.power.kasa"):
+                result = controller._run(_flaky_coro, "power_on")
+
+        assert result is True
+        infos = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.INFO and "succeeded on attempt" in r.getMessage()
+        ]
+        assert len(infos) == 1
 
     @patch("labctl.power.kasa.time.sleep")
     def test_retry_succeeds_on_second_attempt(self, mock_sleep):

@@ -275,50 +275,66 @@ class ResourceManager:
         description: Optional[str] = None,
         ssh_user: Optional[str] = None,
         status: Optional[Status] = None,
+        power_cycle_delay_seconds: Optional[float] = None,
     ) -> Optional[SBC]:
-        """Update SBC fields."""
+        """Update SBC fields.
+
+        ``power_cycle_delay_seconds`` accepts a positive float to set, or
+        a negative value as the sentinel for "clear back to default".
+        """
         sbc = self.get_sbc(sbc_id)
         if not sbc:
             return None
 
         updates = []
         params = []
+        # Human-readable per-field summaries for the audit log.
+        changes: list[str] = []
 
         if name is not None:
             updates.append("name = ?")
             params.append(name)
+            changes.append(f"name: {sbc.name!r} -> {name!r}")
 
         if project is not None:
             updates.append("project = ?")
             params.append(project)
+            changes.append(f"project={project!r}")
 
         if description is not None:
             updates.append("description = ?")
             params.append(description)
+            changes.append(f"description={description!r}")
 
         if ssh_user is not None:
             updates.append("ssh_user = ?")
             params.append(ssh_user)
+            changes.append(f"ssh_user={ssh_user!r}")
 
         if status is not None:
             updates.append("status = ?")
             params.append(status.value)
+            changes.append(f"status={status.value}")
+
+        if power_cycle_delay_seconds is not None:
+            updates.append("power_cycle_delay_seconds = ?")
+            # A negative sentinel clears the per-SBC override.
+            if power_cycle_delay_seconds < 0:
+                params.append(None)
+                changes.append("cycle_delay=cleared")
+            else:
+                value = float(power_cycle_delay_seconds)
+                params.append(value)
+                changes.append(f"cycle_delay={value}s")
 
         if updates:
             updates.append("updated_at = CURRENT_TIMESTAMP")
             sql = f"UPDATE sbcs SET {', '.join(updates)} WHERE id = ?"
             params.append(sbc_id)
             self.db.execute_modify(sql, tuple(params))
-            old_name = sbc.name
-            new_name = name if name else old_name
-            self._audit_log(
-                "update",
-                "sbc",
-                sbc_id,
-                new_name,
-                f"Updated SBC: {old_name}"
-                + (f" (renamed to {new_name})" if name and name != old_name else ""),
-            )
+            new_name = name if name else sbc.name
+            detail = f"Updated SBC {sbc.name}: " + ", ".join(changes)
+            self._audit_log("update", "sbc", sbc_id, new_name, detail)
 
         return self.get_sbc(sbc_id)
 

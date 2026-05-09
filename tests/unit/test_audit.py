@@ -336,10 +336,10 @@ class TestQueryAndPrune:
 
 
 class TestSchemaV6:
-    def test_schema_version_is_6(self):
+    def test_schema_version_is_current(self):
         from labctl.core.database import SCHEMA_VERSION
 
-        assert SCHEMA_VERSION == 6
+        assert SCHEMA_VERSION == 7
 
     def test_fresh_db_has_power_cache_columns(self, db):
         cols = {r["name"] for r in db.execute("PRAGMA table_info(sbcs)")}
@@ -395,11 +395,72 @@ class TestSchemaV6:
         cols = {r["name"] for r in d2.execute("PRAGMA table_info(sbcs)")}
         assert "last_power_state" in cols
         assert "last_power_at" in cols
+        assert "power_cycle_delay_seconds" in cols
 
         # Pre-existing rows survive with NULL columns.
         row = d2.execute_one("SELECT * FROM sbcs WHERE name = ?", ("legacy-sbc",))
         assert row["last_power_state"] is None
         assert row["last_power_at"] is None
+        assert row["power_cycle_delay_seconds"] is None
+
+
+class TestSchemaV7:
+    def test_fresh_db_has_cycle_delay_column(self, db):
+        cols = {r["name"] for r in db.execute("PRAGMA table_info(sbcs)")}
+        assert "power_cycle_delay_seconds" in cols
+
+    def test_migration_from_v6_to_v7(self, tmp_path):
+        """A pre-v7 database must gain power_cycle_delay_seconds."""
+        path = tmp_path / "v6.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE sbcs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                project TEXT,
+                description TEXT,
+                ssh_user TEXT DEFAULT 'root',
+                status TEXT DEFAULT 'unknown',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_power_state TEXT,
+                last_power_at TIMESTAMP
+            );
+            CREATE TABLE audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id INTEGER,
+                entity_name TEXT,
+                details TEXT,
+                logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                actor TEXT NOT NULL DEFAULT 'internal',
+                source TEXT NOT NULL DEFAULT 'internal',
+                result TEXT NOT NULL DEFAULT 'ok',
+                claim_id INTEGER
+            );
+            CREATE TABLE claims (id INTEGER PRIMARY KEY);
+            INSERT INTO schema_version (version) VALUES (6);
+            INSERT INTO sbcs (name, project) VALUES ('legacy-sbc', 'p');
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        from labctl.core.database import Database
+
+        Database(path).initialize()
+
+        d2 = Database(path)
+        cols = {r["name"] for r in d2.execute("PRAGMA table_info(sbcs)")}
+        assert "power_cycle_delay_seconds" in cols
+        row = d2.execute_one("SELECT * FROM sbcs WHERE name = ?", ("legacy-sbc",))
+        assert row["power_cycle_delay_seconds"] is None
 
 
 class TestPowerObservationPersistence:

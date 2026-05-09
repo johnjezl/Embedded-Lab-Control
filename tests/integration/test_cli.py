@@ -159,6 +159,55 @@ class TestStatusCommand:
         assert result.exit_code == 0, result.output
         assert elapsed < 0.5
 
+    def test_status_appends_recent_activity(self, runner):
+        """status renders the last 5 audit_log rows under the table."""
+        plug = SimpleNamespace(plug_type="tasmota", address="plug-x", plug_index=1)
+        sbc = self._make_sbc("sbc-1", plug)
+
+        manager = MagicMock()
+        manager.list_sbcs.return_value = [sbc]
+        manager.list_active_claims.return_value = []
+
+        # Activity rows are returned newest-first by the helper's ORDER BY id DESC,
+        # so the seeded list reflects that order.
+        rows = [
+            {
+                "id": 5,
+                "logged_at": "2026-05-09 10:00:05",
+                "actor": "cli:john",
+                "source": "cli",
+                "action": "power_off",
+                "entity_name": "sbc-1",
+                "result": "ok",
+                "details": None,
+            },
+            {
+                "id": 4,
+                "logged_at": "2026-05-09 09:59:00",
+                "actor": "daemon:monitor",
+                "source": "daemon",
+                "action": "status_change",
+                "entity_name": "sbc-2",
+                "result": "ok",
+                "details": "online -> offline",
+            },
+        ]
+        manager.db.execute.return_value = rows
+
+        with patch("labctl.cli._get_manager", return_value=manager):
+            with patch(
+                "labctl.cli.PowerController.from_plug",
+                return_value=MagicMock(get_state=MagicMock(return_value=None)),
+            ):
+                result = runner.invoke(main, ["status"], color=False)
+
+        assert result.exit_code == 0, result.output
+        assert "Recent activity (last 2):" in result.output
+        # Oldest first under the heading so the newest sits closest to the prompt.
+        idx_old = result.output.index("status_change")
+        idx_new = result.output.index("power_off")
+        assert idx_old < idx_new
+
     def test_status_reuses_recent_power_cache(self, runner):
         from labctl.power.base import PowerState
 
@@ -184,6 +233,175 @@ class TestStatusCommand:
         assert first.exit_code == 0, first.output
         assert second.exit_code == 0, second.output
         assert mock_factory.call_count == 1
+
+
+class TestResolveCycleDelay:
+    """Unit tests for the cycle-delay floor/default resolver."""
+
+    def test_no_request_no_override_uses_default(self):
+        from labctl.cli import DEFAULT_POWER_CYCLE_DELAY_SECONDS, _resolve_cycle_delay
+
+        sbc = SimpleNamespace(power_cycle_delay_seconds=None)
+        delay, warn = _resolve_cycle_delay(sbc, None)
+        assert delay == DEFAULT_POWER_CYCLE_DELAY_SECONDS
+        assert warn is None
+
+    def test_no_request_uses_sbc_value(self):
+        from labctl.cli import _resolve_cycle_delay
+
+        sbc = SimpleNamespace(power_cycle_delay_seconds=5.0)
+        delay, warn = _resolve_cycle_delay(sbc, None)
+        assert delay == 5.0
+        assert warn is None
+
+    def test_request_below_default_floor_warns(self):
+        from labctl.cli import DEFAULT_POWER_CYCLE_DELAY_SECONDS, _resolve_cycle_delay
+
+        sbc = SimpleNamespace(power_cycle_delay_seconds=None)
+        delay, warn = _resolve_cycle_delay(sbc, 1.0)
+        assert delay == DEFAULT_POWER_CYCLE_DELAY_SECONDS
+        assert warn is not None
+        assert "default minimum" in warn
+
+    def test_request_below_sbc_floor_warns(self):
+        from labctl.cli import _resolve_cycle_delay
+
+        sbc = SimpleNamespace(power_cycle_delay_seconds=5.0)
+        delay, warn = _resolve_cycle_delay(sbc, 2.0)
+        assert delay == 5.0
+        assert warn is not None
+        assert "SBC minimum" in warn
+
+    def test_request_above_floor_passes_through(self):
+        from labctl.cli import _resolve_cycle_delay
+
+        sbc = SimpleNamespace(power_cycle_delay_seconds=3.0)
+        delay, warn = _resolve_cycle_delay(sbc, 10.0)
+        assert delay == 10.0
+        assert warn is None
+
+
+class TestPowerCycleCommand:
+    """Integration coverage for `labctl power cycle` delay resolution."""
+
+    def _wire(self, sbc):
+        manager = MagicMock()
+        manager.get_sbc_by_name.return_value = sbc
+        controller = MagicMock()
+        controller.power_cycle.return_value = True
+        return manager, controller
+
+    def _make_sbc(self, *, cycle_delay):
+        return SimpleNamespace(
+            id=1,
+            name="cycle-sbc",
+            power_plug=SimpleNamespace(
+                plug_type=MagicMock(value="tasmota"),
+                address="10.0.0.1",
+                plug_index=1,
+            ),
+            power_cycle_delay_seconds=cycle_delay,
+        )
+
+    def test_cycle_uses_default_when_unset(self, runner):
+        from labctl.cli import DEFAULT_POWER_CYCLE_DELAY_SECONDS
+
+        sbc = self._make_sbc(cycle_delay=None)
+        manager, controller = self._wire(sbc)
+
+        with patch("labctl.cli._get_manager", return_value=manager):
+            with patch(
+                "labctl.cli._get_power_controller",
+                return_value=(controller, sbc),
+            ):
+                result = runner.invoke(main, ["power", "cycle", "cycle-sbc"])
+
+        assert result.exit_code == 0, result.output
+        controller.power_cycle.assert_called_once_with(
+            DEFAULT_POWER_CYCLE_DELAY_SECONDS
+        )
+        assert "Warning" not in result.output
+
+    def test_cycle_uses_sbc_value_when_set(self, runner):
+        sbc = self._make_sbc(cycle_delay=7.0)
+        manager, controller = self._wire(sbc)
+
+        with patch("labctl.cli._get_manager", return_value=manager):
+            with patch(
+                "labctl.cli._get_power_controller",
+                return_value=(controller, sbc),
+            ):
+                result = runner.invoke(main, ["power", "cycle", "cycle-sbc"])
+
+        assert result.exit_code == 0, result.output
+        controller.power_cycle.assert_called_once_with(7.0)
+
+    def test_edit_cycle_delay_clear_sentinel(self, runner, tmp_path, monkeypatch):
+        """`labctl edit --cycle-delay -1` clears the per-SBC override."""
+        from labctl.core.database import Database
+        from labctl.core.manager import ResourceManager
+
+        db_path = tmp_path / "edit.db"
+        db = Database(db_path)
+        db.initialize()
+        m = ResourceManager(db)
+        sbc = m.create_sbc(name="cycle-edit")
+        m.update_sbc(sbc.id, power_cycle_delay_seconds=6.0)
+        assert m.get_sbc(sbc.id).power_cycle_delay_seconds == 6.0
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(f"database_path: {db_path}\n")
+        monkeypatch.setenv("LABCTL_CONFIG", str(config_path))
+
+        result = runner.invoke(
+            main, ["-c", str(config_path), "edit", "cycle-edit", "--cycle-delay", "-1"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert m.get_sbc(sbc.id).power_cycle_delay_seconds is None
+
+    def test_info_renders_cycle_delay(self, runner, tmp_path):
+        """`labctl info` shows the resolved cycle delay in both states."""
+        from labctl.core.database import Database
+        from labctl.core.manager import ResourceManager
+
+        db_path = tmp_path / "info.db"
+        db = Database(db_path)
+        db.initialize()
+        m = ResourceManager(db)
+        m.create_sbc(name="info-default")
+        sbc2 = m.create_sbc(name="info-override")
+        m.update_sbc(sbc2.id, power_cycle_delay_seconds=8.0)
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(f"database_path: {db_path}\n")
+
+        r1 = runner.invoke(main, ["-c", str(config_path), "info", "info-default"])
+        r2 = runner.invoke(main, ["-c", str(config_path), "info", "info-override"])
+
+        assert r1.exit_code == 0, r1.output
+        assert r2.exit_code == 0, r2.output
+        assert "cycle delay: 3.0s (default)" in r1.output
+        assert "cycle delay: 8.0s (per-SBC)" in r2.output
+
+    def test_cycle_warns_and_raises_below_floor(self, runner):
+        sbc = self._make_sbc(cycle_delay=5.0)
+        manager, controller = self._wire(sbc)
+
+        with patch("labctl.cli._get_manager", return_value=manager):
+            with patch(
+                "labctl.cli._get_power_controller",
+                return_value=(controller, sbc),
+            ):
+                result = runner.invoke(
+                    main, ["power", "cycle", "cycle-sbc", "--delay", "1"]
+                )
+
+        assert result.exit_code == 0, result.output
+        controller.power_cycle.assert_called_once_with(5.0)
+        # The warning is printed to stderr; CliRunner mixes streams unless told otherwise.
+        assert "Warning" in result.output
+        assert "below the SBC minimum" in result.output
 
 
 class TestPortsCommand:

@@ -243,6 +243,9 @@ class SBC:
     last_power_state: Optional[str] = None  # "on" | "off" | "unknown"
     last_power_at: Optional[str] = None
 
+    # Per-SBC power-cycle off→on delay. None means "use the global default".
+    power_cycle_delay_seconds: Optional[float] = None
+
     # Related objects (populated by manager)
     serial_ports: list[SerialPort] = field(default_factory=list)
     network_addresses: list[NetworkAddress] = field(default_factory=list)
@@ -261,6 +264,11 @@ class SBC:
             last_power_at = row["last_power_at"]
         except (IndexError, KeyError):
             last_power_at = None
+        # Pre-v7 rows lack the cycle-delay column.
+        try:
+            power_cycle_delay_seconds = row["power_cycle_delay_seconds"]
+        except (IndexError, KeyError):
+            power_cycle_delay_seconds = None
         return cls(
             id=row["id"],
             name=row["name"],
@@ -272,6 +280,7 @@ class SBC:
             updated_at=row["updated_at"],
             last_power_state=last_power_state,
             last_power_at=last_power_at,
+            power_cycle_delay_seconds=power_cycle_delay_seconds,
         )
 
     @property

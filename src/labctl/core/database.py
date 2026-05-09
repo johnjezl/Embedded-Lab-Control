@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Generator, Optional
 
 # Current schema version
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # SQL statements for schema creation
 SCHEMA_SQL = """
@@ -33,7 +33,11 @@ CREATE TABLE IF NOT EXISTS sbcs (
     -- Cached power observation written by the monitor daemon every cycle.
     -- Read by `labctl status --fast` to avoid live network probes.
     last_power_state TEXT,         -- on | off | unknown
-    last_power_at TIMESTAMP        -- when the daemon last observed power
+    last_power_at TIMESTAMP,       -- when the daemon last observed power
+    -- Per-SBC power-cycle off→on delay. Used as both the default when
+    -- --delay is omitted and the floor when --delay is passed (the CLI
+    -- raises smaller values to this with a warning).
+    power_cycle_delay_seconds REAL
 );
 
 -- Registered USB-serial adapters
@@ -393,6 +397,15 @@ class Database:
                     conn.execute(column_sql)
                 except sqlite3.OperationalError:
                     pass  # column already exists
+
+        if from_version < 7:
+            # v7: per-SBC power-cycle delay (used as both default and floor).
+            try:
+                conn.execute(
+                    "ALTER TABLE sbcs ADD COLUMN power_cycle_delay_seconds REAL"
+                )
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
         conn.execute(
             "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
