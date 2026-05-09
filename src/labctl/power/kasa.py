@@ -3,10 +3,26 @@ Kasa power controller.
 
 Controls TP-Link Kasa smart plugs and power strips via python-kasa library.
 Supports single-outlet plugs and multi-outlet strips (e.g., HS300, KP303, EP40).
+
+Per-host state cache
+====================
+
+Each multi-outlet strip exposes one KLAP endpoint regardless of how
+many outlets it has. Naively probing each outlet independently fans
+out into N parallel KLAP handshakes against the same physical device,
+which the strip rate-limits — observed in production as bursts of
+``AuthenticationError`` against a single IP across all outlets in a
+~3 ms window.
+
+This module caches the *state* (channel → is_on) per host with a
+short TTL and serializes refreshes through a per-host lock. The first
+caller in a cycle pays the KLAP cost; concurrent callers on the same
+host wait briefly and read from the cache. Writes invalidate.
 """
 
 import asyncio
 import logging
+import threading
 import time
 from functools import lru_cache
 
@@ -14,6 +30,62 @@ from labctl.core.config import load_config
 from labctl.power.base import PowerController, PowerState
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Per-host state cache
+# ---------------------------------------------------------------------------
+
+# Default TTL for cached states. Tuned to span a single monitor
+# `check_all` parallel batch (typically completes in <1 s) without
+# letting external state changes go unnoticed for long. CLI/MCP fresh
+# processes start with empty caches, so this only matters within the
+# daemon and within long-running web requests.
+KASA_STATE_TTL_SECONDS = 5.0
+
+_kasa_state_cache: dict[str, tuple[float, dict[int, bool]]] = {}
+_kasa_host_locks: dict[str, threading.Lock] = {}
+_kasa_cache_meta_lock = threading.Lock()
+
+
+def _get_host_lock(host: str) -> threading.Lock:
+    """Return (lazily creating) the per-host serialization lock."""
+    with _kasa_cache_meta_lock:
+        lock = _kasa_host_locks.get(host)
+        if lock is None:
+            lock = threading.Lock()
+            _kasa_host_locks[host] = lock
+        return lock
+
+
+def _read_cached_state(host: str, channel: int) -> bool | None:
+    """Return cached is_on for (host, channel), or None if missing/stale."""
+    with _kasa_cache_meta_lock:
+        entry = _kasa_state_cache.get(host)
+        if entry is None:
+            return None
+        cached_at, states = entry
+        if time.monotonic() - cached_at > KASA_STATE_TTL_SECONDS:
+            return None
+        return states.get(channel)
+
+
+def _store_host_state(host: str, states: dict[int, bool]) -> None:
+    with _kasa_cache_meta_lock:
+        _kasa_state_cache[host] = (time.monotonic(), dict(states))
+
+
+def _invalidate_host(host: str) -> None:
+    """Drop the cache entry for a host so the next read refreshes."""
+    with _kasa_cache_meta_lock:
+        _kasa_state_cache.pop(host, None)
+
+
+def _clear_kasa_caches() -> None:
+    """Reset all per-host caches. Test-only entry point."""
+    with _kasa_cache_meta_lock:
+        _kasa_state_cache.clear()
+        _kasa_host_locks.clear()
 
 
 @lru_cache(maxsize=1)
@@ -99,60 +171,42 @@ class KasaController(PowerController):
 
         return device, device
 
-    def _run(self, coro_func, action: str, retries: int = 2):
+    def _run_async(self, coro_factory, action: str, retries: int = 2):
         """
-        Run an async power operation with error handling and retries.
+        Execute an async coro factory with retry/logging.
+
+        The *factory* pattern (rather than passing the coro directly)
+        ensures each retry attempt creates a fresh awaitable — async
+        coros are single-shot.
 
         Retries on authentication / transient errors, which occur
         intermittently with HS300 firmware using the KLAP protocol.
 
         Logging policy:
-          - Retry attempts are logged at WARNING so they show in default
-            (INFO) logs — these are evidence of intermittent KLAP issues
-            we want to track without enabling debug.
+          - Retry attempts log at WARNING so they show in default
+            (INFO) logs — evidence of intermittent KLAP issues we want
+            visible without enabling debug.
           - A successful retry logs at INFO so the recovery is visible.
-          - Final failure logs at ERROR (in addition to raising), so the
-            full attempt history is captured even when the caller only
-            surfaces the exception text.
-
-        Args:
-            coro_func: Async callable that takes (device, target) and performs the action.
-            action: Human-readable action name for logging (e.g. "power_on").
-            retries: Number of retry attempts on transient errors. Total
-                attempts = 1 + retries.
-
-        Returns:
-            The return value of coro_func.
-
-        Raises:
-            RuntimeError: On ImportError, authentication, connection, or device errors.
+          - Final failure logs at ERROR (in addition to raising), so
+            the full attempt history is captured even when the caller
+            only surfaces the exception text.
         """
         last_error = None
         total_attempts = 1 + retries
         for attempt in range(total_attempts):
             try:
-
-                async def _exec():
-                    device, target = await self._get_device()
-                    try:
-                        return await coro_func(device, target)
-                    finally:
-                        await device.disconnect()
-
                 # If already inside an async event loop (e.g., MCP server),
                 # run in a new thread to avoid "cannot call asyncio.run()
                 # from a running event loop" error.
                 try:
                     asyncio.get_running_loop()
-                    # We're inside an async context — run in a thread
                     import concurrent.futures
 
                     with concurrent.futures.ThreadPoolExecutor() as pool:
-                        future = pool.submit(asyncio.run, _exec())
+                        future = pool.submit(asyncio.run, coro_factory())
                         result = future.result(timeout=self.timeout + 10)
                 except RuntimeError:
-                    # No running loop — normal sync context
-                    result = asyncio.run(_exec())
+                    result = asyncio.run(coro_factory())
 
                 if attempt > 0:
                     logger.info(
@@ -196,6 +250,55 @@ class KasaController(PowerController):
         logger.error(msg)
         raise RuntimeError(msg) from last_error
 
+    def _run(self, coro_func, action: str, retries: int = 2):
+        """Per-outlet flow used by writes — discovers, runs, disconnects."""
+
+        def factory():
+            async def go():
+                device, target = await self._get_device()
+                try:
+                    return await coro_func(device, target)
+                finally:
+                    await device.disconnect()
+
+            return go()
+
+        return self._run_async(factory, action, retries)
+
+    def _fetch_all_outlet_states(self) -> dict[int, bool]:
+        """Discover device, update once, return is_on for every outlet.
+
+        One KLAP handshake covers every child outlet — caller stores
+        the result in the host cache so subsequent get_state() calls
+        on sibling outlets hit the cache instead of re-handshaking.
+        """
+
+        def factory():
+            async def go():
+                from kasa import Discover
+
+                credentials = self._load_credentials()
+                kwargs = {"host": self.address}
+                if credentials:
+                    kwargs["credentials"] = credentials
+                logger.debug("Discovering Kasa device at %s", self.address)
+                device = await Discover.discover_single(**kwargs)
+                try:
+                    await device.update()
+                    states: dict[int, bool] = {}
+                    if device.children:
+                        for i, child in enumerate(device.children, start=1):
+                            states[i] = bool(child.is_on)
+                    else:
+                        states[1] = bool(device.is_on)
+                    return states
+                finally:
+                    await device.disconnect()
+
+            return go()
+
+        return self._run_async(factory, "get_state", retries=2)
+
     def power_on(self) -> bool:
         """Turn power on."""
         logger.debug("Kasa power_on: %s[%d]", self.address, self.plug_index)
@@ -205,7 +308,13 @@ class KasaController(PowerController):
             logger.debug("Power ON sent to %s[%d]", self.address, self.plug_index)
             return True
 
-        return self._run(_on, "power_on")
+        # Serialize with concurrent reads on the same host and invalidate
+        # so the next get_state() reflects the change.
+        with _get_host_lock(self.address):
+            try:
+                return self._run(_on, "power_on")
+            finally:
+                _invalidate_host(self.address)
 
     def power_off(self) -> bool:
         """Turn power off."""
@@ -216,20 +325,37 @@ class KasaController(PowerController):
             logger.debug("Power OFF sent to %s[%d]", self.address, self.plug_index)
             return True
 
-        return self._run(_off, "power_off")
+        with _get_host_lock(self.address):
+            try:
+                return self._run(_off, "power_off")
+            finally:
+                _invalidate_host(self.address)
 
     def get_state(self) -> PowerState:
-        """Get current power state."""
+        """Get current power state, using the per-host cache when fresh.
+
+        Concurrent callers on the same host serialize through a per-host
+        lock so the strip sees one KLAP handshake per cache window
+        instead of one per outlet. This eliminates the parallel-handshake
+        contention that the strip rate-limits as auth failures.
+        """
         logger.debug("Kasa get_state: %s[%d]", self.address, self.plug_index)
 
-        async def _state(device, target):
-            state = PowerState.ON if target.is_on else PowerState.OFF
-            logger.debug(
-                "Power state for %s[%d]: %s",
-                self.address,
-                self.plug_index,
-                state.value,
-            )
-            return state
+        cached = _read_cached_state(self.address, self.plug_index)
+        if cached is not None:
+            return PowerState.ON if cached else PowerState.OFF
 
-        return self._run(_state, "get_state")
+        with _get_host_lock(self.address):
+            # Double-check after acquiring the lock — another caller may
+            # have just populated the cache while we were waiting.
+            cached = _read_cached_state(self.address, self.plug_index)
+            if cached is not None:
+                return PowerState.ON if cached else PowerState.OFF
+
+            states = self._fetch_all_outlet_states()
+            _store_host_state(self.address, states)
+
+        is_on = states.get(self.plug_index)
+        if is_on is None:
+            return PowerState.UNKNOWN
+        return PowerState.ON if is_on else PowerState.OFF

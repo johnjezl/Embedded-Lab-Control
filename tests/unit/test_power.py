@@ -451,6 +451,147 @@ class TestKasaRetry:
         mock_sleep.assert_called_once_with(2)
 
 
+class TestKasaHostStateCache:
+    """Per-host state cache eliminates parallel KLAP handshakes per cycle."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_caches(self):
+        from labctl.power import kasa as kasa_module
+
+        kasa_module._clear_kasa_caches()
+        yield
+        kasa_module._clear_kasa_caches()
+
+    def _patch_fetch(self, *, states_seq):
+        """Return a context manager patching `_fetch_all_outlet_states`.
+
+        ``states_seq`` is a list of dicts; each call pops one. Tests can
+        inspect call_count via the returned mock.
+        """
+        from unittest.mock import patch as _patch
+
+        calls = {"n": 0}
+
+        def fake_fetch(self):
+            i = calls["n"]
+            calls["n"] += 1
+            return states_seq[min(i, len(states_seq) - 1)]
+
+        ctx = _patch.object(
+            __import__("labctl.power.kasa", fromlist=["KasaController"]).KasaController,
+            "_fetch_all_outlet_states",
+            new=fake_fetch,
+        )
+        return ctx, calls
+
+    def test_concurrent_callers_share_one_handshake(self):
+        """6 outlets on one strip → one fetch, five cache hits."""
+        import threading
+        from labctl.power.kasa import KasaController
+
+        host = "192.168.4.140"
+        controllers = [KasaController(host, plug_index=i) for i in range(1, 7)]
+        # The strip has 6 outlets; first fetch returns the full state map.
+        ctx, calls = self._patch_fetch(
+            states_seq=[{1: True, 2: False, 3: True, 4: False, 5: True, 6: False}]
+        )
+
+        results: list = [None] * len(controllers)
+        threads: list[threading.Thread] = []
+
+        def worker(i, c):
+            results[i] = c.get_state()
+
+        with ctx:
+            for i, c in enumerate(controllers):
+                threads.append(threading.Thread(target=worker, args=(i, c)))
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+
+        from labctl.power.base import PowerState
+
+        assert calls["n"] == 1, "expected exactly one device fetch for the strip"
+        assert results == [
+            PowerState.ON,
+            PowerState.OFF,
+            PowerState.ON,
+            PowerState.OFF,
+            PowerState.ON,
+            PowerState.OFF,
+        ]
+
+    def test_cache_ttl_expires(self):
+        from labctl.power import kasa as kasa_module
+        from labctl.power.kasa import KasaController
+
+        host = "10.0.0.50"
+        ctx, calls = self._patch_fetch(states_seq=[{1: True}, {1: False}])
+
+        # Sequence of monotonic calls during the three get_state()s:
+        #   #1: cache empty → no TTL check → store @ T=100.0
+        #   #2: TTL check @ T=100.5 (within TTL) → cache hit
+        #   #3: TTL check @ T=200.0 (past TTL) → miss
+        #       in-lock TTL re-check @ T=200.1 → still miss
+        #       store @ T=200.2
+        with ctx:
+            with patch(
+                "labctl.power.kasa.time.monotonic",
+                side_effect=[100.0, 100.5, 200.0, 200.1, 200.2],
+            ):
+                c = KasaController(host)
+                assert c.get_state().value == "on"
+                assert c.get_state().value == "on"   # cache hit
+                assert c.get_state().value == "off"  # TTL expired → refetch
+
+        assert calls["n"] == 2
+
+    def test_different_hosts_do_not_share_cache(self):
+        from labctl.power.kasa import KasaController
+
+        ctx, calls = self._patch_fetch(states_seq=[{1: True}, {1: False}])
+        with ctx:
+            assert KasaController("10.0.0.1").get_state().value == "on"
+            assert KasaController("10.0.0.2").get_state().value == "off"
+
+        assert calls["n"] == 2
+
+    def test_power_off_invalidates_cache(self):
+        """A successful write drops the cache so the next read reflects it."""
+        from labctl.power import kasa as kasa_module
+        from labctl.power.kasa import KasaController
+
+        host = "10.0.0.99"
+        ctx_fetch, calls = self._patch_fetch(
+            states_seq=[{1: True}, {1: False}]
+        )
+
+        with ctx_fetch:
+            c = KasaController(host)
+            assert c.get_state().value == "on"
+            assert calls["n"] == 1
+
+            # Stub _run so power_off doesn't actually network — we only care
+            # about the invalidation side effect.
+            with patch.object(KasaController, "_run", return_value=True):
+                assert c.power_off() is True
+
+            # Cache must be empty now → second get_state refetches.
+            assert kasa_module._read_cached_state(host, 1) is None
+            assert c.get_state().value == "off"
+            assert calls["n"] == 2
+
+    def test_cache_miss_returns_unknown_for_absent_channel(self):
+        """If the strip enumerates fewer channels than expected, fall to UNKNOWN."""
+        from labctl.power.base import PowerState
+        from labctl.power.kasa import KasaController
+
+        ctx, _ = self._patch_fetch(states_seq=[{1: True, 2: False}])
+        with ctx:
+            assert KasaController("10.0.0.10", plug_index=99).get_state() == PowerState.UNKNOWN
+
+
 class TestKasaCredentials:
     """Tests for Kasa credential loading behavior."""
 

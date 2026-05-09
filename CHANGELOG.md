@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Kasa multi-outlet strips no longer hit themselves with parallel KLAP
+  handshakes during monitor cycles. Previously each outlet of an N-outlet
+  strip opened its own KLAP session in parallel, so the strip
+  rate-limited bursts of N concurrent auth attempts as
+  `AuthenticationError`. Symptom in production logs: every monitor cycle
+  produced a wave of "challenge mismatch" errors against `192.168.4.140`
+  (a 6-outlet HS300) followed by an exhausted-retry ERROR per outlet,
+  then a fresh wave 60 s later. Retries never helped because the cause
+  was contention, not transience. Fix: a process-wide per-host state
+  cache (5 s TTL) with a per-host serialization lock. The first caller
+  in a cycle pays one KLAP handshake and populates is-on for every
+  outlet; concurrent callers on sibling outlets read from the cache.
+  Writes invalidate so the next read reflects the change.
+
 ### Added
 - `labctl status` now appends the last 5 audit-log events under the SBC
   table for at-a-glance recent-action context (oldest first so the newest
