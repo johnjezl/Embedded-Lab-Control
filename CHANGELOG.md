@@ -6,6 +6,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added (actuators feature, P1–P7 — groundwork only, awaits hardware)
+
+First-class support for USB-controlled relays as provisioned lab
+resources, with per-target purpose **bindings** (recovery_mode,
+boot_select, power_button, …) so verbs are semantic
+(`labctl enter-recovery jetson-nano-2`) rather than device-specific.
+Built per `docs/SPEC_actuators.md`. Live hardware validation (Phase 8)
+is the only remaining piece.
+
+- **Schema v8** — `actuators`, `actuator_channels`, `bindings` tables
+  with CHECK constraints on enum columns, UNIQUE on
+  `actuator_channel_id` (one binding per channel), UNIQUE on
+  `(sbc_id, purpose)` (one purpose per SBC). Migration v7→v8.
+- **Driver layer** (`labctl.actuators`):
+  - `RelayDriver` ABC with structured `WriteOutcome` /
+    `ProbeResult` so composites can abort safely on USB drop mid-sequence.
+  - `lcus1_serial` — CH340-based 4-byte ASCII protocol at 9600/8N1,
+    write-only, software-tracked state, side-effect-free probe.
+  - `MockRelayDriver` for tests with programmable failure modes.
+  - `get_driver()` registry; future drivers raise NotImplementedError.
+- **Runtime layer** (`labctl.actuators.runtime`):
+  - Per-channel non-blocking locks ⇒ ChannelBusyError for concurrent
+    verbs; verb/shape congruence enforced (BindingShapeError).
+  - `actuate_binding` / `release_binding` / `press_binding` —
+    desired_state persisted only on WriteOutcome.OK.
+  - `apply_pre_power_bindings` — re-applies pre_power straps before
+    `power_on` / `power_cycle` so recovery_mode survives power cycles.
+  - `enter_recovery` / `exit_recovery` — pre-flight probe + power_off
+    + sleep + (de)assert + power_on, with explicit abort if the
+    actuator is unreachable BEFORE any power transition.
+  - `apply_safe_drive_on_startup` — daemon-start reconciliation that
+    leaves `desired_state=asserted` channels alone (recovery
+    mid-flash survives a daemon restart) and drives everything else
+    to `default_state`.
+- **CLI**:
+  - `labctl actuator add/list/probe/remove/set`
+  - `labctl bind`, `labctl unbind`, `labctl bindings list`
+  - `labctl bindings actuate / release / press / status`
+  - `labctl enter-recovery / exit-recovery`
+  - `power on` / `power cycle` now consult pre_power bindings.
+- **MCP**: complete tool set — provisioning, binding management,
+  operation verbs (claim-gated), and recovery composites.
+- **SBC claim composition**: `claim_sbc` snapshot-checks per-channel
+  locks; refuses with ChannelBusyError if a verb is mid-flight.
+- **Wiring-polarity validation** at bind time: refuses
+  `default_state == active`.
+- **`pyproject.toml`**: new optional `actuators` extra pulling
+  `pyserial>=3.5`.
+
+Tests: **897/897 pass.** ~140 new tests across schema migration,
+manager CRUD, driver ABC contract, LCUS-1 frame builder + I/O,
+runtime verbs, composite power integration, daemon-start safe-drive,
+claim composition, CLI surface, and MCP tools.
+
 ### Fixed
 - Kasa multi-outlet strips no longer hit themselves with parallel KLAP
   handshakes during monitor cycles. Previously each outlet of an N-outlet

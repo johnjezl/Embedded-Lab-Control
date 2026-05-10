@@ -7,10 +7,26 @@ is use-agnostic; specific behaviors (USB Force Recovery on a Jetson,
 boot-select strap on a board, simulated GPIO input, etc.) are layered
 on top via bindings.
 
-**Status:** Proposed
+**Status:** Implemented (Phases 1–7); awaiting Phase 8 hardware validation
 **Source request:** Lab-day request, 2026-05-09
 **Target release:** v0.x
 **Motivating case:** Jetson Orin Nano USB Force Recovery (J14 9–10) without a physical jumper
+
+**Implementation note (2026-05-09):** Phases 1–7 land on the
+`feat/actuators` branch with 897/897 tests passing. Two CLI surfaces
+deviated from the spec sketch to avoid name conflicts with existing
+commands:
+
+- `labctl assert` → `labctl bindings actuate` (avoids the Python
+  keyword AND the existing claim-related top-level verbs).
+- `labctl release` (binding) → `labctl bindings release` (avoids the
+  existing claim-`release` command).
+
+The verbs live under the `bindings` group, matching how
+`power on/off/cycle` is grouped. MCP tool names stay flat.
+
+Phase 8 (live hardware validation on a real Jetson Orin Nano + LCUS-1)
+is the only remaining piece before merge.
 
 ---
 
