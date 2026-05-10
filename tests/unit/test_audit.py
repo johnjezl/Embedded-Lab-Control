@@ -339,7 +339,7 @@ class TestSchemaV6:
     def test_schema_version_is_current(self):
         from labctl.core.database import SCHEMA_VERSION
 
-        assert SCHEMA_VERSION == 7
+        assert SCHEMA_VERSION == 8
 
     def test_fresh_db_has_power_cache_columns(self, db):
         cols = {r["name"] for r in db.execute("PRAGMA table_info(sbcs)")}
@@ -461,6 +461,156 @@ class TestSchemaV7:
         assert "power_cycle_delay_seconds" in cols
         row = d2.execute_one("SELECT * FROM sbcs WHERE name = ?", ("legacy-sbc",))
         assert row["power_cycle_delay_seconds"] is None
+
+
+class TestSchemaV8:
+    def test_fresh_db_has_actuator_tables(self, db):
+        names = {
+            r["name"]
+            for r in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        assert {"actuators", "actuator_channels", "bindings"} <= names
+
+    def test_actuator_channels_check_constraint(self, db):
+        """default_state must be one of 'open' / 'closed'."""
+        actuator_id = db.execute_insert(
+            "INSERT INTO actuators (name, driver) VALUES (?, ?)",
+            ("a", "lcus1_serial"),
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute_insert(
+                "INSERT INTO actuator_channels "
+                "(actuator_id, channel_index, default_state) VALUES (?, ?, ?)",
+                (actuator_id, 1, "garbage"),
+            )
+
+    def test_bindings_unique_actuator_channel(self, db):
+        """A channel can only be bound to one (sbc, purpose) in v1."""
+        sbc_id = db.execute_insert(
+            "INSERT INTO sbcs (name) VALUES (?)", ("sbc-a",)
+        )
+        sbc2_id = db.execute_insert(
+            "INSERT INTO sbcs (name) VALUES (?)", ("sbc-b",)
+        )
+        actuator_id = db.execute_insert(
+            "INSERT INTO actuators (name, driver) VALUES (?, ?)",
+            ("relay-1", "lcus1_serial"),
+        )
+        channel_id = db.execute_insert(
+            "INSERT INTO actuator_channels (actuator_id, channel_index) VALUES (?, ?)",
+            (actuator_id, 1),
+        )
+        db.execute_insert(
+            """
+            INSERT INTO bindings
+              (sbc_id, purpose, actuator_channel_id, shape_mode, shape_active)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (sbc_id, "recovery_mode", channel_id, "latch", "closed"),
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute_insert(
+                """
+                INSERT INTO bindings
+                  (sbc_id, purpose, actuator_channel_id, shape_mode, shape_active)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (sbc2_id, "recovery_mode", channel_id, "latch", "closed"),
+            )
+
+    def test_bindings_unique_per_sbc_purpose(self, db):
+        """Same (sbc, purpose) pair can't be bound twice."""
+        sbc_id = db.execute_insert(
+            "INSERT INTO sbcs (name) VALUES (?)", ("sbc-c",)
+        )
+        actuator_id = db.execute_insert(
+            "INSERT INTO actuators (name, driver) VALUES (?, ?)",
+            ("relay-2", "lcus1_serial"),
+        )
+        ch1 = db.execute_insert(
+            "INSERT INTO actuator_channels (actuator_id, channel_index) VALUES (?, ?)",
+            (actuator_id, 1),
+        )
+        ch2 = db.execute_insert(
+            "INSERT INTO actuator_channels (actuator_id, channel_index) VALUES (?, ?)",
+            (actuator_id, 2),
+        )
+        db.execute_insert(
+            """
+            INSERT INTO bindings
+              (sbc_id, purpose, actuator_channel_id, shape_mode, shape_active)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (sbc_id, "recovery_mode", ch1, "latch", "closed"),
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            db.execute_insert(
+                """
+                INSERT INTO bindings
+                  (sbc_id, purpose, actuator_channel_id, shape_mode, shape_active)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (sbc_id, "recovery_mode", ch2, "latch", "closed"),
+            )
+
+    def test_migration_from_v7_to_v8(self, tmp_path):
+        """A pre-v8 database must gain the actuator tables."""
+        path = tmp_path / "v7.db"
+        conn = sqlite3.connect(path)
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (
+                version INTEGER PRIMARY KEY,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE sbcs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL,
+                project TEXT,
+                description TEXT,
+                ssh_user TEXT DEFAULT 'root',
+                status TEXT DEFAULT 'unknown',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                last_power_state TEXT,
+                last_power_at TIMESTAMP,
+                power_cycle_delay_seconds REAL
+            );
+            CREATE TABLE audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                action TEXT NOT NULL,
+                entity_type TEXT NOT NULL,
+                entity_id INTEGER,
+                entity_name TEXT,
+                details TEXT,
+                logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                actor TEXT NOT NULL DEFAULT 'internal',
+                source TEXT NOT NULL DEFAULT 'internal',
+                result TEXT NOT NULL DEFAULT 'ok',
+                claim_id INTEGER
+            );
+            CREATE TABLE claims (id INTEGER PRIMARY KEY);
+            INSERT INTO schema_version (version) VALUES (7);
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        from labctl.core.database import Database
+
+        Database(path).initialize()
+        d2 = Database(path)
+        names = {
+            r["name"]
+            for r in d2.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+        assert "actuators" in names
+        assert "actuator_channels" in names
+        assert "bindings" in names
 
 
 class TestPowerObservationPersistence:

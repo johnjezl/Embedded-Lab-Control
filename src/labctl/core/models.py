@@ -524,3 +524,243 @@ class Claim:
             data["id"] = self.id
             data["sbc_id"] = self.sbc_id
         return data
+
+
+# ---------------------------------------------------------------------------
+# Actuators / bindings (schema v8)
+# ---------------------------------------------------------------------------
+
+
+class ActuatorKind(str, Enum):
+    """Top-level category of an actuator."""
+
+    RELAY = "relay"
+    GPIO = "gpio"
+
+
+class DriverName(str, Enum):
+    """Concrete driver implementations.
+
+    v1 ships ``LCUS1_SERIAL``; the others are placeholders for future
+    driver work referenced by the spec but not yet implemented.
+    """
+
+    LCUS1_SERIAL = "lcus1_serial"
+    NUMATO_ACM = "numato_acm"
+    HID_GENERIC = "hid_generic"
+    SYSFS_GPIO = "sysfs_gpio"
+
+
+class ChannelState(str, Enum):
+    """Physical state of a relay contact."""
+
+    OPEN = "open"
+    CLOSED = "closed"
+
+
+class ShapeMode(str, Enum):
+    """Whether a binding represents sustained or pulsed actuation."""
+
+    LATCH = "latch"
+    MOMENTARY = "momentary"
+
+
+class SamplePhase(str, Enum):
+    """When the binding's value is consequential relative to power."""
+
+    PRE_POWER = "pre_power"
+    POST_POWER = "post_power"
+    NONE = "none"
+
+
+class DesiredState(str, Enum):
+    """Operator intent for a binding (persistent across daemon restarts)."""
+
+    ASSERTED = "asserted"
+    RELEASED = "released"
+    FOLLOWING_POWER = "following_power"
+
+
+# Recommended purposes — the binding `purpose` column stores any string,
+# but provisioning UIs should default to / suggest these.
+KNOWN_PURPOSES = (
+    "recovery_mode",
+    "boot_select",
+    "power_button",
+    "reset_button",
+    "usb_data_break",
+    "usb_power_break",
+    "dut_input",
+)
+
+
+@dataclass
+class Actuator:
+    """A USB-controlled relay (or similar single-bit actuator)."""
+
+    id: Optional[int] = None
+    name: str = ""
+    kind: ActuatorKind = ActuatorKind.RELAY
+    driver: DriverName = DriverName.LCUS1_SERIAL
+    device_path: Optional[str] = None
+    vid: Optional[str] = None
+    pid: Optional[str] = None
+    serial_no: Optional[str] = None
+    last_probe_at: Optional[datetime] = None
+    last_probe_result: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    # Populated by the manager when relations are loaded.
+    channels: list["ActuatorChannel"] = field(default_factory=list)
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "Actuator":
+        return cls(
+            id=row["id"],
+            name=row["name"],
+            kind=ActuatorKind(row["kind"]),
+            driver=DriverName(row["driver"]),
+            device_path=row["device_path"],
+            vid=row["vid"],
+            pid=row["pid"],
+            serial_no=row["serial_no"],
+            last_probe_at=_parse_timestamp(row["last_probe_at"]),
+            last_probe_result=row["last_probe_result"],
+            created_at=row["created_at"],
+        )
+
+    def to_dict(self, include_ids: bool = False) -> dict:
+        data: dict = {
+            "name": self.name,
+            "kind": self.kind.value,
+            "driver": self.driver.value,
+            "device_path": self.device_path,
+            "vid": self.vid,
+            "pid": self.pid,
+            "serial_no": self.serial_no,
+            "last_probe_at": (
+                self.last_probe_at.isoformat() if self.last_probe_at else None
+            ),
+            "last_probe_result": self.last_probe_result,
+        }
+        if include_ids:
+            data["id"] = self.id
+        if self.channels:
+            data["channels"] = [c.to_dict(include_ids=include_ids) for c in self.channels]
+        return data
+
+
+@dataclass
+class ActuatorChannel:
+    """One outlet / channel on an actuator."""
+
+    id: Optional[int] = None
+    actuator_id: int = 0
+    channel_index: int = 1  # 1-based
+    label: Optional[str] = None
+    default_state: ChannelState = ChannelState.OPEN
+    last_state: Optional[ChannelState] = None
+    last_changed_at: Optional[datetime] = None
+    cycle_count: int = 0
+    created_at: Optional[datetime] = None
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "ActuatorChannel":
+        last_raw = row["last_state"]
+        return cls(
+            id=row["id"],
+            actuator_id=row["actuator_id"],
+            channel_index=row["channel_index"],
+            label=row["label"],
+            default_state=ChannelState(row["default_state"]),
+            last_state=ChannelState(last_raw) if last_raw else None,
+            last_changed_at=_parse_timestamp(row["last_changed_at"]),
+            cycle_count=row["cycle_count"],
+            created_at=row["created_at"],
+        )
+
+    def to_dict(self, include_ids: bool = False) -> dict:
+        data: dict = {
+            "channel_index": self.channel_index,
+            "label": self.label,
+            "default_state": self.default_state.value,
+            "last_state": self.last_state.value if self.last_state else None,
+            "last_changed_at": (
+                self.last_changed_at.isoformat() if self.last_changed_at else None
+            ),
+            "cycle_count": self.cycle_count,
+        }
+        if include_ids:
+            data["id"] = self.id
+            data["actuator_id"] = self.actuator_id
+        return data
+
+
+@dataclass
+class Binding:
+    """A (target SBC, purpose) → actuator-channel association."""
+
+    id: Optional[int] = None
+    sbc_id: int = 0
+    purpose: str = ""
+    actuator_channel_id: int = 0
+    shape_mode: ShapeMode = ShapeMode.LATCH
+    shape_active: ChannelState = ChannelState.CLOSED
+    momentary_pulse_ms: Optional[int] = None
+    sample_phase: SamplePhase = SamplePhase.NONE
+    desired_state: DesiredState = DesiredState.RELEASED
+    notes: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+    # Populated by manager when joining for display.
+    sbc_name: Optional[str] = None
+    actuator_name: Optional[str] = None
+    channel_index: Optional[int] = None
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "Binding":
+        keys = row.keys()
+        return cls(
+            id=row["id"],
+            sbc_id=row["sbc_id"],
+            purpose=row["purpose"],
+            actuator_channel_id=row["actuator_channel_id"],
+            shape_mode=ShapeMode(row["shape_mode"]),
+            shape_active=ChannelState(row["shape_active"]),
+            momentary_pulse_ms=row["momentary_pulse_ms"],
+            sample_phase=SamplePhase(row["sample_phase"]),
+            desired_state=DesiredState(row["desired_state"]),
+            notes=row["notes"],
+            created_at=row["created_at"],
+            sbc_name=row["sbc_name"] if "sbc_name" in keys else None,
+            actuator_name=(
+                row["actuator_name"] if "actuator_name" in keys else None
+            ),
+            channel_index=(
+                row["channel_index"] if "channel_index" in keys else None
+            ),
+        )
+
+    def to_dict(self, include_ids: bool = False) -> dict:
+        data: dict = {
+            "purpose": self.purpose,
+            "shape": {
+                "mode": self.shape_mode.value,
+                "active": self.shape_active.value,
+                "momentary_pulse_ms": self.momentary_pulse_ms,
+                "sample_phase": self.sample_phase.value,
+            },
+            "desired_state": self.desired_state.value,
+            "notes": self.notes,
+        }
+        if self.sbc_name:
+            data["sbc_name"] = self.sbc_name
+        if self.actuator_name:
+            data["actuator_name"] = self.actuator_name
+        if self.channel_index is not None:
+            data["channel_index"] = self.channel_index
+        if include_ids:
+            data["id"] = self.id
+            data["sbc_id"] = self.sbc_id
+            data["actuator_channel_id"] = self.actuator_channel_id
+        return data
