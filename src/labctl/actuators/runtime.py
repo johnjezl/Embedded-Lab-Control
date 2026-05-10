@@ -313,3 +313,234 @@ def probe_actuator(actuator: Actuator) -> ProbeOutcome:
         return ProbeOutcome(
             result=ProbeResult.UNREACHABLE, detail=str(e)
         )
+
+
+# ---------------------------------------------------------------------------
+# Power-aware integration (Phase 5)
+# ---------------------------------------------------------------------------
+
+
+def _bindings_with_sample_phase(manager, sbc_id: int, phase) -> list[Binding]:
+    """Return bindings on ``sbc_id`` whose sample_phase matches ``phase``."""
+    return [
+        b
+        for b in manager.list_bindings(sbc_id=sbc_id)
+        if b.sample_phase == phase
+    ]
+
+
+def apply_pre_power_bindings(manager, sbc) -> None:
+    """Drive every pre_power binding on ``sbc`` to match its desired_state.
+
+    Called BEFORE ``power_on`` / ``power_cycle`` so a held recovery_mode
+    strap is in place before the device boots. No-op for SBCs with no
+    pre_power bindings.
+
+    Raises :class:`ActuationError` on any driver failure — power must
+    NOT proceed without the strap in place.
+    """
+    from labctl.core.models import SamplePhase
+
+    pre_bindings = _bindings_with_sample_phase(
+        manager, sbc.id, SamplePhase.PRE_POWER
+    )
+    for binding in pre_bindings:
+        actuator, channel = _resolve(manager, binding)
+        if binding.desired_state == DesiredState.ASSERTED:
+            target = binding.shape_active
+        elif binding.desired_state == DesiredState.RELEASED:
+            target = _opposite(binding.shape_active)
+        else:
+            # FOLLOWING_POWER — driven by the binding's own logic post-on.
+            continue
+
+        with _channel_lock(channel.id):
+            with open_driver_for(actuator) as driver:
+                outcome = _drive(driver, channel.channel_index, target)
+            if outcome is not WriteOutcome.OK:
+                raise ActuationError(
+                    f"pre_power binding {binding.purpose!r} on "
+                    f"{binding.sbc_name!r}: {outcome.value}"
+                )
+            manager.update_channel_state(channel.id, target)
+
+
+def enter_recovery(
+    manager,
+    sbc,
+    controller,
+    *,
+    delay_s: float,
+    sleep_fn=time.sleep,
+) -> None:
+    """Power-aware "enter USB Force Recovery (or equivalent)" composite.
+
+    Sequence (see SPEC_actuators.md §"Composite, power-aware operations"):
+
+      0. Pre-flight probe every actuator we'll touch — abort BEFORE
+         power_off if any is unreachable.
+      1. power_off
+      2. sleep(delay_s)
+      3. actuate recovery_mode  → desired=asserted, strap engaged
+      4. power_on (consults pre_power bindings; idempotent for the
+         strap we just engaged)
+    """
+    binding = manager.get_binding_by_target(sbc.id, "recovery_mode")
+    if binding is None:
+        raise ActuationError(
+            f"no 'recovery_mode' binding on {sbc.name!r}"
+        )
+    actuator, _channel = _resolve(manager, binding)
+
+    # 0. Pre-flight probe. Abort before any power transition.
+    outcome = probe_actuator(actuator)
+    if outcome.result is not ProbeResult.OK:
+        raise ActuationError(
+            f"pre-flight probe failed on {actuator.name!r}: "
+            f"{outcome.result.value} ({outcome.detail or 'no detail'})"
+        )
+
+    # 1. Power off.
+    if not controller.power_off():
+        raise ActuationError(f"power_off failed on {sbc.name!r}")
+    # 2. Settling delay.
+    sleep_fn(delay_s)
+    # 3. Engage recovery strap.
+    actuate_binding(manager, binding)
+    # 4. Power on (re-applies the strap via apply_pre_power_bindings).
+    apply_pre_power_bindings(manager, sbc)
+    if not controller.power_on():
+        raise ActuationError(f"power_on failed on {sbc.name!r}")
+
+
+def exit_recovery(
+    manager,
+    sbc,
+    controller,
+    *,
+    delay_s: float,
+    sleep_fn=time.sleep,
+) -> None:
+    """Power-aware "leave recovery" composite.
+
+    Same shape as :func:`enter_recovery` but releases the strap.
+    """
+    binding = manager.get_binding_by_target(sbc.id, "recovery_mode")
+    if binding is None:
+        raise ActuationError(
+            f"no 'recovery_mode' binding on {sbc.name!r}"
+        )
+    actuator, _channel = _resolve(manager, binding)
+
+    outcome = probe_actuator(actuator)
+    if outcome.result is not ProbeResult.OK:
+        raise ActuationError(
+            f"pre-flight probe failed on {actuator.name!r}: "
+            f"{outcome.result.value} ({outcome.detail or 'no detail'})"
+        )
+
+    if not controller.power_off():
+        raise ActuationError(f"power_off failed on {sbc.name!r}")
+    sleep_fn(delay_s)
+    release_binding(manager, binding)
+    apply_pre_power_bindings(manager, sbc)
+    if not controller.power_on():
+        raise ActuationError(f"power_on failed on {sbc.name!r}")
+
+
+# ---------------------------------------------------------------------------
+# Daemon-start safe drive
+# ---------------------------------------------------------------------------
+
+
+def apply_safe_drive_on_startup(manager) -> dict:
+    """Reconcile every actuator channel against its binding's desired_state.
+
+    On daemon start every channel is evaluated:
+
+      * No binding for channel              → drive to default_state.
+      * Binding desired_state=released       → drive to default_state.
+      * Binding desired_state=asserted       → LEAVE ALONE, warn.
+      * Binding desired_state=following_power → leave alone (driven later
+        by power_on consulting pre_power bindings).
+
+    The "leave alone" path is the keystone: a recovery_mode strap held
+    mid-flash MUST survive daemon restarts. Snapping it to default_state
+    would drop the flash. The warning is the operator's signal that
+    something was mid-operation when the daemon went down.
+
+    Returns a dict summarising what happened (test/observability hook).
+    """
+    bindings_by_channel: dict[int, Binding] = {}
+    for b in manager.list_bindings():
+        bindings_by_channel[b.actuator_channel_id] = b
+
+    held: list[dict] = []
+    drove: list[dict] = []
+    failed: list[dict] = []
+
+    for actuator in manager.list_actuators():
+        # Skip drivers we can't talk to. The daemon stays up; bindings
+        # on unreachable hardware just don't reconcile.
+        try:
+            cm = open_driver_for(actuator)
+            driver = cm.__enter__()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "safe-drive: cannot open %s: %s", actuator.name, e
+            )
+            continue
+        try:
+            for ch in actuator.channels:
+                binding = bindings_by_channel.get(ch.id)
+                if binding is not None and binding.desired_state in (
+                    DesiredState.ASSERTED,
+                    DesiredState.FOLLOWING_POWER,
+                ):
+                    held.append(
+                        {
+                            "actuator": actuator.name,
+                            "channel": ch.channel_index,
+                            "purpose": binding.purpose,
+                            "desired_state": binding.desired_state.value,
+                        }
+                    )
+                    logger.warning(
+                        "safe-drive: leaving %s[%d] alone (binding "
+                        "%s desired=%s)",
+                        actuator.name,
+                        ch.channel_index,
+                        binding.purpose,
+                        binding.desired_state.value,
+                    )
+                    continue
+
+                target = ch.default_state
+                outcome = _drive(driver, ch.channel_index, target)
+                if outcome is WriteOutcome.OK:
+                    manager.update_channel_state(ch.id, target)
+                    drove.append(
+                        {
+                            "actuator": actuator.name,
+                            "channel": ch.channel_index,
+                            "target": target.value,
+                        }
+                    )
+                else:
+                    failed.append(
+                        {
+                            "actuator": actuator.name,
+                            "channel": ch.channel_index,
+                            "outcome": outcome.value,
+                        }
+                    )
+                    logger.warning(
+                        "safe-drive: write to %s[%d] returned %s",
+                        actuator.name,
+                        ch.channel_index,
+                        outcome.value,
+                    )
+        finally:
+            cm.__exit__(None, None, None)
+
+    return {"held": held, "drove": drove, "failed": failed}

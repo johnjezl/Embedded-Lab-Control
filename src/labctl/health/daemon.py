@@ -231,6 +231,35 @@ class MonitorDaemon:
             self.min_sleep_seconds,
         )
 
+        # Reconcile actuator channels against bindings' desired_state on
+        # startup. Held bindings (recovery_mode mid-flash, etc.) survive
+        # a daemon restart untouched; unheld channels return to their
+        # default_state. Failures don't stop the daemon — health checks
+        # still run, the operator gets a warning per affected channel.
+        try:
+            from labctl.actuators.runtime import apply_safe_drive_on_startup
+
+            summary = apply_safe_drive_on_startup(self.manager)
+            if summary["held"]:
+                logger.warning(
+                    "safe-drive: %d binding(s) left held across restart "
+                    "(recovery in progress?): %s",
+                    len(summary["held"]),
+                    summary["held"],
+                )
+            if summary["failed"]:
+                logger.warning(
+                    "safe-drive: %d channel(s) failed to reset: %s",
+                    len(summary["failed"]),
+                    summary["failed"],
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "safe-drive on startup raised %s: %s; continuing without it",
+                type(e).__name__,
+                e,
+            )
+
         # Initialize last known states
         sbcs = self.manager.list_sbcs()
         for sbc in sbcs:

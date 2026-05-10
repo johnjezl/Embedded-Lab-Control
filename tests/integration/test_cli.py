@@ -408,12 +408,15 @@ class TestPowerCycleCommand:
                 "labctl.cli._get_power_controller",
                 return_value=(controller, sbc),
             ):
-                result = runner.invoke(main, ["power", "cycle", "cycle-sbc"])
+                with patch("labctl.cli.time.sleep") as mock_sleep:
+                    result = runner.invoke(main, ["power", "cycle", "cycle-sbc"])
 
         assert result.exit_code == 0, result.output
-        controller.power_cycle.assert_called_once_with(
-            DEFAULT_POWER_CYCLE_DELAY_SECONDS
-        )
+        # power cycle now expands to off → sleep(delay) → pre_power → on
+        # so we can observe the resolved delay via the sleep arg.
+        controller.power_off.assert_called_once()
+        controller.power_on.assert_called_once()
+        mock_sleep.assert_called_with(DEFAULT_POWER_CYCLE_DELAY_SECONDS)
         assert "Warning" not in result.output
 
     def test_cycle_uses_sbc_value_when_set(self, runner):
@@ -425,10 +428,13 @@ class TestPowerCycleCommand:
                 "labctl.cli._get_power_controller",
                 return_value=(controller, sbc),
             ):
-                result = runner.invoke(main, ["power", "cycle", "cycle-sbc"])
+                with patch("labctl.cli.time.sleep") as mock_sleep:
+                    result = runner.invoke(main, ["power", "cycle", "cycle-sbc"])
 
         assert result.exit_code == 0, result.output
-        controller.power_cycle.assert_called_once_with(7.0)
+        controller.power_off.assert_called_once()
+        controller.power_on.assert_called_once()
+        mock_sleep.assert_called_with(7.0)
 
     def test_edit_cycle_delay_clear_sentinel(self, runner, tmp_path, monkeypatch):
         """`labctl edit --cycle-delay -1` clears the per-SBC override."""
@@ -487,12 +493,15 @@ class TestPowerCycleCommand:
                 "labctl.cli._get_power_controller",
                 return_value=(controller, sbc),
             ):
-                result = runner.invoke(
-                    main, ["power", "cycle", "cycle-sbc", "--delay", "1"]
-                )
+                with patch("labctl.cli.time.sleep") as mock_sleep:
+                    result = runner.invoke(
+                        main, ["power", "cycle", "cycle-sbc", "--delay", "1"]
+                    )
 
         assert result.exit_code == 0, result.output
-        controller.power_cycle.assert_called_once_with(5.0)
+        controller.power_off.assert_called_once()
+        controller.power_on.assert_called_once()
+        mock_sleep.assert_called_with(5.0)
         # The warning is printed to stderr; CliRunner mixes streams unless told otherwise.
         assert "Warning" in result.output
         assert "below the SBC minimum" in result.output

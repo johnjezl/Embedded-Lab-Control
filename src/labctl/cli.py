@@ -2696,11 +2696,27 @@ def _emit_power_event(
 @click.argument("sbc_name")
 @click.pass_context
 def power_on_cmd(ctx: click.Context, sbc_name: str) -> None:
-    """Turn power on for an SBC."""
+    """Turn power on for an SBC.
+
+    Consults pre_power bindings: any binding on the SBC with
+    sample_phase=pre_power is driven to its desired_state before power
+    is applied. If applying any of those straps fails the device stays
+    powered off rather than booting without the strap.
+    """
+    from labctl.actuators.runtime import (
+        ActuationError,
+        apply_pre_power_bindings,
+    )
+
     manager = _get_manager(ctx)
     controller, sbc = _get_power_controller(manager, sbc_name)
 
     click.echo(f"Powering on {sbc_name}...")
+    try:
+        apply_pre_power_bindings(manager, sbc)
+    except ActuationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
     try:
         ok = controller.power_on()
         _emit_power_event(manager, sbc, "power_on", ok)
@@ -2792,21 +2808,22 @@ def power_cycle_cmd(
         click.echo(f"Warning: {warning}", err=True)
 
     click.echo(f"Power cycling {sbc_name} (delay: {effective_delay}s)...")
+    # power_cycle expands to off → sleep → apply pre_power bindings → on,
+    # rather than the controller's built-in (which would skip the
+    # binding step). Any pre_power application failure leaves the
+    # device powered off rather than booting without the strap.
+    from labctl.actuators.runtime import (
+        ActuationError,
+        apply_pre_power_bindings,
+    )
+
     try:
-        ok = controller.power_cycle(effective_delay)
-        _emit_power_event(
-            manager,
-            sbc,
-            "power_cycle",
-            ok,
-            extra={"delay_seconds": effective_delay},
-        )
-        if ok:
-            click.echo(f"Power cycled: {sbc_name}")
-        else:
-            click.echo(f"Error: Failed to power cycle {sbc_name}", err=True)
-            sys.exit(1)
-    except RuntimeError as e:
+        if not controller.power_off():
+            raise RuntimeError("power_off failed")
+        time.sleep(effective_delay)
+        apply_pre_power_bindings(manager, sbc)
+        ok = controller.power_on()
+    except (RuntimeError, ActuationError) as e:
         _emit_power_event(
             manager,
             sbc,
@@ -2816,6 +2833,19 @@ def power_cycle_cmd(
             extra={"delay_seconds": effective_delay},
         )
         click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    _emit_power_event(
+        manager,
+        sbc,
+        "power_cycle",
+        ok,
+        extra={"delay_seconds": effective_delay},
+    )
+    if ok:
+        click.echo(f"Power cycled: {sbc_name}")
+    else:
+        click.echo(f"Error: Failed to power cycle {sbc_name}", err=True)
         sys.exit(1)
 
 
@@ -3372,6 +3402,79 @@ def bindings_press_cmd(ctx: click.Context, sbc_name: str, purpose: str) -> None:
 
     _run_actuator_verb(ctx, sbc_name, purpose, press_binding)
     click.echo(f"Pressed {sbc_name}:{purpose}")
+
+
+def _run_composite(
+    ctx, sbc_name: str, fn_name: str, fn
+) -> None:
+    """Wrap a composite (enter_recovery / exit_recovery) with shared setup."""
+    from labctl.actuators.runtime import ActuationError
+
+    manager = _get_manager(ctx)
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC {sbc_name!r} not found", err=True)
+        sys.exit(1)
+    if not sbc.power_plug:
+        click.echo(
+            f"Error: {sbc_name!r} has no power plug configured", err=True
+        )
+        sys.exit(1)
+
+    controller, _sbc = _get_power_controller(manager, sbc_name)
+    delay, _warning = _resolve_cycle_delay(sbc, None)
+
+    try:
+        fn(manager, sbc, controller, delay_s=delay)
+    except ActuationError as e:
+        _emit_power_event(
+            manager, sbc, fn_name, False, error=str(e),
+            extra={"delay_seconds": delay},
+        )
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    except RuntimeError as e:
+        _emit_power_event(
+            manager, sbc, fn_name, False, error=str(e),
+            extra={"delay_seconds": delay},
+        )
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    _emit_power_event(
+        manager, sbc, fn_name, True,
+        extra={"delay_seconds": delay},
+    )
+
+
+@main.command("enter-recovery")
+@click.argument("sbc_name")
+@click.pass_context
+def enter_recovery_cmd(ctx: click.Context, sbc_name: str) -> None:
+    """Power-aware "enter recovery mode" composite.
+
+    Sequence:
+      1. Probe the recovery_mode actuator (read-only).
+      2. power_off
+      3. sleep(power_cycle_delay_seconds)
+      4. Engage the recovery_mode strap (desired=asserted).
+      5. power_on (re-applies the strap via pre_power bindings).
+    """
+    from labctl.actuators.runtime import enter_recovery
+
+    _run_composite(ctx, sbc_name, "enter_recovery", enter_recovery)
+    click.echo(f"Entered recovery: {sbc_name}")
+
+
+@main.command("exit-recovery")
+@click.argument("sbc_name")
+@click.pass_context
+def exit_recovery_cmd(ctx: click.Context, sbc_name: str) -> None:
+    """Power-aware "leave recovery mode" composite (release strap, normal boot)."""
+    from labctl.actuators.runtime import exit_recovery
+
+    _run_composite(ctx, sbc_name, "exit_recovery", exit_recovery)
+    click.echo(f"Exited recovery: {sbc_name}")
 
 
 @bindings_group.command("status")

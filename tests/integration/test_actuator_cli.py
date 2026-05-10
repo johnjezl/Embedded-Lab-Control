@@ -594,6 +594,125 @@ class TestVerbs:
         assert "released" in result.output
 
 
+class TestEnterExitRecovery:
+    def _setup(self, runner, lab, monkeypatch, controller_calls):
+        from labctl.actuators.mock import MockRelayDriver
+        from labctl.core.models import PlugType
+
+        # SBC needs a power plug for the composite to construct a controller.
+        lab.manager.assign_power_plug(
+            lab.sbc.id, PlugType.TASMOTA, address="10.0.0.1"
+        )
+
+        # Pre-bind recovery_mode (latch, pre-power).
+        _add_relay(runner, lab.config_path)
+        result = runner.invoke(
+            main,
+            [
+                "-c", str(lab.config_path),
+                "bind", "jetson-nano-2", "recovery_mode",
+                "--actuator", "relay-1", "--channel", "1",
+                "--mode", "latch", "--active-when", "closed",
+                "--phase", "pre-power",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+        # Stub the driver and the power controller.
+        mock_driver = MockRelayDriver(channel_count=1)
+        monkeypatch.setattr(
+            "labctl.actuators.runtime.get_driver",
+            lambda *a, **kw: mock_driver,
+        )
+
+        class FakeController:
+            def power_off(self):
+                controller_calls.append("off")
+                return True
+
+            def power_on(self):
+                controller_calls.append("on")
+                return True
+
+        monkeypatch.setattr(
+            "labctl.cli._get_power_controller",
+            lambda manager, sbc_name: (FakeController(), lab.sbc),
+        )
+        # Skip real sleeps.
+        monkeypatch.setattr("labctl.actuators.runtime.time.sleep", lambda s: None)
+        monkeypatch.setattr("labctl.cli.time.sleep", lambda s: None)
+
+        return mock_driver
+
+    def test_enter_recovery_sequence(self, runner, lab, monkeypatch):
+        calls: list[str] = []
+        mock = self._setup(runner, lab, monkeypatch, calls)
+
+        result = runner.invoke(
+            main,
+            [
+                "-c", str(lab.config_path),
+                "enter-recovery", "jetson-nano-2",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert calls == ["off", "on"]
+        # Strap engaged twice (actuate + apply_pre_power_bindings).
+        states = [(idx, closed) for (idx, closed, _) in mock.write_log]
+        assert states == [(1, True), (1, True)]
+
+        b = lab.manager.get_binding_by_target(lab.sbc.id, "recovery_mode")
+        assert b.desired_state.value == "asserted"
+
+    def test_exit_recovery_sequence(self, runner, lab, monkeypatch):
+        calls: list[str] = []
+        mock = self._setup(runner, lab, monkeypatch, calls)
+
+        # Pretend we're in recovery already.
+        b = lab.manager.get_binding_by_target(lab.sbc.id, "recovery_mode")
+        from labctl.core.models import DesiredState
+
+        lab.manager.update_binding_desired_state(b.id, DesiredState.ASSERTED)
+
+        result = runner.invoke(
+            main,
+            [
+                "-c", str(lab.config_path),
+                "exit-recovery", "jetson-nano-2",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert calls == ["off", "on"]
+        # Strap released twice (release + apply_pre_power_bindings).
+        states = [(idx, closed) for (idx, closed, _) in mock.write_log]
+        assert states == [(1, False), (1, False)]
+
+        fresh = lab.manager.get_binding(b.id)
+        assert fresh.desired_state.value == "released"
+
+    def test_enter_recovery_without_binding_errors(self, runner, lab, monkeypatch):
+        from labctl.core.models import PlugType
+
+        lab.manager.assign_power_plug(
+            lab.sbc.id, PlugType.TASMOTA, address="10.0.0.1"
+        )
+        # No bind invocation — composite must refuse.
+        monkeypatch.setattr(
+            "labctl.cli._get_power_controller",
+            lambda manager, sbc_name: (object(), lab.sbc),
+        )
+
+        result = runner.invoke(
+            main,
+            [
+                "-c", str(lab.config_path),
+                "enter-recovery", "jetson-nano-2",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "no 'recovery_mode'" in result.output
+
+
 class TestActuatorSet:
     def test_set_drives_channel_and_updates_state(self, runner, lab, monkeypatch):
         _add_relay(runner, lab.config_path)

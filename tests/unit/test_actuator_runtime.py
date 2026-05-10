@@ -332,6 +332,221 @@ class TestBindingStatus:
         assert info["channel"]["cycle_count"] == 0
 
 
+class TestApplyPrePowerBindings:
+    def test_drives_active_when_desired_asserted(self, lab):
+        binding = _make_binding(lab)
+        lab.manager.update_binding_desired_state(
+            binding.id, DesiredState.ASSERTED
+        )
+        runtime.apply_pre_power_bindings(lab.manager, lab.sbc)
+        assert lab.driver.write_log[-1] == (1, True, WriteOutcome.OK)
+
+    def test_drives_inactive_when_desired_released(self, lab):
+        binding = _make_binding(lab)
+        # Default desired_state is RELEASED.
+        runtime.apply_pre_power_bindings(lab.manager, lab.sbc)
+        assert lab.driver.write_log[-1] == (1, False, WriteOutcome.OK)
+
+    def test_skips_following_power(self, lab):
+        binding = _make_binding(lab)
+        lab.manager.update_binding_desired_state(
+            binding.id, DesiredState.FOLLOWING_POWER
+        )
+        runtime.apply_pre_power_bindings(lab.manager, lab.sbc)
+        assert lab.driver.write_log == []
+
+    def test_skips_non_pre_power_bindings(self, lab):
+        _make_binding(lab, sample_phase=SamplePhase.NONE)
+        runtime.apply_pre_power_bindings(lab.manager, lab.sbc)
+        assert lab.driver.write_log == []
+
+    def test_no_bindings_is_a_no_op(self, lab):
+        # Don't make any bindings at all.
+        runtime.apply_pre_power_bindings(lab.manager, lab.sbc)
+        assert lab.driver.write_log == []
+
+    def test_write_failure_raises_actuation_error(self, lab):
+        binding = _make_binding(lab)
+        lab.manager.update_binding_desired_state(
+            binding.id, DesiredState.ASSERTED
+        )
+        lab.driver.next_write_outcome = WriteOutcome.DEVICE_GONE
+        with pytest.raises(runtime.ActuationError, match="device_gone"):
+            runtime.apply_pre_power_bindings(lab.manager, lab.sbc)
+
+
+class TestEnterRecovery:
+    def _make_binding_and_controller(self, lab):
+        binding = _make_binding(lab, purpose="recovery_mode")
+
+        class FakeController:
+            def __init__(self):
+                self.calls: list[str] = []
+
+            def power_off(self):
+                self.calls.append("off")
+                return True
+
+            def power_on(self):
+                self.calls.append("on")
+                return True
+
+        return binding, FakeController()
+
+    def test_full_sequence(self, lab):
+        binding, controller = self._make_binding_and_controller(lab)
+
+        slept: list[float] = []
+        runtime.enter_recovery(
+            lab.manager,
+            lab.sbc,
+            controller,
+            delay_s=2.0,
+            sleep_fn=lambda s: slept.append(s),
+        )
+
+        # Sequence: off → sleep → assert → on. The strap is engaged
+        # twice: once by actuate_binding (step 3) and once by
+        # apply_pre_power_bindings (step 4); both write True.
+        assert controller.calls == ["off", "on"]
+        assert slept == [2.0]
+        states = [(idx, closed) for (idx, closed, _) in lab.driver.write_log]
+        # First write: actuate_binding drives to active=closed.
+        # Second write: pre_power binding application also drives closed.
+        assert states == [(1, True), (1, True)]
+
+        # Persistent intent reflects the actuation.
+        fresh = lab.manager.get_binding(binding.id)
+        assert fresh.desired_state is DesiredState.ASSERTED
+
+    def test_pre_flight_probe_failure_aborts_before_power_off(self, lab, monkeypatch):
+        binding, controller = self._make_binding_and_controller(lab)
+        from labctl.actuators.base import ProbeOutcome, ProbeResult
+
+        monkeypatch.setattr(
+            "labctl.actuators.runtime.probe_actuator",
+            lambda actuator: ProbeOutcome(
+                result=ProbeResult.UNREACHABLE, detail="usb yanked"
+            ),
+        )
+        with pytest.raises(runtime.ActuationError, match="probe failed"):
+            runtime.enter_recovery(
+                lab.manager,
+                lab.sbc,
+                controller,
+                delay_s=2.0,
+                sleep_fn=lambda s: None,
+            )
+        # Crucially, no power transitions occurred.
+        assert controller.calls == []
+        assert lab.driver.write_log == []
+
+    def test_no_recovery_binding_raises(self, lab):
+        controller = type(
+            "Stub",
+            (),
+            {"power_off": lambda self: True, "power_on": lambda self: True},
+        )()
+        with pytest.raises(runtime.ActuationError, match="no 'recovery_mode'"):
+            runtime.enter_recovery(
+                lab.manager,
+                lab.sbc,
+                controller,
+                delay_s=1.0,
+                sleep_fn=lambda s: None,
+            )
+
+
+class TestExitRecovery:
+    def test_full_sequence(self, lab):
+        binding = _make_binding(lab, purpose="recovery_mode")
+        # Pretend we entered recovery.
+        lab.manager.update_binding_desired_state(
+            binding.id, DesiredState.ASSERTED
+        )
+
+        class FakeController:
+            def __init__(self):
+                self.calls = []
+
+            def power_off(self):
+                self.calls.append("off")
+                return True
+
+            def power_on(self):
+                self.calls.append("on")
+                return True
+
+        controller = FakeController()
+        runtime.exit_recovery(
+            lab.manager,
+            lab.sbc,
+            controller,
+            delay_s=2.0,
+            sleep_fn=lambda s: None,
+        )
+
+        assert controller.calls == ["off", "on"]
+        # release_binding drives inactive (open), then apply_pre_power_bindings
+        # also drives inactive (since desired is now RELEASED).
+        states = [(idx, closed) for (idx, closed, _) in lab.driver.write_log]
+        assert states == [(1, False), (1, False)]
+
+        fresh = lab.manager.get_binding(binding.id)
+        assert fresh.desired_state is DesiredState.RELEASED
+
+
+class TestApplySafeDriveOnStartup:
+    def test_drives_unbound_channels_to_default(self, lab):
+        # Add a second channel with no binding.
+        ch2 = lab.manager.add_actuator_channel(
+            lab.actuator.id, 2, default_state=ChannelState.OPEN
+        )
+        lab.driver._configured_count = 2  # mock can talk to ch 2
+
+        result = runtime.apply_safe_drive_on_startup(lab.manager)
+
+        # Both channels driven to default (open).
+        states = [(idx, closed) for (idx, closed, _) in lab.driver.write_log]
+        assert (1, False) in states
+        assert (2, False) in states
+        assert len(result["drove"]) == 2
+        assert result["held"] == []
+
+    def test_held_asserted_binding_left_alone(self, lab):
+        binding = _make_binding(lab)
+        lab.manager.update_binding_desired_state(
+            binding.id, DesiredState.ASSERTED
+        )
+
+        result = runtime.apply_safe_drive_on_startup(lab.manager)
+
+        # The held channel must NOT be written.
+        states = [(idx, closed) for (idx, closed, _) in lab.driver.write_log]
+        assert (1, False) not in states
+        assert len(result["held"]) == 1
+        assert result["held"][0]["purpose"] == "recovery_mode"
+        assert result["held"][0]["desired_state"] == "asserted"
+
+    def test_following_power_left_alone(self, lab):
+        binding = _make_binding(lab)
+        lab.manager.update_binding_desired_state(
+            binding.id, DesiredState.FOLLOWING_POWER
+        )
+
+        result = runtime.apply_safe_drive_on_startup(lab.manager)
+        assert lab.driver.write_log == []
+        assert len(result["held"]) == 1
+
+    def test_released_binding_drives_to_default(self, lab):
+        # Released binding behaves the same as no binding (drive default).
+        _make_binding(lab)  # default desired_state = released
+
+        runtime.apply_safe_drive_on_startup(lab.manager)
+        # default_state is open → False
+        assert lab.driver.write_log[-1] == (1, False, WriteOutcome.OK)
+
+
 class TestProbeActuator:
     def test_probe_returns_outcome(self, lab):
         outcome = runtime.probe_actuator(lab.actuator)
