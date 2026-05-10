@@ -1373,8 +1373,20 @@ class ResourceManager:
         Runs an expire-stale sweep inside the acquisition transaction so
         the partial unique index can't block a legitimate caller behind a
         claim whose deadline has already passed.
+
+        Refuses (via ChannelBusyError) if any actuator channel referenced
+        by this SBC's bindings is currently held by an in-flight verb.
+        Snapshot check only; ownership across the claim's lifetime is
+        enforced by the DB-backed claim row.
         """
         sbc_id = self._require_sbc_id(sbc_name)
+
+        # Phase 6 gate: no actuator-channel verb in flight on bound channels.
+        # Imported lazily to avoid cycles and to keep the manager core
+        # decoupled from the actuators package at import time.
+        from labctl.actuators.runtime import check_no_channel_busy_for_sbc
+
+        check_no_channel_busy_for_sbc(self, sbc_id)
         context_json = json.dumps(context) if context else None
         cutoff = self._fmt_ts(datetime.now() - timedelta(seconds=grace_seconds))
 

@@ -547,6 +547,66 @@ class TestApplySafeDriveOnStartup:
         assert lab.driver.write_log[-1] == (1, False, WriteOutcome.OK)
 
 
+class TestCheckNoChannelBusyForSbc:
+    def test_no_bindings_is_a_no_op(self, lab):
+        runtime.check_no_channel_busy_for_sbc(lab.manager, lab.sbc.id)
+
+    def test_passes_when_channel_free(self, lab):
+        _make_binding(lab)
+        # No verb is in flight, so the check must pass cleanly.
+        runtime.check_no_channel_busy_for_sbc(lab.manager, lab.sbc.id)
+
+    def test_raises_when_channel_held(self, lab):
+        binding = _make_binding(lab)
+
+        # Hold the per-channel lock manually to simulate a verb in flight.
+        lock = runtime._get_channel_lock(binding.actuator_channel_id)
+        assert lock.acquire(blocking=False)
+        try:
+            with pytest.raises(runtime.ChannelBusyError, match="busy"):
+                runtime.check_no_channel_busy_for_sbc(
+                    lab.manager, lab.sbc.id
+                )
+        finally:
+            lock.release()
+
+    def test_releases_acquired_locks_on_failure(self, lab):
+        """If channel 2 is busy, channel 1's lock must be released after the check."""
+        # Two bindings on two channels.
+        ch2 = lab.manager.add_actuator_channel(
+            lab.actuator.id, 2, default_state=ChannelState.OPEN
+        )
+        # Bind ch1 to recovery_mode; ch2 to power_button (different SBC purpose).
+        b1 = _make_binding(lab, purpose="recovery_mode")
+        sbc2 = lab.manager.create_sbc(name="other-sbc")
+        # We need both bindings on the SAME sbc to test the mid-loop failure;
+        # use a second purpose on lab.sbc.
+        b2 = lab.manager.create_binding(
+            lab.sbc.id,
+            "power_button",
+            ch2.id,
+            shape_mode=ShapeMode.MOMENTARY,
+            shape_active=ChannelState.CLOSED,
+            momentary_pulse_ms=200,
+        )
+
+        # Hold ch2's lock; ch1's lock must be released after the check.
+        ch2_lock = runtime._get_channel_lock(b2.actuator_channel_id)
+        assert ch2_lock.acquire(blocking=False)
+        try:
+            with pytest.raises(runtime.ChannelBusyError):
+                runtime.check_no_channel_busy_for_sbc(
+                    lab.manager, lab.sbc.id
+                )
+        finally:
+            ch2_lock.release()
+
+        # Now ch1's lock should be acquirable — proving it was released.
+        ch1_lock = runtime._get_channel_lock(b1.actuator_channel_id)
+        assert ch1_lock.acquire(blocking=False)
+        ch1_lock.release()
+
+
 class TestProbeActuator:
     def test_probe_returns_outcome(self, lab):
         outcome = runtime.probe_actuator(lab.actuator)

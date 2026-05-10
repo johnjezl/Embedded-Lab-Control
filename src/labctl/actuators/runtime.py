@@ -100,6 +100,41 @@ def _channel_lock(channel_id: int):
         lock.release()
 
 
+def check_no_channel_busy_for_sbc(manager, sbc_id: int) -> None:
+    """Snapshot check: raise :class:`ChannelBusyError` if any binding's
+    channel is currently held by an in-flight verb.
+
+    Called from ``claim_sbc`` so a claim can't sneak in while another
+    process is mid-actuate. Locks are released immediately after the
+    check — claim ownership across processes is enforced by the DB-
+    backed claim, not by these in-memory locks.
+    """
+    bindings = manager.list_bindings(sbc_id=sbc_id)
+    acquired: list[threading.Lock] = []
+    busy: Optional[Binding] = None
+    try:
+        for b in bindings:
+            lock = _get_channel_lock(b.actuator_channel_id)
+            if lock.acquire(blocking=False):
+                acquired.append(lock)
+            else:
+                busy = b
+                break
+    finally:
+        for lock in acquired:
+            lock.release()
+    if busy is not None:
+        label = (
+            f"{busy.actuator_name}[{busy.channel_index}]"
+            if busy.actuator_name
+            else f"channel id {busy.actuator_channel_id}"
+        )
+        raise ChannelBusyError(
+            f"actuator channel {label} is busy "
+            f"(binding {busy.purpose!r} in flight)"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Driver helpers
 # ---------------------------------------------------------------------------

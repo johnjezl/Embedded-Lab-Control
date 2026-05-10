@@ -204,6 +204,68 @@ class TestBindingCrud:
         assert all(r["entity_name"] == "jetson:recovery_mode" for r in rows)
 
 
+class TestClaimComposition:
+    """Phase 6: claim_sbc consults per-channel busy state."""
+
+    def _setup(self, manager):
+        sbc = manager.create_sbc(name="jetson")
+        actuator = manager.create_actuator("relay-1", DriverName.LCUS1_SERIAL)
+        ch = manager.add_actuator_channel(actuator.id, 1)
+        manager.create_binding(
+            sbc.id, "recovery_mode", ch.id,
+            shape_mode=ShapeMode.LATCH,
+            shape_active=ChannelState.CLOSED,
+        )
+        return sbc, ch
+
+    def test_claim_succeeds_when_channels_free(self, manager):
+        sbc, _ch = self._setup(manager)
+        claim = manager.claim_sbc(
+            sbc_name=sbc.name,
+            agent_name="alice",
+            session_id="cli-alice@host",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="test",
+        )
+        assert claim.id is not None
+
+    def test_claim_refuses_when_channel_busy(self, manager):
+        from labctl.actuators import runtime
+
+        sbc, ch = self._setup(manager)
+        # Hold the per-channel lock to simulate a verb in flight.
+        lock = runtime._get_channel_lock(ch.id)
+        assert lock.acquire(blocking=False)
+        try:
+            with pytest.raises(runtime.ChannelBusyError, match="busy"):
+                manager.claim_sbc(
+                    sbc_name=sbc.name,
+                    agent_name="alice",
+                    session_id="cli-alice@host",
+                    session_kind="cli",
+                    duration_seconds=600,
+                    reason="test",
+                )
+        finally:
+            lock.release()
+            runtime._clear_runtime_state()
+
+    def test_claim_no_bindings_is_unaffected(self, manager):
+        """An SBC with no actuator bindings claims fine even when other
+        actuators have busy locks."""
+        sbc = manager.create_sbc(name="lonely")
+        claim = manager.claim_sbc(
+            sbc_name=sbc.name,
+            agent_name="alice",
+            session_id="cli-alice@host",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="test",
+        )
+        assert claim.id is not None
+
+
 class TestBindingConstraints:
     def test_one_binding_per_channel_v1(self, manager):
         """UNIQUE on actuator_channel_id enforces single-target v1."""

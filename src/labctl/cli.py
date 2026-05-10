@@ -3330,6 +3330,14 @@ def bindings_group() -> None:
     """Inspect actuator bindings."""
 
 
+def _channel_busy_error():
+    """Lazy import of ChannelBusyError so the actuators module load lands
+    only when the claim path actually needs it."""
+    from labctl.actuators.runtime import ChannelBusyError
+
+    return ChannelBusyError
+
+
 def _resolve_binding_for_verb(ctx, sbc_name: str, purpose: str):
     """Look up the binding for ``(sbc_name, purpose)`` or exit non-zero."""
     manager = _get_manager(ctx)
@@ -4066,6 +4074,9 @@ def claim_cmd(
             f"Use 'labctl request-release' or 'labctl force-release'.",
             err=True,
         )
+        sys.exit(1)
+    except _channel_busy_error() as exc:
+        click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
 
     expires = (
