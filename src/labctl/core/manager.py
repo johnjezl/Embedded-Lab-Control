@@ -1758,6 +1758,11 @@ class ResourceManager:
         actuator = self.get_actuator(actuator_id)
         if not actuator:
             return False
+        # Capture channel IDs before the cascade-delete so we can drop
+        # their per-channel locks afterwards. Without this the
+        # process-local lock dict accumulates stale entries across
+        # reprovisioning cycles.
+        channel_ids = [ch.id for ch in actuator.channels]
         count = self.db.execute_modify(
             "DELETE FROM actuators WHERE id = ?", (actuator_id,)
         )
@@ -1769,6 +1774,17 @@ class ResourceManager:
                 actuator.name,
                 f"Deleted actuator {actuator.name!r}",
             )
+            # Lazy-import to avoid a manager → actuators → manager cycle
+            # at module load time.
+            try:
+                from labctl.actuators.runtime import drop_channel_lock
+
+                for cid in channel_ids:
+                    drop_channel_lock(cid)
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "Failed to drop per-channel locks for actuator %d", actuator_id
+                )
             return True
         return False
 

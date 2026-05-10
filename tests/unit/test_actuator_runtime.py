@@ -516,6 +516,24 @@ class TestExitRecovery:
         assert fresh.desired_state is DesiredState.RELEASED
 
 
+class TestLockDictPruning:
+    def test_drop_channel_lock_removes_entry(self, lab):
+        lock = runtime._get_channel_lock(lab.channel.id)
+        assert lab.channel.id in runtime._channel_locks
+        runtime.drop_channel_lock(lab.channel.id)
+        assert lab.channel.id not in runtime._channel_locks
+        # Calling again is a no-op.
+        runtime.drop_channel_lock(lab.channel.id)
+
+    def test_delete_actuator_drops_locks(self, lab):
+        # Take a lock to seed the dict, then delete and confirm it's gone.
+        runtime._get_channel_lock(lab.channel.id)
+        assert lab.channel.id in runtime._channel_locks
+
+        lab.manager.delete_actuator(lab.actuator.id)
+        assert lab.channel.id not in runtime._channel_locks
+
+
 class TestApplySafeDriveOnStartup:
     def test_drives_unbound_channels_to_default(self, lab):
         # Add a second channel with no binding.

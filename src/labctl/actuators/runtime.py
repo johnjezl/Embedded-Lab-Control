@@ -86,6 +86,17 @@ def _clear_runtime_state() -> None:
         _channel_locks.clear()
 
 
+def drop_channel_lock(channel_id: int) -> None:
+    """Drop the per-channel lock entry, if any.
+
+    Called when a channel (or its parent actuator) is deleted so the
+    process-local lock dict doesn't accumulate stale entries across
+    reprovisioning. Safe to call for IDs that never had a lock.
+    """
+    with _channel_locks_meta:
+        _channel_locks.pop(channel_id, None)
+
+
 @contextmanager
 def _channel_lock(channel_id: int):
     """Non-blocking acquire; raise :class:`ChannelBusyError` if held."""
@@ -656,76 +667,93 @@ def apply_safe_drive_on_startup(manager) -> dict:
 
     Returns a dict summarising what happened (test/observability hook).
     """
-    bindings_by_channel: dict[int, Binding] = {}
-    for b in manager.list_bindings():
-        bindings_by_channel[b.actuator_channel_id] = b
+    bindings_by_channel: dict[int, Binding] = {
+        b.actuator_channel_id: b for b in manager.list_bindings()
+    }
 
     held: list[dict] = []
     drove: list[dict] = []
     failed: list[dict] = []
 
     for actuator in manager.list_actuators():
-        # Skip drivers we can't talk to. The daemon stays up; bindings
-        # on unreachable hardware just don't reconcile.
-        try:
-            cm = open_driver_for(actuator)
-            driver = cm.__enter__()
-        except Exception as e:  # noqa: BLE001
-            logger.warning(
-                "safe-drive: cannot open %s: %s", actuator.name, e
-            )
-            continue
-        try:
-            for ch in actuator.channels:
-                binding = bindings_by_channel.get(ch.id)
-                if binding is not None and binding.desired_state in (
-                    DesiredState.ASSERTED,
-                    DesiredState.FOLLOWING_POWER,
-                ):
-                    held.append(
-                        {
-                            "actuator": actuator.name,
-                            "channel": ch.channel_index,
-                            "purpose": binding.purpose,
-                            "desired_state": binding.desired_state.value,
-                        }
-                    )
-                    logger.warning(
-                        "safe-drive: leaving %s[%d] alone (binding "
-                        "%s desired=%s)",
-                        actuator.name,
-                        ch.channel_index,
-                        binding.purpose,
-                        binding.desired_state.value,
-                    )
-                    continue
-
-                target = ch.default_state
-                outcome = _drive(driver, ch.channel_index, target)
-                if outcome is WriteOutcome.OK:
-                    manager.update_channel_state(ch.id, target)
-                    drove.append(
-                        {
-                            "actuator": actuator.name,
-                            "channel": ch.channel_index,
-                            "target": target.value,
-                        }
-                    )
-                else:
-                    failed.append(
-                        {
-                            "actuator": actuator.name,
-                            "channel": ch.channel_index,
-                            "outcome": outcome.value,
-                        }
-                    )
-                    logger.warning(
-                        "safe-drive: write to %s[%d] returned %s",
-                        actuator.name,
-                        ch.channel_index,
-                        outcome.value,
-                    )
-        finally:
-            cm.__exit__(None, None, None)
+        _safe_drive_one_actuator(
+            manager, actuator, bindings_by_channel,
+            held=held, drove=drove, failed=failed,
+        )
 
     return {"held": held, "drove": drove, "failed": failed}
+
+
+def _safe_drive_one_actuator(
+    manager,
+    actuator: Actuator,
+    bindings_by_channel: dict[int, Binding],
+    *,
+    held: list[dict],
+    drove: list[dict],
+    failed: list[dict],
+) -> None:
+    """Reconcile one actuator's channels; appends to held/drove/failed.
+
+    Skips entirely if the actuator can't be opened (logs a warning). For
+    each channel: leave alone if its binding is held, otherwise drive
+    to the channel's default_state.
+    """
+    try:
+        cm = open_driver_for(actuator)
+        driver = cm.__enter__()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("safe-drive: cannot open %s: %s", actuator.name, e)
+        return
+    try:
+        for ch in actuator.channels:
+            binding = bindings_by_channel.get(ch.id)
+            if binding is not None and binding.desired_state in (
+                DesiredState.ASSERTED,
+                DesiredState.FOLLOWING_POWER,
+            ):
+                held.append(
+                    {
+                        "actuator": actuator.name,
+                        "channel": ch.channel_index,
+                        "purpose": binding.purpose,
+                        "desired_state": binding.desired_state.value,
+                    }
+                )
+                logger.warning(
+                    "safe-drive: leaving %s[%d] alone "
+                    "(binding %s desired=%s)",
+                    actuator.name,
+                    ch.channel_index,
+                    binding.purpose,
+                    binding.desired_state.value,
+                )
+                continue
+
+            target = ch.default_state
+            outcome = _drive(driver, ch.channel_index, target)
+            if outcome is WriteOutcome.OK:
+                manager.update_channel_state(ch.id, target)
+                drove.append(
+                    {
+                        "actuator": actuator.name,
+                        "channel": ch.channel_index,
+                        "target": target.value,
+                    }
+                )
+            else:
+                failed.append(
+                    {
+                        "actuator": actuator.name,
+                        "channel": ch.channel_index,
+                        "outcome": outcome.value,
+                    }
+                )
+                logger.warning(
+                    "safe-drive: write to %s[%d] returned %s",
+                    actuator.name,
+                    ch.channel_index,
+                    outcome.value,
+                )
+    finally:
+        cm.__exit__(None, None, None)
