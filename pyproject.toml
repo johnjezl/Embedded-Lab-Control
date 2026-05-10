@@ -52,6 +52,9 @@ sdwire = [
 kasa = [
     "python-kasa>=0.5",
 ]
+actuators = [
+    "pyserial>=3.5",
+]
 
 [project.scripts]
 labctl = "labctl.cli:main"
