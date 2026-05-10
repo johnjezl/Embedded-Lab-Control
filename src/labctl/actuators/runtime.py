@@ -175,6 +175,80 @@ def _drive(
     return driver.set_channel(channel_index, closed=target is ChannelState.CLOSED)
 
 
+def _audit_actuator_event(
+    manager,
+    action: str,
+    binding: Binding,
+    actuator: Actuator,
+    channel: ActuatorChannel,
+    target: ChannelState,
+    *,
+    ok: bool,
+    error: Optional[str] = None,
+    extra: Optional[dict] = None,
+) -> None:
+    """Emit an audit_log row for a binding-mediated hardware write.
+
+    Hardware writes are operationally significant and the activity
+    stream is the project's "who did what to which device" log. Every
+    successful or failed actuate/release/press lands here.
+    """
+    from labctl.core import audit
+
+    details: dict = {
+        "actuator": actuator.name,
+        "channel": channel.channel_index,
+        "target_state": target.value,
+    }
+    if extra:
+        details.update(extra)
+    if error is not None:
+        details["error"] = error
+    audit.emit(
+        manager.db,
+        action=action,
+        entity_type="binding",
+        entity_id=binding.id,
+        entity_name=(
+            f"{binding.sbc_name}:{binding.purpose}"
+            if binding.sbc_name
+            else binding.purpose
+        ),
+        result="ok" if ok else "error",
+        details=details,
+    )
+
+
+def _audit_raw_actuator_set(
+    manager,
+    actuator: Actuator,
+    channel: ActuatorChannel,
+    target: ChannelState,
+    *,
+    ok: bool,
+    error: Optional[str] = None,
+) -> None:
+    """Audit-log a raw `actuator set` that bypasses any binding."""
+    from labctl.core import audit
+
+    details: dict = {
+        "channel": channel.channel_index,
+        "target_state": target.value,
+        "raw": True,
+    }
+    if error is not None:
+        details["error"] = error
+    audit.emit(
+        manager.db,
+        action="actuator_set",
+        entity_type="actuator_channel",
+        entity_id=channel.id,
+        entity_name=f"{actuator.name}[{channel.channel_index}]",
+        result="ok" if ok else "error",
+        details=details,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Verb implementations
 # ---------------------------------------------------------------------------
@@ -232,11 +306,32 @@ def actuate_binding(manager, binding: Binding) -> None:
         with open_driver_for(actuator) as driver:
             outcome = _drive(driver, channel.channel_index, target)
         if outcome is not WriteOutcome.OK:
+            _audit_actuator_event(
+                manager,
+                "actuate",
+                binding,
+                actuator,
+                channel,
+                target,
+                ok=False,
+                error=outcome.value,
+            )
             raise ActuationError(
                 f"actuate failed: driver returned {outcome.value}"
             )
-        manager.update_channel_state(channel.id, target)
-        manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
+        # Atomic: channel state + binding desired_state in one transaction.
+        manager.commit_actuation(
+            channel.id, target, binding.id, DesiredState.ASSERTED
+        )
+        _audit_actuator_event(
+            manager,
+            "actuate",
+            binding,
+            actuator,
+            channel,
+            target,
+            ok=True,
+        )
 
 
 def release_binding(manager, binding: Binding) -> None:
@@ -249,11 +344,31 @@ def release_binding(manager, binding: Binding) -> None:
         with open_driver_for(actuator) as driver:
             outcome = _drive(driver, channel.channel_index, target)
         if outcome is not WriteOutcome.OK:
+            _audit_actuator_event(
+                manager,
+                "release",
+                binding,
+                actuator,
+                channel,
+                target,
+                ok=False,
+                error=outcome.value,
+            )
             raise ActuationError(
                 f"release failed: driver returned {outcome.value}"
             )
-        manager.update_channel_state(channel.id, target)
-        manager.update_binding_desired_state(binding.id, DesiredState.RELEASED)
+        manager.commit_actuation(
+            channel.id, target, binding.id, DesiredState.RELEASED
+        )
+        _audit_actuator_event(
+            manager,
+            "release",
+            binding,
+            actuator,
+            channel,
+            target,
+            ok=True,
+        )
 
 
 def press_binding(
@@ -280,6 +395,17 @@ def press_binding(
         with open_driver_for(actuator) as driver:
             out1 = _drive(driver, channel.channel_index, active)
             if out1 is not WriteOutcome.OK:
+                _audit_actuator_event(
+                    manager,
+                    "press",
+                    binding,
+                    actuator,
+                    channel,
+                    active,
+                    ok=False,
+                    error=f"assert: {out1.value}",
+                    extra={"pulse_ms": binding.momentary_pulse_ms},
+                )
                 raise ActuationError(
                     f"press: failed to assert: {out1.value}"
                 )
@@ -289,11 +415,35 @@ def press_binding(
 
             out2 = _drive(driver, channel.channel_index, inactive)
         if out2 is not WriteOutcome.OK:
+            _audit_actuator_event(
+                manager,
+                "press",
+                binding,
+                actuator,
+                channel,
+                inactive,
+                ok=False,
+                error=f"release: {out2.value}",
+                extra={
+                    "pulse_ms": binding.momentary_pulse_ms,
+                    "left_in_state": active.value,
+                },
+            )
             raise ActuationError(
                 f"press: assert ok, but release failed ({out2.value}). "
                 f"Channel may be left in {active.value} state."
             )
         manager.update_channel_state(channel.id, inactive)
+        _audit_actuator_event(
+            manager,
+            "press",
+            binding,
+            actuator,
+            channel,
+            inactive,
+            ok=True,
+            extra={"pulse_ms": binding.momentary_pulse_ms},
+        )
 
 
 # ---------------------------------------------------------------------------

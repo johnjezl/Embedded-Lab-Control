@@ -2312,6 +2312,8 @@ def actuator_set(name: str, channel: int, state: str) -> str:
         pid=actuator.pid,
         serial_no=actuator.serial_no,
     )
+    from labctl.actuators.runtime import _audit_raw_actuator_set
+
     try:
         driver.open(transport)
         outcome = driver.set_channel(channel, closed=target_state is ChannelState.CLOSED)
@@ -2319,8 +2321,13 @@ def actuator_set(name: str, channel: int, state: str) -> str:
         driver.close()
 
     if outcome.value != "ok":
+        _audit_raw_actuator_set(
+            manager, actuator, ch, target_state,
+            ok=False, error=outcome.value,
+        )
         return f"Error: set_channel returned {outcome.value}"
     manager.update_channel_state(ch.id, target_state)
+    _audit_raw_actuator_set(manager, actuator, ch, target_state, ok=True)
     return f"Set {name}[{channel}] -> {state}"
 
 

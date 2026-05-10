@@ -1847,18 +1847,30 @@ class ResourceManager:
     ) -> None:
         """Stamp last_state, last_changed_at, and increment cycle_count.
 
-        Called by the actuation layer after a successful write.
+        Called by the actuation layer after a successful write. The
+        cycle bump is **suppressed when the new state matches the
+        currently-cached state** — mechanical relays only wear on
+        actual transitions, so a redundant write (e.g. enter_recovery
+        re-applying an already-engaged strap via apply_pre_power) must
+        not inflate the wear metric.
         """
         if bump_cycle_count:
+            # Only bump when last_state actually changes. SQLite's
+            # CASE expression keeps this atomic in one statement so
+            # there's no read-then-write race.
             self.db.execute_modify(
                 """
                 UPDATE actuator_channels
                 SET last_state = ?,
                     last_changed_at = CURRENT_TIMESTAMP,
-                    cycle_count = cycle_count + 1
+                    cycle_count = cycle_count + CASE
+                        WHEN last_state IS NULL THEN 1
+                        WHEN last_state != ? THEN 1
+                        ELSE 0
+                    END
                 WHERE id = ?
                 """,
-                (last_state.value, channel_id),
+                (last_state.value, last_state.value, channel_id),
             )
         else:
             self.db.execute_modify(
@@ -1868,6 +1880,43 @@ class ResourceManager:
                 WHERE id = ?
                 """,
                 (last_state.value, channel_id),
+            )
+
+    def commit_actuation(
+        self,
+        channel_id: int,
+        last_state: ChannelState,
+        binding_id: int,
+        desired_state: DesiredState,
+    ) -> None:
+        """Atomically stamp channel last_state + binding desired_state.
+
+        The two writes that complete a verb (channel state and binding
+        intent) must land together: process kill between them would
+        leave ``last_state`` updated but ``desired_state`` stale, and
+        the daemon-restart safe-drive would then drive the channel
+        backwards — exactly the failure mode safe-drive was meant to
+        prevent. Held inside one DB transaction so a crash either
+        commits both or rolls back both.
+        """
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE actuator_channels
+                SET last_state = ?,
+                    last_changed_at = CURRENT_TIMESTAMP,
+                    cycle_count = cycle_count + CASE
+                        WHEN last_state IS NULL THEN 1
+                        WHEN last_state != ? THEN 1
+                        ELSE 0
+                    END
+                WHERE id = ?
+                """,
+                (last_state.value, last_state.value, channel_id),
+            )
+            conn.execute(
+                "UPDATE bindings SET desired_state = ? WHERE id = ?",
+                (desired_state.value, binding_id),
             )
 
     # --- Binding Operations ---

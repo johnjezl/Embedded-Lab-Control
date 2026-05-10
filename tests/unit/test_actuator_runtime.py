@@ -441,6 +441,26 @@ class TestEnterRecovery:
         assert controller.calls == []
         assert lab.driver.write_log == []
 
+    def test_enter_recovery_does_not_double_count_cycles(self, lab):
+        """The trailing apply_pre_power_bindings re-asserts an already-
+        engaged strap; cycle_count should reflect ONE physical transition
+        per enter_recovery call, not two."""
+        binding, controller = self._make_binding_and_controller(lab)
+
+        runtime.enter_recovery(
+            lab.manager,
+            lab.sbc,
+            controller,
+            delay_s=0.0,
+            sleep_fn=lambda s: None,
+        )
+
+        ch = lab.manager.get_actuator_channel(lab.actuator.id, 1)
+        # Two driver writes happen but both target the same state →
+        # only the first counts toward wear.
+        assert ch.cycle_count == 1
+        assert ch.last_state is ChannelState.CLOSED
+
     def test_no_recovery_binding_raises(self, lab):
         controller = type(
             "Stub",
@@ -605,6 +625,103 @@ class TestCheckNoChannelBusyForSbc:
         ch1_lock = runtime._get_channel_lock(b1.actuator_channel_id)
         assert ch1_lock.acquire(blocking=False)
         ch1_lock.release()
+
+
+class TestAuditLogging:
+    """Hardware writes leave a footprint in the activity stream."""
+
+    def _audit_rows(self, manager, action=None, entity_type=None):
+        sql = "SELECT action, entity_type, entity_name, result, details FROM audit_log"
+        clauses = []
+        params: list = []
+        if action:
+            clauses.append("action = ?")
+            params.append(action)
+        if entity_type:
+            clauses.append("entity_type = ?")
+            params.append(entity_type)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY id"
+        return manager.db.execute(sql, tuple(params))
+
+    def test_actuate_emits_audit_event(self, lab):
+        binding = _make_binding(lab)
+        runtime.actuate_binding(lab.manager, binding)
+
+        rows = self._audit_rows(lab.manager, action="actuate")
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["entity_type"] == "binding"
+        assert row["entity_name"] == "jetson-nano-2:recovery_mode"
+        assert row["result"] == "ok"
+        # Details JSON includes the actuator + target state.
+        assert "relay-1" in row["details"]
+        assert "closed" in row["details"]
+
+    def test_release_emits_audit_event(self, lab):
+        binding = _make_binding(lab)
+        runtime.actuate_binding(lab.manager, binding)
+        runtime.release_binding(lab.manager, binding)
+
+        rows = self._audit_rows(lab.manager, action="release")
+        assert len(rows) == 1
+        assert rows[0]["entity_name"] == "jetson-nano-2:recovery_mode"
+
+    def test_press_emits_audit_event_with_pulse_ms(self, lab):
+        binding = _make_binding(
+            lab,
+            purpose="power_button",
+            shape_mode=ShapeMode.MOMENTARY,
+            momentary_pulse_ms=200,
+            sample_phase=SamplePhase.NONE,
+        )
+        runtime.press_binding(lab.manager, binding, sleep_fn=lambda s: None)
+
+        rows = self._audit_rows(lab.manager, action="press")
+        assert len(rows) == 1
+        assert "200" in rows[0]["details"]  # pulse_ms recorded
+
+    def test_actuate_failure_emits_error_audit(self, lab):
+        binding = _make_binding(lab)
+        lab.driver.next_write_outcome = WriteOutcome.DEVICE_GONE
+
+        with pytest.raises(runtime.ActuationError):
+            runtime.actuate_binding(lab.manager, binding)
+
+        rows = self._audit_rows(lab.manager, action="actuate")
+        assert len(rows) == 1
+        assert rows[0]["result"] == "error"
+        assert "device_gone" in rows[0]["details"]
+
+    def test_press_partial_failure_emits_error_audit(self, lab):
+        """Press where the second (release) write fails: audit
+        captures the failure with the channel-left-in-state hint."""
+        binding = _make_binding(
+            lab,
+            shape_mode=ShapeMode.MOMENTARY,
+            momentary_pulse_ms=50,
+        )
+
+        original = lab.driver.set_channel
+        call_count = [0]
+
+        def flaky(index, *, closed):
+            call_count[0] += 1
+            if call_count[0] == 2:
+                lab.driver.next_write_outcome = WriteOutcome.DEVICE_GONE
+            return original(index, closed=closed)
+
+        lab.driver.set_channel = flaky
+
+        with pytest.raises(runtime.ActuationError):
+            runtime.press_binding(lab.manager, binding, sleep_fn=lambda s: None)
+
+        rows = self._audit_rows(lab.manager, action="press")
+        assert len(rows) == 1
+        assert rows[0]["result"] == "error"
+        # The "left in" diagnostic survives to the audit log.
+        assert "left_in_state" in rows[0]["details"]
 
 
 class TestProbeActuator:

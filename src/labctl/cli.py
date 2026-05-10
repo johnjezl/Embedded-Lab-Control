@@ -3147,6 +3147,8 @@ def actuator_set_cmd(
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
+    from labctl.actuators.runtime import _audit_raw_actuator_set
+
     transport = _build_transport_for(actuator)
     try:
         driver.open(transport)
@@ -3155,12 +3157,19 @@ def actuator_set_cmd(
         driver.close()
 
     if outcome.value != "ok":
+        _audit_raw_actuator_set(
+            manager, actuator, ch, target_state,
+            ok=False, error=outcome.value,
+        )
         click.echo(
             f"Error: set_channel returned {outcome.value}", err=True
         )
         sys.exit(1)
 
     manager.update_channel_state(ch.id, target_state)
+    _audit_raw_actuator_set(
+        manager, actuator, ch, target_state, ok=True,
+    )
     click.echo(f"Set {name}[{channel}] -> {state}")
 
 

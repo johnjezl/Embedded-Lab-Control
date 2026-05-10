@@ -1,5 +1,7 @@
 """Tests for actuator/binding manager CRUD and audit-log entries."""
 
+import sqlite3
+
 import pytest
 
 from labctl.core.database import Database
@@ -93,6 +95,32 @@ class TestChannelOperations:
         assert fresh is not None
         assert fresh.last_state is ChannelState.OPEN
         assert fresh.cycle_count == 2
+
+    def test_update_channel_state_does_not_bump_on_duplicate_state(self, manager):
+        """Mechanical relays only wear on actual transitions — same-state
+        writes (e.g. enter_recovery re-applying an already-engaged strap)
+        must not inflate cycle_count."""
+        a = manager.create_actuator("a", DriverName.LCUS1_SERIAL)
+        ch = manager.add_actuator_channel(a.id, 1)
+
+        manager.update_channel_state(ch.id, ChannelState.CLOSED)
+        manager.update_channel_state(ch.id, ChannelState.CLOSED)
+        manager.update_channel_state(ch.id, ChannelState.CLOSED)
+
+        fresh = manager.get_actuator_channel(a.id, 1)
+        assert fresh.cycle_count == 1  # only the first write counted
+
+    def test_update_channel_state_bumps_on_transition(self, manager):
+        a = manager.create_actuator("a", DriverName.LCUS1_SERIAL)
+        ch = manager.add_actuator_channel(a.id, 1)
+
+        manager.update_channel_state(ch.id, ChannelState.CLOSED)
+        manager.update_channel_state(ch.id, ChannelState.OPEN)
+        manager.update_channel_state(ch.id, ChannelState.OPEN)  # dup, no bump
+        manager.update_channel_state(ch.id, ChannelState.CLOSED)
+
+        fresh = manager.get_actuator_channel(a.id, 1)
+        assert fresh.cycle_count == 3  # null→closed, closed→open, open→closed
 
     def test_update_channel_state_no_bump(self, manager):
         a = manager.create_actuator("a", DriverName.LCUS1_SERIAL)
@@ -202,6 +230,91 @@ class TestBindingCrud:
         )
         assert [r["action"] for r in rows] == ["create", "delete"]
         assert all(r["entity_name"] == "jetson:recovery_mode" for r in rows)
+
+
+class TestCommitActuationAtomicity:
+    """commit_actuation persists channel + binding state atomically.
+
+    A process kill or DB error between the channel-state write and the
+    binding desired_state write previously left them divergent — the
+    safe-drive on next daemon start would then drive the channel
+    backwards because desired_state was stale.
+    """
+
+    def _setup(self, manager):
+        sbc = manager.create_sbc(name="atomic-sbc")
+        actuator = manager.create_actuator("relay", DriverName.LCUS1_SERIAL)
+        ch = manager.add_actuator_channel(actuator.id, 1)
+        binding = manager.create_binding(
+            sbc.id, "recovery_mode", ch.id,
+            shape_mode=ShapeMode.LATCH,
+            shape_active=ChannelState.CLOSED,
+        )
+        return sbc, actuator, ch, binding
+
+    def test_both_writes_succeed_together(self, manager):
+        from labctl.core.models import DesiredState
+
+        _sbc, _a, ch, binding = self._setup(manager)
+        manager.commit_actuation(
+            ch.id, ChannelState.CLOSED, binding.id, DesiredState.ASSERTED
+        )
+
+        fresh_ch = manager.get_actuator_channel(_a.id, 1)
+        fresh_b = manager.get_binding(binding.id)
+        assert fresh_ch.last_state is ChannelState.CLOSED
+        assert fresh_ch.cycle_count == 1
+        assert fresh_b.desired_state is DesiredState.ASSERTED
+
+    def test_failure_in_binding_update_rolls_back_channel(self, manager, monkeypatch):
+        """If the second statement raises, the first must roll back too."""
+        from labctl.core.models import DesiredState
+
+        _sbc, _a, ch, binding = self._setup(manager)
+
+        # sqlite3.Connection.execute is a read-only C attribute, so we
+        # wrap the live connection in a proxy that intercepts execute()
+        # calls. The Database.connect() context manager already does
+        # rollback-on-exception against the real connection, so any
+        # exception we raise inside the `with` block triggers the real
+        # rollback we want to verify.
+        original_connect = manager.db.connect
+
+        class FlakyConn:
+            def __init__(self, real, fail_on_call: int):
+                self._real = real
+                self._call = 0
+                self._fail_on = fail_on_call
+
+            def execute(self, sql, params=()):
+                self._call += 1
+                if self._call == self._fail_on:
+                    raise sqlite3.OperationalError("simulated kill")
+                return self._real.execute(sql, params)
+
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+        from contextlib import contextmanager
+
+        @contextmanager
+        def flaky_connect():
+            with original_connect() as real_conn:
+                yield FlakyConn(real_conn, fail_on_call=2)
+
+        monkeypatch.setattr(manager.db, "connect", flaky_connect)
+
+        with pytest.raises(sqlite3.OperationalError):
+            manager.commit_actuation(
+                ch.id, ChannelState.CLOSED, binding.id, DesiredState.ASSERTED
+            )
+
+        # Roll back: neither update persisted.
+        fresh_ch = manager.get_actuator_channel(_a.id, 1)
+        fresh_b = manager.get_binding(binding.id)
+        assert fresh_ch.last_state is None
+        assert fresh_ch.cycle_count == 0
+        assert fresh_b.desired_state is DesiredState.RELEASED
 
 
 class TestClaimComposition:
