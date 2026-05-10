@@ -207,6 +207,51 @@ class TestStatusCommand:
         idx_old = result.output.index("status_change")
         idx_new = result.output.index("power_off")
         assert idx_old < idx_new
+        # Compact actor: the colon-and-after suffix is dropped on the
+        # status screen. (The full actor string is still available via
+        # `labctl activity tail`.)
+        assert "cli:john" not in result.output
+        assert "daemon:monitor" not in result.output
+
+    def test_status_compacts_actor_and_truncates_details(self, runner):
+        """status shows only the actor source-kind and truncates details."""
+        plug = SimpleNamespace(plug_type="tasmota", address="plug-x", plug_index=1)
+        sbc = self._make_sbc("sbc-1", plug)
+
+        manager = MagicMock()
+        manager.list_sbcs.return_value = [sbc]
+        manager.list_active_claims.return_value = []
+
+        long_msg = "Updated SBC pi-5-1: project='very-long-project-name'"
+        rows = [
+            {
+                "id": 7,
+                "logged_at": "2026-05-09 10:00:00",
+                "actor": "mcp-stdio:4008429-1778258826",
+                "source": "mcp",
+                "action": "claim",
+                "entity_name": "sbc-1",
+                "result": "ok",
+                "details": '{"message":"' + long_msg + '"}',
+            },
+        ]
+        manager.db.execute.return_value = rows
+
+        with patch("labctl.cli._get_manager", return_value=manager):
+            with patch(
+                "labctl.cli.PowerController.from_plug",
+                return_value=MagicMock(get_state=MagicMock(return_value=None)),
+            ):
+                result = runner.invoke(main, ["status"], color=False)
+
+        assert result.exit_code == 0, result.output
+        # Actor compacted to the source-kind.
+        assert "mcp-stdio" in result.output
+        assert "4008429-1778258826" not in result.output
+        # Details unwrapped from JSON envelope and truncated to 25 chars.
+        assert "Updated SBC pi-5-1: proj…" in result.output
+        # Full message must NOT be present (would imply no truncation).
+        assert long_msg not in result.output
 
     def test_status_reuses_recent_power_cache(self, runner):
         from labctl.power.base import PowerState
@@ -233,6 +278,55 @@ class TestStatusCommand:
         assert first.exit_code == 0, first.output
         assert second.exit_code == 0, second.output
         assert mock_factory.call_count == 1
+
+
+class TestActivityCompactHelpers:
+    """Unit tests for the compact actor / details helpers."""
+
+    def test_compact_actor_strips_after_first_colon(self):
+        from labctl.cli import _compact_actor
+
+        assert _compact_actor("cli:labctl") == "cli"
+        assert _compact_actor("mcp-stdio:4008429-1778258826") == "mcp-stdio"
+        assert _compact_actor("daemon:monitor") == "daemon"
+
+    def test_compact_actor_passes_through_when_no_colon(self):
+        from labctl.cli import _compact_actor
+
+        assert _compact_actor("internal") == "internal"
+
+    def test_compact_details_extracts_message_from_json(self):
+        from labctl.cli import _compact_details
+
+        assert _compact_details('{"message":"Updated SBC: pi-5-1"}') == "Updated SBC: pi-5-1"
+
+    def test_compact_details_truncates_with_ellipsis(self):
+        from labctl.cli import _compact_details
+
+        out = _compact_details('{"message":"a very long sentence indeed"}', limit=25)
+        assert out is not None
+        assert len(out) == 25
+        assert out.endswith("…")
+
+    def test_compact_details_handles_none_and_empty(self):
+        from labctl.cli import _compact_details
+
+        assert _compact_details(None) is None
+        assert _compact_details("") is None
+
+    def test_compact_details_preserves_non_json_strings(self):
+        from labctl.cli import _compact_details
+
+        assert _compact_details("plain text") == "plain text"
+
+    def test_compact_details_falls_back_for_jsons_without_message(self):
+        from labctl.cli import _compact_details
+
+        out = _compact_details('{"delay_seconds":5,"target":"pi-5-1"}', limit=40)
+        assert out is not None
+        # Either k=v rendering — just sanity-check both keys appear.
+        assert "delay_seconds=5" in out
+        assert "target=pi-5-1" in out
 
 
 class TestResolveCycleDelay:

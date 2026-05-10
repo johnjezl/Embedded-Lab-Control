@@ -265,7 +265,7 @@ def _display_recent_activity(manager, *, limit: int = 5) -> None:
     click.echo()
     click.echo(f"Recent activity (last {len(rows)}):")
     for row in reversed(rows):  # show oldest first so newest is closest to prompt
-        click.echo("  " + _format_activity_row(row))
+        click.echo("  " + _format_activity_row(row, compact=True))
 
 
 def _sdwire_host_switch_guard_cli(
@@ -4694,8 +4694,56 @@ def _parse_since(since: str) -> str:
     return cutoff.strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _format_activity_row(row) -> str:
-    """Render a single audit_log row as a colored line."""
+def _compact_actor(actor: str) -> str:
+    """Return the source-kind portion of an actor (left of the first colon).
+
+    Examples:
+        "cli:labctl"               -> "cli"
+        "mcp-stdio:4008429-..."   -> "mcp-stdio"
+        "daemon:monitor"           -> "daemon"
+        "internal"                 -> "internal"
+    """
+    return actor.split(":", 1)[0]
+
+
+def _compact_details(raw, *, limit: int = 25) -> str | None:
+    """Return a short, human-friendly summary of an audit details blob.
+
+    Most rows store JSON like ``{"message":"Updated SBC: pi-5-1"}`` —
+    we want to show the message body, not the envelope. Falls back to
+    the raw string for non-JSON or non-dict payloads. Truncates to
+    ``limit`` characters with a trailing ellipsis.
+    """
+    if not raw:
+        return None
+    text = raw
+    try:
+        import json
+
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            for key in ("message", "error"):
+                value = data.get(key)
+                if isinstance(value, str):
+                    text = value
+                    break
+            else:
+                text = ", ".join(f"{k}={v}" for k, v in data.items())
+    except (ValueError, TypeError):
+        pass
+    if len(text) > limit:
+        text = text[: limit - 1] + "…"
+    return text
+
+
+def _format_activity_row(row, *, compact: bool = False) -> str:
+    """Render a single audit_log row as a colored line.
+
+    ``compact=True`` collapses the actor to its source-kind (left of
+    the colon) and truncates the details payload to 25 characters,
+    used by the at-a-glance tail in ``labctl status``. The full-detail
+    layout is preserved for ``labctl activity tail``.
+    """
     ts = row["logged_at"] or ""
     actor = row["actor"] or "internal"
     action = row["action"] or ""
@@ -4704,15 +4752,25 @@ def _format_activity_row(row) -> str:
     result_color = {"ok": "green", "error": "red", "forbidden": "yellow"}.get(
         result, "white"
     )
+
+    if compact:
+        actor_display = _compact_actor(actor)
+        actor_width = 12
+        details_text = _compact_details(row["details"])
+    else:
+        actor_display = actor
+        actor_width = 32
+        details_text = row["details"]
+
     line = (
         f"{ts}  "
-        f"{click.style(actor, fg='cyan'):<32} "
+        f"{click.style(actor_display, fg='cyan'):<{actor_width}} "
         f"{action:<24} "
         f"{target:<20} "
         f"{click.style(result, fg=result_color)}"
     )
-    if row["details"]:
-        line += f"  {row['details']}"
+    if details_text:
+        line += f"  {details_text}"
     return line
 
 
