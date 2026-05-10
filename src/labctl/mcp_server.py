@@ -2156,6 +2156,47 @@ def _binding_to_dict(binding) -> dict:
     return binding.to_dict(include_ids=False)
 
 
+def _admin_actuator_ops_allowed() -> bool:
+    """Whether the privileged actuator_* tools are enabled in config.
+
+    Defaults to False — operators flip mcp.allow_admin_actuator_ops in
+    config.yaml when running MCP behind a trusted transport. Direct
+    `actuator_set` would otherwise let an agent bypass the binding
+    layer's safety checks (verb/shape congruence, polarity, etc.).
+    """
+    try:
+        return bool(_get_config().mcp.allow_admin_actuator_ops)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+# Allow-list of device-path prefixes for ``actuator_add`` over MCP.
+# Operators can extend by symlinking custom paths under one of these.
+_ACTUATOR_DEVICE_PATH_PREFIXES = (
+    "/dev/lab/",
+    "/dev/serial/by-id/",
+    "/dev/ttyUSB",
+    "/dev/ttyACM",
+)
+
+
+def _validate_actuator_device_path(device_path: str) -> Optional[str]:
+    """Return an error message if ``device_path`` is suspicious, else None.
+
+    A hostile MCP caller could try to point ``actuator_add`` at
+    ``/dev/disk/...``, ``/etc/...``, etc. The allow-list keeps the
+    surface area to USB-serial paths labctl actually uses.
+    """
+    if not device_path:
+        return None  # device_path is optional; nothing to validate
+    if any(device_path.startswith(p) for p in _ACTUATOR_DEVICE_PATH_PREFIXES):
+        return None
+    return (
+        f"device_path {device_path!r} not under any of the allowed "
+        f"prefixes: {', '.join(_ACTUATOR_DEVICE_PATH_PREFIXES)}"
+    )
+
+
 @mcp.tool()
 @_with_mcp_activity
 def actuator_list() -> str:
@@ -2201,11 +2242,16 @@ def actuator_add(
     serial_no: Optional[str] = None,
     channels: int = 1,
 ) -> str:
-    """Register a new actuator (PRIVILEGED).
+    """Register a new actuator (PRIVILEGED — gated by config).
 
-    Provisioning tool — direct access lets an agent bypass the binding
-    layer with raw `actuator_set` writes. Operators running a public
-    MCP transport should restrict access at the transport layer.
+    Privileged: requires ``mcp.allow_admin_actuator_ops: true`` in
+    ``/etc/labctl/config.yaml``. Direct access lets an agent bypass the
+    binding layer with raw `actuator_set` writes; the gate keeps that
+    behind an explicit operator opt-in.
+
+    ``device_path`` is validated against an allow-list of USB-serial
+    prefixes (``/dev/lab/``, ``/dev/serial/by-id/``, ``/dev/ttyUSB*``,
+    ``/dev/ttyACM*``) to refuse obviously dodgy targets.
 
     Args:
         name: Stable actuator name (e.g. "usbrelay-rack1-a").
@@ -2217,12 +2263,21 @@ def actuator_add(
     from labctl.actuators import get_driver
     from labctl.core.models import ChannelState, DriverName
 
+    if not _admin_actuator_ops_allowed():
+        return (
+            "Error: actuator_add is disabled. Set "
+            "mcp.allow_admin_actuator_ops=true in config.yaml to enable."
+        )
     if channels < 1:
         return "Error: channels must be at least 1"
     try:
         driver_name = DriverName(driver)
     except ValueError:
         return f"Error: unknown driver {driver!r}"
+
+    path_err = _validate_actuator_device_path(device_path)
+    if path_err is not None:
+        return f"Error: {path_err}"
 
     try:
         probe = get_driver(driver_name, expected_channel_count=channels)
@@ -2255,11 +2310,18 @@ def actuator_add(
 @mcp.tool()
 @_with_mcp_activity
 def actuator_remove(name: str) -> str:
-    """Remove an actuator and any bindings on its channels (PRIVILEGED).
+    """Remove an actuator and any bindings on its channels (PRIVILEGED — gated).
+
+    Requires ``mcp.allow_admin_actuator_ops: true`` in config.yaml.
 
     Args:
         name: Actuator name.
     """
+    if not _admin_actuator_ops_allowed():
+        return (
+            "Error: actuator_remove is disabled. Set "
+            "mcp.allow_admin_actuator_ops=true in config.yaml to enable."
+        )
     manager = _get_manager()
     actuator = manager.get_actuator_by_name(name)
     if not actuator:
@@ -2271,10 +2333,13 @@ def actuator_remove(name: str) -> str:
 @mcp.tool()
 @_with_mcp_activity
 def actuator_set(name: str, channel: int, state: str) -> str:
-    """Drive a channel directly, bypassing bindings (PRIVILEGED).
+    """Drive a channel directly, bypassing bindings (PRIVILEGED — gated).
 
-    Provisioning aid for verifying wiring. Production paths should use
-    `actuate` / `release` / `press` against bound channels.
+    Requires ``mcp.allow_admin_actuator_ops: true`` in config.yaml.
+    Production paths should use `actuate` / `release` / `press` against
+    bound channels — those go through verb/shape congruence and
+    polarity validation. ``actuator_set`` is only for wiring
+    verification.
 
     Args:
         name: Actuator name.
@@ -2284,6 +2349,11 @@ def actuator_set(name: str, channel: int, state: str) -> str:
     from labctl.actuators import get_driver
     from labctl.core.models import ChannelState
 
+    if not _admin_actuator_ops_allowed():
+        return (
+            "Error: actuator_set is disabled. Set "
+            "mcp.allow_admin_actuator_ops=true in config.yaml to enable."
+        )
     try:
         target_state = ChannelState(state)
     except ValueError:

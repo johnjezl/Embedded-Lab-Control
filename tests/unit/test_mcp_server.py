@@ -2032,8 +2032,27 @@ class TestMcpActuatorReadTools:
         assert {b["sbc_name"] for b in only} == {"test-sbc-1"}
 
 
+@pytest.fixture
+def admin_actuator_ops_enabled(monkeypatch):
+    """Enable the privileged actuator_* MCP tools for tests that need them."""
+    from types import SimpleNamespace
+
+    def _config():
+        # Build a minimally-populated config with admin ops enabled.
+        from labctl.core.config import load_config
+
+        cfg = load_config(None)
+        cfg.mcp.allow_admin_actuator_ops = True
+        return cfg
+
+    monkeypatch.setattr("labctl.mcp_server._get_config", _config)
+    return True
+
+
 class TestMcpActuatorAdminTools:
-    def test_actuator_add_creates_with_channels(self, mock_manager):
+    def test_actuator_add_creates_with_channels(
+        self, mock_manager, admin_actuator_ops_enabled
+    ):
         from labctl.mcp_server import actuator_add
 
         result = actuator_add(
@@ -2046,21 +2065,25 @@ class TestMcpActuatorAdminTools:
         a = mock_manager.get_actuator_by_name("relay-new")
         assert len(a.channels) == 2
 
-    def test_actuator_add_unimplemented_driver(self, mock_manager):
+    def test_actuator_add_unimplemented_driver(
+        self, mock_manager, admin_actuator_ops_enabled
+    ):
         from labctl.mcp_server import actuator_add
 
         result = actuator_add(name="x", driver="numato_acm")
         assert "Error" in result
         assert "not implemented" in result.lower()
 
-    def test_actuator_remove(self, actuator_lab):
+    def test_actuator_remove(self, actuator_lab, admin_actuator_ops_enabled):
         from labctl.mcp_server import actuator_remove
 
         result = actuator_remove(name="relay-1")
         assert "Removed actuator" in result
         assert actuator_lab["manager"].get_actuator_by_name("relay-1") is None
 
-    def test_actuator_set_drives_and_persists(self, actuator_lab):
+    def test_actuator_set_drives_and_persists(
+        self, actuator_lab, admin_actuator_ops_enabled
+    ):
         from labctl.mcp_server import actuator_set
 
         result = actuator_set(name="relay-1", channel=1, state="closed")
@@ -2071,6 +2094,80 @@ class TestMcpActuatorAdminTools:
             actuator_lab["actuator"].id, 1
         )
         assert ch.last_state.value == "closed"
+
+
+class TestMcpAdminGate:
+    """Privileged actuator_* tools refuse without the config flag."""
+
+    def test_actuator_add_disabled_by_default(self, mock_manager):
+        from labctl.mcp_server import actuator_add
+
+        result = actuator_add(
+            name="relay-x",
+            driver="lcus1_serial",
+            device_path="/dev/ttyUSB-x",
+            channels=1,
+        )
+        assert "disabled" in result.lower()
+        assert mock_manager.get_actuator_by_name("relay-x") is None
+
+    def test_actuator_remove_disabled_by_default(self, actuator_lab):
+        from labctl.mcp_server import actuator_remove
+
+        result = actuator_remove(name="relay-1")
+        assert "disabled" in result.lower()
+        # Actuator must still be there.
+        assert actuator_lab["manager"].get_actuator_by_name("relay-1") is not None
+
+    def test_actuator_set_disabled_by_default(self, actuator_lab):
+        from labctl.mcp_server import actuator_set
+
+        result = actuator_set(name="relay-1", channel=1, state="closed")
+        assert "disabled" in result.lower()
+        # No driver write happened.
+        assert actuator_lab["driver"].write_log == []
+
+
+class TestMcpDevicePathValidation:
+    @pytest.mark.parametrize(
+        "path,allowed",
+        [
+            ("/dev/lab/relay-rack1-a", True),
+            ("/dev/serial/by-id/usb-FTDI_FT232R_AB12-if00-port0", True),
+            ("/dev/ttyUSB0", True),
+            ("/dev/ttyACM3", True),
+            ("/etc/passwd", False),
+            ("/dev/disk/by-id/usb-Whatever", False),
+            ("/proc/self/mem", False),
+            ("relative/path", False),
+        ],
+    )
+    def test_path_allow_list(
+        self, mock_manager, admin_actuator_ops_enabled, path, allowed
+    ):
+        from labctl.mcp_server import actuator_add
+
+        result = actuator_add(
+            name=f"relay-pv-{abs(hash(path)) % 10000}",
+            driver="lcus1_serial",
+            device_path=path,
+            channels=1,
+        )
+        if allowed:
+            assert "Added actuator" in result, result
+        else:
+            assert "not under any of the allowed prefixes" in result
+
+    def test_empty_path_is_allowed(
+        self, mock_manager, admin_actuator_ops_enabled
+    ):
+        from labctl.mcp_server import actuator_add
+
+        # device_path is optional — driver may discover via vid/pid/serial.
+        result = actuator_add(
+            name="relay-no-path", driver="lcus1_serial", channels=1
+        )
+        assert "Added actuator" in result
 
 
 class TestMcpBindingTools:
