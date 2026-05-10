@@ -3300,6 +3300,112 @@ def bindings_group() -> None:
     """Inspect actuator bindings."""
 
 
+def _resolve_binding_for_verb(ctx, sbc_name: str, purpose: str):
+    """Look up the binding for ``(sbc_name, purpose)`` or exit non-zero."""
+    manager = _get_manager(ctx)
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC {sbc_name!r} not found", err=True)
+        sys.exit(1)
+    binding = manager.get_binding_by_target(sbc.id, purpose)
+    if not binding:
+        click.echo(
+            f"Error: no binding for {sbc_name}:{purpose}", err=True
+        )
+        sys.exit(1)
+    return manager, binding
+
+
+def _run_actuator_verb(ctx, sbc_name: str, purpose: str, fn):
+    """Common error-handling wrapper for actuate/release/press."""
+    from labctl.actuators.runtime import (
+        ActuationError,
+        BindingShapeError,
+        ChannelBusyError,
+    )
+
+    manager, binding = _resolve_binding_for_verb(ctx, sbc_name, purpose)
+    try:
+        fn(manager, binding)
+    except BindingShapeError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    except ChannelBusyError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(3)
+    except ActuationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@bindings_group.command("actuate")
+@click.argument("sbc_name")
+@click.argument("purpose")
+@click.pass_context
+def bindings_actuate_cmd(ctx: click.Context, sbc_name: str, purpose: str) -> None:
+    """Drive a latch binding to its active state (sets desired=asserted)."""
+    from labctl.actuators.runtime import actuate_binding
+
+    _run_actuator_verb(ctx, sbc_name, purpose, actuate_binding)
+    click.echo(f"Actuated {sbc_name}:{purpose}")
+
+
+@bindings_group.command("release")
+@click.argument("sbc_name")
+@click.argument("purpose")
+@click.pass_context
+def bindings_release_cmd(ctx: click.Context, sbc_name: str, purpose: str) -> None:
+    """Drive a latch binding away from active (sets desired=released)."""
+    from labctl.actuators.runtime import release_binding
+
+    _run_actuator_verb(ctx, sbc_name, purpose, release_binding)
+    click.echo(f"Released {sbc_name}:{purpose}")
+
+
+@bindings_group.command("press")
+@click.argument("sbc_name")
+@click.argument("purpose")
+@click.pass_context
+def bindings_press_cmd(ctx: click.Context, sbc_name: str, purpose: str) -> None:
+    """Pulse a momentary binding for its configured pulse_ms."""
+    from labctl.actuators.runtime import press_binding
+
+    _run_actuator_verb(ctx, sbc_name, purpose, press_binding)
+    click.echo(f"Pressed {sbc_name}:{purpose}")
+
+
+@bindings_group.command("status")
+@click.argument("sbc_name")
+@click.argument("purpose")
+@click.pass_context
+def bindings_status_cmd(
+    ctx: click.Context, sbc_name: str, purpose: str
+) -> None:
+    """Show current desired vs. last state for a binding (read-only)."""
+    from labctl.actuators.runtime import binding_status
+
+    manager, binding = _resolve_binding_for_verb(ctx, sbc_name, purpose)
+    info = binding_status(manager, binding)
+
+    click.echo(f"Binding:    {info['binding']['sbc']}:{info['binding']['purpose']}")
+    click.echo(
+        f"Actuator:   {info['actuator']['name']}[{info['channel']['index']}]"
+        f"  ({info['actuator']['driver']})"
+    )
+    click.echo(
+        f"Shape:      {info['binding']['shape_mode']}, "
+        f"active={info['binding']['shape_active']}, "
+        f"phase={info['binding']['sample_phase']}"
+    )
+    click.echo(f"Desired:    {info['binding']['desired_state']}")
+    last = info['channel']['last_state'] or "unknown"
+    when = info['channel']['last_changed_at'] or "never"
+    click.echo(
+        f"Last:       {last} (changed {when}, "
+        f"{info['channel']['cycle_count']} cycle(s))"
+    )
+
+
 @bindings_group.command("list")
 @click.option("--target", "target_sbc", default=None, help="Filter to one SBC.")
 @click.pass_context

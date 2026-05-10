@@ -405,6 +405,195 @@ class TestActuatorProbe:
         assert a.last_probe_result == "unreachable"
 
 
+class TestVerbs:
+    """End-to-end CLI tests for actuate/release/press/bindings status."""
+
+    def _bind_latch(self, runner, lab):
+        _add_relay(runner, lab.config_path)
+        result = runner.invoke(
+            main,
+            [
+                "-c", str(lab.config_path),
+                "bind", "jetson-nano-2", "recovery_mode",
+                "--actuator", "relay-1", "--channel", "1",
+                "--mode", "latch",
+                "--active-when", "closed",
+                "--phase", "pre-power",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+    def _bind_momentary(self, runner, lab):
+        _add_relay(runner, lab.config_path)
+        result = runner.invoke(
+            main,
+            [
+                "-c", str(lab.config_path),
+                "bind", "jetson-nano-2", "power_button",
+                "--actuator", "relay-1", "--channel", "1",
+                "--mode", "momentary",
+                "--active-when", "closed",
+                "--pulse-ms", "100",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+    def test_actuate_writes_through_runtime(self, runner, lab, monkeypatch):
+        from labctl.actuators.base import WriteOutcome
+        from labctl.actuators.mock import MockRelayDriver
+
+        self._bind_latch(runner, lab)
+        mock = MockRelayDriver(channel_count=1)
+        monkeypatch.setattr(
+            "labctl.actuators.runtime.get_driver",
+            lambda *a, **kw: mock,
+        )
+
+        result = runner.invoke(
+            main,
+            [
+                "-c", str(lab.config_path),
+                "bindings", "actuate", "jetson-nano-2", "recovery_mode",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert mock.write_log == [(1, True, WriteOutcome.OK)]
+
+        b = lab.manager.get_binding_by_target(lab.sbc.id, "recovery_mode")
+        assert b.desired_state.value == "asserted"
+
+    def test_release_after_actuate(self, runner, lab, monkeypatch):
+        from labctl.actuators.mock import MockRelayDriver
+
+        self._bind_latch(runner, lab)
+        mock = MockRelayDriver(channel_count=1)
+        monkeypatch.setattr(
+            "labctl.actuators.runtime.get_driver",
+            lambda *a, **kw: mock,
+        )
+
+        runner.invoke(
+            main,
+            [
+                "-c", str(lab.config_path),
+                "bindings", "actuate", "jetson-nano-2", "recovery_mode",
+            ],
+        )
+        result = runner.invoke(
+            main,
+            [
+                "-c", str(lab.config_path),
+                "bindings", "release", "jetson-nano-2", "recovery_mode",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+        b = lab.manager.get_binding_by_target(lab.sbc.id, "recovery_mode")
+        assert b.desired_state.value == "released"
+
+    def test_actuate_on_momentary_binding_errors(self, runner, lab, monkeypatch):
+        from labctl.actuators.mock import MockRelayDriver
+
+        self._bind_momentary(runner, lab)
+        monkeypatch.setattr(
+            "labctl.actuators.runtime.get_driver",
+            lambda *a, **kw: MockRelayDriver(channel_count=1),
+        )
+
+        result = runner.invoke(
+            main,
+            [
+                "-c", str(lab.config_path),
+                "bindings", "actuate", "jetson-nano-2", "power_button",
+            ],
+        )
+        assert result.exit_code == 2
+        assert "latch" in result.output
+
+    def test_press_on_latch_binding_errors(self, runner, lab, monkeypatch):
+        from labctl.actuators.mock import MockRelayDriver
+
+        self._bind_latch(runner, lab)
+        monkeypatch.setattr(
+            "labctl.actuators.runtime.get_driver",
+            lambda *a, **kw: MockRelayDriver(channel_count=1),
+        )
+
+        result = runner.invoke(
+            main,
+            [
+                "-c", str(lab.config_path),
+                "bindings", "press", "jetson-nano-2", "recovery_mode",
+            ],
+        )
+        assert result.exit_code == 2
+        assert "momentary" in result.output
+
+    def test_press_drives_pulse(self, runner, lab, monkeypatch):
+        from labctl.actuators.mock import MockRelayDriver
+
+        self._bind_momentary(runner, lab)
+        mock = MockRelayDriver(channel_count=1)
+        monkeypatch.setattr(
+            "labctl.actuators.runtime.get_driver",
+            lambda *a, **kw: mock,
+        )
+        # Skip actual sleep so the test runs fast.
+        monkeypatch.setattr("labctl.actuators.runtime.time.sleep", lambda s: None)
+
+        result = runner.invoke(
+            main,
+            [
+                "-c", str(lab.config_path),
+                "bindings", "press", "jetson-nano-2", "power_button",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+        # Two writes: assert then release.
+        states = [(idx, closed) for (idx, closed, _) in mock.write_log]
+        assert states == [(1, True), (1, False)]
+
+    def test_actuation_error_exits_one(self, runner, lab, monkeypatch):
+        from labctl.actuators.base import WriteOutcome
+        from labctl.actuators.mock import MockRelayDriver
+
+        self._bind_latch(runner, lab)
+        mock = MockRelayDriver(channel_count=1)
+        mock.next_write_outcome = WriteOutcome.DEVICE_GONE
+        monkeypatch.setattr(
+            "labctl.actuators.runtime.get_driver",
+            lambda *a, **kw: mock,
+        )
+
+        result = runner.invoke(
+            main,
+            [
+                "-c", str(lab.config_path),
+                "bindings", "actuate", "jetson-nano-2", "recovery_mode",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "device_gone" in result.output
+
+    def test_bindings_status_renders_state(self, runner, lab):
+        self._bind_latch(runner, lab)
+
+        result = runner.invoke(
+            main,
+            [
+                "-c", str(lab.config_path),
+                "bindings", "status", "jetson-nano-2", "recovery_mode",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "jetson-nano-2:recovery_mode" in result.output
+        assert "relay-1[1]" in result.output
+        assert "Desired:" in result.output
+        # No actuation yet → desired stays at the default.
+        assert "released" in result.output
+
+
 class TestActuatorSet:
     def test_set_drives_channel_and_updates_state(self, runner, lab, monkeypatch):
         _add_relay(runner, lab.config_path)
