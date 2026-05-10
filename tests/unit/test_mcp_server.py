@@ -1934,3 +1934,319 @@ class TestMcpClaimAdvisory:
 
         assert "Power ON" in result
         assert "[claim advisory]" not in result
+
+
+# ---------------------------------------------------------------------------
+# Actuator MCP tools (Phase 7)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def actuator_lab(populated_manager, tmp_path, monkeypatch):
+    """Manager with an actuator + recovery_mode binding ready to drive."""
+    from labctl.actuators import runtime
+    from labctl.actuators.mock import MockRelayDriver
+    from labctl.core.models import (
+        ChannelState,
+        DriverName,
+        SamplePhase,
+        ShapeMode,
+    )
+
+    runtime._clear_runtime_state()
+
+    actuator = populated_manager.create_actuator(
+        "relay-1",
+        DriverName.LCUS1_SERIAL,
+        device_path="/dev/ttyUSB-relay-1",
+    )
+    populated_manager.add_actuator_channel(
+        actuator.id, 1, default_state=ChannelState.OPEN
+    )
+    sbc = populated_manager.get_sbc_by_name("test-sbc-1")
+    populated_manager.create_binding(
+        sbc.id,
+        "recovery_mode",
+        populated_manager.get_actuator_channel(actuator.id, 1).id,
+        shape_mode=ShapeMode.LATCH,
+        shape_active=ChannelState.CLOSED,
+        sample_phase=SamplePhase.PRE_POWER,
+    )
+
+    mock_driver = MockRelayDriver(channel_count=1)
+    # The runtime layer and the mcp_server admin tools both look up
+    # get_driver via `from labctl.actuators import get_driver`, so we
+    # patch both the runtime alias and the package attribute.
+    monkeypatch.setattr(
+        "labctl.actuators.runtime.get_driver",
+        lambda *a, **kw: mock_driver,
+    )
+    monkeypatch.setattr(
+        "labctl.actuators.get_driver",
+        lambda *a, **kw: mock_driver,
+    )
+    monkeypatch.setattr(
+        "labctl.mcp_server._get_manager", lambda: populated_manager
+    )
+
+    yield {
+        "manager": populated_manager,
+        "sbc": sbc,
+        "actuator": actuator,
+        "driver": mock_driver,
+    }
+    runtime._clear_runtime_state()
+
+
+class TestMcpActuatorReadTools:
+    def test_actuator_list(self, actuator_lab):
+        from labctl.mcp_server import actuator_list
+
+        result = actuator_list()
+        data = json.loads(result)
+        assert any(a["name"] == "relay-1" for a in data)
+
+    def test_actuator_probe_records_result(self, actuator_lab):
+        from labctl.mcp_server import actuator_probe
+
+        result = actuator_probe(name="relay-1")
+        data = json.loads(result)
+        assert data["actuator"] == "relay-1"
+        assert data["result"] == "ok"
+
+        fresh = actuator_lab["manager"].get_actuator_by_name("relay-1")
+        assert fresh.last_probe_result == "ok"
+
+    def test_actuator_probe_unknown_actuator(self, actuator_lab):
+        from labctl.mcp_server import actuator_probe
+
+        result = actuator_probe(name="ghost")
+        assert "not found" in result
+
+    def test_bindings_list_filter(self, actuator_lab):
+        from labctl.mcp_server import bindings_list
+
+        all_b = json.loads(bindings_list())
+        only = json.loads(bindings_list(sbc_name="test-sbc-1"))
+        assert len(all_b) >= 1
+        assert {b["sbc_name"] for b in only} == {"test-sbc-1"}
+
+
+class TestMcpActuatorAdminTools:
+    def test_actuator_add_creates_with_channels(self, mock_manager):
+        from labctl.mcp_server import actuator_add
+
+        result = actuator_add(
+            name="relay-new",
+            driver="lcus1_serial",
+            device_path="/dev/ttyUSB-x",
+            channels=2,
+        )
+        assert "Added actuator" in result
+        a = mock_manager.get_actuator_by_name("relay-new")
+        assert len(a.channels) == 2
+
+    def test_actuator_add_unimplemented_driver(self, mock_manager):
+        from labctl.mcp_server import actuator_add
+
+        result = actuator_add(name="x", driver="numato_acm")
+        assert "Error" in result
+        assert "not implemented" in result.lower()
+
+    def test_actuator_remove(self, actuator_lab):
+        from labctl.mcp_server import actuator_remove
+
+        result = actuator_remove(name="relay-1")
+        assert "Removed actuator" in result
+        assert actuator_lab["manager"].get_actuator_by_name("relay-1") is None
+
+    def test_actuator_set_drives_and_persists(self, actuator_lab):
+        from labctl.mcp_server import actuator_set
+
+        result = actuator_set(name="relay-1", channel=1, state="closed")
+        assert "Set" in result
+        assert actuator_lab["driver"].write_log[-1][1] is True
+
+        ch = actuator_lab["manager"].get_actuator_channel(
+            actuator_lab["actuator"].id, 1
+        )
+        assert ch.last_state.value == "closed"
+
+
+class TestMcpBindingTools:
+    def test_bind_then_unbind(self, mock_manager):
+        from labctl.core.models import ChannelState, DriverName
+        from labctl.mcp_server import bind, unbind
+
+        a = mock_manager.create_actuator(
+            "relay-bind", DriverName.LCUS1_SERIAL
+        )
+        mock_manager.add_actuator_channel(
+            a.id, 1, default_state=ChannelState.OPEN
+        )
+
+        result = bind(
+            sbc_name="test-sbc-1",
+            purpose="recovery_mode",
+            actuator="relay-bind",
+            channel=1,
+            mode="latch",
+            active_when="closed",
+            sample_phase="pre_power",
+        )
+        assert "bound" in result.lower()
+
+        sbc = mock_manager.get_sbc_by_name("test-sbc-1")
+        assert mock_manager.get_binding_by_target(sbc.id, "recovery_mode") is not None
+
+        result = unbind(sbc_name="test-sbc-1", purpose="recovery_mode")
+        assert "Unbound" in result
+        assert mock_manager.get_binding_by_target(sbc.id, "recovery_mode") is None
+
+    def test_bind_polarity_validation(self, mock_manager):
+        from labctl.core.models import ChannelState, DriverName
+        from labctl.mcp_server import bind
+
+        a = mock_manager.create_actuator(
+            "relay-pol", DriverName.LCUS1_SERIAL
+        )
+        # default_state=open, requesting active_when=open → should refuse.
+        mock_manager.add_actuator_channel(
+            a.id, 1, default_state=ChannelState.OPEN
+        )
+        result = bind(
+            sbc_name="test-sbc-1",
+            purpose="recovery_mode",
+            actuator="relay-pol",
+            channel=1,
+            mode="latch",
+            active_when="open",
+        )
+        assert "always" in result.lower()
+
+
+class TestMcpBindingVerbs:
+    """Operation verbs go through claim enforcement."""
+
+    @pytest.fixture
+    def claimed_lab(self, actuator_lab, monkeypatch):
+        """Pre-claim the SBC so the verbs are allowed to mutate."""
+        sbc_name = actuator_lab["sbc"].name
+        monkeypatch.setattr(
+            "labctl.mcp_server._get_session_id",
+            lambda: f"mcp-test-{sbc_name}",
+        )
+        monkeypatch.setattr(
+            "labctl.mcp_server._get_agent_name", lambda: "mcp-test"
+        )
+        monkeypatch.setattr(
+            "labctl.mcp_server._get_config",
+            lambda: __import__(
+                "labctl.core.config", fromlist=["load_config"]
+            ).load_config(None),
+        )
+        actuator_lab["manager"].claim_sbc(
+            sbc_name=sbc_name,
+            agent_name="mcp-test",
+            session_id=f"mcp-test-{sbc_name}",
+            session_kind="mcp-stdio",
+            duration_seconds=600,
+            reason="test",
+        )
+        return actuator_lab
+
+    def test_actuate_drives_through_runtime(self, claimed_lab):
+        from labctl.mcp_server import actuate
+
+        result = actuate(sbc_name="test-sbc-1", purpose="recovery_mode")
+        assert "OK" in result, result
+
+        # Driver saw the active write.
+        assert claimed_lab["driver"].write_log[-1][1] is True
+
+    def test_release_after_actuate(self, claimed_lab):
+        from labctl.mcp_server import actuate, release
+
+        actuate(sbc_name="test-sbc-1", purpose="recovery_mode")
+        result = release(sbc_name="test-sbc-1", purpose="recovery_mode")
+        assert "OK" in result, result
+
+    def test_press_on_latch_returns_shape_error(self, claimed_lab):
+        from labctl.mcp_server import press
+
+        result = press(sbc_name="test-sbc-1", purpose="recovery_mode")
+        assert "shape" in result.lower()
+        assert "latch" in result.lower()
+
+    def test_actuation_status(self, claimed_lab):
+        from labctl.mcp_server import actuation_status
+
+        result = actuation_status(
+            sbc_name="test-sbc-1", purpose="recovery_mode"
+        )
+        data = json.loads(result)
+        assert data["binding"]["purpose"] == "recovery_mode"
+        assert data["binding"]["desired_state"] == "released"
+
+
+class TestMcpRecoveryComposites:
+    def test_enter_recovery_blocked_without_claim(self, actuator_lab):
+        from labctl.mcp_server import enter_recovery
+
+        result = enter_recovery(sbc_name="test-sbc-1")
+        # _check_claim returns a "needs claim" message; not the OK path.
+        assert "OK" not in result
+
+    def test_enter_recovery_with_claim_runs_sequence(
+        self, actuator_lab, monkeypatch
+    ):
+        from labctl.mcp_server import enter_recovery
+
+        # Claim setup
+        monkeypatch.setattr(
+            "labctl.mcp_server._get_session_id", lambda: "mcp-recov"
+        )
+        monkeypatch.setattr(
+            "labctl.mcp_server._get_agent_name", lambda: "mcp-recov"
+        )
+        monkeypatch.setattr(
+            "labctl.mcp_server._get_config",
+            lambda: __import__(
+                "labctl.core.config", fromlist=["load_config"]
+            ).load_config(None),
+        )
+        actuator_lab["manager"].claim_sbc(
+            sbc_name="test-sbc-1",
+            agent_name="mcp-recov",
+            session_id="mcp-recov",
+            session_kind="mcp-stdio",
+            duration_seconds=600,
+            reason="test",
+        )
+
+        # Stub the power controller.
+        class FakeController:
+            def __init__(self):
+                self.calls = []
+
+            def power_off(self):
+                self.calls.append("off")
+                return True
+
+            def power_on(self):
+                self.calls.append("on")
+                return True
+
+        controller = FakeController()
+        monkeypatch.setattr(
+            "labctl.power.base.PowerController.from_plug",
+            lambda plug, **kw: controller,
+        )
+        # Instant sleep.
+        monkeypatch.setattr(
+            "labctl.actuators.runtime.time.sleep", lambda s: None
+        )
+
+        result = enter_recovery(sbc_name="test-sbc-1")
+        assert "OK" in result, result
+        assert controller.calls == ["off", "on"]
