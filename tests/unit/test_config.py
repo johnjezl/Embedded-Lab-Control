@@ -472,3 +472,16 @@ class TestDatabaseConfig:
         original = Config.from_dict({"database": {"timeout_seconds": 17.5}})
         roundtripped = Config.from_dict(original.to_dict())
         assert roundtripped.database.timeout_seconds == 17.5
+
+    def test_env_override_applies(self, monkeypatch):
+        """LABCTL_DATABASE_TIMEOUT overrides config.yaml."""
+        monkeypatch.setenv("LABCTL_DATABASE_TIMEOUT", "20.5")
+        config = load_config()
+        assert config.database.timeout_seconds == 20.5
+
+    def test_env_override_ignores_garbage(self, monkeypatch):
+        """A non-numeric env value is silently ignored (consistent
+        with the other LABCTL_* overrides), keeping config default."""
+        monkeypatch.setenv("LABCTL_DATABASE_TIMEOUT", "not-a-number")
+        config = load_config()
+        assert config.database.timeout_seconds == 10.0

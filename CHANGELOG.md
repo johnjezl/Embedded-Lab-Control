@@ -37,6 +37,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     DB file. Backup scripts that previously copied just `labctl.db` now
     need to include those sidecars (or quiesce the daemon and run
     `PRAGMA wal_checkpoint(TRUNCATE)` before the backup).
+  - `LABCTL_DATABASE_TIMEOUT` env var overrides
+    `database.timeout_seconds` at load time, parallel to the other
+    `LABCTL_*` overrides. Useful for ad-hoc tuning under contention
+    without editing config.yaml.
+  - `INSERT OR IGNORE` on the `schema_version` bootstrap inserts
+    eliminates a latent cross-process race where two fresh-DB
+    initializers could both pass the `sqlite_master` probe and the
+    losing one would fail with a PRIMARY KEY conflict. Independent
+    of the lock fix but the WAL change made it slightly more likely
+    by shrinking the serialization window.
+  - `Database._init_lock` is a `threading.RLock` (not `Lock`) so a
+    callback into `initialize()` while the lock is held does not
+    self-deadlock. Defensive — nothing in the current codebase
+    triggers re-entry.
 
 ### Added (actuators feature, P1–P7 — groundwork only, awaits hardware)
 

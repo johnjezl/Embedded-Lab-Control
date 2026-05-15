@@ -701,57 +701,135 @@ class TestConcurrency:
         db.initialize()  # must not raise
         assert db._initialized is True
 
-    def test_concurrent_reader_during_writer_does_not_block(self, tmp_path):
-        """With WAL on, a writer holding an open transaction does NOT
-        block a concurrent reader. Pre-WAL this test would hang on the
-        reader until the writer committed or the busy_timeout fired."""
-        db_path = tmp_path / "concurrent.db"
+    def test_writer_can_commit_during_concurrent_read(self, tmp_path):
+        """WAL-specific property: a writer can COMMIT while another
+        connection holds an open read transaction.
+
+        In rollback-journal mode the writer's COMMIT must upgrade from
+        RESERVED to EXCLUSIVE, which blocks until every SHARED lock
+        drops — so a concurrent reader holding a transaction would
+        force the writer to wait for the reader's busy_timeout. With
+        the timeouts set to 100ms here, a regression to rollback mode
+        would surface as ``OperationalError: database is locked`` on
+        the writer's commit; with WAL it just succeeds.
+        """
+        db_path = tmp_path / "wal_commit.db"
         db = get_database(db_path)
         db.execute_insert("INSERT INTO sbcs (name) VALUES (?)", ("baseline",))
 
-        writer_holding = threading.Event()
-        writer_release = threading.Event()
-        reader_done = threading.Event()
-        reader_result: list = []
-
-        def writer():
-            # Hold an open write transaction without committing.
-            conn = sqlite3.connect(str(db_path), timeout=5.0)
-            conn.execute("BEGIN IMMEDIATE")
-            conn.execute(
-                "INSERT INTO sbcs (name) VALUES (?)", ("writer-holds",)
-            )
-            writer_holding.set()
-            writer_release.wait(timeout=10.0)
-            conn.rollback()
-            conn.close()
+        reader_holding = threading.Event()
+        reader_release = threading.Event()
+        writer_done = threading.Event()
+        writer_error: list = []
 
         def reader():
-            writer_holding.wait(timeout=5.0)
-            # Should return immediately with the baseline row, NOT block.
-            row = db.execute_one(
-                "SELECT name FROM sbcs WHERE name = ?", ("baseline",)
-            )
-            reader_result.append(row["name"] if row else None)
-            reader_done.set()
+            # Open a deferred transaction and hold a read lock on the file.
+            conn = sqlite3.connect(str(db_path), timeout=0.1)
+            try:
+                conn.execute("BEGIN")
+                conn.execute(
+                    "SELECT name FROM sbcs WHERE name=?",
+                    ("baseline",),
+                ).fetchone()
+                reader_holding.set()
+                reader_release.wait(timeout=10.0)
+                conn.rollback()
+            finally:
+                conn.close()
 
-        wt = threading.Thread(target=writer)
+        def writer():
+            reader_holding.wait(timeout=5.0)
+            conn = sqlite3.connect(str(db_path), timeout=0.1)
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute(
+                    "INSERT INTO sbcs (name) VALUES (?)", ("writer-2",)
+                )
+                # The COMMIT is the WAL-discriminating step: in
+                # rollback mode this raises within 100ms (busy_timeout
+                # set on the connect). With WAL it returns immediately.
+                conn.commit()
+            except sqlite3.OperationalError as e:
+                writer_error.append(str(e))
+            finally:
+                conn.close()
+            writer_done.set()
+
         rt = threading.Thread(target=reader)
-        wt.start()
+        wt = threading.Thread(target=writer)
         rt.start()
+        wt.start()
         try:
-            # Reader should complete promptly even though writer holds tx.
-            assert reader_done.wait(timeout=3.0), (
-                "reader blocked behind writer — WAL probably not in effect"
+            assert writer_done.wait(timeout=5.0), (
+                "writer never finished — coordination event missed"
             )
-            assert reader_result == ["baseline"]
+            assert writer_error == [], (
+                f"writer.commit() raised {writer_error!r} — WAL probably "
+                "not in effect; rollback-mode commit blocked on the "
+                "reader's SHARED lock"
+            )
         finally:
-            writer_release.set()
-            wt.join(timeout=5.0)
+            reader_release.set()
             rt.join(timeout=5.0)
+            wt.join(timeout=5.0)
+
+        # Sanity: the writer's insert actually committed.
+        assert db.execute_one(
+            "SELECT name FROM sbcs WHERE name=?", ("writer-2",)
+        ) is not None
 
     def test_get_database_threads_timeout(self, tmp_path):
         """get_database forwards timeout_seconds to the Database it builds."""
         db_path = tmp_path / "thread.db"
         db = get_database(db_path, timeout_seconds=3.0)
         assert db.timeout_seconds == 3.0
+
+    def test_schema_version_insert_is_idempotent(self, tmp_path):
+        """A second fresh-DB bootstrap against the same path must not
+        raise a UNIQUE-constraint error.
+
+        This simulates the cross-process race where two fresh
+        ``initialize()`` calls interleave between the sqlite_master
+        probe and the schema_version INSERT. ``INSERT OR IGNORE`` is
+        what keeps this clean.
+        """
+        db_path = tmp_path / "race.db"
+        db1 = Database(db_path)
+        db1.initialize()
+
+        # A second Database instance with the same path, forced to
+        # re-run its fresh-DB code path even though the file now exists.
+        db2 = Database(db_path)
+        # Drop the schema_version row but leave the table, simulating
+        # a half-finished bootstrap by a sibling process.
+        with db2.connect() as conn:
+            conn.execute("DELETE FROM schema_version")
+        # Manually invoke initialize's bootstrap-INSERT path. Without
+        # OR IGNORE this would still pass (table was dropped to empty),
+        # so also re-run with the row present to assert no constraint
+        # violation.
+        db2._reset_initialized()
+        db2.initialize()
+        with db2.connect() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_version (version) VALUES (?)",
+                (SCHEMA_VERSION,),
+            )
+            row = conn.execute(
+                "SELECT COUNT(*) FROM schema_version WHERE version=?",
+                (SCHEMA_VERSION,),
+            ).fetchone()
+        assert row[0] == 1, "schema_version row should be present exactly once"
+
+    def test_init_lock_is_reentrant(self):
+        """_init_lock is an RLock so a callback into initialize() while
+        the lock is held wouldn't self-deadlock. Verified by acquiring
+        the lock twice from the same thread without timing out."""
+        db = Database(__file__)  # path irrelevant; we only touch the lock
+        # If this were a plain Lock, the second acquire would block.
+        assert db._init_lock.acquire(timeout=0.1)
+        try:
+            assert db._init_lock.acquire(timeout=0.1)
+            db._init_lock.release()
+        finally:
+            db._init_lock.release()

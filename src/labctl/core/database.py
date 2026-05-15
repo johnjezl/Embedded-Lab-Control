@@ -309,7 +309,11 @@ class Database:
         # initialize(); long-lived processes (daemon, MCP, web) pay it
         # exactly once total. Reset by tests via _reset_initialized().
         self._initialized = False
-        self._init_lock = threading.Lock()
+        # RLock (not Lock) so a future migration or test helper that
+        # happens to call back into initialize() while holding the lock
+        # doesn't self-deadlock. Nothing in the current codebase does
+        # this, but Lock made it a sharp edge.
+        self._init_lock = threading.RLock()
 
     def initialize(self) -> None:
         """Initialize database schema if needed.
@@ -337,10 +341,18 @@ class Database:
                 )
                 cursor = conn.execute(query)
                 if cursor.fetchone() is None:
-                    # Fresh database - apply full schema
+                    # Fresh database - apply full schema.
+                    # OR IGNORE on the version insert defends against the
+                    # rare cross-process race where two fresh-DB
+                    # initialize() calls interleave between the
+                    # sqlite_master probe and the INSERT — both see no
+                    # schema_version table, both run SCHEMA_SQL (idempotent
+                    # via IF NOT EXISTS), then the second INSERT would
+                    # otherwise fail with a PRIMARY KEY conflict.
                     _executescript_atomic(conn, SCHEMA_SQL)
                     conn.execute(
-                        "INSERT INTO schema_version (version) VALUES (?)",
+                        "INSERT OR IGNORE INTO schema_version (version) "
+                        "VALUES (?)",
                         (SCHEMA_VERSION,),
                     )
                 else:
@@ -624,8 +636,11 @@ class Database:
                 """,
             )
 
+        # OR IGNORE: tolerate a concurrent process that has already
+        # bumped schema_version to the current value during a race.
         conn.execute(
-            "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (?)",
+            (SCHEMA_VERSION,),
         )
 
     @contextmanager

@@ -476,6 +476,7 @@ def load_config(
     - LABCTL_DEV_DIR: Override serial.dev_dir
     - LABCTL_BASE_TCP_PORT: Override serial.base_tcp_port
     - LABCTL_DATABASE_PATH: Override database_path
+    - LABCTL_DATABASE_TIMEOUT: Override database.timeout_seconds (float)
     - LABCTL_LOG_LEVEL: Override log_level
 
     Args:
@@ -533,6 +534,14 @@ def _apply_env_overrides(config: Config) -> Config:
 
     if "LABCTL_DATABASE_PATH" in os.environ:
         config.database_path = _expand_path(os.environ["LABCTL_DATABASE_PATH"])
+
+    if "LABCTL_DATABASE_TIMEOUT" in os.environ:
+        try:
+            config.database.timeout_seconds = float(
+                os.environ["LABCTL_DATABASE_TIMEOUT"]
+            )
+        except ValueError:
+            pass
 
     if "LABCTL_LOG_LEVEL" in os.environ:
         config.log_level = os.environ["LABCTL_LOG_LEVEL"]
