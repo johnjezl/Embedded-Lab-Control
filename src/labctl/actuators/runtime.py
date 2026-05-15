@@ -203,31 +203,43 @@ def _audit_actuator_event(
     Hardware writes are operationally significant and the activity
     stream is the project's "who did what to which device" log. Every
     successful or failed actuate/release/press lands here.
-    """
-    from labctl.core import audit
 
-    details: dict = {
-        "actuator": actuator.name,
-        "channel": channel.channel_index,
-        "target_state": target.value,
-    }
-    if extra:
-        details.update(extra)
-    if error is not None:
-        details["error"] = error
-    audit.emit(
-        manager.db,
-        action=action,
-        entity_type="binding",
-        entity_id=binding.id,
-        entity_name=(
-            f"{binding.sbc_name}:{binding.purpose}"
-            if binding.sbc_name
-            else binding.purpose
-        ),
-        result="ok" if ok else "error",
-        details=details,
-    )
+    Defensive: any failure here is logged but never raised — a verb
+    that physically succeeded must not be reported as failed because
+    audit bookkeeping went sideways.
+    """
+    try:
+        from labctl.core import audit
+
+        details: dict = {
+            "actuator": actuator.name,
+            "channel": channel.channel_index,
+            "target_state": target.value,
+        }
+        if extra:
+            details.update(extra)
+        if error is not None:
+            details["error"] = error
+        audit.emit(
+            manager.db,
+            action=action,
+            entity_type="binding",
+            entity_id=binding.id,
+            entity_name=(
+                f"{binding.sbc_name}:{binding.purpose}"
+                if binding.sbc_name
+                else binding.purpose
+            ),
+            result="ok" if ok else "error",
+            details=details,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "audit emit failed for action=%s binding=%s: %s",
+            action,
+            binding.purpose,
+            e,
+        )
 
 
 def _audit_raw_actuator_set(
@@ -240,23 +252,100 @@ def _audit_raw_actuator_set(
     error: Optional[str] = None,
 ) -> None:
     """Audit-log a raw `actuator set` that bypasses any binding."""
-    from labctl.core import audit
+    try:
+        from labctl.core import audit
 
-    details: dict = {
-        "channel": channel.channel_index,
-        "target_state": target.value,
-        "raw": True,
-    }
-    if error is not None:
-        details["error"] = error
-    audit.emit(
-        manager.db,
-        action="actuator_set",
-        entity_type="actuator_channel",
-        entity_id=channel.id,
-        entity_name=f"{actuator.name}[{channel.channel_index}]",
-        result="ok" if ok else "error",
-        details=details,
+        details: dict = {
+            "channel": channel.channel_index,
+            "target_state": target.value,
+            "raw": True,
+        }
+        if error is not None:
+            details["error"] = error
+        audit.emit(
+            manager.db,
+            action="actuator_set",
+            entity_type="actuator_channel",
+            entity_id=channel.id,
+            entity_name=f"{actuator.name}[{channel.channel_index}]",
+            result="ok" if ok else "error",
+            details=details,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "audit emit failed for actuator_set %s[%d]: %s",
+            actuator.name,
+            channel.channel_index,
+            e,
+        )
+
+
+def _audit_safe_drive(
+    manager, summary: dict, *, ok: bool, error: Optional[str] = None
+) -> None:
+    """Emit a synthetic 'safe_drive' audit event summarizing daemon-start
+    reconciliation: which channels were left held, which were driven to
+    default, and which writes failed. This is the activity-stream
+    counterpart to the per-channel logger.warning lines."""
+    try:
+        from labctl.core import audit
+
+        details: dict = {
+            "held_count": len(summary.get("held", [])),
+            "drove_count": len(summary.get("drove", [])),
+            "failed_count": len(summary.get("failed", [])),
+            "held": summary.get("held", []),
+            "drove": summary.get("drove", []),
+            "failed": summary.get("failed", []),
+        }
+        if error is not None:
+            details["error"] = error
+        audit.emit(
+            manager.db,
+            action="safe_drive",
+            entity_type="daemon",
+            entity_name="actuators",
+            result="ok" if ok else "error",
+            details=details,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("audit emit failed for safe_drive: %s", e)
+
+
+def _audit_pre_power_apply(
+    manager,
+    binding: Binding,
+    actuator: Actuator,
+    channel: ActuatorChannel,
+    target: ChannelState,
+    *,
+    ok: bool,
+    error: Optional[str] = None,
+    cycle_changed: Optional[bool] = None,
+) -> None:
+    """Emit a 'pre_power_apply' audit event for a strap driven before a
+    power transition. Distinct from 'actuate' so the activity stream
+    distinguishes operator-initiated verbs from automatic power-flow
+    re-application.
+
+    ``cycle_changed`` indicates whether the channel was already in the
+    target state pre-write (False) or required a real transition (True).
+    Lets operators read paired actuate→pre_power events without thinking
+    the strap was double-toggled.
+    """
+    extra: dict = {"desired_state": binding.desired_state.value}
+    if cycle_changed is not None:
+        extra["cycle_changed"] = cycle_changed
+    _audit_actuator_event(
+        manager,
+        "pre_power_apply",
+        binding,
+        actuator,
+        channel,
+        target,
+        ok=ok,
+        error=error,
+        extra=extra,
     )
 
 
@@ -550,15 +639,26 @@ def apply_pre_power_bindings(manager, sbc) -> None:
             # FOLLOWING_POWER — driven by the binding's own logic post-on.
             continue
 
+        # Capture pre-write state for cycle_changed before the drive +
+        # update_channel_state pair invalidates it.
+        prior_state = channel.last_state
         with _channel_lock(channel.id):
             with open_driver_for(actuator) as driver:
                 outcome = _drive(driver, channel.channel_index, target)
             if outcome is not WriteOutcome.OK:
+                _audit_pre_power_apply(
+                    manager, binding, actuator, channel, target,
+                    ok=False, error=outcome.value,
+                )
                 raise ActuationError(
                     f"pre_power binding {binding.purpose!r} on "
                     f"{binding.sbc_name!r}: {outcome.value}"
                 )
             manager.update_channel_state(channel.id, target)
+            _audit_pre_power_apply(
+                manager, binding, actuator, channel, target,
+                ok=True, cycle_changed=(prior_state != target),
+            )
 
 
 def enter_recovery(
@@ -681,7 +781,9 @@ def apply_safe_drive_on_startup(manager) -> dict:
             held=held, drove=drove, failed=failed,
         )
 
-    return {"held": held, "drove": drove, "failed": failed}
+    summary = {"held": held, "drove": drove, "failed": failed}
+    _audit_safe_drive(manager, summary, ok=not failed)
+    return summary
 
 
 def _safe_drive_one_actuator(

@@ -2166,7 +2166,14 @@ def _admin_actuator_ops_allowed() -> bool:
     """
     try:
         return bool(_get_config().mcp.allow_admin_actuator_ops)
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        # Fail closed: any config-load error is treated as "gate disabled".
+        # Logged at debug so operators have a breadcrumb if all admin tools
+        # silently refuse work because config.yaml is malformed.
+        logger.debug(
+            "admin_actuator_ops gate defaulting to False (config load failed): %s",
+            e,
+        )
         return False
 
 
@@ -2186,10 +2193,27 @@ def _validate_actuator_device_path(device_path: str) -> Optional[str]:
     A hostile MCP caller could try to point ``actuator_add`` at
     ``/dev/disk/...``, ``/etc/...``, etc. The allow-list keeps the
     surface area to USB-serial paths labctl actually uses.
+
+    Two layers of defense against path-traversal tricks:
+      * Reject any input containing ``..`` outright. Real USB-serial
+        paths never contain it; an attacker passing
+        ``/dev/ttyUSB../disk/foo`` (where ``ttyUSB..`` is a single
+        component, so normpath doesn't collapse it) is stopped here.
+      * Normalize before the allow-list check so
+        ``/dev/lab/../etc/passwd`` collapses to ``/etc/passwd`` and
+        fails the prefix match.
     """
     if not device_path:
         return None  # device_path is optional; nothing to validate
-    if any(device_path.startswith(p) for p in _ACTUATOR_DEVICE_PATH_PREFIXES):
+    if ".." in device_path:
+        return (
+            f"device_path {device_path!r} contains '..' "
+            f"(path traversal not allowed)"
+        )
+    normalized = os.path.normpath(device_path)
+    if any(
+        normalized.startswith(p) for p in _ACTUATOR_DEVICE_PATH_PREFIXES
+    ):
         return None
     return (
         f"device_path {device_path!r} not under any of the allowed "

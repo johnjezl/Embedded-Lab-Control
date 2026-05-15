@@ -712,6 +712,82 @@ class TestAuditLogging:
         assert rows[0]["result"] == "error"
         assert "device_gone" in rows[0]["details"]
 
+    def test_apply_pre_power_bindings_emits_audit(self, lab):
+        """Strap application before a power transition lands in the
+        activity stream as 'pre_power_apply' (distinct from 'actuate')."""
+        binding = _make_binding(lab)
+        lab.manager.update_binding_desired_state(
+            binding.id, DesiredState.ASSERTED
+        )
+        runtime.apply_pre_power_bindings(lab.manager, lab.sbc)
+
+        rows = self._audit_rows(lab.manager, action="pre_power_apply")
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["entity_type"] == "binding"
+        assert row["entity_name"] == "jetson-nano-2:recovery_mode"
+        assert row["result"] == "ok"
+        assert "asserted" in row["details"]  # desired_state in extras
+        assert "closed" in row["details"]    # target state
+
+    def test_apply_pre_power_bindings_records_cycle_changed(self, lab):
+        """First pre_power_apply is a real transition; the immediately
+        following one (e.g. trailing apply in enter_recovery) records
+        cycle_changed=false so the audit log explains the redundant row."""
+        binding = _make_binding(lab)
+        lab.manager.update_binding_desired_state(
+            binding.id, DesiredState.ASSERTED
+        )
+        runtime.apply_pre_power_bindings(lab.manager, lab.sbc)
+        runtime.apply_pre_power_bindings(lab.manager, lab.sbc)
+
+        rows = self._audit_rows(lab.manager, action="pre_power_apply")
+        assert len(rows) == 2
+        # First is a real transition (last_state was None → CLOSED).
+        assert '"cycle_changed":true' in rows[0]["details"]
+        # Second re-asserts an already-asserted strap.
+        assert '"cycle_changed":false' in rows[1]["details"]
+
+    def test_apply_pre_power_bindings_failure_emits_error_audit(self, lab):
+        binding = _make_binding(lab)
+        lab.manager.update_binding_desired_state(
+            binding.id, DesiredState.ASSERTED
+        )
+        lab.driver.next_write_outcome = WriteOutcome.DEVICE_GONE
+        with pytest.raises(runtime.ActuationError):
+            runtime.apply_pre_power_bindings(lab.manager, lab.sbc)
+
+        rows = self._audit_rows(lab.manager, action="pre_power_apply")
+        assert len(rows) == 1
+        assert rows[0]["result"] == "error"
+        assert "device_gone" in rows[0]["details"]
+
+    def test_apply_safe_drive_emits_synthetic_audit(self, lab):
+        """Daemon-start safe-drive emits one summary 'safe_drive' event
+        rather than per-channel events (operators want a single line)."""
+        # Add a held binding and one unbound channel for variety.
+        binding = _make_binding(lab)
+        lab.manager.update_binding_desired_state(
+            binding.id, DesiredState.ASSERTED
+        )
+        ch2 = lab.manager.add_actuator_channel(
+            lab.actuator.id, 2, default_state=ChannelState.OPEN
+        )
+        lab.driver._configured_count = 2
+
+        runtime.apply_safe_drive_on_startup(lab.manager)
+
+        rows = self._audit_rows(lab.manager, action="safe_drive")
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["entity_type"] == "daemon"
+        assert row["entity_name"] == "actuators"
+        assert row["result"] == "ok"
+        # Summary captures both buckets.
+        assert "held_count" in row["details"]
+        assert "drove_count" in row["details"]
+        assert "recovery_mode" in row["details"]  # held purpose preserved
+
     def test_press_partial_failure_emits_error_audit(self, lab):
         """Press where the second (release) write fails: audit
         captures the failure with the channel-left-in-state hint."""

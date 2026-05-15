@@ -60,6 +60,27 @@ manager CRUD, driver ABC contract, LCUS-1 frame builder + I/O,
 runtime verbs, composite power integration, daemon-start safe-drive,
 claim composition, CLI surface, and MCP tools.
 
+#### Post-review hardening (PR #4)
+
+- Hardware writes from automatic power-flow paths now leave audit
+  trails alongside operator-initiated verbs: `apply_pre_power_bindings`
+  emits `pre_power_apply` events (one per strap driven); daemon-start
+  `apply_safe_drive_on_startup` emits one synthetic `safe_drive`
+  summary event with held/drove/failed counts and details.
+- `_validate_actuator_device_path` now rejects path traversal:
+  refuses any input containing `..` outright, then normalizes
+  remaining paths with `os.path.normpath` before the allow-list
+  check. Previously `/dev/lab/../etc/passwd` slipped through.
+- `_audit_actuator_event` / `_audit_raw_actuator_set` / new
+  `_audit_safe_drive` wrap their emit call in try/except so a
+  bookkeeping failure can't fail a verb that physically succeeded.
+- `_admin_actuator_ops_allowed` now logs at debug on config-load
+  errors so silent gate-disables are diagnosable.
+- `pre_power_apply` audit details now include `cycle_changed` so a
+  paired `actuate` → `pre_power_apply` row pair (the normal
+  `enter_recovery` shape) reads as "operator drove the strap, then
+  the power-flow rechecked it" rather than as a double-toggle.
+
 ### Fixed
 - Kasa multi-outlet strips no longer hit themselves with parallel KLAP
   handshakes during monitor cycles. Previously each outlet of an N-outlet

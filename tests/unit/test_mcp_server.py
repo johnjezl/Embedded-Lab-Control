@@ -2140,6 +2140,12 @@ class TestMcpDevicePathValidation:
             ("/dev/disk/by-id/usb-Whatever", False),
             ("/proc/self/mem", False),
             ("relative/path", False),
+            # Path-traversal: '..' segment collapses past the allowed prefix.
+            ("/dev/lab/../etc/passwd", False),
+            ("/dev/serial/by-id/../../etc/shadow", False),
+            # Single-component '..' suffix that normpath wouldn't collapse —
+            # caught by the explicit '..' substring check.
+            ("/dev/ttyUSB../disk/foo", False),
         ],
     )
     def test_path_allow_list(
@@ -2156,7 +2162,27 @@ class TestMcpDevicePathValidation:
         if allowed:
             assert "Added actuator" in result, result
         else:
-            assert "not under any of the allowed prefixes" in result
+            # Either the prefix check or the traversal check rejected it.
+            assert (
+                "not under any of the allowed prefixes" in result
+                or "path traversal not allowed" in result
+            ), result
+
+    def test_traversal_rejected_with_explicit_message(
+        self, mock_manager, admin_actuator_ops_enabled
+    ):
+        """The '..' check fires before the allow-list, with a distinct
+        error so operators understand the rejection cause."""
+        from labctl.mcp_server import actuator_add
+
+        result = actuator_add(
+            name="relay-traversal",
+            driver="lcus1_serial",
+            device_path="/dev/lab/../etc/passwd",
+            channels=1,
+        )
+        assert "path traversal not allowed" in result
+        assert mock_manager.get_actuator_by_name("relay-traversal") is None
 
     def test_empty_path_is_allowed(
         self, mock_manager, admin_actuator_ops_enabled

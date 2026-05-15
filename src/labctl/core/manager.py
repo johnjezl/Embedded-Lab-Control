@@ -1874,6 +1874,11 @@ class ResourceManager:
             # Only bump when last_state actually changes. SQLite's
             # CASE expression keeps this atomic in one statement so
             # there's no read-then-write race.
+            #   - last_state IS NULL  → first ever drive of this channel,
+            #     count it as one transition.
+            #   - last_state != new   → real transition, bump.
+            #   - else                → idempotent re-drive (e.g. pre_power
+            #     re-asserting an already-asserted strap), don't bump.
             self.db.execute_modify(
                 """
                 UPDATE actuator_channels
