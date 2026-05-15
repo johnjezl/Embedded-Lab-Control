@@ -6,6 +6,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+- Transient `sqlite3.OperationalError: database is locked` errors under
+  multi-process load (monitor daemon + CLI + MCP + batch jobs hitting
+  the same SQLite file). Root cause was the combination of default
+  rollback-journal mode (readers and writers exclude each other across
+  the whole DB), the default 5s `sqlite3.connect()` busy timeout, and
+  `Database.initialize()` re-running its `sqlite_master` probe on every
+  `get_database()` call. Fix:
+  - `PRAGMA journal_mode=WAL` applied on first `initialize()` (persists
+    in the DB file header — concurrent processes inherit it). Readers
+    no longer block writers and vice versa; only writer-vs-writer is
+    serialized, and labctl writes commit sub-millisecond.
+  - `PRAGMA synchronous=NORMAL` (WAL-safe pairing, faster commits, a
+    few-second worst-case write loss on power failure — fine for a lab
+    DB).
+  - Per-connection `busy_timeout` mirrors `Config.database.timeout_seconds`
+    (new; default **10s**), and the same value is passed as
+    `sqlite3.connect(timeout=…)`. Backstops the narrow windows WAL
+    still serializes (schema migrations, WAL checkpoints).
+  - `initialize()` is now cached per-process: subsequent calls on the
+    same `Database` instance return immediately without re-opening a
+    connection. Long-lived processes (daemon, MCP, web) pay the
+    sqlite_master probe exactly once; short-lived CLI invocations still
+    pay one initialize() per run.
+  - New `database` config section (`database.timeout_seconds`, default
+    10.0) exposed via `Config.database`. Wired through `get_database` /
+    `get_manager` and the four call sites (CLI, web app, MCP server).
+  - Note: WAL mode creates `-wal` and `-shm` sidecar files next to the
+    DB file. Backup scripts that previously copied just `labctl.db` now
+    need to include those sidecars (or quiesce the daemon and run
+    `PRAGMA wal_checkpoint(TRUNCATE)` before the backup).
+
 ### Added (actuators feature, P1–P7 — groundwork only, awaits hardware)
 
 First-class support for USB-controlled relays as provisioned lab

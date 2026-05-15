@@ -7,6 +7,7 @@ import labctl.core.config as config_module
 from labctl.core.config import (
     ClaimsConfig,
     Config,
+    DatabaseConfig,
     KasaConfig,
     Ser2NetConfig,
     SerialConfig,
@@ -450,3 +451,24 @@ class TestConfigLoadLogging:
 
         assert isinstance(config, Config)
         assert any("Failed to access config path" in r.message for r in caplog.records)
+
+
+class TestDatabaseConfig:
+    """Database connection tuning knobs."""
+
+    def test_default_timeout_seconds(self):
+        cfg = DatabaseConfig()
+        assert cfg.timeout_seconds == 10.0
+
+    def test_from_dict_picks_up_timeout(self):
+        cfg = Config.from_dict({"database": {"timeout_seconds": 25.0}})
+        assert cfg.database.timeout_seconds == 25.0
+
+    def test_from_dict_default_when_section_missing(self):
+        cfg = Config.from_dict({})
+        assert cfg.database.timeout_seconds == 10.0
+
+    def test_roundtrip(self):
+        original = Config.from_dict({"database": {"timeout_seconds": 17.5}})
+        roundtripped = Config.from_dict(original.to_dict())
+        assert roundtripped.database.timeout_seconds == 17.5

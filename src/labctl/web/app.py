@@ -65,7 +65,10 @@ def create_app(config: Config | None = None) -> Flask:
 
     # Start the activity-stream broadcaster thread. Polls audit_log and
     # fans new rows out to SSE subscribers on /activity/stream.
-    mgr_for_broadcast = get_manager(config.database_path)
+    mgr_for_broadcast = get_manager(
+        config.database_path,
+        timeout_seconds=config.database.timeout_seconds,
+    )
     app.config["ACTIVITY_BROADCASTER"] = ActivityBroadcaster(mgr_for_broadcast.db)
     app.config["ACTIVITY_BROADCASTER"].start()
 
@@ -90,7 +93,10 @@ def create_app(config: Config | None = None) -> Flask:
     def before_request():
         """Set up manager and enforce auth for each request."""
         config = app.config["LABCTL_CONFIG"]
-        g.manager = get_manager(config.database_path)
+        g.manager = get_manager(
+            config.database_path,
+            timeout_seconds=config.database.timeout_seconds,
+        )
         g.config = config
 
         api_request = bool(request.endpoint and request.endpoint.startswith("api."))

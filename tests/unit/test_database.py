@@ -1,8 +1,16 @@
 """Unit tests for database module."""
 
+import sqlite3
+import threading
+
 import pytest
 
-from labctl.core.database import SCHEMA_VERSION, Database, get_database
+from labctl.core.database import (
+    DEFAULT_TIMEOUT_SECONDS,
+    SCHEMA_VERSION,
+    Database,
+    get_database,
+)
 
 
 class TestDatabase:
@@ -616,3 +624,134 @@ class TestDatabase:
 
         row = db.execute_one("SELECT MAX(version) as v FROM schema_version")
         assert row["v"] == SCHEMA_VERSION
+
+
+class TestConcurrency:
+    """Concurrency settings — WAL mode, busy_timeout, initialize caching.
+
+    These are the fix for the transient ``database is locked`` errors
+    seen under multi-process load. See database.py module docstring.
+    """
+
+    def test_wal_mode_applied_on_init(self, tmp_path):
+        """initialize() switches the journal mode to WAL."""
+        db_path = tmp_path / "wal.db"
+        db = Database(db_path)
+        db.initialize()
+        mode = db.execute_one("PRAGMA journal_mode")
+        assert mode[0].lower() == "wal"
+
+    def test_synchronous_normal_applied_on_init(self, tmp_path):
+        """initialize() sets synchronous=NORMAL (the WAL-safe pairing)."""
+        db_path = tmp_path / "sync.db"
+        db = Database(db_path)
+        db.initialize()
+        # PRAGMA synchronous returns 0=OFF, 1=NORMAL, 2=FULL, 3=EXTRA
+        result = db.execute_one("PRAGMA synchronous")
+        assert result[0] == 1, (
+            f"expected synchronous=NORMAL (1), got {result[0]}"
+        )
+
+    def test_busy_timeout_applied_per_connection(self, tmp_path):
+        """Every connect() sets busy_timeout to match timeout_seconds."""
+        db_path = tmp_path / "bt.db"
+        db = Database(db_path, timeout_seconds=7.5)
+        db.initialize()
+        with db.connect() as conn:
+            row = conn.execute("PRAGMA busy_timeout").fetchone()
+            assert row[0] == 7500  # milliseconds
+
+    def test_default_timeout_is_ten_seconds(self):
+        """Sanity-check the module-level default the config inherits."""
+        assert DEFAULT_TIMEOUT_SECONDS == 10.0
+
+    def test_initialize_is_cached_per_instance(self, tmp_path):
+        """Repeated initialize() calls on one instance do no further DB work.
+
+        The second call must not re-run the sqlite_master probe, since
+        that's the lock-acquisition surface we're trying to shrink.
+        """
+        db_path = tmp_path / "cache.db"
+        db = Database(db_path)
+        db.initialize()
+        assert db._initialized is True
+
+        # Patch connect to detect any further DB access during a second
+        # initialize(). If the cache is honored, connect() is not called.
+        called = []
+        original_connect = db.connect
+
+        def watch():
+            called.append(1)
+            return original_connect()
+
+        db.connect = watch  # type: ignore[assignment]
+        db.initialize()
+        assert called == [], (
+            "second initialize() opened a connection — cache not honored"
+        )
+
+    def test_reset_initialized_re_runs(self, tmp_path):
+        """_reset_initialized lets tests force a fresh initialize."""
+        db_path = tmp_path / "reset.db"
+        db = Database(db_path)
+        db.initialize()
+        db._reset_initialized()
+        assert db._initialized is False
+        db.initialize()  # must not raise
+        assert db._initialized is True
+
+    def test_concurrent_reader_during_writer_does_not_block(self, tmp_path):
+        """With WAL on, a writer holding an open transaction does NOT
+        block a concurrent reader. Pre-WAL this test would hang on the
+        reader until the writer committed or the busy_timeout fired."""
+        db_path = tmp_path / "concurrent.db"
+        db = get_database(db_path)
+        db.execute_insert("INSERT INTO sbcs (name) VALUES (?)", ("baseline",))
+
+        writer_holding = threading.Event()
+        writer_release = threading.Event()
+        reader_done = threading.Event()
+        reader_result: list = []
+
+        def writer():
+            # Hold an open write transaction without committing.
+            conn = sqlite3.connect(str(db_path), timeout=5.0)
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "INSERT INTO sbcs (name) VALUES (?)", ("writer-holds",)
+            )
+            writer_holding.set()
+            writer_release.wait(timeout=10.0)
+            conn.rollback()
+            conn.close()
+
+        def reader():
+            writer_holding.wait(timeout=5.0)
+            # Should return immediately with the baseline row, NOT block.
+            row = db.execute_one(
+                "SELECT name FROM sbcs WHERE name = ?", ("baseline",)
+            )
+            reader_result.append(row["name"] if row else None)
+            reader_done.set()
+
+        wt = threading.Thread(target=writer)
+        rt = threading.Thread(target=reader)
+        wt.start()
+        rt.start()
+        try:
+            # Reader should complete promptly even though writer holds tx.
+            assert reader_done.wait(timeout=3.0), (
+                "reader blocked behind writer — WAL probably not in effect"
+            )
+            assert reader_result == ["baseline"]
+        finally:
+            writer_release.set()
+            wt.join(timeout=5.0)
+            rt.join(timeout=5.0)
+
+    def test_get_database_threads_timeout(self, tmp_path):
+        """get_database forwards timeout_seconds to the Database it builds."""
+        db_path = tmp_path / "thread.db"
+        db = get_database(db_path, timeout_seconds=3.0)
+        assert db.timeout_seconds == 3.0

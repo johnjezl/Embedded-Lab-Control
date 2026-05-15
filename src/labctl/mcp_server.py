@@ -54,7 +54,10 @@ def _get_manager():
     from labctl.core.manager import get_manager
 
     config = load_config()
-    return get_manager(config.database_path)
+    return get_manager(
+        config.database_path,
+        timeout_seconds=config.database.timeout_seconds,
+    )
 
 
 def _get_config():

@@ -88,7 +88,10 @@ def _get_manager(ctx: click.Context) -> ResourceManager:
     """Get or create resource manager from context."""
     if "manager" not in ctx.obj:
         config: Config = ctx.obj["config"]
-        ctx.obj["manager"] = get_manager(config.database_path)
+        ctx.obj["manager"] = get_manager(
+            config.database_path,
+            timeout_seconds=config.database.timeout_seconds,
+        )
     return ctx.obj["manager"]
 
 
