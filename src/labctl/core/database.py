@@ -2,15 +2,43 @@
 Database management for lab controller.
 
 Provides SQLite connection management, schema initialization, and migrations.
+
+Concurrency notes
+=================
+labctl is multi-process by design (CLI, monitor daemon, MCP server, web app,
+batch jobs all share one SQLite file). To keep concurrent readers and
+writers from blocking each other:
+
+* **WAL journal mode** is applied on first ``initialize()``. WAL is
+  persisted in the database file header, so any process opening the
+  file inherits it. With WAL, readers never block writers and vice
+  versa — only writer-vs-writer is serialized, and labctl writes are
+  all single-statement (sub-ms) or short transactions.
+* **Per-connection busy_timeout** (default 10s, config-driven via
+  ``database.timeout_seconds``) backstops the narrow windows where
+  WAL still serializes — schema migrations and WAL checkpoints.
+* **``synchronous=NORMAL``** trades a few-second worst-case write loss
+  on power failure for substantially faster commits. Safe with WAL.
+* **``initialize()`` is cached per-process** so short-lived CLI
+  invocations don't repeatedly re-probe ``sqlite_master``.
 """
 
+import logging
 import sqlite3
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Generator, Optional
 
+logger = logging.getLogger(__name__)
+
 # Current schema version
 SCHEMA_VERSION = 8
+
+# Default SQLite busy-timeout when the Database is constructed without an
+# explicit value (e.g. tests, direct callers). Matches Config.database
+# default; raise only if a migration on a contended DB is timing out.
+DEFAULT_TIMEOUT_SECONDS = 10.0
 
 # SQL statements for schema creation
 SCHEMA_SQL = """
@@ -259,39 +287,114 @@ CREATE INDEX IF NOT EXISTS idx_bindings_actuator_channel
 class Database:
     """SQLite database manager for lab controller."""
 
-    def __init__(self, db_path: Path):
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
+    ):
         """
         Initialize database manager.
 
         Args:
-            db_path: Path to SQLite database file
+            db_path: Path to SQLite database file.
+            timeout_seconds: SQLite busy-wait used when another process
+                holds an incompatible lock. Defaults to 10s; usually
+                wired from ``Config.database.timeout_seconds``.
         """
         self.db_path = db_path
+        self.timeout_seconds = timeout_seconds
+        # Cache: only run the migration-probe block once per process per
+        # Database instance. Short-lived CLI invocations still pay one
+        # initialize(); long-lived processes (daemon, MCP, web) pay it
+        # exactly once total. Reset by tests via _reset_initialized().
+        self._initialized = False
+        # RLock (not Lock) so a future migration or test helper that
+        # happens to call back into initialize() while holding the lock
+        # doesn't self-deadlock. Nothing in the current codebase does
+        # this, but Lock made it a sharp edge.
+        self._init_lock = threading.RLock()
 
     def initialize(self) -> None:
-        """Initialize database schema if needed."""
-        # Ensure directory exists
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        """Initialize database schema if needed.
 
-        with self.connect() as conn:
-            # Check current schema version
-            query = (
-                "SELECT name FROM sqlite_master "
-                "WHERE type='table' AND name='schema_version'"
-            )
-            cursor = conn.execute(query)
-            if cursor.fetchone() is None:
-                # Fresh database - apply full schema
-                _executescript_atomic(conn, SCHEMA_SQL)
-                conn.execute(
-                    "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
+        Idempotent across calls within a single process: the first call
+        runs the WAL/synchronous pragmas and the migration probe; every
+        subsequent call is a near-no-op (only the cache flag is read
+        under a lock). Multiple Python processes still each call this
+        once on first DB access — which is fine because the pragmas are
+        idempotent and the migration probe early-exits when current.
+        """
+        with self._init_lock:
+            if self._initialized:
+                return
+
+            # Ensure directory exists
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
+
+            with self.connect() as conn:
+                self._apply_persistent_pragmas(conn)
+                # Check current schema version
+                query = (
+                    "SELECT name FROM sqlite_master "
+                    "WHERE type='table' AND name='schema_version'"
                 )
-            else:
-                # Check for migrations
-                cursor = conn.execute("SELECT MAX(version) FROM schema_version")
-                current_version = cursor.fetchone()[0] or 0
-                if current_version < SCHEMA_VERSION:
-                    self._apply_migrations(conn, current_version)
+                cursor = conn.execute(query)
+                if cursor.fetchone() is None:
+                    # Fresh database - apply full schema.
+                    # OR IGNORE on the version insert defends against the
+                    # rare cross-process race where two fresh-DB
+                    # initialize() calls interleave between the
+                    # sqlite_master probe and the INSERT — both see no
+                    # schema_version table, both run SCHEMA_SQL (idempotent
+                    # via IF NOT EXISTS), then the second INSERT would
+                    # otherwise fail with a PRIMARY KEY conflict.
+                    _executescript_atomic(conn, SCHEMA_SQL)
+                    conn.execute(
+                        "INSERT OR IGNORE INTO schema_version (version) "
+                        "VALUES (?)",
+                        (SCHEMA_VERSION,),
+                    )
+                else:
+                    # Check for migrations
+                    cursor = conn.execute("SELECT MAX(version) FROM schema_version")
+                    current_version = cursor.fetchone()[0] or 0
+                    if current_version < SCHEMA_VERSION:
+                        self._apply_migrations(conn, current_version)
+
+            self._initialized = True
+
+    def _apply_persistent_pragmas(self, conn: sqlite3.Connection) -> None:
+        """Switch the database to WAL journal mode.
+
+        ``journal_mode=WAL`` is persisted in the database file header,
+        so any subsequent process that opens the file inherits it.
+        Running it every ``initialize()`` is cheap and ensures a
+        freshly-restored rollback-mode backup gets upgraded back to WAL
+        on next start. ``synchronous`` is per-connection and set in
+        ``connect()`` instead.
+        """
+        try:
+            mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()[0]
+            if mode.lower() != "wal":
+                # Read-only filesystem or otherwise unable to switch —
+                # warn but keep going. Lock contention will fall back to
+                # the connect()-level busy_timeout backstop.
+                logger.warning(
+                    "DB %s: requested journal_mode=WAL but got %r — "
+                    "concurrent readers/writers may block each other.",
+                    self.db_path,
+                    mode,
+                )
+        except sqlite3.OperationalError as e:
+            logger.warning(
+                "DB %s: pragma setup failed: %s", self.db_path, e
+            )
+
+    def _reset_initialized(self) -> None:
+        """Test-only: force the next initialize() to re-run."""
+        with self._init_lock:
+            self._initialized = False
 
     def _apply_migrations(self, conn: sqlite3.Connection, from_version: int) -> None:
         """Apply database migrations."""
@@ -533,8 +636,11 @@ class Database:
                 """,
             )
 
+        # OR IGNORE: tolerate a concurrent process that has already
+        # bumped schema_version to the current value during a race.
         conn.execute(
-            "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
+            "INSERT OR IGNORE INTO schema_version (version) VALUES (?)",
+            (SCHEMA_VERSION,),
         )
 
     @contextmanager
@@ -542,11 +648,27 @@ class Database:
         """
         Get a database connection as a context manager.
 
+        The ``timeout=`` arg makes ``sqlite3`` poll the busy lock for
+        up to ``self.timeout_seconds`` before raising
+        ``OperationalError``; the per-connection ``busy_timeout`` pragma
+        is a belt-and-suspenders for sqlite3 stdlib versions where the
+        ``timeout=`` plumbing has historically been buggy.
+
         Yields:
-            SQLite connection with row factory set to sqlite3.Row
+            SQLite connection with row factory set to sqlite3.Row.
         """
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, timeout=self.timeout_seconds)
         conn.row_factory = sqlite3.Row
+        # Belt-and-suspenders busy backstop; mirrors the connect() timeout.
+        conn.execute(
+            f"PRAGMA busy_timeout = {int(self.timeout_seconds * 1000)}"
+        )
+        # synchronous=NORMAL is per-connection (not persisted in the file
+        # like journal_mode), so it must be set on every connect. Pairs
+        # with WAL for substantially faster commits at the cost of a few
+        # seconds of write loss on a hard power failure — acceptable for
+        # a lab DB.
+        conn.execute("PRAGMA synchronous = NORMAL")
         # Enable foreign keys
         conn.execute("PRAGMA foreign_keys = ON")
         try:
@@ -635,17 +757,21 @@ class Database:
             return cursor.rowcount
 
 
-def get_database(db_path: Path) -> Database:
+def get_database(
+    db_path: Path, *, timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS
+) -> Database:
     """
     Get an initialized database instance.
 
     Args:
-        db_path: Path to database file
+        db_path: Path to database file.
+        timeout_seconds: SQLite busy-wait. Usually wired from
+            ``Config.database.timeout_seconds``; default 10s.
 
     Returns:
-        Initialized Database instance
+        Initialized Database instance.
     """
-    db = Database(db_path)
+    db = Database(db_path, timeout_seconds=timeout_seconds)
     db.initialize()
     return db
 

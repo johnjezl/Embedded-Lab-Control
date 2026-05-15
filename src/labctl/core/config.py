@@ -206,6 +206,22 @@ class ClaimsConfig:
 
 
 @dataclass
+class DatabaseConfig:
+    """SQLite database tuning knobs.
+
+    ``timeout_seconds`` is the SQLite busy-wait used when another
+    process holds an incompatible lock. With WAL mode (always on for
+    labctl), readers never block writers and vice versa — the only
+    serialization is writer-vs-writer, which for labctl's
+    single-statement writes commits sub-millisecond. 10s is several
+    orders of magnitude over the realistic worst case; raise only if
+    a migration on a contended DB is timing out.
+    """
+
+    timeout_seconds: float = 10.0
+
+
+@dataclass
 class McpConfig:
     """MCP server configuration.
 
@@ -232,6 +248,7 @@ class Config:
     kasa: KasaConfig = field(default_factory=KasaConfig)
     claims: ClaimsConfig = field(default_factory=ClaimsConfig)
     mcp: McpConfig = field(default_factory=McpConfig)
+    database: DatabaseConfig = field(default_factory=DatabaseConfig)
     database_path: Path = field(
         default_factory=lambda: _default_config_dir() / "labctl.db"
     )
@@ -249,6 +266,7 @@ class Config:
         kasa_data = data.get("kasa", {})
         claims_data = data.get("claims", {})
         mcp_data = data.get("mcp", {})
+        database_data = data.get("database", {})
 
         serial = SerialConfig(
             dev_dir=_expand_path(serial_data.get("dev_dir", "/dev/lab")),
@@ -344,6 +362,10 @@ class Config:
             ),
         )
 
+        database = DatabaseConfig(
+            timeout_seconds=float(database_data.get("timeout_seconds", 10.0)),
+        )
+
         return cls(
             serial=serial,
             ser2net=ser2net,
@@ -354,6 +376,7 @@ class Config:
             kasa=kasa,
             claims=claims,
             mcp=mcp,
+            database=database,
             database_path=_expand_path(
                 data.get("database_path", str(_default_config_dir() / "labctl.db"))
             ),
@@ -427,6 +450,9 @@ class Config:
             "mcp": {
                 "allow_admin_actuator_ops": self.mcp.allow_admin_actuator_ops,
             },
+            "database": {
+                "timeout_seconds": self.database.timeout_seconds,
+            },
             "database_path": str(self.database_path),
             "log_level": self.log_level,
         }
@@ -450,6 +476,7 @@ def load_config(
     - LABCTL_DEV_DIR: Override serial.dev_dir
     - LABCTL_BASE_TCP_PORT: Override serial.base_tcp_port
     - LABCTL_DATABASE_PATH: Override database_path
+    - LABCTL_DATABASE_TIMEOUT: Override database.timeout_seconds (float)
     - LABCTL_LOG_LEVEL: Override log_level
 
     Args:
@@ -507,6 +534,14 @@ def _apply_env_overrides(config: Config) -> Config:
 
     if "LABCTL_DATABASE_PATH" in os.environ:
         config.database_path = _expand_path(os.environ["LABCTL_DATABASE_PATH"])
+
+    if "LABCTL_DATABASE_TIMEOUT" in os.environ:
+        try:
+            config.database.timeout_seconds = float(
+                os.environ["LABCTL_DATABASE_TIMEOUT"]
+            )
+        except ValueError:
+            pass
 
     if "LABCTL_LOG_LEVEL" in os.environ:
         config.log_level = os.environ["LABCTL_LOG_LEVEL"]

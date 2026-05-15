@@ -287,7 +287,17 @@ kasa:
 
 database_path: ~/.config/labctl/labctl.db
 log_level: WARNING
+
+# SQLite tuning. WAL journal mode is always on; this controls how long
+# a transaction will wait for an exclusive lock before giving up.
+database:
+  timeout_seconds: 10.0
 ```
+
+> **Note on backups:** WAL mode creates `-wal` and `-shm` sidecar files
+> next to `labctl.db`. Backup scripts should copy all three together,
+> or quiesce the daemon and run `sqlite3 labctl.db 'PRAGMA wal_checkpoint(TRUNCATE)'`
+> before copying just the main file.
 
 ## Web Interface
 

@@ -14,7 +14,11 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 from labctl.core import audit
-from labctl.core.database import Database, get_database
+from labctl.core.database import (
+    DEFAULT_TIMEOUT_SECONDS as DEFAULT_DB_TIMEOUT,
+    Database,
+    get_database,
+)
 from labctl.core.models import (
     SBC,
     Actuator,
@@ -2097,15 +2101,21 @@ class ResourceManager:
         )
 
 
-def get_manager(db_path: Path) -> ResourceManager:
+def get_manager(
+    db_path: Path,
+    *,
+    timeout_seconds: float = DEFAULT_DB_TIMEOUT,
+) -> ResourceManager:
     """
     Get a resource manager instance.
 
     Args:
-        db_path: Path to database file
+        db_path: Path to database file.
+        timeout_seconds: SQLite busy-wait passed to the underlying
+            ``Database`` (default matches Database default).
 
     Returns:
-        Initialized ResourceManager instance
+        Initialized ResourceManager instance.
     """
-    db = get_database(db_path)
+    db = get_database(db_path, timeout_seconds=timeout_seconds)
     return ResourceManager(db)
