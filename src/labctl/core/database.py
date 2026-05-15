@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Generator, Optional
 
 # Current schema version
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # SQL statements for schema creation
 SCHEMA_SQL = """
@@ -156,6 +156,62 @@ CREATE TABLE IF NOT EXISTS claims (
     FOREIGN KEY (sbc_id) REFERENCES sbcs(id) ON DELETE CASCADE
 );
 
+-- Actuators (USB relays and similar single-bit hardware resources)
+CREATE TABLE IF NOT EXISTS actuators (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT UNIQUE NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'relay',         -- relay | gpio | …
+    driver TEXT NOT NULL,                       -- lcus1_serial | numato_acm | …
+    device_path TEXT,                           -- /dev/lab/relay-rack1-a
+    vid TEXT,                                   -- USB vendor id (hex string)
+    pid TEXT,                                   -- USB product id (hex string)
+    serial_no TEXT,                             -- USB serial number (when present)
+    last_probe_at TIMESTAMP,                    -- last health-probe timestamp
+    last_probe_result TEXT,                     -- ok | unreachable | …
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Channels (outlets) on an actuator
+CREATE TABLE IF NOT EXISTS actuator_channels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    actuator_id INTEGER NOT NULL,
+    channel_index INTEGER NOT NULL,             -- 1-based
+    label TEXT,
+    default_state TEXT NOT NULL DEFAULT 'open'
+        CHECK(default_state IN ('open','closed')),
+    last_state TEXT
+        CHECK(last_state IN ('open','closed') OR last_state IS NULL),
+    last_changed_at TIMESTAMP,
+    cycle_count INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (actuator_id) REFERENCES actuators(id) ON DELETE CASCADE,
+    UNIQUE (actuator_id, channel_index)
+);
+
+-- Bindings: (SBC, purpose) → actuator_channel
+CREATE TABLE IF NOT EXISTS bindings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sbc_id INTEGER NOT NULL,
+    purpose TEXT NOT NULL,                      -- recovery_mode | boot_select | …
+    actuator_channel_id INTEGER NOT NULL,
+    shape_mode TEXT NOT NULL
+        CHECK(shape_mode IN ('latch','momentary')),
+    shape_active TEXT NOT NULL
+        CHECK(shape_active IN ('closed','open')),
+    momentary_pulse_ms INTEGER,
+    sample_phase TEXT NOT NULL DEFAULT 'none'
+        CHECK(sample_phase IN ('pre_power','post_power','none')),
+    desired_state TEXT NOT NULL DEFAULT 'released'
+        CHECK(desired_state IN ('asserted','released','following_power')),
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (sbc_id) REFERENCES sbcs(id) ON DELETE CASCADE,
+    FOREIGN KEY (actuator_channel_id)
+        REFERENCES actuator_channels(id) ON DELETE CASCADE,
+    UNIQUE (sbc_id, purpose),
+    UNIQUE (actuator_channel_id)
+);
+
 -- Release requests (polite nudges without forced eviction)
 CREATE TABLE IF NOT EXISTS claim_requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -192,6 +248,11 @@ CREATE INDEX IF NOT EXISTS idx_claims_expiry
     ON claims(expires_at) WHERE released_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_claim_requests_claim
     ON claim_requests(claim_id);
+CREATE INDEX IF NOT EXISTS idx_actuator_channels_actuator
+    ON actuator_channels(actuator_id);
+CREATE INDEX IF NOT EXISTS idx_bindings_sbc ON bindings(sbc_id);
+CREATE INDEX IF NOT EXISTS idx_bindings_actuator_channel
+    ON bindings(actuator_channel_id);
 """
 
 
@@ -406,6 +467,71 @@ class Database:
                 )
             except sqlite3.OperationalError:
                 pass  # column already exists
+
+        if from_version < 8:
+            # v8: actuators, actuator_channels, bindings — first-class
+            # support for USB relays and per-target purpose bindings.
+            _executescript_atomic(
+                conn,
+                """
+                CREATE TABLE IF NOT EXISTS actuators (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE NOT NULL,
+                    kind TEXT NOT NULL DEFAULT 'relay',
+                    driver TEXT NOT NULL,
+                    device_path TEXT,
+                    vid TEXT,
+                    pid TEXT,
+                    serial_no TEXT,
+                    last_probe_at TIMESTAMP,
+                    last_probe_result TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE TABLE IF NOT EXISTS actuator_channels (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    actuator_id INTEGER NOT NULL,
+                    channel_index INTEGER NOT NULL,
+                    label TEXT,
+                    default_state TEXT NOT NULL DEFAULT 'open'
+                        CHECK(default_state IN ('open','closed')),
+                    last_state TEXT
+                        CHECK(last_state IN ('open','closed') OR last_state IS NULL),
+                    last_changed_at TIMESTAMP,
+                    cycle_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (actuator_id) REFERENCES actuators(id)
+                        ON DELETE CASCADE,
+                    UNIQUE (actuator_id, channel_index)
+                );
+                CREATE TABLE IF NOT EXISTS bindings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sbc_id INTEGER NOT NULL,
+                    purpose TEXT NOT NULL,
+                    actuator_channel_id INTEGER NOT NULL,
+                    shape_mode TEXT NOT NULL
+                        CHECK(shape_mode IN ('latch','momentary')),
+                    shape_active TEXT NOT NULL
+                        CHECK(shape_active IN ('closed','open')),
+                    momentary_pulse_ms INTEGER,
+                    sample_phase TEXT NOT NULL DEFAULT 'none'
+                        CHECK(sample_phase IN ('pre_power','post_power','none')),
+                    desired_state TEXT NOT NULL DEFAULT 'released'
+                        CHECK(desired_state IN ('asserted','released','following_power')),
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (sbc_id) REFERENCES sbcs(id) ON DELETE CASCADE,
+                    FOREIGN KEY (actuator_channel_id)
+                        REFERENCES actuator_channels(id) ON DELETE CASCADE,
+                    UNIQUE (sbc_id, purpose),
+                    UNIQUE (actuator_channel_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_actuator_channels_actuator
+                    ON actuator_channels(actuator_id);
+                CREATE INDEX IF NOT EXISTS idx_bindings_sbc ON bindings(sbc_id);
+                CREATE INDEX IF NOT EXISTS idx_bindings_actuator_channel
+                    ON bindings(actuator_channel_id);
+                """,
+            )
 
         conn.execute(
             "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)

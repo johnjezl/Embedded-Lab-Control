@@ -20,7 +20,13 @@ from labctl import __version__
 from labctl.core import audit
 from labctl.core.config import Config, load_config
 from labctl.core.manager import ResourceManager, get_manager
-from labctl.core.models import AddressType, PlugType, PortType, Status
+from labctl.core.models import (
+    AddressType,
+    DriverName,
+    PlugType,
+    PortType,
+    Status,
+)
 from labctl.power import PowerController, PowerState
 from labctl.serial.ser2net import Ser2NetPort, generate_ser2net_config
 
@@ -2690,11 +2696,27 @@ def _emit_power_event(
 @click.argument("sbc_name")
 @click.pass_context
 def power_on_cmd(ctx: click.Context, sbc_name: str) -> None:
-    """Turn power on for an SBC."""
+    """Turn power on for an SBC.
+
+    Consults pre_power bindings: any binding on the SBC with
+    sample_phase=pre_power is driven to its desired_state before power
+    is applied. If applying any of those straps fails the device stays
+    powered off rather than booting without the strap.
+    """
+    from labctl.actuators.runtime import (
+        ActuationError,
+        apply_pre_power_bindings,
+    )
+
     manager = _get_manager(ctx)
     controller, sbc = _get_power_controller(manager, sbc_name)
 
     click.echo(f"Powering on {sbc_name}...")
+    try:
+        apply_pre_power_bindings(manager, sbc)
+    except ActuationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
     try:
         ok = controller.power_on()
         _emit_power_event(manager, sbc, "power_on", ok)
@@ -2786,21 +2808,22 @@ def power_cycle_cmd(
         click.echo(f"Warning: {warning}", err=True)
 
     click.echo(f"Power cycling {sbc_name} (delay: {effective_delay}s)...")
+    # power_cycle expands to off → sleep → apply pre_power bindings → on,
+    # rather than the controller's built-in (which would skip the
+    # binding step). Any pre_power application failure leaves the
+    # device powered off rather than booting without the strap.
+    from labctl.actuators.runtime import (
+        ActuationError,
+        apply_pre_power_bindings,
+    )
+
     try:
-        ok = controller.power_cycle(effective_delay)
-        _emit_power_event(
-            manager,
-            sbc,
-            "power_cycle",
-            ok,
-            extra={"delay_seconds": effective_delay},
-        )
-        if ok:
-            click.echo(f"Power cycled: {sbc_name}")
-        else:
-            click.echo(f"Error: Failed to power cycle {sbc_name}", err=True)
-            sys.exit(1)
-    except RuntimeError as e:
+        if not controller.power_off():
+            raise RuntimeError("power_off failed")
+        time.sleep(effective_delay)
+        apply_pre_power_bindings(manager, sbc)
+        ok = controller.power_on()
+    except (RuntimeError, ActuationError) as e:
         _emit_power_event(
             manager,
             sbc,
@@ -2810,6 +2833,19 @@ def power_cycle_cmd(
             extra={"delay_seconds": effective_delay},
         )
         click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    _emit_power_event(
+        manager,
+        sbc,
+        "power_cycle",
+        ok,
+        extra={"delay_seconds": effective_delay},
+    )
+    if ok:
+        click.echo(f"Power cycled: {sbc_name}")
+    else:
+        click.echo(f"Error: Failed to power cycle {sbc_name}", err=True)
         sys.exit(1)
 
 
@@ -2886,6 +2922,641 @@ def power_all_cmd(
     click.echo(
         f"\n{success_count}/{len(sbcs_with_plugs)} SBCs powered {action.upper()}"
     )
+
+
+# --- Actuator Commands ---
+
+
+def _channel_state_choice():
+    return click.Choice(["open", "closed"])
+
+
+def _shape_mode_choice():
+    return click.Choice(["latch", "momentary"])
+
+
+def _sample_phase_choice():
+    return click.Choice(["pre-power", "post-power", "none"])
+
+
+def _normalize_phase(value: str):
+    """Map the dashed CLI value to the underscored enum value."""
+    from labctl.core.models import SamplePhase
+
+    return SamplePhase(value.replace("-", "_"))
+
+
+def _build_transport_for(actuator):
+    """Construct a Transport from an actuator row's transport hints."""
+    from labctl.actuators import Transport
+
+    return Transport(
+        device_path=actuator.device_path,
+        vid=actuator.vid,
+        pid=actuator.pid,
+        serial_no=actuator.serial_no,
+    )
+
+
+@main.group("actuator")
+def actuator_group() -> None:
+    """Manage USB relays and similar actuators."""
+
+
+@actuator_group.command("add")
+@click.argument("name")
+@click.option(
+    "--driver",
+    type=click.Choice([d.value for d in DriverName]),
+    required=True,
+    help="Driver implementation to use.",
+)
+@click.option(
+    "--device",
+    "device_path",
+    type=str,
+    default=None,
+    help="Device path (e.g. /dev/lab/relay-rack1-a).",
+)
+@click.option("--vid", default=None, help="USB vendor id (hex).")
+@click.option("--pid", default=None, help="USB product id (hex).")
+@click.option("--serial", "serial_no", default=None, help="USB serial number.")
+@click.option(
+    "--channels",
+    type=int,
+    default=1,
+    show_default=True,
+    help=(
+        "Number of channels on the device. Required for non-enumerable "
+        "drivers (LCUS-1). For drivers that enumerate, this is a hint "
+        "and a mismatch is reported."
+    ),
+)
+@click.pass_context
+def actuator_add_cmd(
+    ctx: click.Context,
+    name: str,
+    driver: str,
+    device_path: str | None,
+    vid: str | None,
+    pid: str | None,
+    serial_no: str | None,
+    channels: int,
+) -> None:
+    """Register a new actuator and create its channels."""
+    from labctl.actuators import get_driver
+    from labctl.core.models import ChannelState, DriverName
+
+    if channels < 1:
+        raise click.UsageError("--channels must be at least 1")
+
+    driver_name = DriverName(driver)
+
+    # Validate the driver is available before writing any rows so a
+    # bad provisioning command doesn't leave half-state behind.
+    try:
+        probe_driver = get_driver(driver_name, expected_channel_count=channels)
+    except NotImplementedError as e:
+        raise click.UsageError(str(e))
+
+    enumerated = probe_driver.channel_count()
+    if enumerated is not None and enumerated != channels:
+        raise click.UsageError(
+            f"driver enumerated {enumerated} channels but --channels={channels} "
+            f"disagrees; pass --channels {enumerated}"
+        )
+
+    manager = _get_manager(ctx)
+    actuator = manager.create_actuator(
+        name,
+        driver_name,
+        device_path=device_path,
+        vid=vid,
+        pid=pid,
+        serial_no=serial_no,
+    )
+    for i in range(1, channels + 1):
+        manager.add_actuator_channel(
+            actuator.id, i, default_state=ChannelState.OPEN
+        )
+    click.echo(f"Added actuator {name!r} ({driver}, {channels} channel(s))")
+
+
+@actuator_group.command("list")
+@click.pass_context
+def actuator_list_cmd(ctx: click.Context) -> None:
+    """List provisioned actuators."""
+    manager = _get_manager(ctx)
+    actuators = manager.list_actuators()
+    if not actuators:
+        click.echo("No actuators configured.")
+        return
+
+    click.echo(
+        f"{'NAME':<24} {'DRIVER':<14} {'CH':<3} {'DEVICE':<28} {'PROBE'}"
+    )
+    click.echo("-" * 80)
+    for a in actuators:
+        device = a.device_path or "-"
+        probe = a.last_probe_result or "-"
+        click.echo(
+            f"{a.name:<24} {a.driver.value:<14} {len(a.channels):<3} "
+            f"{device:<28} {probe}"
+        )
+
+
+@actuator_group.command("probe")
+@click.argument("name")
+@click.pass_context
+def actuator_probe_cmd(ctx: click.Context, name: str) -> None:
+    """Probe an actuator for reachability (read-only)."""
+    from labctl.actuators import get_driver
+
+    manager = _get_manager(ctx)
+    actuator = manager.get_actuator_by_name(name)
+    if not actuator:
+        click.echo(f"Error: actuator {name!r} not found", err=True)
+        sys.exit(1)
+
+    try:
+        driver = get_driver(actuator.driver, expected_channel_count=len(actuator.channels))
+    except NotImplementedError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    transport = _build_transport_for(actuator)
+    # Probe path: open + close transient. The driver guarantees no
+    # channel state is touched.
+    try:
+        driver.open(transport)
+        outcome = driver.probe()
+    except Exception as e:  # noqa: BLE001
+        click.echo(f"Error: probe failed: {e}", err=True)
+        manager.record_actuator_probe(actuator.id, "error")
+        sys.exit(1)
+    finally:
+        driver.close()
+
+    manager.record_actuator_probe(actuator.id, outcome.result.value)
+
+    if outcome.detail:
+        click.echo(f"Probe: {outcome.result.value} ({outcome.detail})")
+    else:
+        click.echo(f"Probe: {outcome.result.value}")
+    if outcome.result.value != "ok":
+        sys.exit(1)
+
+
+@actuator_group.command("set")
+@click.argument("name")
+@click.argument("channel", type=int)
+@click.argument("state", type=_channel_state_choice())
+@click.pass_context
+def actuator_set_cmd(
+    ctx: click.Context, name: str, channel: int, state: str
+) -> None:
+    """Drive a channel directly (bypasses bindings).
+
+    Provisioning aid for verifying wiring; production paths should go
+    through `labctl actuate / release / press`.
+    """
+    from labctl.actuators import get_driver
+    from labctl.core.models import ChannelState
+
+    manager = _get_manager(ctx)
+    actuator = manager.get_actuator_by_name(name)
+    if not actuator:
+        click.echo(f"Error: actuator {name!r} not found", err=True)
+        sys.exit(1)
+
+    ch = manager.get_actuator_channel(actuator.id, channel)
+    if not ch:
+        click.echo(
+            f"Error: channel {channel} not on {name!r}", err=True
+        )
+        sys.exit(1)
+
+    target_state = ChannelState(state)
+    closed = target_state is ChannelState.CLOSED
+
+    try:
+        driver = get_driver(
+            actuator.driver, expected_channel_count=len(actuator.channels)
+        )
+    except NotImplementedError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    from labctl.actuators.runtime import _audit_raw_actuator_set
+
+    transport = _build_transport_for(actuator)
+    try:
+        driver.open(transport)
+        outcome = driver.set_channel(channel, closed=closed)
+    finally:
+        driver.close()
+
+    if outcome.value != "ok":
+        _audit_raw_actuator_set(
+            manager, actuator, ch, target_state,
+            ok=False, error=outcome.value,
+        )
+        click.echo(
+            f"Error: set_channel returned {outcome.value}", err=True
+        )
+        sys.exit(1)
+
+    manager.update_channel_state(ch.id, target_state)
+    _audit_raw_actuator_set(
+        manager, actuator, ch, target_state, ok=True,
+    )
+    click.echo(f"Set {name}[{channel}] -> {state}")
+
+
+@actuator_group.command("remove")
+@click.argument("name")
+@click.option(
+    "--yes", "-y", is_flag=True, help="Skip confirmation prompt."
+)
+@click.pass_context
+def actuator_remove_cmd(ctx: click.Context, name: str, yes: bool) -> None:
+    """Remove an actuator and any bindings that reference it."""
+    manager = _get_manager(ctx)
+    actuator = manager.get_actuator_by_name(name)
+    if not actuator:
+        click.echo(f"Error: actuator {name!r} not found", err=True)
+        sys.exit(1)
+
+    if not yes and not click.confirm(
+        f"Remove actuator {name!r} and any bindings on its channels?"
+    ):
+        click.echo("Aborted.")
+        return
+
+    manager.delete_actuator(actuator.id)
+    click.echo(f"Removed actuator {name!r}")
+
+
+# --- Binding Commands ---
+
+
+@main.command("bind")
+@click.argument("sbc_name")
+@click.argument("purpose")
+@click.option("--actuator", "actuator_name", required=True, help="Actuator name.")
+@click.option("--channel", type=int, required=True, help="Channel index (1-based).")
+@click.option(
+    "--mode",
+    type=_shape_mode_choice(),
+    required=True,
+    help="latch (sustained) or momentary (pulsed).",
+)
+@click.option(
+    "--active-when",
+    type=_channel_state_choice(),
+    default="closed",
+    show_default=True,
+    help="Which physical state means 'asserted' for this binding.",
+)
+@click.option(
+    "--pulse-ms",
+    type=int,
+    default=None,
+    help="Pulse duration in ms (required when --mode=momentary).",
+)
+@click.option(
+    "--phase",
+    "sample_phase",
+    type=_sample_phase_choice(),
+    default="none",
+    show_default=True,
+    help=(
+        "When the binding's value matters: pre-power straps "
+        "(recovery_mode, boot_select), post-power, or none."
+    ),
+)
+@click.option(
+    "--notes",
+    default=None,
+    help="Free-text notes (wiring photo URL, polarity, etc.).",
+)
+@click.pass_context
+def bind_cmd(
+    ctx: click.Context,
+    sbc_name: str,
+    purpose: str,
+    actuator_name: str,
+    channel: int,
+    mode: str,
+    active_when: str,
+    pulse_ms: int | None,
+    sample_phase: str,
+    notes: str | None,
+) -> None:
+    """Bind an actuator channel to a (target SBC, purpose) pair."""
+    from labctl.core.models import ChannelState, ShapeMode
+
+    manager = _get_manager(ctx)
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC {sbc_name!r} not found", err=True)
+        sys.exit(1)
+    actuator = manager.get_actuator_by_name(actuator_name)
+    if not actuator:
+        click.echo(f"Error: actuator {actuator_name!r} not found", err=True)
+        sys.exit(1)
+    ch = manager.get_actuator_channel(actuator.id, channel)
+    if not ch:
+        click.echo(
+            f"Error: channel {channel} not on {actuator_name!r}",
+            err=True,
+        )
+        sys.exit(1)
+
+    shape_mode = ShapeMode(mode)
+    shape_active = ChannelState(active_when)
+
+    if shape_mode is ShapeMode.MOMENTARY and pulse_ms is None:
+        raise click.UsageError(
+            "--pulse-ms is required when --mode=momentary"
+        )
+    if shape_mode is ShapeMode.LATCH and pulse_ms is not None:
+        raise click.UsageError(
+            "--pulse-ms only applies to momentary bindings"
+        )
+
+    # Wiring-polarity validation: if default_state == active, the device
+    # would always boot asserted — almost always a wiring mistake.
+    # See SPEC_actuators.md §"Wiring polarity validation".
+    if ch.default_state == shape_active:
+        raise click.UsageError(
+            f"binding has default_state={ch.default_state.value} and "
+            f"active={shape_active.value}; the device would always be "
+            f"asserted. Verify wiring or pass "
+            f"--active-when {'open' if shape_active.value == 'closed' else 'closed'}."
+        )
+
+    binding = manager.create_binding(
+        sbc.id,
+        purpose,
+        ch.id,
+        shape_mode=shape_mode,
+        shape_active=shape_active,
+        momentary_pulse_ms=pulse_ms,
+        sample_phase=_normalize_phase(sample_phase),
+        notes=notes,
+    )
+    click.echo(
+        f"Bound {sbc.name}:{purpose} -> {actuator.name}[{channel}] "
+        f"({mode}, active={active_when}, phase={sample_phase})"
+    )
+    _ = binding  # silence linter; created for side effects + audit
+
+
+@main.command("unbind")
+@click.argument("sbc_name")
+@click.argument("purpose")
+@click.pass_context
+def unbind_cmd(ctx: click.Context, sbc_name: str, purpose: str) -> None:
+    """Remove a binding."""
+    manager = _get_manager(ctx)
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC {sbc_name!r} not found", err=True)
+        sys.exit(1)
+    binding = manager.get_binding_by_target(sbc.id, purpose)
+    if not binding:
+        click.echo(
+            f"Error: no binding for {sbc_name}:{purpose}", err=True
+        )
+        sys.exit(1)
+    manager.delete_binding(binding.id)
+    click.echo(f"Unbound {sbc_name}:{purpose}")
+
+
+@main.group("bindings")
+def bindings_group() -> None:
+    """Inspect actuator bindings."""
+
+
+def _channel_busy_error():
+    """Lazy import of ChannelBusyError so the actuators module load lands
+    only when the claim path actually needs it."""
+    from labctl.actuators.runtime import ChannelBusyError
+
+    return ChannelBusyError
+
+
+def _resolve_binding_for_verb(ctx, sbc_name: str, purpose: str):
+    """Look up the binding for ``(sbc_name, purpose)`` or exit non-zero."""
+    manager = _get_manager(ctx)
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC {sbc_name!r} not found", err=True)
+        sys.exit(1)
+    binding = manager.get_binding_by_target(sbc.id, purpose)
+    if not binding:
+        click.echo(
+            f"Error: no binding for {sbc_name}:{purpose}", err=True
+        )
+        sys.exit(1)
+    return manager, binding
+
+
+def _run_actuator_verb(ctx, sbc_name: str, purpose: str, fn):
+    """Common error-handling wrapper for actuate/release/press."""
+    from labctl.actuators.runtime import (
+        ActuationError,
+        BindingShapeError,
+        ChannelBusyError,
+    )
+
+    manager, binding = _resolve_binding_for_verb(ctx, sbc_name, purpose)
+    try:
+        fn(manager, binding)
+    except BindingShapeError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(2)
+    except ChannelBusyError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(3)
+    except ActuationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@bindings_group.command("actuate")
+@click.argument("sbc_name")
+@click.argument("purpose")
+@click.pass_context
+def bindings_actuate_cmd(ctx: click.Context, sbc_name: str, purpose: str) -> None:
+    """Drive a latch binding to its active state (sets desired=asserted)."""
+    from labctl.actuators.runtime import actuate_binding
+
+    _run_actuator_verb(ctx, sbc_name, purpose, actuate_binding)
+    click.echo(f"Actuated {sbc_name}:{purpose}")
+
+
+@bindings_group.command("release")
+@click.argument("sbc_name")
+@click.argument("purpose")
+@click.pass_context
+def bindings_release_cmd(ctx: click.Context, sbc_name: str, purpose: str) -> None:
+    """Drive a latch binding away from active (sets desired=released)."""
+    from labctl.actuators.runtime import release_binding
+
+    _run_actuator_verb(ctx, sbc_name, purpose, release_binding)
+    click.echo(f"Released {sbc_name}:{purpose}")
+
+
+@bindings_group.command("press")
+@click.argument("sbc_name")
+@click.argument("purpose")
+@click.pass_context
+def bindings_press_cmd(ctx: click.Context, sbc_name: str, purpose: str) -> None:
+    """Pulse a momentary binding for its configured pulse_ms."""
+    from labctl.actuators.runtime import press_binding
+
+    _run_actuator_verb(ctx, sbc_name, purpose, press_binding)
+    click.echo(f"Pressed {sbc_name}:{purpose}")
+
+
+def _run_composite(
+    ctx, sbc_name: str, fn_name: str, fn
+) -> None:
+    """Wrap a composite (enter_recovery / exit_recovery) with shared setup."""
+    from labctl.actuators.runtime import ActuationError
+
+    manager = _get_manager(ctx)
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC {sbc_name!r} not found", err=True)
+        sys.exit(1)
+    if not sbc.power_plug:
+        click.echo(
+            f"Error: {sbc_name!r} has no power plug configured", err=True
+        )
+        sys.exit(1)
+
+    controller, _sbc = _get_power_controller(manager, sbc_name)
+    delay, _warning = _resolve_cycle_delay(sbc, None)
+
+    try:
+        fn(manager, sbc, controller, delay_s=delay)
+    except ActuationError as e:
+        _emit_power_event(
+            manager, sbc, fn_name, False, error=str(e),
+            extra={"delay_seconds": delay},
+        )
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    except RuntimeError as e:
+        _emit_power_event(
+            manager, sbc, fn_name, False, error=str(e),
+            extra={"delay_seconds": delay},
+        )
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    _emit_power_event(
+        manager, sbc, fn_name, True,
+        extra={"delay_seconds": delay},
+    )
+
+
+@main.command("enter-recovery")
+@click.argument("sbc_name")
+@click.pass_context
+def enter_recovery_cmd(ctx: click.Context, sbc_name: str) -> None:
+    """Power-aware "enter recovery mode" composite.
+
+    Sequence:
+      1. Probe the recovery_mode actuator (read-only).
+      2. power_off
+      3. sleep(power_cycle_delay_seconds)
+      4. Engage the recovery_mode strap (desired=asserted).
+      5. power_on (re-applies the strap via pre_power bindings).
+    """
+    from labctl.actuators.runtime import enter_recovery
+
+    _run_composite(ctx, sbc_name, "enter_recovery", enter_recovery)
+    click.echo(f"Entered recovery: {sbc_name}")
+
+
+@main.command("exit-recovery")
+@click.argument("sbc_name")
+@click.pass_context
+def exit_recovery_cmd(ctx: click.Context, sbc_name: str) -> None:
+    """Power-aware "leave recovery mode" composite (release strap, normal boot)."""
+    from labctl.actuators.runtime import exit_recovery
+
+    _run_composite(ctx, sbc_name, "exit_recovery", exit_recovery)
+    click.echo(f"Exited recovery: {sbc_name}")
+
+
+@bindings_group.command("status")
+@click.argument("sbc_name")
+@click.argument("purpose")
+@click.pass_context
+def bindings_status_cmd(
+    ctx: click.Context, sbc_name: str, purpose: str
+) -> None:
+    """Show current desired vs. last state for a binding (read-only)."""
+    from labctl.actuators.runtime import binding_status
+
+    manager, binding = _resolve_binding_for_verb(ctx, sbc_name, purpose)
+    info = binding_status(manager, binding)
+
+    click.echo(f"Binding:    {info['binding']['sbc']}:{info['binding']['purpose']}")
+    click.echo(
+        f"Actuator:   {info['actuator']['name']}[{info['channel']['index']}]"
+        f"  ({info['actuator']['driver']})"
+    )
+    click.echo(
+        f"Shape:      {info['binding']['shape_mode']}, "
+        f"active={info['binding']['shape_active']}, "
+        f"phase={info['binding']['sample_phase']}"
+    )
+    click.echo(f"Desired:    {info['binding']['desired_state']}")
+    last = info['channel']['last_state'] or "unknown"
+    when = info['channel']['last_changed_at'] or "never"
+    click.echo(
+        f"Last:       {last} (changed {when}, "
+        f"{info['channel']['cycle_count']} cycle(s))"
+    )
+
+
+@bindings_group.command("list")
+@click.option("--target", "target_sbc", default=None, help="Filter to one SBC.")
+@click.pass_context
+def bindings_list_cmd(ctx: click.Context, target_sbc: str | None) -> None:
+    """List bindings (optionally filtered by target SBC)."""
+    manager = _get_manager(ctx)
+    sbc_id = None
+    if target_sbc:
+        sbc = manager.get_sbc_by_name(target_sbc)
+        if not sbc:
+            click.echo(f"Error: SBC {target_sbc!r} not found", err=True)
+            sys.exit(1)
+        sbc_id = sbc.id
+
+    bindings = manager.list_bindings(sbc_id=sbc_id)
+    if not bindings:
+        click.echo("No bindings configured.")
+        return
+
+    click.echo(
+        f"{'TARGET':<18} {'PURPOSE':<16} {'ACTUATOR':<22} "
+        f"{'CH':<3} {'MODE':<10} {'ACTIVE':<7} {'PHASE':<11} DESIRED"
+    )
+    click.echo("-" * 100)
+    for b in bindings:
+        click.echo(
+            f"{(b.sbc_name or '?'):<18} {b.purpose:<16} "
+            f"{(b.actuator_name or '?'):<22} {(b.channel_index or 0):<3} "
+            f"{b.shape_mode.value:<10} {b.shape_active.value:<7} "
+            f"{b.sample_phase.value:<11} {b.desired_state.value}"
+        )
 
 
 # --- Console and SSH Commands ---
@@ -3412,6 +4083,9 @@ def claim_cmd(
             f"Use 'labctl request-release' or 'labctl force-release'.",
             err=True,
         )
+        sys.exit(1)
+    except _channel_busy_error() as exc:
+        click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
 
     expires = (

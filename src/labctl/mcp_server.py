@@ -2129,6 +2129,563 @@ def force_release_sbc(sbc_name: str, reason: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Actuator tools (Phase 7)
+# ---------------------------------------------------------------------------
+#
+# Tool layering matches docs/SPEC_actuators.md:
+#
+#   actuator_*    — provisioning. Privileged: these are the tools that
+#                   could let an agent bypass the binding layer
+#                   (raw set_channel writes). Surface them but document
+#                   the risk; transport-level scoping is the operator's
+#                   responsibility for v1.
+#   bind / unbind — config management. Mutates DB only.
+#   bindings_*    — read-only inspection.
+#   actuate / release / press
+#                 — the binding-mediated verbs. Claim-gated on the
+#                   target SBC, like every other mutating SBC operation.
+#   enter_recovery / exit_recovery
+#                 — power-aware composites. Claim-gated.
+
+
+def _actuator_to_dict(actuator) -> dict:
+    return actuator.to_dict(include_ids=False)
+
+
+def _binding_to_dict(binding) -> dict:
+    return binding.to_dict(include_ids=False)
+
+
+def _admin_actuator_ops_allowed() -> bool:
+    """Whether the privileged actuator_* tools are enabled in config.
+
+    Defaults to False — operators flip mcp.allow_admin_actuator_ops in
+    config.yaml when running MCP behind a trusted transport. Direct
+    `actuator_set` would otherwise let an agent bypass the binding
+    layer's safety checks (verb/shape congruence, polarity, etc.).
+    """
+    try:
+        return bool(_get_config().mcp.allow_admin_actuator_ops)
+    except Exception as e:  # noqa: BLE001
+        # Fail closed: any config-load error is treated as "gate disabled".
+        # Logged at debug so operators have a breadcrumb if all admin tools
+        # silently refuse work because config.yaml is malformed.
+        logger.debug(
+            "admin_actuator_ops gate defaulting to False (config load failed): %s",
+            e,
+        )
+        return False
+
+
+# Allow-list of device-path prefixes for ``actuator_add`` over MCP.
+# Operators can extend by symlinking custom paths under one of these.
+_ACTUATOR_DEVICE_PATH_PREFIXES = (
+    "/dev/lab/",
+    "/dev/serial/by-id/",
+    "/dev/ttyUSB",
+    "/dev/ttyACM",
+)
+
+
+def _validate_actuator_device_path(device_path: str) -> Optional[str]:
+    """Return an error message if ``device_path`` is suspicious, else None.
+
+    A hostile MCP caller could try to point ``actuator_add`` at
+    ``/dev/disk/...``, ``/etc/...``, etc. The allow-list keeps the
+    surface area to USB-serial paths labctl actually uses.
+
+    Two layers of defense against path-traversal tricks:
+      * Reject any input containing ``..`` outright. Real USB-serial
+        paths never contain it; an attacker passing
+        ``/dev/ttyUSB../disk/foo`` (where ``ttyUSB..`` is a single
+        component, so normpath doesn't collapse it) is stopped here.
+      * Normalize before the allow-list check so
+        ``/dev/lab/../etc/passwd`` collapses to ``/etc/passwd`` and
+        fails the prefix match.
+    """
+    if not device_path:
+        return None  # device_path is optional; nothing to validate
+    if ".." in device_path:
+        return (
+            f"device_path {device_path!r} contains '..' "
+            f"(path traversal not allowed)"
+        )
+    normalized = os.path.normpath(device_path)
+    if any(
+        normalized.startswith(p) for p in _ACTUATOR_DEVICE_PATH_PREFIXES
+    ):
+        return None
+    return (
+        f"device_path {device_path!r} not under any of the allowed "
+        f"prefixes: {', '.join(_ACTUATOR_DEVICE_PATH_PREFIXES)}"
+    )
+
+
+@mcp.tool()
+@_with_mcp_activity
+def actuator_list() -> str:
+    """List provisioned actuators (read-only)."""
+    manager = _get_manager()
+    return json.dumps(
+        [_actuator_to_dict(a) for a in manager.list_actuators()],
+        indent=2,
+    )
+
+
+@mcp.tool()
+@_with_mcp_activity
+def actuator_probe(name: str) -> str:
+    """Probe an actuator for reachability (read-only).
+
+    Records last_probe_at / last_probe_result on the actuator row.
+
+    Args:
+        name: Actuator name.
+    """
+    from labctl.actuators.runtime import probe_actuator
+
+    manager = _get_manager()
+    actuator = manager.get_actuator_by_name(name)
+    if not actuator:
+        return f"Error: actuator '{name}' not found"
+    outcome = probe_actuator(actuator)
+    manager.record_actuator_probe(actuator.id, outcome.result.value)
+    return json.dumps(
+        {"actuator": name, "result": outcome.result.value, "detail": outcome.detail}
+    )
+
+
+@mcp.tool()
+@_with_mcp_activity
+def actuator_add(
+    name: str,
+    driver: str,
+    device_path: Optional[str] = None,
+    vid: Optional[str] = None,
+    pid: Optional[str] = None,
+    serial_no: Optional[str] = None,
+    channels: int = 1,
+) -> str:
+    """Register a new actuator (PRIVILEGED — gated by config).
+
+    Privileged: requires ``mcp.allow_admin_actuator_ops: true`` in
+    ``/etc/labctl/config.yaml``. Direct access lets an agent bypass the
+    binding layer with raw `actuator_set` writes; the gate keeps that
+    behind an explicit operator opt-in.
+
+    ``device_path`` is validated against an allow-list of USB-serial
+    prefixes (``/dev/lab/``, ``/dev/serial/by-id/``, ``/dev/ttyUSB*``,
+    ``/dev/ttyACM*``) to refuse obviously dodgy targets.
+
+    Args:
+        name: Stable actuator name (e.g. "usbrelay-rack1-a").
+        driver: Driver implementation. v1: "lcus1_serial".
+        device_path: Device path hint (e.g. "/dev/lab/relay-rack1-a").
+        vid, pid, serial_no: Optional USB identity hints.
+        channels: Number of channels on the device (default 1).
+    """
+    from labctl.actuators import get_driver
+    from labctl.core.models import ChannelState, DriverName
+
+    if not _admin_actuator_ops_allowed():
+        return (
+            "Error: actuator_add is disabled. Set "
+            "mcp.allow_admin_actuator_ops=true in config.yaml to enable."
+        )
+    if channels < 1:
+        return "Error: channels must be at least 1"
+    try:
+        driver_name = DriverName(driver)
+    except ValueError:
+        return f"Error: unknown driver {driver!r}"
+
+    path_err = _validate_actuator_device_path(device_path)
+    if path_err is not None:
+        return f"Error: {path_err}"
+
+    try:
+        probe = get_driver(driver_name, expected_channel_count=channels)
+    except NotImplementedError as e:
+        return f"Error: {e}"
+
+    enumerated = probe.channel_count()
+    if enumerated is not None and enumerated != channels:
+        return (
+            f"Error: driver enumerated {enumerated} channels but "
+            f"channels={channels} disagrees"
+        )
+
+    manager = _get_manager()
+    actuator = manager.create_actuator(
+        name,
+        driver_name,
+        device_path=device_path,
+        vid=vid,
+        pid=pid,
+        serial_no=serial_no,
+    )
+    for i in range(1, channels + 1):
+        manager.add_actuator_channel(
+            actuator.id, i, default_state=ChannelState.OPEN
+        )
+    return f"Added actuator {name!r} ({driver}, {channels} channel(s))"
+
+
+@mcp.tool()
+@_with_mcp_activity
+def actuator_remove(name: str) -> str:
+    """Remove an actuator and any bindings on its channels (PRIVILEGED — gated).
+
+    Requires ``mcp.allow_admin_actuator_ops: true`` in config.yaml.
+
+    Args:
+        name: Actuator name.
+    """
+    if not _admin_actuator_ops_allowed():
+        return (
+            "Error: actuator_remove is disabled. Set "
+            "mcp.allow_admin_actuator_ops=true in config.yaml to enable."
+        )
+    manager = _get_manager()
+    actuator = manager.get_actuator_by_name(name)
+    if not actuator:
+        return f"Error: actuator '{name}' not found"
+    manager.delete_actuator(actuator.id)
+    return f"Removed actuator {name!r}"
+
+
+@mcp.tool()
+@_with_mcp_activity
+def actuator_set(name: str, channel: int, state: str) -> str:
+    """Drive a channel directly, bypassing bindings (PRIVILEGED — gated).
+
+    Requires ``mcp.allow_admin_actuator_ops: true`` in config.yaml.
+    Production paths should use `actuate` / `release` / `press` against
+    bound channels — those go through verb/shape congruence and
+    polarity validation. ``actuator_set`` is only for wiring
+    verification.
+
+    Args:
+        name: Actuator name.
+        channel: Channel index (1-based).
+        state: "open" or "closed".
+    """
+    from labctl.actuators import get_driver
+    from labctl.core.models import ChannelState
+
+    if not _admin_actuator_ops_allowed():
+        return (
+            "Error: actuator_set is disabled. Set "
+            "mcp.allow_admin_actuator_ops=true in config.yaml to enable."
+        )
+    try:
+        target_state = ChannelState(state)
+    except ValueError:
+        return f"Error: state must be 'open' or 'closed', got {state!r}"
+
+    manager = _get_manager()
+    actuator = manager.get_actuator_by_name(name)
+    if not actuator:
+        return f"Error: actuator '{name}' not found"
+    ch = manager.get_actuator_channel(actuator.id, channel)
+    if not ch:
+        return f"Error: channel {channel} not on {name!r}"
+
+    try:
+        driver = get_driver(
+            actuator.driver, expected_channel_count=len(actuator.channels)
+        )
+    except NotImplementedError as e:
+        return f"Error: {e}"
+
+    from labctl.actuators import Transport
+
+    transport = Transport(
+        device_path=actuator.device_path,
+        vid=actuator.vid,
+        pid=actuator.pid,
+        serial_no=actuator.serial_no,
+    )
+    from labctl.actuators.runtime import _audit_raw_actuator_set
+
+    try:
+        driver.open(transport)
+        outcome = driver.set_channel(channel, closed=target_state is ChannelState.CLOSED)
+    finally:
+        driver.close()
+
+    if outcome.value != "ok":
+        _audit_raw_actuator_set(
+            manager, actuator, ch, target_state,
+            ok=False, error=outcome.value,
+        )
+        return f"Error: set_channel returned {outcome.value}"
+    manager.update_channel_state(ch.id, target_state)
+    _audit_raw_actuator_set(manager, actuator, ch, target_state, ok=True)
+    return f"Set {name}[{channel}] -> {state}"
+
+
+@mcp.tool()
+@_with_mcp_activity
+def bind(
+    sbc_name: str,
+    purpose: str,
+    actuator: str,
+    channel: int,
+    mode: str,
+    active_when: str = "closed",
+    pulse_ms: Optional[int] = None,
+    sample_phase: str = "none",
+    notes: Optional[str] = None,
+) -> str:
+    """Create a binding linking an actuator channel to (SBC, purpose).
+
+    Args:
+        sbc_name: Target SBC.
+        purpose: e.g. "recovery_mode", "boot_select", "power_button".
+        actuator: Actuator name.
+        channel: Channel index (1-based).
+        mode: "latch" or "momentary".
+        active_when: "closed" or "open" — physical state == "asserted".
+        pulse_ms: Required when mode="momentary".
+        sample_phase: "pre_power", "post_power", or "none".
+        notes: Optional free-text note (wiring photo URL, etc.).
+    """
+    from labctl.core.models import ChannelState, SamplePhase, ShapeMode
+
+    try:
+        shape_mode = ShapeMode(mode)
+        shape_active = ChannelState(active_when)
+        phase = SamplePhase(sample_phase)
+    except ValueError as e:
+        return f"Error: {e}"
+
+    if shape_mode is ShapeMode.MOMENTARY and pulse_ms is None:
+        return "Error: pulse_ms is required when mode='momentary'"
+    if shape_mode is ShapeMode.LATCH and pulse_ms is not None:
+        return "Error: pulse_ms only applies to momentary bindings"
+
+    manager = _get_manager()
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return f"Error: SBC '{sbc_name}' not found"
+    a = manager.get_actuator_by_name(actuator)
+    if not a:
+        return f"Error: actuator '{actuator}' not found"
+    ch = manager.get_actuator_channel(a.id, channel)
+    if not ch:
+        return f"Error: channel {channel} not on {actuator!r}"
+
+    if ch.default_state == shape_active:
+        return (
+            f"Error: default_state={ch.default_state.value} and "
+            f"active_when={shape_active.value}; the device would always "
+            "be asserted. Verify wiring."
+        )
+
+    binding = manager.create_binding(
+        sbc.id,
+        purpose,
+        ch.id,
+        shape_mode=shape_mode,
+        shape_active=shape_active,
+        momentary_pulse_ms=pulse_ms,
+        sample_phase=phase,
+        notes=notes,
+    )
+    return json.dumps({"bound": _binding_to_dict(binding)})
+
+
+@mcp.tool()
+@_with_mcp_activity
+def unbind(sbc_name: str, purpose: str) -> str:
+    """Remove a binding.
+
+    Args:
+        sbc_name: Target SBC.
+        purpose: Binding purpose to remove.
+    """
+    manager = _get_manager()
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return f"Error: SBC '{sbc_name}' not found"
+    binding = manager.get_binding_by_target(sbc.id, purpose)
+    if not binding:
+        return f"Error: no binding for {sbc_name}:{purpose}"
+    manager.delete_binding(binding.id)
+    return f"Unbound {sbc_name}:{purpose}"
+
+
+@mcp.tool()
+@_with_mcp_activity
+def bindings_list(sbc_name: Optional[str] = None) -> str:
+    """List bindings (read-only), optionally filtered by SBC.
+
+    Args:
+        sbc_name: Filter to one SBC, or omit for all.
+    """
+    manager = _get_manager()
+    sbc_id = None
+    if sbc_name:
+        sbc = manager.get_sbc_by_name(sbc_name)
+        if not sbc:
+            return f"Error: SBC '{sbc_name}' not found"
+        sbc_id = sbc.id
+    bindings = manager.list_bindings(sbc_id=sbc_id)
+    return json.dumps([_binding_to_dict(b) for b in bindings], indent=2)
+
+
+def _run_binding_verb(sbc_name: str, purpose: str, fn) -> str:
+    """Shared error handling for actuate / release / press tools."""
+    from labctl.actuators.runtime import (
+        ActuationError,
+        BindingShapeError,
+        ChannelBusyError,
+    )
+
+    manager = _get_manager()
+    claim_err = _check_claim(manager, sbc_name, mutating=True)
+    if claim_err:
+        return claim_err
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return f"Error: SBC '{sbc_name}' not found"
+    binding = manager.get_binding_by_target(sbc.id, purpose)
+    if not binding:
+        return f"Error: no binding for {sbc_name}:{purpose}"
+
+    try:
+        fn(manager, binding)
+    except BindingShapeError as e:
+        return f"Error (shape): {e}"
+    except ChannelBusyError as e:
+        return f"Error (busy): {e}"
+    except ActuationError as e:
+        return f"Error (actuation): {e}"
+    return f"OK: {sbc_name}:{purpose}"
+
+
+@mcp.tool()
+@_with_mcp_activity
+def actuate(sbc_name: str, purpose: str) -> str:
+    """Drive a latch binding to its active state (sets desired=asserted).
+
+    Args:
+        sbc_name: Target SBC.
+        purpose: Binding purpose, e.g. "recovery_mode".
+    """
+    from labctl.actuators.runtime import actuate_binding
+
+    return _run_binding_verb(sbc_name, purpose, actuate_binding)
+
+
+@mcp.tool()
+@_with_mcp_activity
+def release(sbc_name: str, purpose: str) -> str:
+    """Drive a latch binding away from active (sets desired=released).
+
+    Args:
+        sbc_name: Target SBC.
+        purpose: Binding purpose.
+    """
+    from labctl.actuators.runtime import release_binding
+
+    return _run_binding_verb(sbc_name, purpose, release_binding)
+
+
+@mcp.tool()
+@_with_mcp_activity
+def press(sbc_name: str, purpose: str) -> str:
+    """Pulse a momentary binding for its configured pulse_ms.
+
+    Args:
+        sbc_name: Target SBC.
+        purpose: Binding purpose, e.g. "power_button".
+    """
+    from labctl.actuators.runtime import press_binding
+
+    return _run_binding_verb(sbc_name, purpose, press_binding)
+
+
+@mcp.tool()
+@_with_mcp_activity
+def actuation_status(sbc_name: str, purpose: str) -> str:
+    """Return desired vs. last state for a binding (read-only).
+
+    Args:
+        sbc_name: Target SBC.
+        purpose: Binding purpose.
+    """
+    from labctl.actuators.runtime import binding_status
+
+    manager = _get_manager()
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return f"Error: SBC '{sbc_name}' not found"
+    binding = manager.get_binding_by_target(sbc.id, purpose)
+    if not binding:
+        return f"Error: no binding for {sbc_name}:{purpose}"
+    return json.dumps(binding_status(manager, binding), indent=2)
+
+
+def _run_recovery_composite(sbc_name: str, fn_name: str, fn) -> str:
+    from labctl.actuators.runtime import ActuationError
+    from labctl.power import PowerController
+
+    manager = _get_manager()
+    claim_err = _check_claim(manager, sbc_name, mutating=True)
+    if claim_err:
+        return claim_err
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return f"Error: SBC '{sbc_name}' not found"
+    if not sbc.power_plug:
+        return f"Error: no power plug on '{sbc_name}'"
+
+    delay = float(
+        sbc.power_cycle_delay_seconds
+        if sbc.power_cycle_delay_seconds is not None
+        else 3.0
+    )
+    controller = PowerController.from_plug(sbc.power_plug)
+    try:
+        fn(manager, sbc, controller, delay_s=delay)
+    except (ActuationError, RuntimeError) as e:
+        return f"Error: {fn_name} failed: {e}"
+    return f"OK: {fn_name} {sbc_name}"
+
+
+@mcp.tool()
+@_with_mcp_activity
+def enter_recovery(sbc_name: str) -> str:
+    """Power-aware "enter recovery mode" composite.
+
+    Pre-flight probes the recovery_mode actuator, then power_off →
+    sleep → engage strap → power_on. Aborts before any power
+    transition if the actuator is unreachable.
+
+    Args:
+        sbc_name: Target SBC.
+    """
+    from labctl.actuators.runtime import enter_recovery as _enter
+
+    return _run_recovery_composite(sbc_name, "enter_recovery", _enter)
+
+
+@mcp.tool()
+@_with_mcp_activity
+def exit_recovery(sbc_name: str) -> str:
+    """Power-aware "leave recovery mode" composite (release strap, normal boot).
+
+    Args:
+        sbc_name: Target SBC.
+    """
+    from labctl.actuators.runtime import exit_recovery as _exit
+
+    return _run_recovery_composite(sbc_name, "exit_recovery", _exit)
+
+
+# ---------------------------------------------------------------------------
 # Prompts (reusable instruction templates)
 # ---------------------------------------------------------------------------
 

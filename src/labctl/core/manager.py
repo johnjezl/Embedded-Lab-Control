@@ -17,11 +17,18 @@ from labctl.core import audit
 from labctl.core.database import Database, get_database
 from labctl.core.models import (
     SBC,
+    Actuator,
+    ActuatorChannel,
+    ActuatorKind,
     AddressType,
+    Binding,
+    ChannelState,
     Claim,
     ClaimConflict,
     ClaimNotFoundError,
     ClaimRequest,
+    DesiredState,
+    DriverName,
     NetworkAddress,
     NotClaimantError,
     PlugType,
@@ -29,8 +36,10 @@ from labctl.core.models import (
     PowerPlug,
     ReleaseReason,
     SDWireDevice,
+    SamplePhase,
     SerialDevice,
     SerialPort,
+    ShapeMode,
     Status,
     UnknownSBCError,
 )
@@ -1364,8 +1373,20 @@ class ResourceManager:
         Runs an expire-stale sweep inside the acquisition transaction so
         the partial unique index can't block a legitimate caller behind a
         claim whose deadline has already passed.
+
+        Refuses (via ChannelBusyError) if any actuator channel referenced
+        by this SBC's bindings is currently held by an in-flight verb.
+        Snapshot check only; ownership across the claim's lifetime is
+        enforced by the DB-backed claim row.
         """
         sbc_id = self._require_sbc_id(sbc_name)
+
+        # Phase 6 gate: no actuator-channel verb in flight on bound channels.
+        # Imported lazily to avoid cycles and to keep the manager core
+        # decoupled from the actuators package at import time.
+        from labctl.actuators.runtime import check_no_channel_busy_for_sbc
+
+        check_no_channel_busy_for_sbc(self, sbc_id)
         context_json = json.dumps(context) if context else None
         cutoff = self._fmt_ts(datetime.now() - timedelta(seconds=grace_seconds))
 
@@ -1649,6 +1670,403 @@ class ResourceManager:
         if claim.released_at is None:
             self._load_pending_requests(claim)
         return claim
+
+    # --- Actuator Operations ---
+
+    def create_actuator(
+        self,
+        name: str,
+        driver: DriverName,
+        *,
+        kind: ActuatorKind = ActuatorKind.RELAY,
+        device_path: Optional[str] = None,
+        vid: Optional[str] = None,
+        pid: Optional[str] = None,
+        serial_no: Optional[str] = None,
+    ) -> Actuator:
+        """Register a new actuator."""
+        actuator_id = self.db.execute_insert(
+            """
+            INSERT INTO actuators
+              (name, kind, driver, device_path, vid, pid, serial_no)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                name,
+                kind.value,
+                driver.value,
+                device_path,
+                vid,
+                pid,
+                serial_no,
+            ),
+        )
+        self._audit_log(
+            "create",
+            "actuator",
+            actuator_id,
+            name,
+            f"Registered actuator {name!r} (driver={driver.value})",
+        )
+        result = self.get_actuator(actuator_id)
+        if result is None:
+            raise RuntimeError(f"Failed to retrieve actuator {actuator_id}")
+        return result
+
+    def get_actuator(self, actuator_id: int) -> Optional[Actuator]:
+        row = self.db.execute_one(
+            "SELECT * FROM actuators WHERE id = ?", (actuator_id,)
+        )
+        if not row:
+            return None
+        actuator = Actuator.from_row(row)
+        actuator.channels = self.list_actuator_channels(actuator.id)
+        return actuator
+
+    def get_actuator_by_name(self, name: str) -> Optional[Actuator]:
+        row = self.db.execute_one(
+            "SELECT * FROM actuators WHERE name = ?", (name,)
+        )
+        if not row:
+            return None
+        actuator = Actuator.from_row(row)
+        actuator.channels = self.list_actuator_channels(actuator.id)
+        return actuator
+
+    def list_actuators(self) -> list[Actuator]:
+        rows = self.db.execute("SELECT * FROM actuators ORDER BY name")
+        actuators = [Actuator.from_row(r) for r in rows]
+        # Batch-load channels.
+        if actuators:
+            ids = [a.id for a in actuators]
+            placeholders = ",".join("?" for _ in ids)
+            ch_rows = self.db.execute(
+                f"SELECT * FROM actuator_channels WHERE actuator_id IN ({placeholders})"
+                " ORDER BY actuator_id, channel_index",
+                tuple(ids),
+            )
+            by_aid: dict[int, list[ActuatorChannel]] = {}
+            for r in ch_rows:
+                by_aid.setdefault(r["actuator_id"], []).append(
+                    ActuatorChannel.from_row(r)
+                )
+            for a in actuators:
+                a.channels = by_aid.get(a.id, [])
+        return actuators
+
+    def delete_actuator(self, actuator_id: int) -> bool:
+        actuator = self.get_actuator(actuator_id)
+        if not actuator:
+            return False
+        # Capture channel IDs before the cascade-delete so we can drop
+        # their per-channel locks afterwards. Without this the
+        # process-local lock dict accumulates stale entries across
+        # reprovisioning cycles.
+        channel_ids = [ch.id for ch in actuator.channels]
+        count = self.db.execute_modify(
+            "DELETE FROM actuators WHERE id = ?", (actuator_id,)
+        )
+        if count > 0:
+            self._audit_log(
+                "delete",
+                "actuator",
+                actuator_id,
+                actuator.name,
+                f"Deleted actuator {actuator.name!r}",
+            )
+            # Lazy-import to avoid a manager → actuators → manager cycle
+            # at module load time.
+            try:
+                from labctl.actuators.runtime import drop_channel_lock
+
+                for cid in channel_ids:
+                    drop_channel_lock(cid)
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "Failed to drop per-channel locks for actuator %d", actuator_id
+                )
+            return True
+        return False
+
+    def record_actuator_probe(
+        self, actuator_id: int, result: str
+    ) -> None:
+        """Stamp `last_probe_at` and `last_probe_result` on an actuator."""
+        self.db.execute_modify(
+            """
+            UPDATE actuators
+            SET last_probe_at = CURRENT_TIMESTAMP,
+                last_probe_result = ?
+            WHERE id = ?
+            """,
+            (result, actuator_id),
+        )
+
+    # --- Actuator Channel Operations ---
+
+    def add_actuator_channel(
+        self,
+        actuator_id: int,
+        channel_index: int,
+        *,
+        label: Optional[str] = None,
+        default_state: ChannelState = ChannelState.OPEN,
+    ) -> ActuatorChannel:
+        channel_id = self.db.execute_insert(
+            """
+            INSERT INTO actuator_channels
+              (actuator_id, channel_index, label, default_state)
+            VALUES (?, ?, ?, ?)
+            """,
+            (actuator_id, channel_index, label, default_state.value),
+        )
+        actuator = self.get_actuator(actuator_id)
+        actuator_name = actuator.name if actuator else None
+        self._audit_log(
+            "create",
+            "actuator_channel",
+            channel_id,
+            f"{actuator_name}[{channel_index}]" if actuator_name else None,
+            f"Added channel {channel_index} to {actuator_name!r}",
+        )
+        row = self.db.execute_one(
+            "SELECT * FROM actuator_channels WHERE id = ?", (channel_id,)
+        )
+        if not row:
+            raise RuntimeError(f"Failed to retrieve channel {channel_id}")
+        return ActuatorChannel.from_row(row)
+
+    def list_actuator_channels(self, actuator_id: int) -> list[ActuatorChannel]:
+        rows = self.db.execute(
+            "SELECT * FROM actuator_channels WHERE actuator_id = ?"
+            " ORDER BY channel_index",
+            (actuator_id,),
+        )
+        return [ActuatorChannel.from_row(r) for r in rows]
+
+    def get_actuator_channel(
+        self, actuator_id: int, channel_index: int
+    ) -> Optional[ActuatorChannel]:
+        row = self.db.execute_one(
+            "SELECT * FROM actuator_channels"
+            " WHERE actuator_id = ? AND channel_index = ?",
+            (actuator_id, channel_index),
+        )
+        return ActuatorChannel.from_row(row) if row else None
+
+    def update_channel_state(
+        self,
+        channel_id: int,
+        last_state: ChannelState,
+        *,
+        bump_cycle_count: bool = True,
+    ) -> None:
+        """Stamp last_state, last_changed_at, and increment cycle_count.
+
+        Called by the actuation layer after a successful write. The
+        cycle bump is **suppressed when the new state matches the
+        currently-cached state** — mechanical relays only wear on
+        actual transitions, so a redundant write (e.g. enter_recovery
+        re-applying an already-engaged strap via apply_pre_power) must
+        not inflate the wear metric.
+        """
+        if bump_cycle_count:
+            # Only bump when last_state actually changes. SQLite's
+            # CASE expression keeps this atomic in one statement so
+            # there's no read-then-write race.
+            #   - last_state IS NULL  → first ever drive of this channel,
+            #     count it as one transition.
+            #   - last_state != new   → real transition, bump.
+            #   - else                → idempotent re-drive (e.g. pre_power
+            #     re-asserting an already-asserted strap), don't bump.
+            self.db.execute_modify(
+                """
+                UPDATE actuator_channels
+                SET last_state = ?,
+                    last_changed_at = CURRENT_TIMESTAMP,
+                    cycle_count = cycle_count + CASE
+                        WHEN last_state IS NULL THEN 1
+                        WHEN last_state != ? THEN 1
+                        ELSE 0
+                    END
+                WHERE id = ?
+                """,
+                (last_state.value, last_state.value, channel_id),
+            )
+        else:
+            self.db.execute_modify(
+                """
+                UPDATE actuator_channels
+                SET last_state = ?, last_changed_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (last_state.value, channel_id),
+            )
+
+    def commit_actuation(
+        self,
+        channel_id: int,
+        last_state: ChannelState,
+        binding_id: int,
+        desired_state: DesiredState,
+    ) -> None:
+        """Atomically stamp channel last_state + binding desired_state.
+
+        The two writes that complete a verb (channel state and binding
+        intent) must land together: process kill between them would
+        leave ``last_state`` updated but ``desired_state`` stale, and
+        the daemon-restart safe-drive would then drive the channel
+        backwards — exactly the failure mode safe-drive was meant to
+        prevent. Held inside one DB transaction so a crash either
+        commits both or rolls back both.
+        """
+        with self.db.connect() as conn:
+            conn.execute(
+                """
+                UPDATE actuator_channels
+                SET last_state = ?,
+                    last_changed_at = CURRENT_TIMESTAMP,
+                    cycle_count = cycle_count + CASE
+                        WHEN last_state IS NULL THEN 1
+                        WHEN last_state != ? THEN 1
+                        ELSE 0
+                    END
+                WHERE id = ?
+                """,
+                (last_state.value, last_state.value, channel_id),
+            )
+            conn.execute(
+                "UPDATE bindings SET desired_state = ? WHERE id = ?",
+                (desired_state.value, binding_id),
+            )
+
+    # --- Binding Operations ---
+
+    def create_binding(
+        self,
+        sbc_id: int,
+        purpose: str,
+        actuator_channel_id: int,
+        *,
+        shape_mode: ShapeMode,
+        shape_active: ChannelState,
+        momentary_pulse_ms: Optional[int] = None,
+        sample_phase: SamplePhase = SamplePhase.NONE,
+        notes: Optional[str] = None,
+    ) -> Binding:
+        binding_id = self.db.execute_insert(
+            """
+            INSERT INTO bindings
+              (sbc_id, purpose, actuator_channel_id,
+               shape_mode, shape_active,
+               momentary_pulse_ms, sample_phase, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                sbc_id,
+                purpose,
+                actuator_channel_id,
+                shape_mode.value,
+                shape_active.value,
+                momentary_pulse_ms,
+                sample_phase.value,
+                notes,
+            ),
+        )
+        sbc = self.get_sbc(sbc_id)
+        sbc_name = sbc.name if sbc else None
+        self._audit_log(
+            "create",
+            "binding",
+            binding_id,
+            f"{sbc_name}:{purpose}" if sbc_name else purpose,
+            f"Bound {purpose!r} on {sbc_name!r} → channel id {actuator_channel_id}",
+        )
+        result = self.get_binding(binding_id)
+        if result is None:
+            raise RuntimeError(f"Failed to retrieve binding {binding_id}")
+        return result
+
+    def get_binding(self, binding_id: int) -> Optional[Binding]:
+        row = self.db.execute_one(
+            """
+            SELECT b.*, s.name AS sbc_name,
+                   a.name AS actuator_name, c.channel_index AS channel_index
+            FROM bindings b
+            LEFT JOIN sbcs s ON s.id = b.sbc_id
+            LEFT JOIN actuator_channels c ON c.id = b.actuator_channel_id
+            LEFT JOIN actuators a ON a.id = c.actuator_id
+            WHERE b.id = ?
+            """,
+            (binding_id,),
+        )
+        return Binding.from_row(row) if row else None
+
+    def get_binding_by_target(
+        self, sbc_id: int, purpose: str
+    ) -> Optional[Binding]:
+        row = self.db.execute_one(
+            """
+            SELECT b.*, s.name AS sbc_name,
+                   a.name AS actuator_name, c.channel_index AS channel_index
+            FROM bindings b
+            LEFT JOIN sbcs s ON s.id = b.sbc_id
+            LEFT JOIN actuator_channels c ON c.id = b.actuator_channel_id
+            LEFT JOIN actuators a ON a.id = c.actuator_id
+            WHERE b.sbc_id = ? AND b.purpose = ?
+            """,
+            (sbc_id, purpose),
+        )
+        return Binding.from_row(row) if row else None
+
+    def list_bindings(
+        self, sbc_id: Optional[int] = None
+    ) -> list[Binding]:
+        sql = (
+            "SELECT b.*, s.name AS sbc_name,"
+            " a.name AS actuator_name, c.channel_index AS channel_index"
+            " FROM bindings b"
+            " LEFT JOIN sbcs s ON s.id = b.sbc_id"
+            " LEFT JOIN actuator_channels c ON c.id = b.actuator_channel_id"
+            " LEFT JOIN actuators a ON a.id = c.actuator_id"
+        )
+        params: tuple = ()
+        if sbc_id is not None:
+            sql += " WHERE b.sbc_id = ?"
+            params = (sbc_id,)
+        sql += " ORDER BY s.name, b.purpose"
+        return [Binding.from_row(r) for r in self.db.execute(sql, params)]
+
+    def delete_binding(self, binding_id: int) -> bool:
+        binding = self.get_binding(binding_id)
+        if not binding:
+            return False
+        count = self.db.execute_modify(
+            "DELETE FROM bindings WHERE id = ?", (binding_id,)
+        )
+        if count > 0:
+            label = (
+                f"{binding.sbc_name}:{binding.purpose}"
+                if binding.sbc_name
+                else binding.purpose
+            )
+            self._audit_log(
+                "delete",
+                "binding",
+                binding_id,
+                label,
+                f"Removed binding {label}",
+            )
+            return True
+        return False
+
+    def update_binding_desired_state(
+        self, binding_id: int, desired: DesiredState
+    ) -> None:
+        self.db.execute_modify(
+            "UPDATE bindings SET desired_state = ? WHERE id = ?",
+            (desired.value, binding_id),
+        )
 
     # --- Audit Log ---
 

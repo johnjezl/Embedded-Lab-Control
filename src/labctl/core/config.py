@@ -206,6 +206,20 @@ class ClaimsConfig:
 
 
 @dataclass
+class McpConfig:
+    """MCP server configuration.
+
+    ``allow_admin_actuator_ops`` gates the privileged actuator
+    provisioning tools (``actuator_add``, ``actuator_remove``,
+    ``actuator_set``) over MCP. Defaults to False because raw
+    ``actuator_set`` lets an agent bypass the binding layer; operators
+    deploying MCP behind a trusted transport can flip this on.
+    """
+
+    allow_admin_actuator_ops: bool = False
+
+
+@dataclass
 class Config:
     """Main configuration for lab controller."""
 
@@ -217,6 +231,7 @@ class Config:
     web: WebConfig = field(default_factory=WebConfig)
     kasa: KasaConfig = field(default_factory=KasaConfig)
     claims: ClaimsConfig = field(default_factory=ClaimsConfig)
+    mcp: McpConfig = field(default_factory=McpConfig)
     database_path: Path = field(
         default_factory=lambda: _default_config_dir() / "labctl.db"
     )
@@ -233,6 +248,7 @@ class Config:
         web_data = data.get("web", {})
         kasa_data = data.get("kasa", {})
         claims_data = data.get("claims", {})
+        mcp_data = data.get("mcp", {})
 
         serial = SerialConfig(
             dev_dir=_expand_path(serial_data.get("dev_dir", "/dev/lab")),
@@ -322,6 +338,12 @@ class Config:
         for w in claim_warnings:
             logger.warning("Config: %s", w)
 
+        mcp = McpConfig(
+            allow_admin_actuator_ops=mcp_data.get(
+                "allow_admin_actuator_ops", False
+            ),
+        )
+
         return cls(
             serial=serial,
             ser2net=ser2net,
@@ -331,6 +353,7 @@ class Config:
             web=web,
             kasa=kasa,
             claims=claims,
+            mcp=mcp,
             database_path=_expand_path(
                 data.get("database_path", str(_default_config_dir() / "labctl.db"))
             ),
@@ -400,6 +423,9 @@ class Config:
                 "grace_period_seconds": self.claims.grace_period_seconds,
                 "auto_prune_released_after_days": self.claims.auto_prune_released_after_days,
                 "require_agent_name": self.claims.require_agent_name,
+            },
+            "mcp": {
+                "allow_admin_actuator_ops": self.mcp.allow_admin_actuator_ops,
             },
             "database_path": str(self.database_path),
             "log_level": self.log_level,
