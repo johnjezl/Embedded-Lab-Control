@@ -659,18 +659,38 @@ class Database:
         """
         conn = sqlite3.connect(self.db_path, timeout=self.timeout_seconds)
         conn.row_factory = sqlite3.Row
-        # Belt-and-suspenders busy backstop; mirrors the connect() timeout.
-        conn.execute(
-            f"PRAGMA busy_timeout = {int(self.timeout_seconds * 1000)}"
-        )
-        # synchronous=NORMAL is per-connection (not persisted in the file
-        # like journal_mode), so it must be set on every connect. Pairs
-        # with WAL for substantially faster commits at the cost of a few
-        # seconds of write loss on a hard power failure — acceptable for
-        # a lab DB.
-        conn.execute("PRAGMA synchronous = NORMAL")
-        # Enable foreign keys
-        conn.execute("PRAGMA foreign_keys = ON")
+        # Best-effort per-connection tuning. A caller without OS-level
+        # write permission on the DB file opens the connection just
+        # fine for reads, but SQLite refuses to execute write-side
+        # pragmas on that connection ("attempt to write a readonly
+        # database"). We log at debug and continue so unprivileged
+        # readers (callers outside the ``labctl`` group, ad-hoc CLI
+        # users, etc.) keep working after the WAL switch. Writable
+        # connections still get the full tuning.
+        for pragma in (
+            # Mirrors the connect() timeout; belt-and-suspenders for
+            # sqlite3 stdlib versions where `timeout=` plumbing has
+            # historically been buggy.
+            f"PRAGMA busy_timeout = {int(self.timeout_seconds * 1000)}",
+            # synchronous=NORMAL is per-connection (not persisted in
+            # the file like journal_mode), so it must be set on every
+            # connect for writers. Pairs with WAL for substantially
+            # faster commits at the cost of a few seconds of write
+            # loss on a hard power failure — acceptable for a lab DB.
+            "PRAGMA synchronous = NORMAL",
+            # FK enforcement is per-connection. Irrelevant for a
+            # read-only connection (no writes to enforce against).
+            "PRAGMA foreign_keys = ON",
+        ):
+            try:
+                conn.execute(pragma)
+            except sqlite3.OperationalError as e:
+                logger.debug(
+                    "connect(%s): pragma %r failed (read-only connection?): %s",
+                    self.db_path,
+                    pragma,
+                    e,
+                )
         try:
             yield conn
             conn.commit()
