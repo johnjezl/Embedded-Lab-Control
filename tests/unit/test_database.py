@@ -821,6 +821,44 @@ class TestConcurrency:
             ).fetchone()
         assert row[0] == 1, "schema_version row should be present exactly once"
 
+    def test_connect_tolerates_readonly_connection(self, tmp_path, monkeypatch):
+        """Regression: after the WAL switch, a connection against a
+        read-only DB used to fail at ``PRAGMA synchronous=NORMAL``
+        with ``attempt to write a readonly database`` — breaking any
+        unprivileged caller (e.g. a user outside the ``labctl`` group
+        running ``labctl serial send``). Pragmas are now best-effort
+        so reads still work.
+
+        We simulate the production scenario by monkey-patching
+        ``sqlite3.connect`` to open the file via the ``mode=ro`` URI.
+        SQLite's auto-downgrade-on-EACCES path produces the same
+        connection-marked-readonly state; URI is just a deterministic
+        way to reach it from a test.
+        """
+        # Create + populate the DB while the file is writable.
+        db_path = tmp_path / "ro.db"
+        db = get_database(db_path)
+        db.execute_insert("INSERT INTO sbcs (name) VALUES (?)", ("ro-test",))
+
+        real_connect = sqlite3.connect
+
+        def ro_connect(target, *args, **kwargs):
+            # Force read-only via URI regardless of the path argument.
+            return real_connect(
+                f"file:{target}?mode=ro", *args, uri=True, **kwargs
+            )
+
+        monkeypatch.setattr(sqlite3, "connect", ro_connect)
+
+        ro = Database(db_path)
+        # connect() must not raise; SELECT must succeed despite the
+        # pragmas failing to apply.
+        row = ro.execute_one(
+            "SELECT name FROM sbcs WHERE name=?", ("ro-test",)
+        )
+        assert row is not None
+        assert row["name"] == "ro-test"
+
     def test_init_lock_is_reentrant(self):
         """_init_lock is an RLock so a callback into initialize() while
         the lock is held wouldn't self-deadlock. Verified by acquiring

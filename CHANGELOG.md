@@ -7,6 +7,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Fixed
+- Hotfix: per-connection SQLite pragmas (`busy_timeout`, `synchronous=NORMAL`,
+  `foreign_keys=ON`) are now best-effort. After the WAL switch, callers
+  without OS-level write permission on the DB file (e.g. users outside
+  the `labctl` group running `labctl serial send`) hit
+  `sqlite3.OperationalError: attempt to write a readonly database`
+  at connection open, because SQLite auto-downgrades the connection to
+  read-only and then rejects write-side pragmas. We now wrap each
+  pragma in `try/except sqlite3.OperationalError` and log at debug.
+  Writable connections still get full tuning; read-only callers keep
+  working. Regression test added in `tests/unit/test_database.py`.
 - Transient `sqlite3.OperationalError: database is locked` errors under
   multi-process load (monitor daemon + CLI + MCP + batch jobs hitting
   the same SQLite file). Root cause was the combination of default
