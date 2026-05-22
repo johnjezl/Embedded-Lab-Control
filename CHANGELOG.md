@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+- `labctl serial send` send pacing to avoid receiver UART RX-FIFO overrun
+  on sustained sends (issue #8). A gapless burst can leave a receiver no
+  window to drain its RX FIFO, dropping a contiguous mid-payload byte run.
+  Two new mutually-exclusive knobs feed the payload to ser2net in delayed
+  slices within a single TCP connection:
+  - `--interbyte-delay-ms N` — one byte at a time, N ms between bytes.
+  - `--chunk-size B --chunk-delay-ms N` — B bytes per slice, N ms between.
+  Pacing applies to both send-only and `--capture` paths. Hardware/software
+  flow control (RTS/CTS, XON/XOFF) is tracked separately in issue #9.
+
 ### Fixed
 - Hotfix: per-connection SQLite pragmas (`busy_timeout`, `synchronous=NORMAL`,
   `foreign_keys=ON`) are now best-effort. After the WAL switch, callers

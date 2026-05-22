@@ -2165,6 +2165,54 @@ def serial_capture_cmd(
         sys.exit(1)
 
 
+def _resolve_send_pacing(
+    interbyte_delay_ms: float | None,
+    chunk_size: int | None,
+    chunk_delay_ms: float | None,
+):
+    """Validate the pacing CLI options and build a SendPacing, or None.
+
+    Exits with an error on invalid combinations. ``--interbyte-delay-ms``
+    is just chunk-size-1 pacing, so it is mutually exclusive with the
+    --chunk-* pair; the chunk pair must be given together.
+    """
+    from labctl.serial.capture import SendPacing
+
+    has_interbyte = interbyte_delay_ms is not None
+    has_chunk = chunk_size is not None or chunk_delay_ms is not None
+
+    if has_interbyte and has_chunk:
+        click.echo(
+            "Error: --interbyte-delay-ms cannot be combined with "
+            "--chunk-size/--chunk-delay-ms",
+            err=True,
+        )
+        sys.exit(1)
+
+    if has_interbyte:
+        if interbyte_delay_ms <= 0:
+            click.echo("Error: --interbyte-delay-ms must be positive", err=True)
+            sys.exit(1)
+        return SendPacing(chunk_size=1, delay_ms=interbyte_delay_ms)
+
+    if has_chunk:
+        if chunk_size is None or chunk_delay_ms is None:
+            click.echo(
+                "Error: --chunk-size and --chunk-delay-ms must be used together",
+                err=True,
+            )
+            sys.exit(1)
+        if chunk_size <= 0:
+            click.echo("Error: --chunk-size must be positive", err=True)
+            sys.exit(1)
+        if chunk_delay_ms <= 0:
+            click.echo("Error: --chunk-delay-ms must be positive", err=True)
+            sys.exit(1)
+        return SendPacing(chunk_size=chunk_size, delay_ms=chunk_delay_ms)
+
+    return None
+
+
 @serial_group.command("send")
 @click.argument("port_name")
 @click.argument("data")
@@ -2186,6 +2234,23 @@ def serial_capture_cmd(
     "capture_until",
     help="Stop capture when this regex pattern matches",
 )
+@click.option(
+    "--interbyte-delay-ms",
+    type=float,
+    help="Pace the send one byte at a time, pausing N ms between bytes "
+    "(avoids receiver RX-FIFO overrun). Mutually exclusive with "
+    "--chunk-size/--chunk-delay-ms.",
+)
+@click.option(
+    "--chunk-size",
+    type=int,
+    help="Pace the send in slices of B bytes (use with --chunk-delay-ms).",
+)
+@click.option(
+    "--chunk-delay-ms",
+    type=float,
+    help="Pause N ms between chunks (use with --chunk-size).",
+)
 @click.pass_context
 def serial_send_cmd(
     ctx: click.Context,
@@ -2194,6 +2259,9 @@ def serial_send_cmd(
     raw: bool,
     capture_timeout: float | None,
     capture_until: str | None,
+    interbyte_delay_ms: float | None,
+    chunk_size: int | None,
+    chunk_delay_ms: float | None,
 ) -> None:
     """Send data to a serial port.
 
@@ -2205,8 +2273,12 @@ def serial_send_cmd(
       labctl serial send pi-5-1 --raw "ABCD\\r\\n"
       labctl serial send pi-5-1 "help" --capture 5
       labctl serial send pi-5-1 "help" --capture 5 --until ">"
+      labctl serial send pi-5-1 "help" --interbyte-delay-ms 2
+      labctl serial send pi-5-1 "help" --chunk-size 16 --chunk-delay-ms 50
     """
     from labctl.serial.capture import resolve_port, send_serial_data
+
+    pacing = _resolve_send_pacing(interbyte_delay_ms, chunk_size, chunk_delay_ms)
 
     manager = _get_manager(ctx)
 
@@ -2228,6 +2300,7 @@ def serial_send_cmd(
             newline=not raw,
             capture_timeout=capture_timeout,
             capture_until=capture_until,
+            pacing=pacing,
         )
 
         if result.capture and result.capture.output:

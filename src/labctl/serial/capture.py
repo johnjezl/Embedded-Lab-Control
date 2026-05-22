@@ -10,7 +10,7 @@ import re
 import select
 import socket
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,46 @@ class SendResult:
         if self.capture:
             return self.capture.to_mcp_string()
         return f"Sent {self.bytes_sent} bytes"
+
+
+@dataclass
+class SendPacing:
+    """Outbound write pacing to avoid receiver UART RX-FIFO overrun.
+
+    A gapless burst gives the receiver's RX ISR no window to drain its
+    FIFO, so a sustained write can lose a contiguous mid-payload byte
+    window. Writing ``chunk_size`` bytes per slice with ``delay_ms``
+    between slices inserts the gaps the receiver needs. ``chunk_size=1``
+    expresses per-byte pacing.
+
+    The wire still transmits at the configured baud rate; pacing only
+    controls how the payload is fed to ser2net, which is what creates
+    the inter-slice gaps on the UART.
+    """
+
+    chunk_size: int = 0
+    delay_ms: float = 0.0
+
+    @property
+    def enabled(self) -> bool:
+        return self.chunk_size > 0 and self.delay_ms > 0
+
+
+def _write_payload(
+    sock: socket.socket,
+    raw: bytes,
+    pacing: Optional[SendPacing] = None,
+) -> None:
+    """Write ``raw`` to ``sock``, optionally paced into delayed slices."""
+    if pacing is None or not pacing.enabled:
+        sock.sendall(raw)
+        return
+    delay = pacing.delay_ms / 1000.0
+    step = pacing.chunk_size
+    for i in range(0, len(raw), step):
+        sock.sendall(raw[i : i + step])
+        if i + step < len(raw):
+            time.sleep(delay)
 
 
 def resolve_port(manager, port_name: str):
@@ -198,6 +238,7 @@ def send_serial_data(
     newline: bool = True,
     capture_timeout: Optional[float] = None,
     capture_until: Optional[str] = None,
+    pacing: Optional[SendPacing] = None,
 ) -> SendResult:
     """Send data to a serial port via ser2net TCP.
 
@@ -210,6 +251,7 @@ def send_serial_data(
         newline: Append \\r\\n after data (default True)
         capture_timeout: If set, capture response for this many seconds
         capture_until: If set, capture until this regex matches
+        pacing: Optional write pacing to avoid receiver RX-FIFO overrun
 
     Returns:
         SendResult with send status and optional capture.
@@ -227,6 +269,7 @@ def send_serial_data(
             raw,
             capture_timeout,
             capture_until,
+            pacing,
         )
 
     # Send only
@@ -235,7 +278,7 @@ def send_serial_data(
 
     try:
         sock.connect((tcp_host, tcp_port))
-        sock.sendall(raw)
+        _write_payload(sock, raw, pacing)
         return SendResult(sent=True, bytes_sent=len(raw))
     except (ConnectionRefusedError, OSError) as e:
         raise RuntimeError(
@@ -254,6 +297,7 @@ def _send_and_capture(
     raw_data: bytes,
     timeout: float,
     until_pattern: Optional[str] = None,
+    pacing: Optional[SendPacing] = None,
 ) -> SendResult:
     """Send data then capture response on the same connection."""
     compiled_pattern = None
@@ -284,7 +328,7 @@ def _send_and_capture(
         # Send data
         sock.setblocking(True)
         sock.settimeout(5.0)
-        sock.sendall(raw_data)
+        _write_payload(sock, raw_data, pacing)
         bytes_sent = len(raw_data)
 
         # Capture response
