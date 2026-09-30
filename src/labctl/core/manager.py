@@ -11,14 +11,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-logger = logging.getLogger(__name__)
-
 from labctl.core import audit
-from labctl.core.database import (
-    DEFAULT_TIMEOUT_SECONDS as DEFAULT_DB_TIMEOUT,
-    Database,
-    get_database,
-)
+from labctl.core.database import DEFAULT_TIMEOUT_SECONDS as DEFAULT_DB_TIMEOUT
+from labctl.core.database import Database, get_database
 from labctl.core.models import (
     SBC,
     Actuator,
@@ -39,14 +34,16 @@ from labctl.core.models import (
     PortType,
     PowerPlug,
     ReleaseReason,
-    SDWireDevice,
     SamplePhase,
+    SDWireDevice,
     SerialDevice,
     SerialPort,
     ShapeMode,
     Status,
     UnknownSBCError,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ResourceManager:
@@ -628,7 +625,7 @@ class ResourceManager:
                 baud_rate = excluded.baud_rate,
                 alias = excluded.alias,
                 serial_device_id = excluded.serial_device_id
-            """,
+            """,  # noqa: E501
             (
                 sbc_id,
                 port_type.value,
@@ -893,7 +890,7 @@ class ResourceManager:
         # Atomic upsert
         self.db.execute_insert(
             """INSERT INTO sdwire_assignments (sbc_id, sdwire_device_id) VALUES (?, ?)
-               ON CONFLICT (sbc_id) DO UPDATE SET sdwire_device_id = excluded.sdwire_device_id""",
+               ON CONFLICT (sbc_id) DO UPDATE SET sdwire_device_id = excluded.sdwire_device_id""",  # noqa: E501
             (sbc_id, sdwire_device_id),
         )
 
@@ -1234,13 +1231,11 @@ class ResourceManager:
         claim is released as ``session-lost``. Claims with other
         ``session_kind`` values (cli, web) are skipped.
         """
-        rows = self.db.execute(
-            """
+        rows = self.db.execute("""
             SELECT c.*, s.name AS sbc_name
             FROM claims c JOIN sbcs s ON s.id = c.sbc_id
             WHERE c.released_at IS NULL AND c.session_kind = 'mcp-stdio'
-            """
-        )
+            """)
         released = 0
         cutoff = datetime.now() - timedelta(seconds=grace_seconds)
         for row in rows:
@@ -1319,8 +1314,7 @@ class ResourceManager:
 
     def get_claim_metrics(self) -> dict:
         """Aggregate statistics across all claims (active and released)."""
-        rows = self.db.execute(
-            """
+        rows = self.db.execute("""
             SELECT
                 COUNT(*)                                        AS total,
                 SUM(CASE WHEN released_at IS NULL THEN 1 ELSE 0 END) AS active,
@@ -1334,8 +1328,7 @@ class ResourceManager:
                         * 86400 AS INTEGER)
                     ELSE NULL END)                              AS avg_duration_seconds
             FROM claims
-            """
-        )
+            """)  # noqa: E501
         row = rows[0] if rows else None
         if not row:
             return {
@@ -1490,14 +1483,12 @@ class ResourceManager:
 
     def list_active_claims(self) -> list[Claim]:
         """All currently active claims across the lab."""
-        rows = self.db.execute(
-            """
+        rows = self.db.execute("""
             SELECT c.*, s.name AS sbc_name
             FROM claims c JOIN sbcs s ON s.id = c.sbc_id
             WHERE c.released_at IS NULL
             ORDER BY c.acquired_at ASC
-            """
-        )
+            """)
         claims = []
         for row in rows:
             claim = Claim.from_row(row)
@@ -1728,9 +1719,7 @@ class ResourceManager:
         return actuator
 
     def get_actuator_by_name(self, name: str) -> Optional[Actuator]:
-        row = self.db.execute_one(
-            "SELECT * FROM actuators WHERE name = ?", (name,)
-        )
+        row = self.db.execute_one("SELECT * FROM actuators WHERE name = ?", (name,))
         if not row:
             return None
         actuator = Actuator.from_row(row)
@@ -1792,9 +1781,7 @@ class ResourceManager:
             return True
         return False
 
-    def record_actuator_probe(
-        self, actuator_id: int, result: str
-    ) -> None:
+    def record_actuator_probe(self, actuator_id: int, result: str) -> None:
         """Stamp `last_probe_at` and `last_probe_result` on an actuator."""
         self.db.execute_modify(
             """
@@ -2006,9 +1993,7 @@ class ResourceManager:
         )
         return Binding.from_row(row) if row else None
 
-    def get_binding_by_target(
-        self, sbc_id: int, purpose: str
-    ) -> Optional[Binding]:
+    def get_binding_by_target(self, sbc_id: int, purpose: str) -> Optional[Binding]:
         row = self.db.execute_one(
             """
             SELECT b.*, s.name AS sbc_name,
@@ -2023,9 +2008,7 @@ class ResourceManager:
         )
         return Binding.from_row(row) if row else None
 
-    def list_bindings(
-        self, sbc_id: Optional[int] = None
-    ) -> list[Binding]:
+    def list_bindings(self, sbc_id: Optional[int] = None) -> list[Binding]:
         sql = (
             "SELECT b.*, s.name AS sbc_name,"
             " a.name AS actuator_name, c.channel_index AS channel_index"

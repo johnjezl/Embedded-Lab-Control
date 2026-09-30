@@ -172,9 +172,7 @@ class ActivityBroadcaster:
                             q.get_nowait()
                     except queue.Empty:
                         pass
-                    logger.info(
-                        "ActivityBroadcaster: dropped slow subscriber queue"
-                    )
+                    logger.info("ActivityBroadcaster: dropped slow subscriber queue")
                     break  # don't keep adding to a drained queue this tick
 
 

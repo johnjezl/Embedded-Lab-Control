@@ -66,9 +66,7 @@ class TestActivityEvent:
         assert "event: activity\n" in frame
         assert "data: {" in frame
         assert frame.endswith("\n\n")
-        data_line = next(
-            ln for ln in frame.splitlines() if ln.startswith("data: ")
-        )
+        data_line = next(ln for ln in frame.splitlines() if ln.startswith("data: "))
         parsed = json.loads(data_line[len("data: ") :])
         assert parsed["id"] == 42
         assert parsed["actor"] == "cli:john"
@@ -101,9 +99,7 @@ class TestBroadcaster:
     def test_new_event_reaches_subscriber(self, broadcaster, db):
         q = broadcaster.subscribe()
         try:
-            audit.emit(
-                db, action="power_on", entity_type="sbc", entity_name="pi-5-1"
-            )
+            audit.emit(db, action="power_on", entity_type="sbc", entity_name="pi-5-1")
             evt = _wait_for(q)
             assert evt.action == "power_on"
             assert evt.entity_name == "pi-5-1"

@@ -73,7 +73,10 @@ class TestMockDriverFailureModes:
 
 class TestMockDriverQueryability:
     def test_non_queryable_returns_none(self):
-        """LCUS-1-style drivers can't read state back; mock that with queryable=False."""
+        """LCUS-1-style drivers can't read state back.
+
+        Mock that with queryable=False.
+        """
         d = MockRelayDriver(queryable=False)
         d.open(Transport())
         d.set_channel(1, closed=True)

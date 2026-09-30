@@ -91,14 +91,10 @@ class Lcus1SerialDriver(RelayDriver):
         try:
             import serial  # type: ignore
         except ImportError as e:
-            raise DriverError(
-                "pyserial is required for the lcus1_serial driver"
-            ) from e
+            raise DriverError("pyserial is required for the lcus1_serial driver") from e
 
         if not transport.device_path:
-            raise DriverError(
-                "lcus1_serial driver requires transport.device_path"
-            )
+            raise DriverError("lcus1_serial driver requires transport.device_path")
 
         try:
             self._port = serial.Serial(
@@ -112,9 +108,7 @@ class Lcus1SerialDriver(RelayDriver):
             )
         except (OSError, serial.SerialException) as e:
             self._port = None
-            raise DriverError(
-                f"failed to open {transport.device_path}: {e}"
-            ) from e
+            raise DriverError(f"failed to open {transport.device_path}: {e}") from e
         self._transport = transport
         logger.debug("LCUS-1 opened %s", transport.device_path)
 
@@ -145,10 +139,7 @@ class Lcus1SerialDriver(RelayDriver):
         self._require_open()
         if index < 1:
             return WriteOutcome.WRITE_FAILED
-        if (
-            self._expected_channels is not None
-            and index > self._expected_channels
-        ):
+        if self._expected_channels is not None and index > self._expected_channels:
             return WriteOutcome.WRITE_FAILED
 
         frame = _build_frame(index, closed=closed)
@@ -218,7 +209,5 @@ class Lcus1SerialDriver(RelayDriver):
             )
             test.close()
         except (OSError, serial.SerialException) as e:
-            return ProbeOutcome(
-                result=ProbeResult.UNREACHABLE, detail=str(e)
-            )
+            return ProbeOutcome(result=ProbeResult.UNREACHABLE, detail=str(e))
         return ProbeOutcome(result=ProbeResult.OK)

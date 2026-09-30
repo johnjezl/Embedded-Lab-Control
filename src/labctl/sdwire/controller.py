@@ -510,7 +510,17 @@ class SDWireController:
 
         try:
             parted = subprocess.run(
-                ["sudo", "parted", "-s", "-m", block_dev, "unit", "MiB", "print", "free"],
+                [
+                    "sudo",
+                    "parted",
+                    "-s",
+                    "-m",
+                    block_dev,
+                    "unit",
+                    "MiB",
+                    "print",
+                    "free",
+                ],
                 check=True,
                 capture_output=True,
                 text=True,
@@ -538,13 +548,19 @@ class _MountedPartition:
 
         parent = full if full == self.mount_point else os.path.dirname(full)
         real_parent = os.path.realpath(parent)
-        if not real_parent.startswith(self._real_mount + "/") and real_parent != self._real_mount:
+        if (
+            not real_parent.startswith(self._real_mount + "/")
+            and real_parent != self._real_mount
+        ):
             raise RuntimeError(
                 f"Path traversal rejected: '{path}' escapes partition via symlink"
             )
         if os.path.lexists(full):
             real_full = os.path.realpath(full)
-            if not real_full.startswith(self._real_mount + "/") and real_full != self._real_mount:
+            if (
+                not real_full.startswith(self._real_mount + "/")
+                and real_full != self._real_mount
+            ):
                 raise RuntimeError(
                     f"Path traversal rejected: '{path}' target escapes partition"
                 )
@@ -655,9 +671,11 @@ def _parse_parted_output(block_dev: str, output: str) -> dict:
                 "size_mib": size_mib,
                 "type": parts[4] or None,
                 "label": parts[5] or part_meta.get("LABEL"),
-                "flags": [flag for flag in parts[6].rstrip(";").split(",") if flag]
-                if len(parts) > 6 and parts[6].rstrip(";")
-                else [],
+                "flags": (
+                    [flag for flag in parts[6].rstrip(";").split(",") if flag]
+                    if len(parts) > 6 and parts[6].rstrip(";")
+                    else []
+                ),
                 "partuuid": part_meta.get("PARTUUID"),
                 "filesystem_uuid": part_meta.get("UUID"),
                 "mount_status": "mounted" if _is_mounted(part_dev) else "clean",

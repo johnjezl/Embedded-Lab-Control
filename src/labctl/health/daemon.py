@@ -81,7 +81,9 @@ class MonitorDaemon:
         """Return True if this tick should include the power probe."""
         return (now_monotonic - self._last_power_check) >= self.power_check_interval
 
-    def run_once(self, include_power: Optional[bool] = None) -> dict[str, HealthCheckSummary]:
+    def run_once(
+        self, include_power: Optional[bool] = None
+    ) -> dict[str, HealthCheckSummary]:
         """
         Run a single health check pass.
 

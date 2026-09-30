@@ -228,7 +228,8 @@ class KasaController(PowerController):
                 last_error = e
                 if attempt < retries:
                     logger.warning(
-                        "Kasa %s attempt %d/%d failed for %s[%d]: %s: %s — retrying in 2s",
+                        "Kasa %s attempt %d/%d failed for %s[%d]: "
+                        "%s: %s — retrying in 2s",
                         action,
                         attempt + 1,
                         total_attempts,

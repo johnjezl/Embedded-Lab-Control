@@ -15,7 +15,6 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Optional
 
-
 # Units labctl depends on. First three are labctl's own; ser2net is
 # the hardware-facing TCP-to-serial proxy used for every console.
 DEFAULT_UNITS: tuple[str, ...] = (

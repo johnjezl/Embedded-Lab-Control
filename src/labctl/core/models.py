@@ -646,7 +646,9 @@ class Actuator:
         if include_ids:
             data["id"] = self.id
         if self.channels:
-            data["channels"] = [c.to_dict(include_ids=include_ids) for c in self.channels]
+            data["channels"] = [
+                c.to_dict(include_ids=include_ids) for c in self.channels
+            ]
         return data
 
 
@@ -733,12 +735,8 @@ class Binding:
             notes=row["notes"],
             created_at=row["created_at"],
             sbc_name=row["sbc_name"] if "sbc_name" in keys else None,
-            actuator_name=(
-                row["actuator_name"] if "actuator_name" in keys else None
-            ),
-            channel_index=(
-                row["channel_index"] if "channel_index" in keys else None
-            ),
+            actuator_name=(row["actuator_name"] if "actuator_name" in keys else None),
+            channel_index=(row["channel_index"] if "channel_index" in keys else None),
         )
 
     def to_dict(self, include_ids: bool = False) -> dict:

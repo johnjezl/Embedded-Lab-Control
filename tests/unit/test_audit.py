@@ -7,7 +7,7 @@ from datetime import datetime
 import pytest
 
 from labctl.core import audit
-from labctl.core.database import SCHEMA_VERSION, Database
+from labctl.core.database import Database
 from labctl.core.manager import ResourceManager
 
 
@@ -44,8 +44,7 @@ class TestSchemaV5:
         """v4 databases should be upgraded to v5 with new columns."""
         path = tmp_path / "v4.db"
         conn = sqlite3.connect(path)
-        conn.executescript(
-            """
+        conn.executescript("""
             CREATE TABLE schema_version (
                 version INTEGER PRIMARY KEY,
                 applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -63,8 +62,7 @@ class TestSchemaV5:
             INSERT INTO schema_version (version) VALUES (4);
             INSERT INTO audit_log (action, entity_type, entity_name, details)
                 VALUES ('legacy_action', 'sbc', 'legacy-sbc', 'legacy row');
-            """
-        )
+            """)
         conn.commit()
         conn.close()
 
@@ -111,6 +109,7 @@ class TestEmit:
 
     def test_emit_failure_does_not_propagate(self, db, monkeypatch):
         """audit failures must never crash the caller."""
+
         def boom(*args, **kwargs):
             raise RuntimeError("db is on fire")
 
@@ -142,7 +141,7 @@ class TestContext:
 
     def test_claim_id_propagates_from_context(self, db, manager):
         """With a real claim row, claim_id flows through emit."""
-        sbc = manager.create_sbc(name="claim-target", project="t")
+        manager.create_sbc(name="claim-target", project="t")
         claim = manager.claim_sbc(
             sbc_name="claim-target",
             agent_name="test-agent",
@@ -154,9 +153,7 @@ class TestContext:
         with audit.activity_context("cli:alice", "cli", claim_id=claim.id):
             audit.emit(db, action="a", entity_type="sbc", entity_name="claim-target")
         # First activity_context emit is the one we care about; grab by action.
-        evt = db.execute_one(
-            "SELECT * FROM audit_log WHERE action = 'a'"
-        )
+        evt = db.execute_one("SELECT * FROM audit_log WHERE action = 'a'")
         assert evt["claim_id"] == claim.id
 
     def test_nested_contexts(self, db):
@@ -350,8 +347,7 @@ class TestSchemaV6:
         """A pre-v6 database must gain the new columns and be readable."""
         path = tmp_path / "v5.db"
         conn = sqlite3.connect(path)
-        conn.executescript(
-            """
+        conn.executescript("""
             CREATE TABLE schema_version (
                 version INTEGER PRIMARY KEY,
                 applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -382,8 +378,7 @@ class TestSchemaV6:
             CREATE TABLE claims (id INTEGER PRIMARY KEY);
             INSERT INTO schema_version (version) VALUES (5);
             INSERT INTO sbcs (name, project) VALUES ('legacy-sbc', 'p');
-            """
-        )
+            """)
         conn.commit()
         conn.close()
 
@@ -413,8 +408,7 @@ class TestSchemaV7:
         """A pre-v7 database must gain power_cycle_delay_seconds."""
         path = tmp_path / "v6.db"
         conn = sqlite3.connect(path)
-        conn.executescript(
-            """
+        conn.executescript("""
             CREATE TABLE schema_version (
                 version INTEGER PRIMARY KEY,
                 applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -447,8 +441,7 @@ class TestSchemaV7:
             CREATE TABLE claims (id INTEGER PRIMARY KEY);
             INSERT INTO schema_version (version) VALUES (6);
             INSERT INTO sbcs (name, project) VALUES ('legacy-sbc', 'p');
-            """
-        )
+            """)
         conn.commit()
         conn.close()
 
@@ -467,9 +460,7 @@ class TestSchemaV8:
     def test_fresh_db_has_actuator_tables(self, db):
         names = {
             r["name"]
-            for r in db.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            )
+            for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
         assert {"actuators", "actuator_channels", "bindings"} <= names
 
@@ -488,12 +479,8 @@ class TestSchemaV8:
 
     def test_bindings_unique_actuator_channel(self, db):
         """A channel can only be bound to one (sbc, purpose) in v1."""
-        sbc_id = db.execute_insert(
-            "INSERT INTO sbcs (name) VALUES (?)", ("sbc-a",)
-        )
-        sbc2_id = db.execute_insert(
-            "INSERT INTO sbcs (name) VALUES (?)", ("sbc-b",)
-        )
+        sbc_id = db.execute_insert("INSERT INTO sbcs (name) VALUES (?)", ("sbc-a",))
+        sbc2_id = db.execute_insert("INSERT INTO sbcs (name) VALUES (?)", ("sbc-b",))
         actuator_id = db.execute_insert(
             "INSERT INTO actuators (name, driver) VALUES (?, ?)",
             ("relay-1", "lcus1_serial"),
@@ -522,9 +509,7 @@ class TestSchemaV8:
 
     def test_bindings_unique_per_sbc_purpose(self, db):
         """Same (sbc, purpose) pair can't be bound twice."""
-        sbc_id = db.execute_insert(
-            "INSERT INTO sbcs (name) VALUES (?)", ("sbc-c",)
-        )
+        sbc_id = db.execute_insert("INSERT INTO sbcs (name) VALUES (?)", ("sbc-c",))
         actuator_id = db.execute_insert(
             "INSERT INTO actuators (name, driver) VALUES (?, ?)",
             ("relay-2", "lcus1_serial"),
@@ -559,8 +544,7 @@ class TestSchemaV8:
         """A pre-v8 database must gain the actuator tables."""
         path = tmp_path / "v7.db"
         conn = sqlite3.connect(path)
-        conn.executescript(
-            """
+        conn.executescript("""
             CREATE TABLE schema_version (
                 version INTEGER PRIMARY KEY,
                 applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -593,8 +577,7 @@ class TestSchemaV8:
             );
             CREATE TABLE claims (id INTEGER PRIMARY KEY);
             INSERT INTO schema_version (version) VALUES (7);
-            """
-        )
+            """)
         conn.commit()
         conn.close()
 
@@ -604,9 +587,7 @@ class TestSchemaV8:
         d2 = Database(path)
         names = {
             r["name"]
-            for r in d2.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-            )
+            for r in d2.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
         assert "actuators" in names
         assert "actuator_channels" in names

@@ -260,9 +260,7 @@ class TestPress:
         lab.driver.set_channel = flaky_set
 
         with pytest.raises(runtime.ActuationError, match="release failed"):
-            runtime.press_binding(
-                lab.manager, binding, sleep_fn=lambda s: None
-            )
+            runtime.press_binding(lab.manager, binding, sleep_fn=lambda s: None)
 
         ch = lab.manager.get_actuator_channel(lab.actuator.id, 1)
         # First write succeeded → last_state was stamped to active (closed).
@@ -335,14 +333,12 @@ class TestBindingStatus:
 class TestApplyPrePowerBindings:
     def test_drives_active_when_desired_asserted(self, lab):
         binding = _make_binding(lab)
-        lab.manager.update_binding_desired_state(
-            binding.id, DesiredState.ASSERTED
-        )
+        lab.manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
         runtime.apply_pre_power_bindings(lab.manager, lab.sbc)
         assert lab.driver.write_log[-1] == (1, True, WriteOutcome.OK)
 
     def test_drives_inactive_when_desired_released(self, lab):
-        binding = _make_binding(lab)
+        _make_binding(lab)
         # Default desired_state is RELEASED.
         runtime.apply_pre_power_bindings(lab.manager, lab.sbc)
         assert lab.driver.write_log[-1] == (1, False, WriteOutcome.OK)
@@ -367,9 +363,7 @@ class TestApplyPrePowerBindings:
 
     def test_write_failure_raises_actuation_error(self, lab):
         binding = _make_binding(lab)
-        lab.manager.update_binding_desired_state(
-            binding.id, DesiredState.ASSERTED
-        )
+        lab.manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
         lab.driver.next_write_outcome = WriteOutcome.DEVICE_GONE
         with pytest.raises(runtime.ActuationError, match="device_gone"):
             runtime.apply_pre_power_bindings(lab.manager, lab.sbc)
@@ -481,9 +475,7 @@ class TestExitRecovery:
     def test_full_sequence(self, lab):
         binding = _make_binding(lab, purpose="recovery_mode")
         # Pretend we entered recovery.
-        lab.manager.update_binding_desired_state(
-            binding.id, DesiredState.ASSERTED
-        )
+        lab.manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
 
         class FakeController:
             def __init__(self):
@@ -518,7 +510,7 @@ class TestExitRecovery:
 
 class TestLockDictPruning:
     def test_drop_channel_lock_removes_entry(self, lab):
-        lock = runtime._get_channel_lock(lab.channel.id)
+        runtime._get_channel_lock(lab.channel.id)
         assert lab.channel.id in runtime._channel_locks
         runtime.drop_channel_lock(lab.channel.id)
         assert lab.channel.id not in runtime._channel_locks
@@ -537,7 +529,7 @@ class TestLockDictPruning:
 class TestApplySafeDriveOnStartup:
     def test_drives_unbound_channels_to_default(self, lab):
         # Add a second channel with no binding.
-        ch2 = lab.manager.add_actuator_channel(
+        lab.manager.add_actuator_channel(
             lab.actuator.id, 2, default_state=ChannelState.OPEN
         )
         lab.driver._configured_count = 2  # mock can talk to ch 2
@@ -553,9 +545,7 @@ class TestApplySafeDriveOnStartup:
 
     def test_held_asserted_binding_left_alone(self, lab):
         binding = _make_binding(lab)
-        lab.manager.update_binding_desired_state(
-            binding.id, DesiredState.ASSERTED
-        )
+        lab.manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
 
         result = runtime.apply_safe_drive_on_startup(lab.manager)
 
@@ -602,9 +592,7 @@ class TestCheckNoChannelBusyForSbc:
         assert lock.acquire(blocking=False)
         try:
             with pytest.raises(runtime.ChannelBusyError, match="busy"):
-                runtime.check_no_channel_busy_for_sbc(
-                    lab.manager, lab.sbc.id
-                )
+                runtime.check_no_channel_busy_for_sbc(lab.manager, lab.sbc.id)
         finally:
             lock.release()
 
@@ -616,7 +604,7 @@ class TestCheckNoChannelBusyForSbc:
         )
         # Bind ch1 to recovery_mode; ch2 to power_button (different SBC purpose).
         b1 = _make_binding(lab, purpose="recovery_mode")
-        sbc2 = lab.manager.create_sbc(name="other-sbc")
+        lab.manager.create_sbc(name="other-sbc")
         # We need both bindings on the SAME sbc to test the mid-loop failure;
         # use a second purpose on lab.sbc.
         b2 = lab.manager.create_binding(
@@ -633,9 +621,7 @@ class TestCheckNoChannelBusyForSbc:
         assert ch2_lock.acquire(blocking=False)
         try:
             with pytest.raises(runtime.ChannelBusyError):
-                runtime.check_no_channel_busy_for_sbc(
-                    lab.manager, lab.sbc.id
-                )
+                runtime.check_no_channel_busy_for_sbc(lab.manager, lab.sbc.id)
         finally:
             ch2_lock.release()
 
@@ -716,9 +702,7 @@ class TestAuditLogging:
         """Strap application before a power transition lands in the
         activity stream as 'pre_power_apply' (distinct from 'actuate')."""
         binding = _make_binding(lab)
-        lab.manager.update_binding_desired_state(
-            binding.id, DesiredState.ASSERTED
-        )
+        lab.manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
         runtime.apply_pre_power_bindings(lab.manager, lab.sbc)
 
         rows = self._audit_rows(lab.manager, action="pre_power_apply")
@@ -728,16 +712,14 @@ class TestAuditLogging:
         assert row["entity_name"] == "jetson-nano-2:recovery_mode"
         assert row["result"] == "ok"
         assert "asserted" in row["details"]  # desired_state in extras
-        assert "closed" in row["details"]    # target state
+        assert "closed" in row["details"]  # target state
 
     def test_apply_pre_power_bindings_records_cycle_changed(self, lab):
         """First pre_power_apply is a real transition; the immediately
         following one (e.g. trailing apply in enter_recovery) records
         cycle_changed=false so the audit log explains the redundant row."""
         binding = _make_binding(lab)
-        lab.manager.update_binding_desired_state(
-            binding.id, DesiredState.ASSERTED
-        )
+        lab.manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
         runtime.apply_pre_power_bindings(lab.manager, lab.sbc)
         runtime.apply_pre_power_bindings(lab.manager, lab.sbc)
 
@@ -750,9 +732,7 @@ class TestAuditLogging:
 
     def test_apply_pre_power_bindings_failure_emits_error_audit(self, lab):
         binding = _make_binding(lab)
-        lab.manager.update_binding_desired_state(
-            binding.id, DesiredState.ASSERTED
-        )
+        lab.manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
         lab.driver.next_write_outcome = WriteOutcome.DEVICE_GONE
         with pytest.raises(runtime.ActuationError):
             runtime.apply_pre_power_bindings(lab.manager, lab.sbc)
@@ -767,10 +747,8 @@ class TestAuditLogging:
         rather than per-channel events (operators want a single line)."""
         # Add a held binding and one unbound channel for variety.
         binding = _make_binding(lab)
-        lab.manager.update_binding_desired_state(
-            binding.id, DesiredState.ASSERTED
-        )
-        ch2 = lab.manager.add_actuator_channel(
+        lab.manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
+        lab.manager.add_actuator_channel(
             lab.actuator.id, 2, default_state=ChannelState.OPEN
         )
         lab.driver._configured_count = 2
@@ -829,9 +807,7 @@ class TestProbeActuator:
             raise RuntimeError("usb hub yanked")
             yield  # noqa: never reached
 
-        monkeypatch.setattr(
-            "labctl.actuators.runtime.open_driver_for", boom
-        )
+        monkeypatch.setattr("labctl.actuators.runtime.open_driver_for", boom)
         outcome = runtime.probe_actuator(lab.actuator)
         assert outcome.result is ProbeResult.UNREACHABLE
         assert outcome.detail and "usb hub" in outcome.detail
