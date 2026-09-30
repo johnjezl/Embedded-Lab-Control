@@ -6,7 +6,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+- **Package renamed for PyPI**: the distribution is now
+  `embedded-lab-control` (`pip install embedded-lab-control`); the import
+  package and CLI remain `labctl`. Version `0.2.0.dev0`, single-sourced from
+  `labctl.__version__` (also used by `/api/health` and the web footer, which
+  previously hard-coded `0.1.0`). License metadata is now the SPDX
+  expression `MIT`, and the LICENSE file ships in the wheel and sdist.
+- **MCP server migrated to the mcp 2.x SDK** (`mcp>=2.2,<3`, `MCPServer`
+  replaces `FastMCP`). `mcp>=1.0` had started resolving to 2.2, where
+  `mcp.server.fastmcp` no longer exists and `labctl mcp` crashed on import.
+  Tools, resources and prompts are unchanged. mcp 2.x runs sync tools on
+  worker threads; labctl keeps 1.x semantics by serializing tool calls
+  (D011). The server now reports labctl's version in `serverInfo`.
+- The `sdwire` extra only installs on Python ≥ 3.12 (PyPI `sdwire` requires
+  it). On 3.10/3.11 SDWire commands report that the package is missing.
+
 ### Added
+- MCP tool annotations (`title`, `readOnlyHint`, `destructiveHint`,
+  `idempotentHint`, `openWorldHint`) on all 52 tools, defined in one table in
+  `mcp_server.py`. A unit test fails if a tool is added without an entry.
+- `labctl mcp --host ADDR` (default `127.0.0.1`) for the HTTP transport.
+- `labctl mcp` without the `mcp` extra now prints an install hint instead of
+  a traceback.
 - `labctl serial send` send pacing to avoid receiver UART RX-FIFO overrun
   on sustained sends (issue #8). A gapless burst can leave a receiver no
   window to drain its RX FIFO, dropping a contiguous mid-payload byte run.
@@ -18,6 +40,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   flow control (RTS/CTS, XON/XOFF) is tracked separately in issue #9.
 
 ### Fixed
+- `labctl mcp --http PORT` ignored PORT and always bound `127.0.0.1:8000`.
+  It now binds `127.0.0.1:PORT` (or `--host`). **Deployment note:** the
+  shipped systemd unit uses `--http 8080`, so a deployed server moves from
+  `:8000` to `:8080`. With a loopback bind, the SDK's DNS-rebinding guard
+  rejects non-localhost `Host` headers (HTTP 421).
+- `labctl.sdwire` failed to import on Python 3.10 (`datetime.UTC` is
+  3.11+), despite `requires-python >= 3.10`.
 - Hotfix: per-connection SQLite pragmas (`busy_timeout`, `synchronous=NORMAL`,
   `foreign_keys=ON`) are now best-effort. After the WAL switch, callers
   without OS-level write permission on the DB file (e.g. users outside

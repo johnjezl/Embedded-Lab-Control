@@ -2373,3 +2373,268 @@ class TestMcpRecoveryComposites:
         result = enter_recovery(sbc_name="test-sbc-1")
         assert "OK" in result, result
         assert controller.calls == ["off", "on"]
+
+
+class TestMcpSdkRegistration:
+    """SDK-level checks: what an MCP client actually sees (mcp 2.x MCPServer)."""
+
+    @staticmethod
+    def _run(coro_fn, *args):
+        import anyio
+
+        return anyio.run(coro_fn, *args)
+
+    def test_counts_unchanged(self):
+        """52 tools, 14 resources (8 static + 6 templates), 2 prompts."""
+        from labctl.mcp_server import mcp
+
+        assert len(self._run(mcp.list_tools)) == 52
+        resources = self._run(mcp.list_resources)
+        templates = self._run(mcp.list_resource_templates)
+        assert len(resources) + len(templates) == 14
+        assert {p.name for p in self._run(mcp.list_prompts)} == {
+            "debug_sbc",
+            "lab_report",
+        }
+
+    def test_every_tool_has_complete_annotations(self):
+        """New tools cannot skip annotations: every hint must be explicit.
+
+        The MCP spec defaults destructiveHint/openWorldHint to true, so an
+        unset hint is not a safe default — require all five fields.
+        """
+        from labctl.mcp_server import mcp
+
+        missing = []
+        for tool in self._run(mcp.list_tools):
+            ann = tool.annotations
+            if ann is None:
+                missing.append(f"{tool.name}: no annotations")
+                continue
+            for field in (
+                "title",
+                "read_only_hint",
+                "destructive_hint",
+                "idempotent_hint",
+                "open_world_hint",
+            ):
+                if getattr(ann, field) is None:
+                    missing.append(f"{tool.name}: {field} unset")
+        assert not missing, "\n".join(missing)
+
+    def test_annotation_table_matches_registered_tools(self):
+        """No stale table entries, no registered tool missing from the table."""
+        from labctl.mcp_server import TOOL_ANNOTATIONS, mcp
+
+        registered = {t.name for t in self._run(mcp.list_tools)}
+        assert registered == set(TOOL_ANNOTATIONS)
+
+    def test_registered_annotations_come_from_table(self):
+        from labctl.mcp_server import TOOL_ANNOTATIONS, mcp
+
+        for tool in self._run(mcp.list_tools):
+            assert tool.annotations == TOOL_ANNOTATIONS[tool.name], tool.name
+
+    def test_read_only_tools_are_not_destructive(self):
+        from labctl.mcp_server import TOOL_ANNOTATIONS
+
+        bad = [
+            n
+            for n, a in TOOL_ANNOTATIONS.items()
+            if a.read_only_hint and a.destructive_hint
+        ]
+        assert not bad
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "power_off",
+            "power_cycle",
+            "flash_image",
+            "sdwire_update",
+            "remove_sbc",
+            "remove_serial_port",
+            "remove_network_address",
+            "remove_power_plug",
+            "remove_serial_device",
+            "force_release_sbc",
+            "actuator_set",
+            "actuator_remove",
+            "enter_recovery",
+        ],
+    )
+    def test_required_destructive_tools(self, name):
+        from labctl.mcp_server import TOOL_ANNOTATIONS
+
+        ann = TOOL_ANNOTATIONS[name]
+        assert ann.destructive_hint is True
+        assert ann.read_only_hint is False
+
+    def test_annotations_serialize_camelcase_on_wire(self):
+        from labctl.mcp_server import TOOL_ANNOTATIONS
+
+        wire = TOOL_ANNOTATIONS["power_off"].model_dump(by_alias=True)
+        assert wire["readOnlyHint"] is False
+        assert wire["destructiveHint"] is True
+        assert wire["openWorldHint"] is True
+
+    def test_tool_call_routes_through_sdk(self, claims_env):
+        """A call via the SDK returns exactly what the direct call returns."""
+        from labctl.mcp_server import list_claims, mcp
+
+        result = self._run(mcp.call_tool, "list_claims", {})
+        assert not result.is_error
+        assert result.content[0].text == list_claims()
+        assert json.loads(result.content[0].text) == {"active_claims": []}
+
+    @pytest.mark.parametrize(
+        "uri,check",
+        [
+            # Static URIs must win over the sibling {sbc_name} templates.
+            ("lab://claims/metrics", lambda d: isinstance(d, dict)),
+            ("lab://activity/recent", lambda d: isinstance(d, list)),
+            ("lab://claims/history/test-sbc-1", lambda d: isinstance(d, list)),
+            ("lab://claims/test-sbc-1", lambda d: d["claimed"] is False),
+            ("lab://sbcs/test-sbc-1", lambda d: d["name"] == "test-sbc-1"),
+        ],
+    )
+    def test_resource_uri_routing(self, claims_env, uri, check):
+        """mcp 2.x changed template matching (RFC 6570); pin our URIs."""
+        from labctl.mcp_server import mcp
+
+        contents = list(self._run(mcp.read_resource, uri))
+        assert len(contents) == 1
+        assert check(json.loads(contents[0].content))
+
+
+class TestMcpToolSerialization:
+    """mcp 2.x runs sync tools on worker threads; we keep 1.x serial semantics."""
+
+    def test_tool_calls_do_not_overlap(self):
+        import threading
+        import time
+
+        from labctl.mcp_server import _with_mcp_activity
+
+        active = 0
+        peak = 0
+        guard = threading.Lock()
+
+        @_with_mcp_activity
+        def slow_tool():
+            nonlocal active, peak
+            with guard:
+                active += 1
+                peak = max(peak, active)
+            time.sleep(0.05)
+            with guard:
+                active -= 1
+
+        threads = [threading.Thread(target=slow_tool) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert peak == 1
+
+
+class TestMcpRunServer:
+    """run_server must pass host/port through to the SDK."""
+
+    @pytest.fixture
+    def run_env(self):
+        with (
+            patch("labctl.mcp_server.mcp") as fake_mcp,
+            patch("labctl.mcp_server._start_expiry_thread"),
+            patch("atexit.register"),
+        ):
+            yield fake_mcp
+
+    def test_http_passes_port_and_default_host(self, run_env):
+        from labctl.mcp_server import run_server
+
+        run_server(transport="http", http_port=8080)
+        run_env.run.assert_called_once_with(
+            transport="streamable-http", host="127.0.0.1", port=8080
+        )
+
+    def test_http_passes_custom_host(self, run_env):
+        from labctl.mcp_server import run_server
+
+        run_server(transport="http", http_port=9123, host="0.0.0.0")
+        run_env.run.assert_called_once_with(
+            transport="streamable-http", host="0.0.0.0", port=9123
+        )
+
+    def test_stdio(self, run_env):
+        from labctl.mcp_server import run_server
+
+        run_server(transport="stdio")
+        run_env.run.assert_called_once_with(transport="stdio")
+
+    def test_unknown_transport_rejected_before_side_effects(self, run_env):
+        from labctl.mcp_server import run_server
+
+        with pytest.raises(ValueError):
+            run_server(transport="carrier-pigeon")
+        run_env.run.assert_not_called()
+
+
+class TestMcpCliCommand:
+    """`labctl mcp` CLI flag plumbing."""
+
+    def test_http_with_host(self):
+        from click.testing import CliRunner
+
+        from labctl.cli import main
+
+        with patch("labctl.mcp_server.run_server") as run:
+            result = CliRunner().invoke(
+                main, ["mcp", "--http", "8080", "--host", "0.0.0.0"]
+            )
+        assert result.exit_code == 0, result.output
+        run.assert_called_once_with(transport="http", http_port=8080, host="0.0.0.0")
+
+    def test_http_default_host_is_loopback(self):
+        from click.testing import CliRunner
+
+        from labctl.cli import main
+
+        with patch("labctl.mcp_server.run_server") as run:
+            result = CliRunner().invoke(main, ["mcp", "--http", "8080"])
+        assert result.exit_code == 0, result.output
+        run.assert_called_once_with(transport="http", http_port=8080, host="127.0.0.1")
+        assert "127.0.0.1:8080" in result.output
+
+    def test_stdio_default(self):
+        from click.testing import CliRunner
+
+        from labctl.cli import main
+
+        with patch("labctl.mcp_server.run_server") as run:
+            result = CliRunner().invoke(main, ["mcp"])
+        assert result.exit_code == 0, result.output
+        run.assert_called_once_with(transport="stdio")
+
+    def test_missing_mcp_extra_gives_install_hint(self):
+        """A bare `pip install embedded-lab-control` has no mcp SDK."""
+        import sys
+
+        from click.testing import CliRunner
+
+        from labctl.cli import main
+
+        # None in sys.modules makes `import mcp...` raise ModuleNotFoundError;
+        # dropping labctl.mcp_server forces the CLI to re-import it.
+        absent = {
+            "mcp": None,
+            "mcp.server": None,
+            "mcp.server.mcpserver": None,
+            "labctl.mcp_server": None,
+        }
+        with patch.dict("sys.modules", absent):
+            del sys.modules["labctl.mcp_server"]
+            result = CliRunner().invoke(main, ["mcp"])
+        assert result.exit_code == 1
+        assert "embedded-lab-control[mcp]" in result.output
+        assert "Traceback" not in result.output

@@ -1,27 +1,28 @@
 [build-system]
-requires = ["setuptools>=61.0", "wheel"]
+requires = ["setuptools>=77.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "labctl"
-version = "0.1.0"
+# Distribution name on PyPI; the import package and CLI stay `labctl`.
+name = "embedded-lab-control"
+dynamic = ["version"]
 description = "Centralized management system for embedded development lab resources"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 requires-python = ">=3.10"
 authors = [
-    {name = "John"}
+    {name = "John Jezl"}
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX :: Linux",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: System :: Hardware",
     "Topic :: Utilities",
 ]
@@ -44,10 +45,12 @@ web = [
     "flask-socketio>=5.0",
 ]
 mcp = [
-    "mcp>=1.0",
+    "mcp>=2.2,<3",
 ]
+# PyPI sdwire requires Python >= 3.12; on older interpreters the extra
+# installs nothing and SDWire commands report "sdwire package not installed".
 sdwire = [
-    "sdwire>=0.3",
+    "sdwire>=0.3; python_version >= '3.12'",
 ]
 kasa = [
     "python-kasa>=0.5",
@@ -56,8 +59,17 @@ actuators = [
     "pyserial>=3.5",
 ]
 
+[project.urls]
+Homepage = "https://github.com/johnjezl/Embedded-Lab-Control"
+Repository = "https://github.com/johnjezl/Embedded-Lab-Control"
+Issues = "https://github.com/johnjezl/Embedded-Lab-Control/issues"
+Changelog = "https://github.com/johnjezl/Embedded-Lab-Control/blob/main/CHANGELOG.md"
+
 [project.scripts]
 labctl = "labctl.cli:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "labctl.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]

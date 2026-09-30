@@ -742,3 +742,33 @@ preventing destructive interference between concurrent workflows.
   duration guidelines
 - ✅ `MCP_SERVER.md` updated with claims tools/resources tables
 - ✅ Tests: config validation (7), prune (3), metrics (2)
+
+---
+
+## Release: Public PyPI release (`embedded-lab-control`)
+
+**Goal**: Publish labctl on PyPI as `embedded-lab-control` (CLI stays
+`labctl`). Phases: P0 installable/SDK, P1 safety, P2 release, P3 docs,
+P4 showcase. Scratch list of out-of-scope findings:
+`docs/development/RELEASE_NOTES_PHASE0.md`.
+
+### Phase 0: Installable + mcp 2.x SDK
+
+- ✅ Issue triage (#2, #3, #7, #9, #11) mapped to phases
+- ✅ A1 Migrate `FastMCP` → `mcp.server.mcpserver.MCPServer`; pin
+  `mcp>=2.2,<3`; 52 tools / 14 resources / 2 prompts unchanged
+- ✅ A2 `ToolAnnotations` on every tool from one table
+  (`_TOOL_ANNOTATION_TABLE`), with enforcement test
+- ✅ A3 Serialize tool calls under mcp 2.x worker threads (D011)
+- ✅ A4 Fix `labctl mcp --http PORT` ignoring PORT; add `--host`
+  (default `127.0.0.1`)
+- ✅ A5 `tests/unit/test_mcp_server.py` green (was 157 errors + 12 failures)
+- ✅ B1 Package metadata: name, `0.2.0.dev0` (single-sourced from
+  `labctl.__version__`), author, URLs, SPDX license, 3.13 classifier
+- ✅ B2 `sdwire` extra gated on Python ≥ 3.12; `sdwire_stub` test fixture
+- ✅ B3 Fix Python 3.10 import crash in `labctl.sdwire` (`datetime.UTC`)
+- ✅ B4 `python -m build` + `twine check --strict` clean; pipx wheel
+  install + `labctl mcp` stdio handshake verified
+- ☐ C0 Clear repo-wide lint debt (black/isort/flake8) and pin tool versions
+- ☐ C1 GitHub Actions CI: 3.10–3.13 matrix, lint, pytest + coverage
+  artifact, gitleaks

@@ -87,9 +87,11 @@ class TestHealthEndpoints:
         response = client.get("/api/health")
         assert response.status_code == 200
 
+        from labctl import __version__
+
         data = json.loads(response.data)
         assert data["status"] == "healthy"
-        assert "version" in data
+        assert data["version"] == __version__
 
     def test_status_empty(self, client):
         """Test /api/status with no SBCs."""

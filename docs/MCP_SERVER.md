@@ -17,7 +17,7 @@ AI Assistant (Claude Desktop / Claude Code)
     ▼
 ┌──────────────────────────────┐
 │  labctl MCP Server           │
-│  (FastMCP)                   │
+│  (mcp SDK 2.x MCPServer)     │
 │                              │
 │  Resources ──► read-only     │
 │  Tools ──────► mutations     │
@@ -69,11 +69,19 @@ JSON-RPC messages. All logging goes to stderr.
 ### HTTP transport (for remote access)
 
 ```bash
-labctl mcp --http 8080
+labctl mcp --http 8080                  # binds 127.0.0.1:8080 (default)
+labctl mcp --http 8080 --host 0.0.0.0   # all interfaces — see note below
 ```
 
-Uses the Streamable HTTP transport on the specified port. Useful for
-multi-client scenarios or accessing the lab from a different machine.
+Uses the Streamable HTTP transport (endpoint `/mcp`) on the specified port.
+Useful for multi-client scenarios or accessing the lab from a different machine.
+
+`--host` defaults to `127.0.0.1`. When bound to loopback, the MCP SDK also
+enables DNS-rebinding protection, so requests whose `Host` header is not
+`localhost`/`127.0.0.1`/`[::1]` are rejected with `421 Misdirected Request`
+(this includes a reverse proxy that forwards the public host name).
+For remote access either tunnel (`ssh -L 8080:127.0.0.1:8080 tarrasque`) or
+bind a non-loopback address on a trusted network.
 
 ### Running as a systemd service
 
@@ -92,9 +100,12 @@ systemctl status labctl-mcp
 journalctl -u labctl-mcp -f
 ```
 
-The service runs on port 8080 by default. Edit the service file to change the port.
+The service runs on `127.0.0.1:8080` by default. Edit the service file to
+change the port or add `--host`. (Before 0.2.0 the port argument was
+ignored and the server silently bound `127.0.0.1:8000`.)
 
-Remote clients connect via HTTP:
+Remote clients connect via HTTP (requires a tunnel, or `--host` set to a
+reachable address):
 
 ```json
 {

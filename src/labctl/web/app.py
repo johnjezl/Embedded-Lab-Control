@@ -8,6 +8,7 @@ from pathlib import Path
 
 from flask import Flask, g, jsonify, redirect, request, session, url_for
 
+from labctl import __version__
 from labctl.core import audit
 from labctl.core.config import Config, load_config
 from labctl.core.manager import ResourceManager, get_manager
@@ -39,6 +40,7 @@ def create_app(config: Config | None = None) -> Flask:
         config = load_config()
 
     app.config["LABCTL_CONFIG"] = config
+    app.jinja_env.globals["labctl_version"] = __version__
 
     # Set SECRET_KEY from auth config, fall back to random if empty
     if config.auth.secret_key:

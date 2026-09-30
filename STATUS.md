@@ -2,11 +2,36 @@
 
 ## Current State
 
-- **Milestone**: Activity Stream
-- **Sub-task**: Phase D — polish complete
-- **Status**: Phase A, Phase B, Phase C, and Phase D complete
+- **Milestone**: Public PyPI release (`embedded-lab-control`)
+- **Sub-task**: Phase 0 — installable + mcp 2.x SDK
+- **Status**: A (SDK migration + tool annotations) and B (packaging) done;
+  C0 (lint debt) and C1 (CI workflow) in progress on `release/phase0`
 
 ## Last Session
+
+- **Date**: 2026-09-29
+- **Branch**: `release/phase0` (from `main` @ `11ad19f`)
+- **Completed**:
+  - Issue triage: #3, #7 → P1 safety; #2, #9, #11 → post-release
+  - MCP server on mcp 2.2 (`MCPServer`), tool calls serialized (D011)
+  - `ToolAnnotations` on all 52 tools from a single table + enforcement test
+  - `labctl mcp --http PORT --host ADDR` now honored (was 127.0.0.1:8000)
+  - Packaged as `embedded-lab-control` 0.2.0.dev0; build/twine/pipx verified
+  - Python 3.10 fix in `labctl.sdwire`; sdwire extra gated on ≥ 3.12
+  - 996 tests passing on 3.10 and 3.12 (baseline on mcp 2.2: 791 passed,
+    13 failed, 157 errors)
+- **Pending**:
+  - C0: clear repo-wide black/isort/flake8 debt, pin tool versions
+  - C1: `.github/workflows/ci.yml`
+- **Environment notes**:
+  - This host's `/tmp` is on the failing `/dev/sda` (#11); SQLite commits
+    take ~1.2 s there. Run tests with `--basetemp` on `/dev/shm`
+    (~2 min vs ~32 min).
+  - Production `labctl-mcp` is still mcp 1.26 on `127.0.0.1:8000` via the
+    `PYTHONPATH` overlay; see deployment notes in
+    `docs/development/RELEASE_NOTES_PHASE0.md` before deploying.
+
+## Earlier Session (Activity Stream)
 
 - **Date**: 2026-04-20
 - **Branch**: current working tree
@@ -50,14 +75,14 @@
 ## Notes
 
 - **All Milestones Complete!**
-- 322 tests passing
+- 996 tests passing (Python 3.10 and 3.12, 2026-09-29)
 - Database schema v3: serial_devices, sdwire_devices/sdwire_assignments tables
 - Schema migration is automatic and preserves existing data
 - Two config files may need to be kept in sync (user + labctl system user)
   - Recommendation: use /etc/labctl/config.yaml as single source of truth
 - HTTPS uses Flask's built-in ssl_context (suitable for lab use)
 - Monitor service needs AmbientCapabilities=CAP_NET_RAW for ping to work
-- MCP server available via `labctl mcp` (stdio) or `labctl mcp --http <port>`
+- MCP server available via `labctl mcp` (stdio) or `labctl mcp --http <port> [--host <addr>]`
 
 ## Milestones Summary
 
