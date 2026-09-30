@@ -53,13 +53,22 @@ Delete or fold into the real release notes before publishing.
   RuntimeErrors naming `pip install sdwire` rather than the extra.
 - sdwire error text says `pip install sdwire`; on Python < 3.12 that cannot
   succeed. Consider mentioning the 3.12 requirement.
-- **Repo-wide lint debt blocks the CI lint gates as specified**: at
-  `a17855d`, `black --check` would reformat 29 files, `isort --check` fails
-  on 6, `flake8` reports 121 issues (76 × E501, 20 × F401, 13 × F841, ...).
-  None introduced by Phase 0. `cli.py` is intentionally not black-formatted
-  (see agent memory) — reformatting it is a large churn diff.
-- `black>=23.0` / `isort>=5.12` / `flake8>=6.0` are unpinned; different
-  versions format differently, so a CI `--check` gate needs pinned versions.
+- ~~Repo-wide lint debt~~ — resolved in `120990e` (black/isort/flake8 clean,
+  tools pinned exactly in the `dev` extra).
+- CI notes (from writing `.github/workflows/ci.yml`):
+  - Test coverage is **68%** (`cli.py` 51%, `mcp_server.py` 78%); CI reports
+    it but does not gate on it. AGENT_RULES aims for > 80%.
+  - Push + pull_request triggers mean a same-repo PR branch runs twice.
+    Consider `push: branches: [main]` once the PR flow is settled.
+  - Python 3.11 and 3.13 have only been exercised by CI, not locally.
+  - Runners have passwordless sudo; the suite passed locally in a sandbox
+    that hid `/etc/labctl`, `~/.config/labctl` and `ser2net`, but any test
+    that shells out to `sudo` unmocked would really run it on a runner.
+  - gitleaks: 4 historical false positives (README `your-api-key`
+    placeholders, test fixture `test-api-key-abc123`) are allowlisted by
+    exact fingerprint in `.gitleaksignore`.
+  - Consider a coverage service and a PyPI publish workflow (trusted
+    publishing, needs an `id-token: write` job) in P2.
 - `mcp 2.x` pulls `mcp-types==<exact>`, `httpx2`, `opentelemetry-api`; worth a
   line in the release notes for downstream packagers.
 

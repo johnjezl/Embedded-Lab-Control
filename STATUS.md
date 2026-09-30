@@ -4,8 +4,9 @@
 
 - **Milestone**: Public PyPI release (`embedded-lab-control`)
 - **Sub-task**: Phase 0 — installable + mcp 2.x SDK
-- **Status**: A (SDK migration + tool annotations) and B (packaging) done;
-  C0 (lint debt) and C1 (CI workflow) in progress on `release/phase0`
+- **Status**: Phase 0 complete on `release/phase0` (A SDK + annotations,
+  B packaging, C0 lint debt, C1 CI). Not yet pushed; first GitHub Actions
+  run happens on push. Next: Phase 1 (safety).
 
 ## Last Session
 
@@ -19,10 +20,16 @@
   - Packaged as `embedded-lab-control` 0.2.0.dev0; build/twine/pipx verified
   - Python 3.10 fix in `labctl.sdwire`; sdwire extra gated on ≥ 3.12
   - 996 tests passing on 3.10 and 3.12 (baseline on mcp 2.2: 791 passed,
-    13 failed, 157 errors)
+    13 failed, 157 errors); coverage 68%
+  - Repo clean under pinned black/isort/flake8 (`120990e`)
+  - `.github/workflows/ci.yml`: 3.10–3.13 matrix (lint + pytest/coverage
+    artifact) and full-history gitleaks job; 4 reviewed false positives in
+    `.gitleaksignore`
 - **Pending**:
-  - C0: clear repo-wide black/isort/flake8 debt, pin tool versions
-  - C1: `.github/workflows/ci.yml`
+  - Push `release/phase0` and confirm the first CI run (3.11/3.13 only
+    exercised in CI so far)
+  - Phase 1 safety: #3, #7, auth/confirm/dry-run (see
+    `docs/development/RELEASE_NOTES_PHASE0.md`)
 - **Environment notes**:
   - This host's `/tmp` is on the failing `/dev/sda` (#11); SQLite commits
     take ~1.2 s there. Run tests with `--basetemp` on `/dev/shm`
