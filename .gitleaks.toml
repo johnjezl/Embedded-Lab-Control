@@ -1,0 +1,8 @@
+# gitleaks configuration: default ruleset plus one path allowlist.
+# Reviewed false positives are listed by fingerprint in .gitleaksignore.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "The ignore file lists finding fingerprints, which look like keys"
+paths = ['''^\.gitleaksignore$''']

@@ -33,6 +33,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `labctl mcp --host ADDR` (default `127.0.0.1`) for the HTTP transport.
 - `labctl mcp` without the `mcp` extra now prints an install hint instead of
   a traceback.
+- GitHub Actions CI (`.github/workflows/ci.yml`) on push and pull request:
+  Python 3.10–3.13 matrix running flake8, black, isort and pytest with
+  coverage (XML uploaded as an artifact), plus a gitleaks scan of the full
+  git history. Reviewed gitleaks false positives are listed in
+  `.gitleaksignore`.
 - `labctl serial send` send pacing to avoid receiver UART RX-FIFO overrun
   on sustained sends (issue #8). A gapless burst can leave a receiver no
   window to drain its RX FIFO, dropping a contiguous mid-payload byte run.

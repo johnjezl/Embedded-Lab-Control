@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Least privilege: jobs only need to read the repository.
+permissions:
+  contents: read
+
+# Superseded PR runs are cancelled; pushes (e.g. to main) always run to
+# completion so every commit gets a verdict.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    name: test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      # The sdwire extra carries a `python_version >= '3.12'` marker, so it
+      # installs sdwire on 3.12+ and is a no-op on 3.10/3.11 (the tests use a
+      # sys.modules stub either way). Installing it everywhere also exercises
+      # the marker.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e '.[dev,web,mcp,kasa,actuators,sdwire]'
+
+      - name: flake8
+        run: flake8 src tests
+
+      - name: black
+        run: black --check --diff src tests
+
+      - name: isort
+        run: isort --check-only --diff src tests
+
+      - name: pytest
+        run: >-
+          pytest tests/
+          --cov=labctl
+          --cov-report=term-missing:skip-covered
+          --cov-report=xml:coverage.xml
+
+      - name: Upload coverage report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-py${{ matrix.python-version }}
+          path: coverage.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+  gitleaks:
+    name: secret scan (gitleaks, full history)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      GITLEAKS_VERSION: 8.30.1
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # full history, not just the pushed commits
+          persist-credentials: false
+
+      # Official release binary, verified against the published checksums.
+      # (gitleaks-action needs a license for org-owned repos and scans only
+      # the commit range of the event; this scans every commit.)
+      - name: Install gitleaks
+        run: |
+          base="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfLO "${base}/${tarball}"
+          curl -sSfLO "${base}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          sha256sum --check --ignore-missing "gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          tar -xzf "${tarball}" gitleaks
+          ./gitleaks version
+
+      # Uses .gitleaks.toml (default rules) and .gitleaksignore (reviewed
+      # false positives) from the repository root.
+      - name: Scan full history
+        run: ./gitleaks git --redact --verbose --no-banner .
