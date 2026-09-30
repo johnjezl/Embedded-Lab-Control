@@ -78,6 +78,13 @@ Delete or fold into the real release notes before publishing.
   `/dev/sda` (#11) and each SQLite commit takes ~1.2 s there vs ~6 ms on tmpfs.
   With `--basetemp` on `/dev/shm` the full suite takes ~2 min. Not a code
   problem, but anyone running tests on tarrasque is also stressing the bad disk.
+- First CI run: 995/996 on every Python version; the one failure was
+  `test_services.py::test_parse_systemd_timestamp_valid`, which parsed a
+  hard-coded "PDT" timestamp and so only passed on a Pacific-time host.
+  Fixed by pinning TZ in the test. Product note: `_parse_systemd_timestamp`
+  returns None for any zone abbreviation other than UTC/GMT/the host's own
+  (strptime `%Z` limitation) — correct for local systemd output, but it
+  would silently drop timestamps if ever fed output from another host.
 - `test_manager.py::TestClaimExpiryAndHeartbeat::test_heartbeat_prevents_expiry`
   uses real sleeps and failed once under load (passes in isolation) — CI flake
   risk.
