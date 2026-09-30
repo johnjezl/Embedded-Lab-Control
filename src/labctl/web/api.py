@@ -6,6 +6,7 @@ import time
 
 from flask import Blueprint, g, jsonify, request, session
 
+from labctl import __version__
 from labctl.core import audit
 from labctl.core.models import PortType, Status
 from labctl.power import PowerController
@@ -356,7 +357,7 @@ def health_check():
     return jsonify(
         {
             "status": "healthy",
-            "version": "0.1.0",
+            "version": __version__,
         }
     )
 

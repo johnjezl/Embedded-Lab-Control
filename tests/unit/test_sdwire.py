@@ -8,6 +8,10 @@ import pytest
 
 from labctl.sdwire.controller import SDWireController
 
+# Every test here runs against the sys.modules stub (tests/conftest.py), so the
+# suite passes without the optional sdwire package (which needs Python >= 3.12).
+pytestmark = pytest.mark.usefixtures("sdwire_stub")
+
 
 class TestSDWireController:
     """Tests for SDWireController."""
@@ -668,35 +672,29 @@ class TestDiscoverSDWireDevices:
 
         assert result == []
 
+    # A None entry in sys.modules makes `import sdwire...` raise ImportError,
+    # simulating the optional package being absent (e.g. on Python < 3.12).
+    _SDWIRE_ABSENT = {
+        "sdwire": None,
+        "sdwire.backend": None,
+        "sdwire.backend.detect": None,
+    }
+
     def test_discover_import_error(self):
-        """Test discover raises RuntimeError when sdwire not installed."""
+        """discover_sdwire_devices raises a helpful error without sdwire."""
         from labctl.sdwire.controller import discover_sdwire_devices
 
-        with patch.dict(
-            "sys.modules",
-            {"sdwire": None, "sdwire.backend": None, "sdwire.backend.detect": None},
-        ):
-            # Force reimport to trigger ImportError
-            import importlib
-
-            import labctl.sdwire.controller
-
+        with patch.dict("sys.modules", self._SDWIRE_ABSENT):
             with pytest.raises(RuntimeError, match="sdwire package not installed"):
-                # Call with the import patched out
-                original = labctl.sdwire.controller.discover_sdwire_devices
+                discover_sdwire_devices()
 
-                def patched():
-                    try:
-                        from sdwire.backend.detect import (
-                            get_sdwire_devices,
-                            get_sdwirec_devices,
-                        )
-                    except (ImportError, TypeError):
-                        raise RuntimeError(
-                            "sdwire package not installed. Install with: pip install sdwire"
-                        )
+    def test_get_device_import_error(self):
+        """SDWireController._get_device raises a helpful error without sdwire."""
+        ctrl = SDWireController("any_serial")
 
-                patched()
+        with patch.dict("sys.modules", self._SDWIRE_ABSENT):
+            with pytest.raises(RuntimeError, match="sdwire package not installed"):
+                ctrl._get_device()
 
 
 class TestValidation:

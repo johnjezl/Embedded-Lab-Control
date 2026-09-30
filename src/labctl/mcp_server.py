@@ -6,7 +6,8 @@ as MCP resources, tools, and prompts for AI assistant integration.
 
 Usage:
     labctl mcp                    # stdio transport (default)
-    labctl mcp --http 8080        # streamable HTTP transport
+    labctl mcp --http 8080        # streamable HTTP transport on 127.0.0.1:8080
+    labctl mcp --http 8080 --host 0.0.0.0
 
     # Or directly:
     python -m labctl.mcp_server
@@ -16,12 +17,15 @@ import json
 import logging
 import os
 import sys
+import threading
 import time as _time_mod
 from functools import wraps
 from typing import Optional
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
+from mcp.types import ToolAnnotations
 
+from labctl import __version__
 from labctl.core import audit
 
 # All logging must go to stderr (stdout is the JSON-RPC channel for stdio transport)
@@ -33,14 +37,112 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-mcp = FastMCP(
+mcp = MCPServer(
     "labctl",
+    version=__version__,
     instructions=(
         "Lab Controller MCP server. Provides access to embedded development "
         "lab resources including SBC management, power control, serial ports, "
         "and health monitoring. Use resources to read state, tools to perform actions."
     ),
 )
+
+
+# ---------------------------------------------------------------------------
+# Tool annotations
+# ---------------------------------------------------------------------------
+#
+# Single reviewable classification of every tool. Every hint is explicit:
+# the MCP spec defaults destructiveHint and openWorldHint to *true*, so an
+# omitted field is not "safe". open_world means the tool touches physical
+# hardware (power plugs, SDWire, serial, relays) or the network.
+# tests/unit/test_mcp_server.py asserts this table and the registered tools
+# match exactly, so a new tool cannot ship without an entry.
+#
+# name: (title, read_only, destructive, idempotent, open_world)
+_TOOL_ANNOTATION_TABLE: dict[str, tuple[str, bool, bool, bool, bool]] = {
+    # Power / health
+    "power_on": ("Power on SBC", False, False, True, True),
+    "power_off": ("Power off SBC", False, True, True, True),
+    "power_cycle": ("Power-cycle SBC", False, True, False, True),
+    "run_health_check": ("Run health check", False, False, True, True),
+    # SBC / port / device inventory (database only)
+    "add_sbc": ("Add SBC", False, False, False, False),
+    "remove_sbc": ("Remove SBC", False, True, True, False),
+    "update_sbc": ("Update SBC", False, False, True, False),
+    "assign_serial_port": ("Assign serial port", False, False, True, False),
+    "assign_power_plug": ("Assign power plug", False, False, True, False),
+    "set_network_address": ("Set network address", False, False, True, False),
+    "remove_serial_port": ("Remove serial port", False, True, True, False),
+    "remove_network_address": ("Remove network address", False, True, True, False),
+    "remove_power_plug": ("Remove power plug", False, True, True, False),
+    "add_serial_device": ("Add serial device", False, False, False, False),
+    "remove_serial_device": ("Remove serial device", False, True, True, False),
+    # SDWire inventory
+    "sdwire_add": ("Add SDWire device", False, False, False, False),
+    "sdwire_remove": ("Remove SDWire device", False, True, True, False),
+    "sdwire_assign": ("Assign SDWire to SBC", False, False, True, False),
+    "sdwire_unassign": ("Unassign SDWire", False, True, True, False),
+    # Discovery (USB scans)
+    "sdwire_discover": ("Discover SDWire devices", True, False, True, True),
+    "serial_discover": ("Discover USB-serial adapters", True, False, True, True),
+    # SD card mux / contents. sdwire_ls/cat/info transiently switch the mux
+    # to host and back (and refuse when powered on); they leave no change.
+    "sdwire_to_dut": ("Switch SD card to DUT", False, False, True, True),
+    "sdwire_to_host": ("Switch SD card to host", False, True, True, True),
+    "sdwire_update": ("Update files on SD card", False, True, False, True),
+    "sdwire_ls": ("List SD card directory", True, False, True, True),
+    "sdwire_cat": ("Read file from SD card", True, False, True, True),
+    "sdwire_info": ("SD card partition info", True, False, True, True),
+    "flash_image": ("Flash image to SD card", False, True, False, True),
+    # Serial console
+    "serial_capture": ("Capture serial output", True, False, True, True),
+    "serial_send": ("Send to serial console", False, True, False, True),
+    "boot_test": ("Run boot reliability test", False, True, False, True),
+    # Claims (database only)
+    "claim_sbc": ("Claim SBC", False, False, False, False),
+    "release_sbc": ("Release own SBC claim", False, False, True, False),
+    "renew_sbc_claim": ("Renew SBC claim", False, False, False, False),
+    "list_claims": ("List claims", True, False, True, False),
+    "get_claim": ("Get claim", True, False, True, False),
+    "request_sbc_release": ("Request claim release", False, False, False, False),
+    "force_release_sbc": ("Force-release SBC claim", False, True, True, False),
+    # Actuators. actuator_probe only records last_probe_* bookkeeping.
+    "actuator_list": ("List actuators", True, False, True, False),
+    "actuator_probe": ("Probe actuator", True, False, True, True),
+    "actuator_add": ("Add actuator", False, False, False, False),
+    "actuator_remove": ("Remove actuator", False, True, True, False),
+    "actuator_set": ("Set actuator channel (raw)", False, True, True, True),
+    # Bindings. Binding purposes are free-form (power_button, reset, ...), so
+    # the verbs are conservatively destructive.
+    "bind": ("Bind actuator channel", False, False, False, False),
+    "unbind": ("Remove binding", False, True, True, False),
+    "bindings_list": ("List bindings", True, False, True, False),
+    "actuate": ("Assert latch binding", False, True, True, True),
+    "release": ("Release latch binding", False, True, True, True),
+    "press": ("Pulse momentary binding", False, True, False, True),
+    "actuation_status": ("Binding actuation status", True, False, True, False),
+    # Recovery composites (power transitions)
+    "enter_recovery": ("Enter recovery mode", False, True, False, True),
+    "exit_recovery": ("Exit recovery mode", False, True, False, True),
+}
+
+TOOL_ANNOTATIONS: dict[str, ToolAnnotations] = {
+    name: ToolAnnotations(
+        title=title,
+        read_only_hint=read_only,
+        destructive_hint=destructive,
+        idempotent_hint=idempotent,
+        open_world_hint=open_world,
+    )
+    for name, (
+        title,
+        read_only,
+        destructive,
+        idempotent,
+        open_world,
+    ) in _TOOL_ANNOTATION_TABLE.items()
+}
 
 
 # ---------------------------------------------------------------------------
@@ -168,13 +270,21 @@ def _claim_advisory(manager, sbc_name: str) -> str:
     return "\n".join(lines)
 
 
+# mcp 2.x runs sync handlers on worker threads (1.x ran them inline on the
+# event loop, which serialized every tool call). Tools drive shared physical
+# hardware — power plugs, SD muxes, serial consoles — so keep the 1.x
+# one-at-a-time semantics rather than let e.g. power_cycle and flash_image
+# interleave on the same SBC.
+_TOOL_CALL_LOCK = threading.Lock()
+
+
 def _with_mcp_activity(func):
-    """Scope audit attribution to the active MCP session for one tool call."""
+    """Serialize one tool call and scope audit attribution to the MCP session."""
     from labctl.core import audit
 
     @wraps(func)
     def wrapper(*args, **kwargs):
-        with audit.activity_context(_get_session_id(), "mcp"):
+        with _TOOL_CALL_LOCK, audit.activity_context(_get_session_id(), "mcp"):
             return func(*args, **kwargs)
 
     return wrapper
@@ -412,7 +522,7 @@ def get_status_overview() -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["power_on"])
 @_with_mcp_activity
 def power_on(sbc_name: str) -> str:
     """Turn on power to an SBC.
@@ -443,7 +553,7 @@ def power_on(sbc_name: str) -> str:
         return f"Error: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["power_off"])
 @_with_mcp_activity
 def power_off(sbc_name: str) -> str:
     """Turn off power to an SBC.
@@ -474,7 +584,7 @@ def power_off(sbc_name: str) -> str:
         return f"Error: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["power_cycle"])
 @_with_mcp_activity
 def power_cycle(sbc_name: str, delay: float = 3.0) -> str:
     """Power cycle an SBC (turn off, wait, turn on).
@@ -509,7 +619,7 @@ def power_cycle(sbc_name: str, delay: float = 3.0) -> str:
         return f"Error: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["run_health_check"])
 @_with_mcp_activity
 def run_health_check(sbc_name: Optional[str] = None) -> str:
     """Run health checks on one or all SBCs and return results.
@@ -554,7 +664,7 @@ def run_health_check(sbc_name: Optional[str] = None) -> str:
     return json.dumps(output, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["add_sbc"])
 @_with_mcp_activity
 def add_sbc(
     name: str,
@@ -584,7 +694,7 @@ def add_sbc(
         return f"Error: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["remove_sbc"])
 @_with_mcp_activity
 def remove_sbc(name: str) -> str:
     """Remove an SBC and all its assignments from the lab inventory.
@@ -607,7 +717,7 @@ def remove_sbc(name: str) -> str:
     return f"Failed to remove SBC: {name}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["update_sbc"])
 @_with_mcp_activity
 def update_sbc(
     name: str,
@@ -650,7 +760,7 @@ def update_sbc(
         return f"Error: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["assign_serial_port"])
 @_with_mcp_activity
 def assign_serial_port(
     sbc_name: str,
@@ -690,7 +800,7 @@ def assign_serial_port(
         return f"Error: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["assign_power_plug"])
 @_with_mcp_activity
 def assign_power_plug(
     sbc_name: str,
@@ -726,7 +836,7 @@ def assign_power_plug(
         return f"Error: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["set_network_address"])
 @_with_mcp_activity
 def set_network_address(
     sbc_name: str,
@@ -769,7 +879,7 @@ def set_network_address(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["remove_serial_port"])
 @_with_mcp_activity
 def remove_serial_port(sbc_name: str, port_type: str = "console") -> str:
     """Remove a serial port assignment from an SBC.
@@ -793,7 +903,7 @@ def remove_serial_port(sbc_name: str, port_type: str = "console") -> str:
         return f"Error: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["remove_network_address"])
 @_with_mcp_activity
 def remove_network_address(sbc_name: str, address_type: str = "ethernet") -> str:
     """Remove a network address from an SBC.
@@ -817,7 +927,7 @@ def remove_network_address(sbc_name: str, address_type: str = "ethernet") -> str
         return f"Error: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["remove_power_plug"])
 @_with_mcp_activity
 def remove_power_plug(sbc_name: str) -> str:
     """Remove power plug assignment from an SBC.
@@ -840,7 +950,7 @@ def remove_power_plug(sbc_name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["add_serial_device"])
 @_with_mcp_activity
 def add_serial_device(
     name: str,
@@ -872,7 +982,7 @@ def add_serial_device(
         return f"Error: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["remove_serial_device"])
 @_with_mcp_activity
 def remove_serial_device(name: str) -> str:
     """Unregister a USB-serial adapter.
@@ -897,7 +1007,7 @@ def remove_serial_device(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["sdwire_add"])
 @_with_mcp_activity
 def sdwire_add(
     name: str,
@@ -923,7 +1033,7 @@ def sdwire_add(
         return f"Error: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["sdwire_remove"])
 @_with_mcp_activity
 def sdwire_remove(name: str) -> str:
     """Unregister an SDWire device.
@@ -943,7 +1053,7 @@ def sdwire_remove(name: str) -> str:
         return f"Error: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["sdwire_assign"])
 @_with_mcp_activity
 def sdwire_assign(sbc_name: str, device_name: str) -> str:
     """Assign an SDWire device to an SBC.
@@ -968,7 +1078,7 @@ def sdwire_assign(sbc_name: str, device_name: str) -> str:
         return f"Error: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["sdwire_unassign"])
 @_with_mcp_activity
 def sdwire_unassign(sbc_name: str) -> str:
     """Remove SDWire assignment from an SBC.
@@ -986,7 +1096,7 @@ def sdwire_unassign(sbc_name: str) -> str:
     return f"No SDWire assigned to {sbc_name}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["sdwire_discover"])
 @_with_mcp_activity
 def sdwire_discover() -> str:
     """Discover connected SDWire devices.
@@ -1005,7 +1115,7 @@ def sdwire_discover() -> str:
         return f"Error: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["serial_discover"])
 @_with_mcp_activity
 def serial_discover() -> str:
     """Discover connected USB-serial adapters.
@@ -1047,7 +1157,7 @@ def list_sdwire_devices() -> str:
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["sdwire_to_dut"])
 @_with_mcp_activity
 def sdwire_to_dut(sbc_name: str) -> str:
     """Switch an SBC's SD card to DUT mode (SBC boots from the SD card).
@@ -1077,7 +1187,7 @@ def sdwire_to_dut(sbc_name: str) -> str:
         return f"Error: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["sdwire_to_host"])
 @_with_mcp_activity
 def sdwire_to_host(sbc_name: str, force: bool = False) -> str:
     """Switch an SBC's SD card to host mode (dev machine can read/write the SD card).
@@ -1120,7 +1230,7 @@ def sdwire_to_host(sbc_name: str, force: bool = False) -> str:
         return f"Error: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["sdwire_update"])
 @_with_mcp_activity
 def sdwire_update(
     sbc_name: str,
@@ -1225,7 +1335,7 @@ def sdwire_update(
         return f"Error: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["sdwire_ls"])
 @_with_mcp_activity
 def sdwire_ls(
     sbc_name: str,
@@ -1303,7 +1413,7 @@ def sdwire_ls(
     return response
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["sdwire_cat"])
 @_with_mcp_activity
 def sdwire_cat(
     sbc_name: str,
@@ -1401,7 +1511,7 @@ def sdwire_cat(
     return response
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["sdwire_info"])
 @_with_mcp_activity
 def sdwire_info(sbc_name: str) -> str:
     """Return partition-table metadata for an SBC SD card."""
@@ -1458,7 +1568,7 @@ def sdwire_info(sbc_name: str) -> str:
     return response
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["flash_image"])
 @_with_mcp_activity
 def flash_image(
     sbc_name: str,
@@ -1583,7 +1693,7 @@ def flash_image(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["serial_capture"])
 @_with_mcp_activity
 def serial_capture(
     port_name: str,
@@ -1630,7 +1740,7 @@ def serial_capture(
         return f"Error: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["serial_send"])
 @_with_mcp_activity
 def serial_send(
     port_name: str,
@@ -1696,7 +1806,7 @@ def serial_send(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["boot_test"])
 @_with_mcp_activity
 def boot_test(
     sbc_name: str,
@@ -1847,7 +1957,7 @@ def get_activity_for_sbc_resource(sbc_name: str) -> str:
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["claim_sbc"])
 @_with_mcp_activity
 def claim_sbc(
     sbc_name: str,
@@ -1926,7 +2036,7 @@ def claim_sbc(
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["release_sbc"])
 @_with_mcp_activity
 def release_sbc(sbc_name: str) -> str:
     """Release a claim held by the calling session.
@@ -1967,7 +2077,7 @@ def release_sbc(sbc_name: str) -> str:
     return json.dumps({"status": "released", "sbc_name": sbc_name})
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["renew_sbc_claim"])
 @_with_mcp_activity
 def renew_sbc_claim(sbc_name: str, duration_minutes: int | None = None) -> str:
     """Extend an active claim. Bounded by config max_duration.
@@ -2027,7 +2137,7 @@ def renew_sbc_claim(sbc_name: str, duration_minutes: int | None = None) -> str:
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["list_claims"])
 @_with_mcp_activity
 def list_claims() -> str:
     """List all active claims across the lab."""
@@ -2036,7 +2146,7 @@ def list_claims() -> str:
     return json.dumps({"active_claims": [c.to_dict() for c in claims]}, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["get_claim"])
 @_with_mcp_activity
 def get_claim(sbc_name: str) -> str:
     """Get the current active claim on an SBC, including pending requests.
@@ -2058,7 +2168,7 @@ def get_claim(sbc_name: str) -> str:
     return json.dumps({"sbc_name": sbc_name, "claimed": True, "claim": claim.to_dict()})
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["request_sbc_release"])
 @_with_mcp_activity
 def request_sbc_release(sbc_name: str, reason: str) -> str:
     """Politely ask the current claimant to release an SBC.
@@ -2091,7 +2201,7 @@ def request_sbc_release(sbc_name: str, reason: str) -> str:
     return json.dumps({"status": "request_recorded", "sbc_name": sbc_name})
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["force_release_sbc"])
 @_with_mcp_activity
 def force_release_sbc(sbc_name: str, reason: str) -> str:
     """Operator override — forcibly release an active claim.
@@ -2224,7 +2334,7 @@ def _validate_actuator_device_path(device_path: str) -> Optional[str]:
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["actuator_list"])
 @_with_mcp_activity
 def actuator_list() -> str:
     """List provisioned actuators (read-only)."""
@@ -2235,7 +2345,7 @@ def actuator_list() -> str:
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["actuator_probe"])
 @_with_mcp_activity
 def actuator_probe(name: str) -> str:
     """Probe an actuator for reachability (read-only).
@@ -2258,7 +2368,7 @@ def actuator_probe(name: str) -> str:
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["actuator_add"])
 @_with_mcp_activity
 def actuator_add(
     name: str,
@@ -2334,7 +2444,7 @@ def actuator_add(
     return f"Added actuator {name!r} ({driver}, {channels} channel(s))"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["actuator_remove"])
 @_with_mcp_activity
 def actuator_remove(name: str) -> str:
     """Remove an actuator and any bindings on its channels (PRIVILEGED — gated).
@@ -2357,7 +2467,7 @@ def actuator_remove(name: str) -> str:
     return f"Removed actuator {name!r}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["actuator_set"])
 @_with_mcp_activity
 def actuator_set(name: str, channel: int, state: str) -> str:
     """Drive a channel directly, bypassing bindings (PRIVILEGED — gated).
@@ -2428,7 +2538,7 @@ def actuator_set(name: str, channel: int, state: str) -> str:
     return f"Set {name}[{channel}] -> {state}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["bind"])
 @_with_mcp_activity
 def bind(
     sbc_name: str,
@@ -2499,7 +2609,7 @@ def bind(
     return json.dumps({"bound": _binding_to_dict(binding)})
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["unbind"])
 @_with_mcp_activity
 def unbind(sbc_name: str, purpose: str) -> str:
     """Remove a binding.
@@ -2519,7 +2629,7 @@ def unbind(sbc_name: str, purpose: str) -> str:
     return f"Unbound {sbc_name}:{purpose}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["bindings_list"])
 @_with_mcp_activity
 def bindings_list(sbc_name: Optional[str] = None) -> str:
     """List bindings (read-only), optionally filtered by SBC.
@@ -2568,7 +2678,7 @@ def _run_binding_verb(sbc_name: str, purpose: str, fn) -> str:
     return f"OK: {sbc_name}:{purpose}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["actuate"])
 @_with_mcp_activity
 def actuate(sbc_name: str, purpose: str) -> str:
     """Drive a latch binding to its active state (sets desired=asserted).
@@ -2582,7 +2692,7 @@ def actuate(sbc_name: str, purpose: str) -> str:
     return _run_binding_verb(sbc_name, purpose, actuate_binding)
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["release"])
 @_with_mcp_activity
 def release(sbc_name: str, purpose: str) -> str:
     """Drive a latch binding away from active (sets desired=released).
@@ -2596,7 +2706,7 @@ def release(sbc_name: str, purpose: str) -> str:
     return _run_binding_verb(sbc_name, purpose, release_binding)
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["press"])
 @_with_mcp_activity
 def press(sbc_name: str, purpose: str) -> str:
     """Pulse a momentary binding for its configured pulse_ms.
@@ -2610,7 +2720,7 @@ def press(sbc_name: str, purpose: str) -> str:
     return _run_binding_verb(sbc_name, purpose, press_binding)
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["actuation_status"])
 @_with_mcp_activity
 def actuation_status(sbc_name: str, purpose: str) -> str:
     """Return desired vs. last state for a binding (read-only).
@@ -2658,7 +2768,7 @@ def _run_recovery_composite(sbc_name: str, fn_name: str, fn) -> str:
     return f"OK: {fn_name} {sbc_name}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["enter_recovery"])
 @_with_mcp_activity
 def enter_recovery(sbc_name: str) -> str:
     """Power-aware "enter recovery mode" composite.
@@ -2675,7 +2785,7 @@ def enter_recovery(sbc_name: str) -> str:
     return _run_recovery_composite(sbc_name, "enter_recovery", _enter)
 
 
-@mcp.tool()
+@mcp.tool(annotations=TOOL_ANNOTATIONS["exit_recovery"])
 @_with_mcp_activity
 def exit_recovery(sbc_name: str) -> str:
     """Power-aware "leave recovery mode" composite (release strap, normal boot).
@@ -2792,19 +2902,29 @@ def _start_expiry_thread(interval: int = 30):
     return t
 
 
-def run_server(transport: str = "stdio", http_port: int = 8080):
-    """Start the MCP server."""
+def run_server(
+    transport: str = "stdio", http_port: int = 8080, host: str = "127.0.0.1"
+):
+    """Start the MCP server.
+
+    Args:
+        transport: "stdio" or "http" (streamable HTTP).
+        http_port: TCP port for the HTTP transport.
+        host: Bind address for the HTTP transport. Defaults to loopback;
+            pass "0.0.0.0" only behind an authenticating proxy.
+    """
     import atexit
+
+    if transport not in ("stdio", "http"):
+        raise ValueError(f"Unknown transport: {transport}")
 
     atexit.register(_release_session_claims)
     _start_expiry_thread(interval=30)
 
     if transport == "stdio":
         mcp.run(transport="stdio")
-    elif transport == "http":
-        mcp.run(transport="streamable-http")
     else:
-        raise ValueError(f"Unknown transport: {transport}")
+        mcp.run(transport="streamable-http", host=host, port=http_port)
 
 
 if __name__ == "__main__":

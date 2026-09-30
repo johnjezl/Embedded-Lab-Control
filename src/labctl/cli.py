@@ -4893,18 +4893,34 @@ def sessions_cmd(ctx: click.Context, sbc_name: str | None) -> None:
     default=None,
     help="Run as HTTP server on this port (default: stdio transport)",
 )
+@click.option(
+    "--host",
+    default="127.0.0.1",
+    show_default=True,
+    help="Bind address for --http. Use 0.0.0.0 only behind an auth proxy.",
+)
 @click.pass_context
-def mcp_cmd(ctx: click.Context, http_port: int | None) -> None:
+def mcp_cmd(ctx: click.Context, http_port: int | None, host: str) -> None:
     """Start the MCP (Model Context Protocol) server.
 
     By default uses stdio transport for local AI tool integration
     (Claude Desktop, Claude Code, etc.). Use --http for remote access.
     """
-    from labctl.mcp_server import run_server
+    try:
+        from labctl.mcp_server import run_server
+    except ModuleNotFoundError as e:
+        # Only translate a missing `mcp` SDK (the optional extra); any other
+        # missing module is a real bug and should keep its traceback.
+        if e.name != "mcp" and not (e.name or "").startswith("mcp."):
+            raise
+        raise click.ClickException(
+            "MCP support is not installed. "
+            "Install it with: pip install 'embedded-lab-control[mcp]'"
+        ) from e
 
     if http_port:
-        click.echo(f"Starting MCP server (HTTP on port {http_port})...")
-        run_server(transport="http", http_port=http_port)
+        click.echo(f"Starting MCP server (HTTP on {host}:{http_port})...")
+        run_server(transport="http", http_port=http_port, host=host)
     else:
         # stdio mode — no output to stdout (it's the JSON-RPC channel)
         run_server(transport="stdio")

@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import tempfile
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -552,7 +552,9 @@ class _MountedPartition:
 
 
 def _serialize_mtime(timestamp: float) -> str:
-    return datetime.fromtimestamp(timestamp, UTC).isoformat().replace("+00:00", "Z")
+    # timezone.utc rather than datetime.UTC: the latter is Python 3.11+.
+    utc = datetime.fromtimestamp(timestamp, timezone.utc)
+    return utc.isoformat().replace("+00:00", "Z")
 
 
 def _serialize_stat(stat_result, owner_mount: bool) -> dict:
