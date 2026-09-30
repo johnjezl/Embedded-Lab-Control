@@ -1,7 +1,11 @@
 """Unit tests for the services-status module."""
 
+import os
+import time
 from datetime import timedelta
 from unittest.mock import patch
+
+import pytest
 
 from labctl import services
 from labctl.services import (
@@ -12,6 +16,28 @@ from labctl.services import (
     _parse_systemd_timestamp,
     check_service,
 )
+
+
+@pytest.fixture
+def pacific_tz():
+    """Run the test with the process timezone set to US Pacific.
+
+    strptime's %Z only accepts UTC/GMT and the *local* zone names, and
+    systemd prints timestamps in the host's local zone. A "PDT" sample
+    therefore only parses when the process is on Pacific time — which the
+    dev host is, but CI runners (UTC) are not.
+    """
+    old = os.environ.get("TZ")
+    os.environ["TZ"] = "America/Los_Angeles"
+    time.tzset()
+    try:
+        yield
+    finally:
+        if old is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old
+        time.tzset()
 
 
 class TestParsing:
@@ -28,8 +54,14 @@ class TestParsing:
         assert props["NRestarts"] == "2"
         assert props["Result"] == "success"
 
-    def test_parse_systemd_timestamp_valid(self):
+    def test_parse_systemd_timestamp_valid(self, pacific_tz):
         dt = _parse_systemd_timestamp("Sun 2026-04-19 16:08:26 PDT")
+        assert dt is not None
+        assert dt.year == 2026 and dt.month == 4 and dt.day == 19
+
+    def test_parse_systemd_timestamp_utc_any_host(self):
+        """A UTC host's systemd output parses regardless of process TZ."""
+        dt = _parse_systemd_timestamp("Sun 2026-04-19 23:08:26 UTC")
         assert dt is not None
         assert dt.year == 2026 and dt.month == 4 and dt.day == 19
 
