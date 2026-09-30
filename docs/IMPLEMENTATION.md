@@ -769,6 +769,6 @@ P4 showcase. Scratch list of out-of-scope findings:
 - ✅ B3 Fix Python 3.10 import crash in `labctl.sdwire` (`datetime.UTC`)
 - ✅ B4 `python -m build` + `twine check --strict` clean; pipx wheel
   install + `labctl mcp` stdio handshake verified
-- ☐ C0 Clear repo-wide lint debt (black/isort/flake8) and pin tool versions
+- ✅ C0 Clear repo-wide lint debt (black/isort/flake8) and pin tool versions
 - ☐ C1 GitHub Actions CI: 3.10–3.13 matrix, lint, pytest + coverage
   artifact, gitleaks

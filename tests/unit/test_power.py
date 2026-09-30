@@ -1,9 +1,8 @@
 """Unit tests for power control module."""
 
-import asyncio
 import logging
-import types
 import sys
+import types
 from unittest.mock import Mock, patch
 
 import pytest
@@ -487,6 +486,7 @@ class TestKasaHostStateCache:
     def test_concurrent_callers_share_one_handshake(self):
         """6 outlets on one strip → one fetch, five cache hits."""
         import threading
+
         from labctl.power.kasa import KasaController
 
         host = "192.168.4.140"
@@ -523,7 +523,6 @@ class TestKasaHostStateCache:
         ]
 
     def test_cache_ttl_expires(self):
-        from labctl.power import kasa as kasa_module
         from labctl.power.kasa import KasaController
 
         host = "10.0.0.50"
@@ -542,7 +541,7 @@ class TestKasaHostStateCache:
             ):
                 c = KasaController(host)
                 assert c.get_state().value == "on"
-                assert c.get_state().value == "on"   # cache hit
+                assert c.get_state().value == "on"  # cache hit
                 assert c.get_state().value == "off"  # TTL expired → refetch
 
         assert calls["n"] == 2
@@ -563,9 +562,7 @@ class TestKasaHostStateCache:
         from labctl.power.kasa import KasaController
 
         host = "10.0.0.99"
-        ctx_fetch, calls = self._patch_fetch(
-            states_seq=[{1: True}, {1: False}]
-        )
+        ctx_fetch, calls = self._patch_fetch(states_seq=[{1: True}, {1: False}])
 
         with ctx_fetch:
             c = KasaController(host)
@@ -589,7 +586,10 @@ class TestKasaHostStateCache:
 
         ctx, _ = self._patch_fetch(states_seq=[{1: True, 2: False}])
         with ctx:
-            assert KasaController("10.0.0.10", plug_index=99).get_state() == PowerState.UNKNOWN
+            assert (
+                KasaController("10.0.0.10", plug_index=99).get_state()
+                == PowerState.UNKNOWN
+            )
 
 
 class TestKasaCredentials:
@@ -611,7 +611,9 @@ class TestKasaCredentials:
         )
 
         with patch.dict(sys.modules, {"kasa": fake_kasa}):
-            with patch("labctl.power.kasa.load_config", return_value=mock_config) as mock_load:
+            with patch(
+                "labctl.power.kasa.load_config", return_value=mock_config
+            ) as mock_load:
                 c1 = KasaController("192.168.1.100")
                 c2 = KasaController("192.168.1.101")
 

@@ -10,9 +10,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-logger = logging.getLogger(__name__)
-
 import yaml
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_CONFIG_FILE = Path("/etc/labctl/config.yaml")
 
@@ -357,9 +357,7 @@ class Config:
             logger.warning("Config: %s", w)
 
         mcp = McpConfig(
-            allow_admin_actuator_ops=mcp_data.get(
-                "allow_admin_actuator_ops", False
-            ),
+            allow_admin_actuator_ops=mcp_data.get("allow_admin_actuator_ops", False),
         )
 
         database = DatabaseConfig(
@@ -444,7 +442,9 @@ class Config:
                 "max_duration_minutes": self.claims.max_duration_minutes,
                 "min_duration_minutes": self.claims.min_duration_minutes,
                 "grace_period_seconds": self.claims.grace_period_seconds,
-                "auto_prune_released_after_days": self.claims.auto_prune_released_after_days,
+                "auto_prune_released_after_days": (
+                    self.claims.auto_prune_released_after_days
+                ),
                 "require_agent_name": self.claims.require_agent_name,
             },
             "mcp": {

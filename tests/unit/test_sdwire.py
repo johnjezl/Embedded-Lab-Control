@@ -1,7 +1,6 @@
 """Unit tests for SDWire controller."""
 
 from contextlib import contextmanager
-
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -1023,5 +1022,7 @@ class TestReadAccess:
                 "labctl.sdwire.controller.subprocess.run",
                 side_effect=FileNotFoundError("parted"),
             ):
-                with pytest.raises(RuntimeError, match="Failed to read partition table"):
+                with pytest.raises(
+                    RuntimeError, match="Failed to read partition table"
+                ):
                     ctrl.get_disk_info()

@@ -168,7 +168,9 @@ def control_power(name: str):
             return (
                 jsonify(
                     {
-                        "error": f"Rate limited: wait {wait:.1f}s before next power cycle",
+                        "error": (
+                            f"Rate limited: wait {wait:.1f}s before next power cycle"
+                        ),
                     }
                 ),
                 429,

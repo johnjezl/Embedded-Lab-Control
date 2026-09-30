@@ -1,9 +1,7 @@
 """Unit tests for the services-status module."""
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 from unittest.mock import patch
-
-import pytest
 
 from labctl import services
 from labctl.services import (
@@ -83,8 +81,9 @@ class TestCheckService:
                 return 0, show_output
             return 0, ""
 
-        with patch.object(services, "_run", side_effect=fake_run), patch.object(
-            services.shutil, "which", return_value="/bin/systemctl"
+        with (
+            patch.object(services, "_run", side_effect=fake_run),
+            patch.object(services.shutil, "which", return_value="/bin/systemctl"),
         ):
             status = check_service("fake.service")
 
@@ -120,8 +119,9 @@ class TestCheckService:
                 return 0, journal_output
             return 0, ""
 
-        with patch.object(services, "_run", side_effect=fake_run), patch.object(
-            services.shutil, "which", return_value="/bin/whatever"
+        with (
+            patch.object(services, "_run", side_effect=fake_run),
+            patch.object(services.shutil, "which", return_value="/bin/whatever"),
         ):
             status = check_service("fake.service")
 
@@ -139,8 +139,9 @@ class TestCheckService:
         def fake_run(cmd, timeout=5.0):
             return 0, show_output
 
-        with patch.object(services, "_run", side_effect=fake_run), patch.object(
-            services.shutil, "which", return_value="/bin/systemctl"
+        with (
+            patch.object(services, "_run", side_effect=fake_run),
+            patch.object(services.shutil, "which", return_value="/bin/systemctl"),
         ):
             status = check_service("nope.service")
 

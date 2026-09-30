@@ -176,7 +176,9 @@ DEFAULT_POWER_CYCLE_DELAY_SECONDS = 3.0
 def _status_fast_stale_threshold(config) -> int:
     """Compute the dim-threshold from config: 2 × power_check_interval."""
     try:
-        return max(STATUS_FAST_STALE_SECONDS, 2 * int(config.health.power_check_interval))
+        return max(
+            STATUS_FAST_STALE_SECONDS, 2 * int(config.health.power_check_interval)
+        )
     except (AttributeError, TypeError, ValueError):
         return STATUS_FAST_STALE_SECONDS
 
@@ -533,9 +535,7 @@ TCP_ESCAPE_CHAR = b"\x1d"  # ASCII 29 = Ctrl+]
 TCP_EXIT_CHARS = (b"q", b"Q", b"\x1c")  # 'q', 'Q', or Ctrl+\
 
 
-def _process_keystrokes(
-    data: bytes, in_escape: bool
-) -> tuple[bytes, bool, bool]:
+def _process_keystrokes(data: bytes, in_escape: bool) -> tuple[bytes, bool, bool]:
     """Drive the Ctrl+] escape state machine across a chunk of input.
 
     Returns ``(bytes_to_send_upstream, new_in_escape_state, should_exit)``.
@@ -652,9 +652,7 @@ def _connect_tcp_raw(host: str, port: int) -> None:
                     break
                 if not data:
                     break
-                to_send, in_escape, should_exit = _process_keystrokes(
-                    data, in_escape
-                )
+                to_send, in_escape, should_exit = _process_keystrokes(data, in_escape)
                 if to_send:
                     try:
                         sock.sendall(to_send)
@@ -744,7 +742,9 @@ def _find_proxy_blocking_sbc(
     return target_sbc.name, state
 
 
-def _refuse_when_proxy_active(sbc_name: str, proxy_state: dict, command_name: str) -> None:
+def _refuse_when_proxy_active(
+    sbc_name: str, proxy_state: dict, command_name: str
+) -> None:
     """Exit with a clear message when a shared proxy already owns the console path."""
     proxy_port = proxy_state.get("proxy_port")
     click.echo(
@@ -899,7 +899,8 @@ def info_cmd(ctx: click.Context, name: str) -> None:
             tcp = f" (tcp:{port.tcp_port})" if port.tcp_port else ""
             alias = f" [{port.alias}]" if port.alias else ""
             click.echo(
-                f"  {port.port_type.value}: {port.device_path}{tcp} @ {port.baud_rate}{alias}"
+                f"  {port.port_type.value}: {port.device_path}{tcp}"
+                f" @ {port.baud_rate}{alias}"
             )
     else:
         click.echo("  (none)")
@@ -924,15 +925,14 @@ def info_cmd(ctx: click.Context, name: str) -> None:
     if sbc.power_cycle_delay_seconds is not None:
         click.echo(f"  cycle delay: {sbc.power_cycle_delay_seconds}s (per-SBC)")
     else:
-        click.echo(
-            f"  cycle delay: {DEFAULT_POWER_CYCLE_DELAY_SECONDS}s (default)"
-        )
+        click.echo(f"  cycle delay: {DEFAULT_POWER_CYCLE_DELAY_SECONDS}s (default)")
 
     # SDWire
     click.echo("\nSDWire:")
     if sbc.sdwire:
         click.echo(
-            f"  {sbc.sdwire.name}: {sbc.sdwire.serial_number} ({sbc.sdwire.device_type})"
+            f"  {sbc.sdwire.name}: {sbc.sdwire.serial_number}"
+            f" ({sbc.sdwire.device_type})"
         )
     else:
         click.echo("  (none)")
@@ -1129,7 +1129,8 @@ def sdwire_list_cmd(ctx: click.Context) -> None:
     devices = manager.list_sdwire_devices()
     if not devices:
         click.echo(
-            "No SDWire devices registered. Use 'labctl sdwire discover' to find devices."
+            "No SDWire devices registered. "
+            "Use 'labctl sdwire discover' to find devices."
         )
         return
 
@@ -1451,7 +1452,7 @@ def sdwire_update_cmd(
       labctl sdwire update pi-5 -p 1 --rename armstub.bin:armstub.bin.disabled
       labctl sdwire update pi-5 -p 1 --delete old-config.txt
       labctl sdwire update pi-5 -p 1 -c fw.bin:firmware.bin -r old.bin:old.bin.bak -d stale.txt --reboot
-    """
+    """  # noqa: E501
     from labctl.sdwire.controller import SDWireController
 
     if not copies and not renames and not deletes:
@@ -1950,7 +1951,8 @@ def serial_list_cmd(ctx: click.Context) -> None:
     devices = manager.list_serial_devices()
     if not devices:
         click.echo(
-            "No serial devices registered. Use 'labctl serial discover' to find devices."
+            "No serial devices registered. "
+            "Use 'labctl serial discover' to find devices."
         )
         return
 
@@ -2154,7 +2156,7 @@ def serial_capture_cmd(
         if result.output:
             click.echo(result.output)
 
-        status = f"pattern matched" if result.pattern_matched else "timeout"
+        status = "pattern matched" if result.pattern_matched else "timeout"
         click.echo(
             f"\n[{result.lines} lines, {result.elapsed_seconds:.1f}s, {status}]",
             err=True,
@@ -2396,7 +2398,8 @@ def port_assign_cmd(
         )
         alias_str = f" as '{alias}'" if alias else ""
         click.echo(
-            f"Assigned {port_type} port to {sbc_name}{alias_str}: {device} (tcp:{port.tcp_port})"
+            f"Assigned {port_type} port to {sbc_name}{alias_str}: "
+            f"{device} (tcp:{port.tcp_port})"
         )
     except ValueError as e:
         click.echo(f"Error: {e}", err=True)
@@ -2447,7 +2450,8 @@ def port_list_cmd(ctx: click.Context, unassigned: bool) -> None:
 
     if ports:
         click.echo(
-            f"{'SBC':<15} {'TYPE':<10} {'ALIAS':<18} {'DEVICE':<25} {'TCP':<8} {'BAUD':<10}"
+            f"{'SBC':<15} {'TYPE':<10} {'ALIAS':<18} "
+            f"{'DEVICE':<25} {'TCP':<8} {'BAUD':<10}"
         )
         click.echo("-" * 86)
 
@@ -2842,7 +2846,9 @@ def _resolve_cycle_delay(sbc, requested: float | None) -> tuple[float, str | Non
     string when the requested value was raised to the floor, else None.
     """
     sbc_value = getattr(sbc, "power_cycle_delay_seconds", None)
-    floor = float(sbc_value) if sbc_value is not None else DEFAULT_POWER_CYCLE_DELAY_SECONDS
+    floor = (
+        float(sbc_value) if sbc_value is not None else DEFAULT_POWER_CYCLE_DELAY_SECONDS
+    )
 
     if requested is None:
         return floor, None
@@ -2872,9 +2878,7 @@ def _resolve_cycle_delay(sbc, requested: float | None) -> tuple[float, str | Non
     ),
 )
 @click.pass_context
-def power_cycle_cmd(
-    ctx: click.Context, sbc_name: str, delay: float | None
-) -> None:
+def power_cycle_cmd(ctx: click.Context, sbc_name: str, delay: float | None) -> None:
     """Power cycle an SBC (off, wait, on)."""
     manager = _get_manager(ctx)
     controller, sbc = _get_power_controller(manager, sbc_name)
@@ -3112,9 +3116,7 @@ def actuator_add_cmd(
         serial_no=serial_no,
     )
     for i in range(1, channels + 1):
-        manager.add_actuator_channel(
-            actuator.id, i, default_state=ChannelState.OPEN
-        )
+        manager.add_actuator_channel(actuator.id, i, default_state=ChannelState.OPEN)
     click.echo(f"Added actuator {name!r} ({driver}, {channels} channel(s))")
 
 
@@ -3128,9 +3130,7 @@ def actuator_list_cmd(ctx: click.Context) -> None:
         click.echo("No actuators configured.")
         return
 
-    click.echo(
-        f"{'NAME':<24} {'DRIVER':<14} {'CH':<3} {'DEVICE':<28} {'PROBE'}"
-    )
+    click.echo(f"{'NAME':<24} {'DRIVER':<14} {'CH':<3} {'DEVICE':<28} {'PROBE'}")
     click.echo("-" * 80)
     for a in actuators:
         device = a.device_path or "-"
@@ -3155,7 +3155,9 @@ def actuator_probe_cmd(ctx: click.Context, name: str) -> None:
         sys.exit(1)
 
     try:
-        driver = get_driver(actuator.driver, expected_channel_count=len(actuator.channels))
+        driver = get_driver(
+            actuator.driver, expected_channel_count=len(actuator.channels)
+        )
     except NotImplementedError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -3188,9 +3190,7 @@ def actuator_probe_cmd(ctx: click.Context, name: str) -> None:
 @click.argument("channel", type=int)
 @click.argument("state", type=_channel_state_choice())
 @click.pass_context
-def actuator_set_cmd(
-    ctx: click.Context, name: str, channel: int, state: str
-) -> None:
+def actuator_set_cmd(ctx: click.Context, name: str, channel: int, state: str) -> None:
     """Drive a channel directly (bypasses bindings).
 
     Provisioning aid for verifying wiring; production paths should go
@@ -3207,9 +3207,7 @@ def actuator_set_cmd(
 
     ch = manager.get_actuator_channel(actuator.id, channel)
     if not ch:
-        click.echo(
-            f"Error: channel {channel} not on {name!r}", err=True
-        )
+        click.echo(f"Error: channel {channel} not on {name!r}", err=True)
         sys.exit(1)
 
     target_state = ChannelState(state)
@@ -3234,26 +3232,30 @@ def actuator_set_cmd(
 
     if outcome.value != "ok":
         _audit_raw_actuator_set(
-            manager, actuator, ch, target_state,
-            ok=False, error=outcome.value,
+            manager,
+            actuator,
+            ch,
+            target_state,
+            ok=False,
+            error=outcome.value,
         )
-        click.echo(
-            f"Error: set_channel returned {outcome.value}", err=True
-        )
+        click.echo(f"Error: set_channel returned {outcome.value}", err=True)
         sys.exit(1)
 
     manager.update_channel_state(ch.id, target_state)
     _audit_raw_actuator_set(
-        manager, actuator, ch, target_state, ok=True,
+        manager,
+        actuator,
+        ch,
+        target_state,
+        ok=True,
     )
     click.echo(f"Set {name}[{channel}] -> {state}")
 
 
 @actuator_group.command("remove")
 @click.argument("name")
-@click.option(
-    "--yes", "-y", is_flag=True, help="Skip confirmation prompt."
-)
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
 @click.pass_context
 def actuator_remove_cmd(ctx: click.Context, name: str, yes: bool) -> None:
     """Remove an actuator and any bindings that reference it."""
@@ -3353,13 +3355,9 @@ def bind_cmd(
     shape_active = ChannelState(active_when)
 
     if shape_mode is ShapeMode.MOMENTARY and pulse_ms is None:
-        raise click.UsageError(
-            "--pulse-ms is required when --mode=momentary"
-        )
+        raise click.UsageError("--pulse-ms is required when --mode=momentary")
     if shape_mode is ShapeMode.LATCH and pulse_ms is not None:
-        raise click.UsageError(
-            "--pulse-ms only applies to momentary bindings"
-        )
+        raise click.UsageError("--pulse-ms only applies to momentary bindings")
 
     # Wiring-polarity validation: if default_state == active, the device
     # would always boot asserted — almost always a wiring mistake.
@@ -3402,9 +3400,7 @@ def unbind_cmd(ctx: click.Context, sbc_name: str, purpose: str) -> None:
         sys.exit(1)
     binding = manager.get_binding_by_target(sbc.id, purpose)
     if not binding:
-        click.echo(
-            f"Error: no binding for {sbc_name}:{purpose}", err=True
-        )
+        click.echo(f"Error: no binding for {sbc_name}:{purpose}", err=True)
         sys.exit(1)
     manager.delete_binding(binding.id)
     click.echo(f"Unbound {sbc_name}:{purpose}")
@@ -3432,9 +3428,7 @@ def _resolve_binding_for_verb(ctx, sbc_name: str, purpose: str):
         sys.exit(1)
     binding = manager.get_binding_by_target(sbc.id, purpose)
     if not binding:
-        click.echo(
-            f"Error: no binding for {sbc_name}:{purpose}", err=True
-        )
+        click.echo(f"Error: no binding for {sbc_name}:{purpose}", err=True)
         sys.exit(1)
     return manager, binding
 
@@ -3497,9 +3491,7 @@ def bindings_press_cmd(ctx: click.Context, sbc_name: str, purpose: str) -> None:
     click.echo(f"Pressed {sbc_name}:{purpose}")
 
 
-def _run_composite(
-    ctx, sbc_name: str, fn_name: str, fn
-) -> None:
+def _run_composite(ctx, sbc_name: str, fn_name: str, fn) -> None:
     """Wrap a composite (enter_recovery / exit_recovery) with shared setup."""
     from labctl.actuators.runtime import ActuationError
 
@@ -3509,9 +3501,7 @@ def _run_composite(
         click.echo(f"Error: SBC {sbc_name!r} not found", err=True)
         sys.exit(1)
     if not sbc.power_plug:
-        click.echo(
-            f"Error: {sbc_name!r} has no power plug configured", err=True
-        )
+        click.echo(f"Error: {sbc_name!r} has no power plug configured", err=True)
         sys.exit(1)
 
     controller, _sbc = _get_power_controller(manager, sbc_name)
@@ -3521,21 +3511,32 @@ def _run_composite(
         fn(manager, sbc, controller, delay_s=delay)
     except ActuationError as e:
         _emit_power_event(
-            manager, sbc, fn_name, False, error=str(e),
+            manager,
+            sbc,
+            fn_name,
+            False,
+            error=str(e),
             extra={"delay_seconds": delay},
         )
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
     except RuntimeError as e:
         _emit_power_event(
-            manager, sbc, fn_name, False, error=str(e),
+            manager,
+            sbc,
+            fn_name,
+            False,
+            error=str(e),
             extra={"delay_seconds": delay},
         )
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
     _emit_power_event(
-        manager, sbc, fn_name, True,
+        manager,
+        sbc,
+        fn_name,
+        True,
         extra={"delay_seconds": delay},
     )
 
@@ -3574,9 +3575,7 @@ def exit_recovery_cmd(ctx: click.Context, sbc_name: str) -> None:
 @click.argument("sbc_name")
 @click.argument("purpose")
 @click.pass_context
-def bindings_status_cmd(
-    ctx: click.Context, sbc_name: str, purpose: str
-) -> None:
+def bindings_status_cmd(ctx: click.Context, sbc_name: str, purpose: str) -> None:
     """Show current desired vs. last state for a binding (read-only)."""
     from labctl.actuators.runtime import binding_status
 
@@ -3594,8 +3593,8 @@ def bindings_status_cmd(
         f"phase={info['binding']['sample_phase']}"
     )
     click.echo(f"Desired:    {info['binding']['desired_state']}")
-    last = info['channel']['last_state'] or "unknown"
-    when = info['channel']['last_changed_at'] or "never"
+    last = info["channel"]["last_state"] or "unknown"
+    when = info["channel"]["last_changed_at"] or "never"
     click.echo(
         f"Last:       {last} (changed {when}, "
         f"{info['channel']['cycle_count']} cycle(s))"
@@ -3941,6 +3940,7 @@ def status_cmd(
       labctl status -w           # Watch mode (updates every 5s)
       labctl status -w -i 10     # Watch mode with 10s interval
     """
+
     def display_status():
         manager = _get_manager(ctx)
         sbcs = manager.list_sbcs(project=project)
@@ -4872,7 +4872,10 @@ def sessions_cmd(ctx: click.Context, sbc_name: str | None) -> None:
     """
     # This would query a running proxy daemon for session info
     # For now, just show a placeholder message
-    click.echo("Shared serial proxy only: this does not track direct console or serial_capture.")
+    click.echo(
+        "Shared serial proxy only: "
+        "this does not track direct console or serial_capture."
+    )
     click.echo(
         "Note: Session listing requires proxy daemon mode (not yet implemented)."
     )
@@ -5061,7 +5064,7 @@ def boot_test_cmd(
       labctl boot-test pi-5-1 -i slmos.bin -d kernel_2712.img -p 1 -e "slmos>" -r 10
       labctl boot-test pi-5-1 --no-deploy -e "slmos>" -r 5 -t 30
       labctl boot-test pi-5-1 -i slmos.bin -d kernel_2712.img -e "slmos>" -o /tmp/results/
-    """
+    """  # noqa: E501
     import time as time_mod
 
     from labctl.serial.boot_test import run_boot_test
@@ -5102,7 +5105,7 @@ def boot_test_cmd(
     deploy_fn = None
     if not no_deploy and image and dest:
 
-        def deploy_fn():
+        def _deploy():
             from labctl.sdwire.controller import SDWireController
 
             if not sbc.sdwire:
@@ -5116,6 +5119,8 @@ def boot_test_cmd(
             ctrl.update_files(partition, [(image, dest)])
             ctrl.switch_to_dut()
             click.echo(f"Deployed {image} -> {dest}")
+
+        deploy_fn = _deploy
 
     # Build power cycle function
     def power_cycle_fn():
@@ -5449,9 +5454,7 @@ def _parse_since(since: str) -> str:
     unit = since[-1]
     units = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}
     if unit not in units:
-        raise click.BadParameter(
-            f"Unknown unit '{unit}'. Use Ns, Nm, Nh, or Nd."
-        )
+        raise click.BadParameter(f"Unknown unit '{unit}'. Use Ns, Nm, Nh, or Nd.")
     try:
         n = int(since[:-1])
     except ValueError as e:

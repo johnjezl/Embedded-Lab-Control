@@ -2,8 +2,6 @@
 
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from labctl.serial.boot_test import BootRunResult, BootTestResult, run_boot_test
 
 

@@ -52,9 +52,5 @@ def get_driver(
     if driver_name is DriverName.LCUS1_SERIAL:
         from labctl.actuators.lcus1 import Lcus1SerialDriver
 
-        return Lcus1SerialDriver(
-            expected_channel_count=expected_channel_count
-        )
-    raise NotImplementedError(
-        f"driver {driver_name.value!r} is not implemented yet"
-    )
+        return Lcus1SerialDriver(expected_channel_count=expected_channel_count)
+    raise NotImplementedError(f"driver {driver_name.value!r} is not implemented yet")

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from labctl.serial.capture import CaptureResult, capture_serial_output
+from labctl.serial.capture import capture_serial_output
 
 logger = logging.getLogger(__name__)
 

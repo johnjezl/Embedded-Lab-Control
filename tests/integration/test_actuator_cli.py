@@ -52,11 +52,17 @@ class TestActuatorAdd:
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "actuator", "add", "relay-1",
-                "--driver", "lcus1_serial",
-                "--device", "/dev/ttyUSB-relay-1",
-                "--channels", "1",
+                "-c",
+                str(lab.config_path),
+                "actuator",
+                "add",
+                "relay-1",
+                "--driver",
+                "lcus1_serial",
+                "--device",
+                "/dev/ttyUSB-relay-1",
+                "--channels",
+                "1",
             ],
         )
         assert result.exit_code == 0, result.output
@@ -72,10 +78,15 @@ class TestActuatorAdd:
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "actuator", "add", "relay-x",
-                "--driver", "numato_acm",
-                "--channels", "1",
+                "-c",
+                str(lab.config_path),
+                "actuator",
+                "add",
+                "relay-x",
+                "--driver",
+                "numato_acm",
+                "--channels",
+                "1",
             ],
         )
         assert result.exit_code != 0
@@ -85,10 +96,15 @@ class TestActuatorAdd:
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "actuator", "add", "relay-x",
-                "--driver", "lcus1_serial",
-                "--channels", "0",
+                "-c",
+                str(lab.config_path),
+                "actuator",
+                "add",
+                "relay-x",
+                "--driver",
+                "lcus1_serial",
+                "--channels",
+                "0",
             ],
         )
         assert result.exit_code != 0
@@ -100,15 +116,18 @@ class TestActuatorListAndRemove:
         runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "actuator", "add", "relay-a",
-                "--driver", "lcus1_serial",
-                "--channels", "1",
+                "-c",
+                str(lab.config_path),
+                "actuator",
+                "add",
+                "relay-a",
+                "--driver",
+                "lcus1_serial",
+                "--channels",
+                "1",
             ],
         )
-        result = runner.invoke(
-            main, ["-c", str(lab.config_path), "actuator", "list"]
-        )
+        result = runner.invoke(main, ["-c", str(lab.config_path), "actuator", "list"])
         assert result.exit_code == 0, result.output
         assert "relay-a" in result.output
         assert "lcus1_serial" in result.output
@@ -117,17 +136,26 @@ class TestActuatorListAndRemove:
         runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "actuator", "add", "relay-b",
-                "--driver", "lcus1_serial",
-                "--channels", "1",
+                "-c",
+                str(lab.config_path),
+                "actuator",
+                "add",
+                "relay-b",
+                "--driver",
+                "lcus1_serial",
+                "--channels",
+                "1",
             ],
         )
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "actuator", "remove", "relay-b", "--yes",
+                "-c",
+                str(lab.config_path),
+                "actuator",
+                "remove",
+                "relay-b",
+                "--yes",
             ],
         )
         assert result.exit_code == 0, result.output
@@ -143,11 +171,17 @@ def _add_relay(runner, config_path, name="relay-1", channels=1):
     return runner.invoke(
         main,
         [
-            "-c", str(config_path),
-            "actuator", "add", name,
-            "--driver", "lcus1_serial",
-            "--device", f"/dev/ttyUSB-{name}",
-            "--channels", str(channels),
+            "-c",
+            str(config_path),
+            "actuator",
+            "add",
+            name,
+            "--driver",
+            "lcus1_serial",
+            "--device",
+            f"/dev/ttyUSB-{name}",
+            "--channels",
+            str(channels),
         ],
     )
 
@@ -158,12 +192,21 @@ class TestBindCommand:
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "bind", "jetson-nano-2", "recovery_mode",
-                "--actuator", "relay-1", "--channel", "1",
-                "--mode", "latch",
-                "--active-when", "closed",
-                "--phase", "pre-power",
+                "-c",
+                str(lab.config_path),
+                "bind",
+                "jetson-nano-2",
+                "recovery_mode",
+                "--actuator",
+                "relay-1",
+                "--channel",
+                "1",
+                "--mode",
+                "latch",
+                "--active-when",
+                "closed",
+                "--phase",
+                "pre-power",
             ],
         )
         assert result.exit_code == 0, result.output
@@ -180,11 +223,19 @@ class TestBindCommand:
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "bind", "jetson-nano-2", "power_button",
-                "--actuator", "relay-1", "--channel", "1",
-                "--mode", "momentary",
-                "--active-when", "closed",
+                "-c",
+                str(lab.config_path),
+                "bind",
+                "jetson-nano-2",
+                "power_button",
+                "--actuator",
+                "relay-1",
+                "--channel",
+                "1",
+                "--mode",
+                "momentary",
+                "--active-when",
+                "closed",
             ],
         )
         assert result.exit_code != 0
@@ -195,12 +246,21 @@ class TestBindCommand:
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "bind", "jetson-nano-2", "recovery_mode",
-                "--actuator", "relay-1", "--channel", "1",
-                "--mode", "latch",
-                "--active-when", "closed",
-                "--pulse-ms", "200",
+                "-c",
+                str(lab.config_path),
+                "bind",
+                "jetson-nano-2",
+                "recovery_mode",
+                "--actuator",
+                "relay-1",
+                "--channel",
+                "1",
+                "--mode",
+                "latch",
+                "--active-when",
+                "closed",
+                "--pulse-ms",
+                "200",
             ],
         )
         assert result.exit_code != 0
@@ -214,11 +274,19 @@ class TestBindCommand:
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "bind", "jetson-nano-2", "recovery_mode",
-                "--actuator", "relay-1", "--channel", "1",
-                "--mode", "latch",
-                "--active-when", "open",
+                "-c",
+                str(lab.config_path),
+                "bind",
+                "jetson-nano-2",
+                "recovery_mode",
+                "--actuator",
+                "relay-1",
+                "--channel",
+                "1",
+                "--mode",
+                "latch",
+                "--active-when",
+                "open",
             ],
         )
         assert result.exit_code != 0
@@ -230,11 +298,19 @@ class TestBindCommand:
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "bind", "ghost", "recovery_mode",
-                "--actuator", "relay-1", "--channel", "1",
-                "--mode", "latch",
-                "--active-when", "closed",
+                "-c",
+                str(lab.config_path),
+                "bind",
+                "ghost",
+                "recovery_mode",
+                "--actuator",
+                "relay-1",
+                "--channel",
+                "1",
+                "--mode",
+                "latch",
+                "--active-when",
+                "closed",
             ],
         )
         assert result.exit_code != 0
@@ -245,11 +321,19 @@ class TestBindCommand:
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "bind", "jetson-nano-2", "recovery_mode",
-                "--actuator", "relay-1", "--channel", "99",
-                "--mode", "latch",
-                "--active-when", "closed",
+                "-c",
+                str(lab.config_path),
+                "bind",
+                "jetson-nano-2",
+                "recovery_mode",
+                "--actuator",
+                "relay-1",
+                "--channel",
+                "99",
+                "--mode",
+                "latch",
+                "--active-when",
+                "closed",
             ],
         )
         assert result.exit_code != 0
@@ -262,23 +346,33 @@ class TestUnbindAndList:
         runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "bind", "jetson-nano-2", "recovery_mode",
-                "--actuator", "relay-1", "--channel", "1",
-                "--mode", "latch", "--active-when", "closed",
+                "-c",
+                str(lab.config_path),
+                "bind",
+                "jetson-nano-2",
+                "recovery_mode",
+                "--actuator",
+                "relay-1",
+                "--channel",
+                "1",
+                "--mode",
+                "latch",
+                "--active-when",
+                "closed",
             ],
         )
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "unbind", "jetson-nano-2", "recovery_mode",
+                "-c",
+                str(lab.config_path),
+                "unbind",
+                "jetson-nano-2",
+                "recovery_mode",
             ],
         )
         assert result.exit_code == 0, result.output
-        assert lab.manager.get_binding_by_target(
-            lab.sbc.id, "recovery_mode"
-        ) is None
+        assert lab.manager.get_binding_by_target(lab.sbc.id, "recovery_mode") is None
 
     def test_bindings_list_filters_by_target(self, runner, lab):
         _add_relay(runner, lab.config_path, channels=2)
@@ -287,34 +381,55 @@ class TestUnbindAndList:
         runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "bind", "jetson-nano-2", "recovery_mode",
-                "--actuator", "relay-1", "--channel", "1",
-                "--mode", "latch", "--active-when", "closed",
+                "-c",
+                str(lab.config_path),
+                "bind",
+                "jetson-nano-2",
+                "recovery_mode",
+                "--actuator",
+                "relay-1",
+                "--channel",
+                "1",
+                "--mode",
+                "latch",
+                "--active-when",
+                "closed",
             ],
         )
         runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "bind", "pi-5-1", "power_button",
-                "--actuator", "relay-1", "--channel", "2",
-                "--mode", "momentary", "--active-when", "closed",
-                "--pulse-ms", "200",
+                "-c",
+                str(lab.config_path),
+                "bind",
+                "pi-5-1",
+                "power_button",
+                "--actuator",
+                "relay-1",
+                "--channel",
+                "2",
+                "--mode",
+                "momentary",
+                "--active-when",
+                "closed",
+                "--pulse-ms",
+                "200",
             ],
         )
 
-        all_b = runner.invoke(
-            main, ["-c", str(lab.config_path), "bindings", "list"]
-        )
+        all_b = runner.invoke(main, ["-c", str(lab.config_path), "bindings", "list"])
         assert "jetson-nano-2" in all_b.output
         assert "pi-5-1" in all_b.output
 
         only = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "bindings", "list", "--target", "jetson-nano-2",
+                "-c",
+                str(lab.config_path),
+                "bindings",
+                "list",
+                "--target",
+                "jetson-nano-2",
             ],
         )
         assert "jetson-nano-2" in only.output
@@ -413,12 +528,21 @@ class TestVerbs:
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "bind", "jetson-nano-2", "recovery_mode",
-                "--actuator", "relay-1", "--channel", "1",
-                "--mode", "latch",
-                "--active-when", "closed",
-                "--phase", "pre-power",
+                "-c",
+                str(lab.config_path),
+                "bind",
+                "jetson-nano-2",
+                "recovery_mode",
+                "--actuator",
+                "relay-1",
+                "--channel",
+                "1",
+                "--mode",
+                "latch",
+                "--active-when",
+                "closed",
+                "--phase",
+                "pre-power",
             ],
         )
         assert result.exit_code == 0, result.output
@@ -428,12 +552,21 @@ class TestVerbs:
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "bind", "jetson-nano-2", "power_button",
-                "--actuator", "relay-1", "--channel", "1",
-                "--mode", "momentary",
-                "--active-when", "closed",
-                "--pulse-ms", "100",
+                "-c",
+                str(lab.config_path),
+                "bind",
+                "jetson-nano-2",
+                "power_button",
+                "--actuator",
+                "relay-1",
+                "--channel",
+                "1",
+                "--mode",
+                "momentary",
+                "--active-when",
+                "closed",
+                "--pulse-ms",
+                "100",
             ],
         )
         assert result.exit_code == 0, result.output
@@ -452,8 +585,12 @@ class TestVerbs:
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "bindings", "actuate", "jetson-nano-2", "recovery_mode",
+                "-c",
+                str(lab.config_path),
+                "bindings",
+                "actuate",
+                "jetson-nano-2",
+                "recovery_mode",
             ],
         )
         assert result.exit_code == 0, result.output
@@ -475,15 +612,23 @@ class TestVerbs:
         runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "bindings", "actuate", "jetson-nano-2", "recovery_mode",
+                "-c",
+                str(lab.config_path),
+                "bindings",
+                "actuate",
+                "jetson-nano-2",
+                "recovery_mode",
             ],
         )
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "bindings", "release", "jetson-nano-2", "recovery_mode",
+                "-c",
+                str(lab.config_path),
+                "bindings",
+                "release",
+                "jetson-nano-2",
+                "recovery_mode",
             ],
         )
         assert result.exit_code == 0, result.output
@@ -503,8 +648,12 @@ class TestVerbs:
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "bindings", "actuate", "jetson-nano-2", "power_button",
+                "-c",
+                str(lab.config_path),
+                "bindings",
+                "actuate",
+                "jetson-nano-2",
+                "power_button",
             ],
         )
         assert result.exit_code == 2
@@ -522,8 +671,12 @@ class TestVerbs:
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "bindings", "press", "jetson-nano-2", "recovery_mode",
+                "-c",
+                str(lab.config_path),
+                "bindings",
+                "press",
+                "jetson-nano-2",
+                "recovery_mode",
             ],
         )
         assert result.exit_code == 2
@@ -544,8 +697,12 @@ class TestVerbs:
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "bindings", "press", "jetson-nano-2", "power_button",
+                "-c",
+                str(lab.config_path),
+                "bindings",
+                "press",
+                "jetson-nano-2",
+                "power_button",
             ],
         )
         assert result.exit_code == 0, result.output
@@ -569,8 +726,12 @@ class TestVerbs:
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "bindings", "actuate", "jetson-nano-2", "recovery_mode",
+                "-c",
+                str(lab.config_path),
+                "bindings",
+                "actuate",
+                "jetson-nano-2",
+                "recovery_mode",
             ],
         )
         assert result.exit_code == 1
@@ -582,8 +743,12 @@ class TestVerbs:
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "bindings", "status", "jetson-nano-2", "recovery_mode",
+                "-c",
+                str(lab.config_path),
+                "bindings",
+                "status",
+                "jetson-nano-2",
+                "recovery_mode",
             ],
         )
         assert result.exit_code == 0, result.output
@@ -600,20 +765,28 @@ class TestEnterExitRecovery:
         from labctl.core.models import PlugType
 
         # SBC needs a power plug for the composite to construct a controller.
-        lab.manager.assign_power_plug(
-            lab.sbc.id, PlugType.TASMOTA, address="10.0.0.1"
-        )
+        lab.manager.assign_power_plug(lab.sbc.id, PlugType.TASMOTA, address="10.0.0.1")
 
         # Pre-bind recovery_mode (latch, pre-power).
         _add_relay(runner, lab.config_path)
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "bind", "jetson-nano-2", "recovery_mode",
-                "--actuator", "relay-1", "--channel", "1",
-                "--mode", "latch", "--active-when", "closed",
-                "--phase", "pre-power",
+                "-c",
+                str(lab.config_path),
+                "bind",
+                "jetson-nano-2",
+                "recovery_mode",
+                "--actuator",
+                "relay-1",
+                "--channel",
+                "1",
+                "--mode",
+                "latch",
+                "--active-when",
+                "closed",
+                "--phase",
+                "pre-power",
             ],
         )
         assert result.exit_code == 0, result.output
@@ -651,8 +824,10 @@ class TestEnterExitRecovery:
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "enter-recovery", "jetson-nano-2",
+                "-c",
+                str(lab.config_path),
+                "enter-recovery",
+                "jetson-nano-2",
             ],
         )
         assert result.exit_code == 0, result.output
@@ -677,8 +852,10 @@ class TestEnterExitRecovery:
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "exit-recovery", "jetson-nano-2",
+                "-c",
+                str(lab.config_path),
+                "exit-recovery",
+                "jetson-nano-2",
             ],
         )
         assert result.exit_code == 0, result.output
@@ -693,9 +870,7 @@ class TestEnterExitRecovery:
     def test_enter_recovery_without_binding_errors(self, runner, lab, monkeypatch):
         from labctl.core.models import PlugType
 
-        lab.manager.assign_power_plug(
-            lab.sbc.id, PlugType.TASMOTA, address="10.0.0.1"
-        )
+        lab.manager.assign_power_plug(lab.sbc.id, PlugType.TASMOTA, address="10.0.0.1")
         # No bind invocation — composite must refuse.
         monkeypatch.setattr(
             "labctl.cli._get_power_controller",
@@ -705,8 +880,10 @@ class TestEnterExitRecovery:
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "enter-recovery", "jetson-nano-2",
+                "-c",
+                str(lab.config_path),
+                "enter-recovery",
+                "jetson-nano-2",
             ],
         )
         assert result.exit_code == 1
@@ -722,8 +899,13 @@ class TestActuatorSet:
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "actuator", "set", "relay-1", "1", "closed",
+                "-c",
+                str(lab.config_path),
+                "actuator",
+                "set",
+                "relay-1",
+                "1",
+                "closed",
             ],
         )
         assert result.exit_code == 0, result.output
@@ -744,8 +926,13 @@ class TestActuatorSet:
         result = runner.invoke(
             main,
             [
-                "-c", str(lab.config_path),
-                "actuator", "set", "relay-1", "1", "closed",
+                "-c",
+                str(lab.config_path),
+                "actuator",
+                "set",
+                "relay-1",
+                "1",
+                "closed",
             ],
         )
         assert result.exit_code != 0

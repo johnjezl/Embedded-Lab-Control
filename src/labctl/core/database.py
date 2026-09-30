@@ -281,7 +281,7 @@ CREATE INDEX IF NOT EXISTS idx_actuator_channels_actuator
 CREATE INDEX IF NOT EXISTS idx_bindings_sbc ON bindings(sbc_id);
 CREATE INDEX IF NOT EXISTS idx_bindings_actuator_channel
     ON bindings(actuator_channel_id);
-"""
+"""  # noqa: E501
 
 
 class Database:
@@ -351,8 +351,7 @@ class Database:
                     # otherwise fail with a PRIMARY KEY conflict.
                     _executescript_atomic(conn, SCHEMA_SQL)
                     conn.execute(
-                        "INSERT OR IGNORE INTO schema_version (version) "
-                        "VALUES (?)",
+                        "INSERT OR IGNORE INTO schema_version (version) " "VALUES (?)",
                         (SCHEMA_VERSION,),
                     )
                 else:
@@ -387,9 +386,7 @@ class Database:
                     mode,
                 )
         except sqlite3.OperationalError as e:
-            logger.warning(
-                "DB %s: pragma setup failed: %s", self.db_path, e
-            )
+            logger.warning("DB %s: pragma setup failed: %s", self.db_path, e)
 
     def _reset_initialized(self) -> None:
         """Test-only: force the next initialize() to re-run."""
@@ -414,7 +411,7 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_serial_devices_usb_path
                     ON serial_devices(usb_path);
-            """
+            """,
             )
             # ALTER TABLE cannot add FK constraints in SQLite, but the column works fine
             try:
@@ -458,7 +455,7 @@ class Database:
                 );
                 CREATE INDEX IF NOT EXISTS idx_sdwire_assignments_sbc
                     ON sdwire_assignments(sbc_id);
-            """
+            """,
             )
 
         if from_version < 4:
@@ -503,7 +500,7 @@ class Database:
                     ON claims(expires_at) WHERE released_at IS NULL;
                 CREATE INDEX IF NOT EXISTS idx_claim_requests_claim
                     ON claim_requests(claim_id);
-            """
+            """,
             )
 
         if from_version < 5:
@@ -529,10 +526,13 @@ class Database:
                 """,
             )
             for column_sql in (
-                "ALTER TABLE audit_log ADD COLUMN actor TEXT NOT NULL DEFAULT 'internal'",
-                "ALTER TABLE audit_log ADD COLUMN source TEXT NOT NULL DEFAULT 'internal'",
+                "ALTER TABLE audit_log ADD COLUMN actor "
+                "TEXT NOT NULL DEFAULT 'internal'",
+                "ALTER TABLE audit_log ADD COLUMN source "
+                "TEXT NOT NULL DEFAULT 'internal'",
                 "ALTER TABLE audit_log ADD COLUMN result TEXT NOT NULL DEFAULT 'ok'",
-                "ALTER TABLE audit_log ADD COLUMN claim_id INTEGER REFERENCES claims(id)",
+                "ALTER TABLE audit_log ADD COLUMN claim_id "
+                "INTEGER REFERENCES claims(id)",
             ):
                 try:
                     conn.execute(column_sql)
@@ -547,7 +547,7 @@ class Database:
                     ON audit_log(actor, logged_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_audit_log_source
                     ON audit_log(source, logged_at DESC);
-                """
+                """,
             )
 
         if from_version < 6:
@@ -633,7 +633,7 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_bindings_sbc ON bindings(sbc_id);
                 CREATE INDEX IF NOT EXISTS idx_bindings_actuator_channel
                     ON bindings(actuator_channel_id);
-                """,
+                """,  # noqa: E501
             )
 
         # OR IGNORE: tolerate a concurrent process that has already

@@ -176,12 +176,12 @@ class TestClaimsConfigValidation:
 
     def test_negative_grace_clamped(self):
         c = ClaimsConfig(grace_period_seconds=-1)
-        warnings = c.validate()
+        c.validate()
         assert c.grace_period_seconds == 0
 
     def test_prune_days_below_one_clamped(self):
         c = ClaimsConfig(auto_prune_released_after_days=0)
-        warnings = c.validate()
+        c.validate()
         assert c.auto_prune_released_after_days == 1
 
     def test_validation_runs_on_from_dict(self):
@@ -272,13 +272,11 @@ class TestLoadConfig:
     def test_load_from_explicit_path(self, tmp_path):
         """Test loading config from explicit path."""
         config_file = tmp_path / "config.yaml"
-        config_file.write_text(
-            """
+        config_file.write_text("""
 serial:
   base_tcp_port: 6000
 log_level: WARNING
-"""
-        )
+""")
         config = load_config(config_file)
         assert config.serial.base_tcp_port == 6000
         assert config.log_level == "WARNING"
@@ -345,9 +343,7 @@ log_level: WARNING
 
         config = load_config()
 
-        assert config.database_path == Path(
-            "/var/lib/labctl/.config/labctl/labctl.db"
-        )
+        assert config.database_path == Path("/var/lib/labctl/.config/labctl/labctl.db")
 
     def test_env_override_database_path_expands_tilde(self, tmp_path, monkeypatch):
         """Environment overrides should normalize '~' paths too."""

@@ -150,7 +150,9 @@ def create_app(config: Config | None = None) -> Flask:
         """Reset per-request audit attribution context."""
         ctx = getattr(g, "_activity_context", None)
         if ctx is not None:
-            ctx.__exit__(type(exc) if exc else None, exc, exc.__traceback__ if exc else None)
+            ctx.__exit__(
+                type(exc) if exc else None, exc, exc.__traceback__ if exc else None
+            )
 
     @app.before_request
     def enforce_csrf():

@@ -42,9 +42,7 @@ REDACT_PLACEHOLDER = "***"
 
 _actor: ContextVar[str] = ContextVar("labctl_audit_actor", default="internal")
 _source: ContextVar[str] = ContextVar("labctl_audit_source", default="internal")
-_claim_id: ContextVar[Optional[int]] = ContextVar(
-    "labctl_audit_claim_id", default=None
-)
+_claim_id: ContextVar[Optional[int]] = ContextVar("labctl_audit_claim_id", default=None)
 
 
 @contextmanager
@@ -136,7 +134,10 @@ def _serialize_details(details: Optional[dict]) -> Optional[str]:
 
 def _now_ms() -> str:
     """ISO8601 timestamp with millisecond precision."""
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S.") + f"{datetime.now().microsecond // 1000:03d}"
+    return (
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S.")
+        + f"{datetime.now().microsecond // 1000:03d}"
+    )
 
 
 def row_to_event_dict(row) -> dict[str, Any]:

@@ -124,7 +124,8 @@ class TestDatabase:
 
         # Verify serial_devices table exists
         tables = db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='serial_devices'"
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='serial_devices'"
         )
         assert len(tables) == 1
 
@@ -158,8 +159,7 @@ class TestDatabase:
         # Manually create a v1-like database
         conn = sqlite3.connect(str(db_path))
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.executescript(
-            """
+        conn.executescript("""
             CREATE TABLE schema_version (
                 version INTEGER PRIMARY KEY,
                 applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -230,8 +230,7 @@ class TestDatabase:
             );
 
             INSERT INTO schema_version (version) VALUES (1);
-        """
-        )
+        """)
         conn.commit()
         conn.close()
 
@@ -241,7 +240,8 @@ class TestDatabase:
 
         # Verify serial_devices table was created
         tables = db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='serial_devices'"
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='serial_devices'"
         )
         assert len(tables) == 1
 
@@ -265,8 +265,7 @@ class TestDatabase:
 
         conn = sqlite3.connect(str(db_path))
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.executescript(
-            """
+        conn.executescript("""
             CREATE TABLE schema_version (
                 version INTEGER PRIMARY KEY,
                 applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -340,8 +339,7 @@ class TestDatabase:
             INSERT INTO sbcs (name) VALUES ('existing-sbc');
             INSERT INTO serial_ports (sbc_id, port_type, device_path, tcp_port, baud_rate)
                 VALUES (1, 'console', '/dev/ttyUSB0', 4000, 115200);
-        """
-        )
+        """)  # noqa: E501
         conn.commit()
         conn.close()
 
@@ -365,7 +363,8 @@ class TestDatabase:
 
         # Check sdwire_devices table
         rows = db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='sdwire_devices'"
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='sdwire_devices'"
         )
         assert len(rows) == 1
 
@@ -378,7 +377,8 @@ class TestDatabase:
 
         # Check sdwire_assignments table
         rows = db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='sdwire_assignments'"
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='sdwire_assignments'"
         )
         assert len(rows) == 1
 
@@ -396,8 +396,7 @@ class TestDatabase:
         # Create a v2 database (has serial_devices but no sdwire tables)
         conn = sqlite3.connect(str(db_path))
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.executescript(
-            """
+        conn.executescript("""
             CREATE TABLE schema_version (
                 version INTEGER PRIMARY KEY,
                 applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -467,8 +466,7 @@ class TestDatabase:
             );
 
             INSERT INTO schema_version (version) VALUES (2);
-        """
-        )
+        """)
         conn.commit()
         conn.close()
 
@@ -478,12 +476,14 @@ class TestDatabase:
 
         # SDWire tables should now exist
         rows = db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='sdwire_devices'"
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='sdwire_devices'"
         )
         assert len(rows) == 1
 
         rows = db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='sdwire_assignments'"
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='sdwire_assignments'"
         )
         assert len(rows) == 1
 
@@ -494,7 +494,7 @@ class TestDatabase:
         assert row["v"] == SCHEMA_VERSION
 
     def test_schema_v4_creates_claim_tables(self, tmp_path):
-        """Test that fresh init creates claims and claim_requests tables with expected columns."""
+        """Fresh init creates claims and claim_requests tables with expected columns."""
         db_path = tmp_path / "test.db"
         db = get_database(db_path)
 
@@ -575,8 +575,7 @@ class TestDatabase:
 
         conn = sqlite3.connect(str(db_path))
         conn.execute("PRAGMA foreign_keys = ON")
-        conn.executescript(
-            """
+        conn.executescript("""
             CREATE TABLE schema_version (
                 version INTEGER PRIMARY KEY,
                 applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -592,8 +591,7 @@ class TestDatabase:
             );
             INSERT INTO schema_version (version) VALUES (3);
             INSERT INTO sbcs (name) VALUES ('pre-existing');
-        """
-        )
+        """)
         conn.commit()
         conn.close()
 
@@ -648,9 +646,7 @@ class TestConcurrency:
         db.initialize()
         # PRAGMA synchronous returns 0=OFF, 1=NORMAL, 2=FULL, 3=EXTRA
         result = db.execute_one("PRAGMA synchronous")
-        assert result[0] == 1, (
-            f"expected synchronous=NORMAL (1), got {result[0]}"
-        )
+        assert result[0] == 1, f"expected synchronous=NORMAL (1), got {result[0]}"
 
     def test_busy_timeout_applied_per_connection(self, tmp_path):
         """Every connect() sets busy_timeout to match timeout_seconds."""
@@ -687,9 +683,9 @@ class TestConcurrency:
 
         db.connect = watch  # type: ignore[assignment]
         db.initialize()
-        assert called == [], (
-            "second initialize() opened a connection — cache not honored"
-        )
+        assert (
+            called == []
+        ), "second initialize() opened a connection — cache not honored"
 
     def test_reset_initialized_re_runs(self, tmp_path):
         """_reset_initialized lets tests force a fresh initialize."""
@@ -742,9 +738,7 @@ class TestConcurrency:
             conn = sqlite3.connect(str(db_path), timeout=0.1)
             try:
                 conn.execute("BEGIN IMMEDIATE")
-                conn.execute(
-                    "INSERT INTO sbcs (name) VALUES (?)", ("writer-2",)
-                )
+                conn.execute("INSERT INTO sbcs (name) VALUES (?)", ("writer-2",))
                 # The COMMIT is the WAL-discriminating step: in
                 # rollback mode this raises within 100ms (busy_timeout
                 # set on the connect). With WAL it returns immediately.
@@ -760,9 +754,9 @@ class TestConcurrency:
         rt.start()
         wt.start()
         try:
-            assert writer_done.wait(timeout=5.0), (
-                "writer never finished — coordination event missed"
-            )
+            assert writer_done.wait(
+                timeout=5.0
+            ), "writer never finished — coordination event missed"
             assert writer_error == [], (
                 f"writer.commit() raised {writer_error!r} — WAL probably "
                 "not in effect; rollback-mode commit blocked on the "
@@ -774,9 +768,10 @@ class TestConcurrency:
             wt.join(timeout=5.0)
 
         # Sanity: the writer's insert actually committed.
-        assert db.execute_one(
-            "SELECT name FROM sbcs WHERE name=?", ("writer-2",)
-        ) is not None
+        assert (
+            db.execute_one("SELECT name FROM sbcs WHERE name=?", ("writer-2",))
+            is not None
+        )
 
     def test_get_database_threads_timeout(self, tmp_path):
         """get_database forwards timeout_seconds to the Database it builds."""
@@ -844,18 +839,14 @@ class TestConcurrency:
 
         def ro_connect(target, *args, **kwargs):
             # Force read-only via URI regardless of the path argument.
-            return real_connect(
-                f"file:{target}?mode=ro", *args, uri=True, **kwargs
-            )
+            return real_connect(f"file:{target}?mode=ro", *args, uri=True, **kwargs)
 
         monkeypatch.setattr(sqlite3, "connect", ro_connect)
 
         ro = Database(db_path)
         # connect() must not raise; SELECT must succeed despite the
         # pragmas failing to apply.
-        row = ro.execute_one(
-            "SELECT name FROM sbcs WHERE name=?", ("ro-test",)
-        )
+        row = ro.execute_one("SELECT name FROM sbcs WHERE name=?", ("ro-test",))
         assert row is not None
         assert row["name"] == "ro-test"
 

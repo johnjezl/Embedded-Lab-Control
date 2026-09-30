@@ -141,8 +141,7 @@ def check_no_channel_busy_for_sbc(manager, sbc_id: int) -> None:
             else f"channel id {busy.actuator_channel_id}"
         )
         raise ChannelBusyError(
-            f"actuator channel {label} is busy "
-            f"(binding {busy.purpose!r} in flight)"
+            f"actuator channel {label} is busy " f"(binding {busy.purpose!r} in flight)"
         )
 
 
@@ -175,9 +174,7 @@ def open_driver_for(actuator: Actuator) -> RelayDriver:
 
 
 def _opposite(state: ChannelState) -> ChannelState:
-    return (
-        ChannelState.OPEN if state is ChannelState.CLOSED else ChannelState.CLOSED
-    )
+    return ChannelState.OPEN if state is ChannelState.CLOSED else ChannelState.CLOSED
 
 
 def _drive(
@@ -382,13 +379,13 @@ def _require_shape(binding: Binding, expected: ShapeMode, verb: str) -> None:
     if binding.shape_mode is not expected:
         if expected is ShapeMode.LATCH:
             hint = (
-                f"Use 'press' for momentary bindings, or rebind with "
-                f"--mode latch for sustained state."
+                "Use 'press' for momentary bindings, or rebind with "
+                "--mode latch for sustained state."
             )
         else:
             hint = (
-                f"Use 'actuate'/'release' for latch bindings, or rebind "
-                f"with --mode momentary if you want press semantics."
+                "Use 'actuate'/'release' for latch bindings, or rebind "
+                "with --mode momentary if you want press semantics."
             )
         raise BindingShapeError(
             f"{verb!r} requires a {expected.value} binding; "
@@ -416,13 +413,9 @@ def actuate_binding(manager, binding: Binding) -> None:
                 ok=False,
                 error=outcome.value,
             )
-            raise ActuationError(
-                f"actuate failed: driver returned {outcome.value}"
-            )
+            raise ActuationError(f"actuate failed: driver returned {outcome.value}")
         # Atomic: channel state + binding desired_state in one transaction.
-        manager.commit_actuation(
-            channel.id, target, binding.id, DesiredState.ASSERTED
-        )
+        manager.commit_actuation(channel.id, target, binding.id, DesiredState.ASSERTED)
         _audit_actuator_event(
             manager,
             "actuate",
@@ -454,12 +447,8 @@ def release_binding(manager, binding: Binding) -> None:
                 ok=False,
                 error=outcome.value,
             )
-            raise ActuationError(
-                f"release failed: driver returned {outcome.value}"
-            )
-        manager.commit_actuation(
-            channel.id, target, binding.id, DesiredState.RELEASED
-        )
+            raise ActuationError(f"release failed: driver returned {outcome.value}")
+        manager.commit_actuation(channel.id, target, binding.id, DesiredState.RELEASED)
         _audit_actuator_event(
             manager,
             "release",
@@ -471,9 +460,7 @@ def release_binding(manager, binding: Binding) -> None:
         )
 
 
-def press_binding(
-    manager, binding: Binding, *, sleep_fn=time.sleep
-) -> None:
+def press_binding(manager, binding: Binding, *, sleep_fn=time.sleep) -> None:
     """Pulse a momentary binding to active for momentary_pulse_ms then back.
 
     Both writes must succeed. If the second write fails the channel may
@@ -483,9 +470,7 @@ def press_binding(
     """
     _require_shape(binding, ShapeMode.MOMENTARY, "press")
     if not binding.momentary_pulse_ms or binding.momentary_pulse_ms <= 0:
-        raise ActuationError(
-            f"binding {binding.purpose!r} has no momentary_pulse_ms"
-        )
+        raise ActuationError(f"binding {binding.purpose!r} has no momentary_pulse_ms")
 
     actuator, channel = _resolve(manager, binding)
     active = binding.shape_active
@@ -506,9 +491,7 @@ def press_binding(
                     error=f"assert: {out1.value}",
                     extra={"pulse_ms": binding.momentary_pulse_ms},
                 )
-                raise ActuationError(
-                    f"press: failed to assert: {out1.value}"
-                )
+                raise ActuationError(f"press: failed to assert: {out1.value}")
             manager.update_channel_state(channel.id, active)
 
             sleep_fn(binding.momentary_pulse_ms / 1000.0)
@@ -576,13 +559,9 @@ def binding_status(manager, binding: Binding) -> dict:
         "channel": {
             "index": channel.channel_index,
             "default_state": channel.default_state.value,
-            "last_state": (
-                channel.last_state.value if channel.last_state else None
-            ),
+            "last_state": (channel.last_state.value if channel.last_state else None),
             "last_changed_at": (
-                channel.last_changed_at.isoformat()
-                if channel.last_changed_at
-                else None
+                channel.last_changed_at.isoformat() if channel.last_changed_at else None
             ),
             "cycle_count": channel.cycle_count,
         },
@@ -595,9 +574,7 @@ def probe_actuator(actuator: Actuator) -> ProbeOutcome:
         with open_driver_for(actuator) as driver:
             return driver.probe()
     except Exception as e:  # noqa: BLE001
-        return ProbeOutcome(
-            result=ProbeResult.UNREACHABLE, detail=str(e)
-        )
+        return ProbeOutcome(result=ProbeResult.UNREACHABLE, detail=str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -607,11 +584,7 @@ def probe_actuator(actuator: Actuator) -> ProbeOutcome:
 
 def _bindings_with_sample_phase(manager, sbc_id: int, phase) -> list[Binding]:
     """Return bindings on ``sbc_id`` whose sample_phase matches ``phase``."""
-    return [
-        b
-        for b in manager.list_bindings(sbc_id=sbc_id)
-        if b.sample_phase == phase
-    ]
+    return [b for b in manager.list_bindings(sbc_id=sbc_id) if b.sample_phase == phase]
 
 
 def apply_pre_power_bindings(manager, sbc) -> None:
@@ -626,9 +599,7 @@ def apply_pre_power_bindings(manager, sbc) -> None:
     """
     from labctl.core.models import SamplePhase
 
-    pre_bindings = _bindings_with_sample_phase(
-        manager, sbc.id, SamplePhase.PRE_POWER
-    )
+    pre_bindings = _bindings_with_sample_phase(manager, sbc.id, SamplePhase.PRE_POWER)
     for binding in pre_bindings:
         actuator, channel = _resolve(manager, binding)
         if binding.desired_state == DesiredState.ASSERTED:
@@ -647,8 +618,13 @@ def apply_pre_power_bindings(manager, sbc) -> None:
                 outcome = _drive(driver, channel.channel_index, target)
             if outcome is not WriteOutcome.OK:
                 _audit_pre_power_apply(
-                    manager, binding, actuator, channel, target,
-                    ok=False, error=outcome.value,
+                    manager,
+                    binding,
+                    actuator,
+                    channel,
+                    target,
+                    ok=False,
+                    error=outcome.value,
                 )
                 raise ActuationError(
                     f"pre_power binding {binding.purpose!r} on "
@@ -656,8 +632,13 @@ def apply_pre_power_bindings(manager, sbc) -> None:
                 )
             manager.update_channel_state(channel.id, target)
             _audit_pre_power_apply(
-                manager, binding, actuator, channel, target,
-                ok=True, cycle_changed=(prior_state != target),
+                manager,
+                binding,
+                actuator,
+                channel,
+                target,
+                ok=True,
+                cycle_changed=(prior_state != target),
             )
 
 
@@ -683,9 +664,7 @@ def enter_recovery(
     """
     binding = manager.get_binding_by_target(sbc.id, "recovery_mode")
     if binding is None:
-        raise ActuationError(
-            f"no 'recovery_mode' binding on {sbc.name!r}"
-        )
+        raise ActuationError(f"no 'recovery_mode' binding on {sbc.name!r}")
     actuator, _channel = _resolve(manager, binding)
 
     # 0. Pre-flight probe. Abort before any power transition.
@@ -723,9 +702,7 @@ def exit_recovery(
     """
     binding = manager.get_binding_by_target(sbc.id, "recovery_mode")
     if binding is None:
-        raise ActuationError(
-            f"no 'recovery_mode' binding on {sbc.name!r}"
-        )
+        raise ActuationError(f"no 'recovery_mode' binding on {sbc.name!r}")
     actuator, _channel = _resolve(manager, binding)
 
     outcome = probe_actuator(actuator)
@@ -777,8 +754,12 @@ def apply_safe_drive_on_startup(manager) -> dict:
 
     for actuator in manager.list_actuators():
         _safe_drive_one_actuator(
-            manager, actuator, bindings_by_channel,
-            held=held, drove=drove, failed=failed,
+            manager,
+            actuator,
+            bindings_by_channel,
+            held=held,
+            drove=drove,
+            failed=failed,
         )
 
     summary = {"held": held, "drove": drove, "failed": failed}
@@ -823,8 +804,7 @@ def _safe_drive_one_actuator(
                     }
                 )
                 logger.warning(
-                    "safe-drive: leaving %s[%d] alone "
-                    "(binding %s desired=%s)",
+                    "safe-drive: leaving %s[%d] alone " "(binding %s desired=%s)",
                     actuator.name,
                     ch.channel_index,
                     binding.purpose,

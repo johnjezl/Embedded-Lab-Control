@@ -221,11 +221,7 @@ def _check_claim(manager, sbc_name: str, mutating: bool = True) -> str | None:
         return None
 
     if mutating:
-        remaining = (
-            int(claim.time_remaining.total_seconds())
-            if claim.time_remaining is not None
-            else 0
-        )
+        # claim.to_dict() carries time_remaining_seconds for the caller.
         return json.dumps(
             {
                 "error": "sbc_claimed",
@@ -354,7 +350,7 @@ def list_sbcs() -> str:
 
 @mcp.resource("lab://sbcs/{sbc_name}")
 def get_sbc_details(sbc_name: str) -> str:
-    """Get full details for a specific SBC including serial ports, network, and power."""
+    """Get full details for a specific SBC including serial ports, network, and power."""  # noqa: E501
     manager = _get_manager()
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
@@ -365,7 +361,7 @@ def get_sbc_details(sbc_name: str) -> str:
 @mcp.resource("lab://power/{sbc_name}")
 def get_power_state(sbc_name: str) -> str:
     """Get current power state for an SBC (on/off/unknown)."""
-    from labctl.power import PowerController, PowerState
+    from labctl.power import PowerController
 
     manager = _get_manager()
     sbc = manager.get_sbc_by_name(sbc_name)
@@ -489,7 +485,7 @@ def get_health(sbc_name: str) -> str:
 @mcp.resource("lab://status")
 def get_status_overview() -> str:
     """Get a dashboard-style overview of all SBCs with power states."""
-    from labctl.power import PowerController, PowerState
+    from labctl.power import PowerController
 
     manager = _get_manager()
     sbcs = manager.list_sbcs()
@@ -1587,7 +1583,7 @@ def flash_image(
         image_path: Absolute path to image file (.img, .img.xz, .img.gz)
         reboot: Power on the SBC after flashing
         post_flash_copies: Optional "source:dest" pairs to copy to boot partition after flash
-    """
+    """  # noqa: E501
     import time as time_mod
 
     from labctl.sdwire import SDWireController
@@ -1862,7 +1858,7 @@ def boot_test(
     deploy_fn = None
     if image and dest:
 
-        def deploy_fn():
+        def _deploy():
             from labctl.sdwire import SDWireController
 
             if not sbc.sdwire:
@@ -1872,6 +1868,8 @@ def boot_test(
             time_mod.sleep(2)
             ctrl.update_files(partition, [(image, dest)])
             ctrl.switch_to_dut()
+
+        deploy_fn = _deploy
 
     # Build power cycle function
     def power_cycle_fn():
@@ -2054,7 +2052,7 @@ def release_sbc(sbc_name: str) -> str:
 
     manager = _get_manager()
     try:
-        released = manager.release_claim(sbc_name, _get_session_id())
+        manager.release_claim(sbc_name, _get_session_id())
     except UnknownSBCError:
         return json.dumps(
             {"error": "unknown_sbc", "message": f"SBC '{sbc_name}' not found"}
@@ -2324,9 +2322,7 @@ def _validate_actuator_device_path(device_path: str) -> Optional[str]:
             f"(path traversal not allowed)"
         )
     normalized = os.path.normpath(device_path)
-    if any(
-        normalized.startswith(p) for p in _ACTUATOR_DEVICE_PATH_PREFIXES
-    ):
+    if any(normalized.startswith(p) for p in _ACTUATOR_DEVICE_PATH_PREFIXES):
         return None
     return (
         f"device_path {device_path!r} not under any of the allowed "
@@ -2438,9 +2434,7 @@ def actuator_add(
         serial_no=serial_no,
     )
     for i in range(1, channels + 1):
-        manager.add_actuator_channel(
-            actuator.id, i, default_state=ChannelState.OPEN
-        )
+        manager.add_actuator_channel(actuator.id, i, default_state=ChannelState.OPEN)
     return f"Added actuator {name!r} ({driver}, {channels} channel(s))"
 
 
@@ -2523,14 +2517,20 @@ def actuator_set(name: str, channel: int, state: str) -> str:
 
     try:
         driver.open(transport)
-        outcome = driver.set_channel(channel, closed=target_state is ChannelState.CLOSED)
+        outcome = driver.set_channel(
+            channel, closed=target_state is ChannelState.CLOSED
+        )
     finally:
         driver.close()
 
     if outcome.value != "ok":
         _audit_raw_actuator_set(
-            manager, actuator, ch, target_state,
-            ok=False, error=outcome.value,
+            manager,
+            actuator,
+            ch,
+            target_state,
+            ok=False,
+            error=outcome.value,
         )
         return f"Error: set_channel returned {outcome.value}"
     manager.update_channel_state(ch.id, target_state)
@@ -2822,7 +2822,7 @@ Based on findings:
 - If ping succeeds but serial fails: check physical serial cable connections.
 - If everything passes but status is wrong: use update_sbc to correct the status.
 
-Report your findings and any actions taken."""
+Report your findings and any actions taken."""  # noqa: E501
 
 
 @mcp.prompt()

@@ -13,7 +13,6 @@ from labctl.core.models import (
     PlugType,
     PortType,
     ReleaseReason,
-    SerialDevice,
     Status,
     UnknownSBCError,
 )
@@ -157,9 +156,7 @@ class TestSBCOperations:
         """Audit detail string names the fields that changed."""
         sbc = manager.create_sbc(name="audit-detail")
 
-        manager.update_sbc(
-            sbc.id, project="newproj", power_cycle_delay_seconds=4.0
-        )
+        manager.update_sbc(sbc.id, project="newproj", power_cycle_delay_seconds=4.0)
 
         rows = manager.db.execute(
             "SELECT details FROM audit_log "
@@ -573,7 +570,7 @@ class TestSerialPortOperations:
             )
 
     def test_alias_uniqueness_same_sbc_different_type(self, manager):
-        """Test that alias must be unique even on the same SBC with different port type."""
+        """Alias must be unique even on the same SBC with a different port type."""
         sbc = manager.create_sbc(name="sbc-same-alias")
 
         manager.assign_serial_port(
@@ -592,7 +589,7 @@ class TestSerialPortOperations:
             )
 
     def test_alias_allowed_on_same_sbc_same_type_reassign(self, manager):
-        """Test that re-assigning the same sbc/port_type with same alias works (upsert)."""
+        """Re-assigning the same sbc/port_type with the same alias works (upsert)."""
         sbc = manager.create_sbc(name="sbc-reassign")
 
         manager.assign_serial_port(

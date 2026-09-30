@@ -1,7 +1,6 @@
 """Unit tests for MCP server tools and resources."""
 
 import json
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -25,7 +24,7 @@ def populated_manager(manager):
     sbc1 = manager.create_sbc(
         name="test-sbc-1", project="ProjectA", description="First test SBC"
     )
-    sbc2 = manager.create_sbc(name="test-sbc-2", project="ProjectB", ssh_user="admin")
+    manager.create_sbc(name="test-sbc-2", project="ProjectB", ssh_user="admin")
 
     device = manager.create_serial_device(
         name="port-1", usb_path="1-10.1.3", vendor="FTDI", model="FT232R"
@@ -533,7 +532,7 @@ class TestMcpSDWireTools:
         mock_ctrl.get_block_device.return_value = None
 
         # Temporarily remove power plug from sbc
-        sbc = mock_manager.get_sbc_by_name("test-sbc-2")
+        mock_manager.get_sbc_by_name("test-sbc-2")
         # test-sbc-2 has no sdwire, so this will fail for a different reason
         result = sdwire_to_host(sbc_name="test-sbc-2")
         assert "No SDWire" in result
@@ -773,9 +772,7 @@ class TestMcpSDWireTools:
 
         with patch("labctl.mcp_server._get_manager", return_value=manager):
             with patch("labctl.mcp_server._check_claim", return_value=None):
-                with patch(
-                    "labctl.sdwire.SDWireController", return_value=mock_ctrl
-                ):
+                with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl):
                     result = json.loads(
                         sdwire_cat("test-sbc-1", partition=1, path="/kernel8.img")
                     )
@@ -916,9 +913,13 @@ class TestMcpSDWireTools:
             with patch("labctl.mcp_server._check_claim", return_value=None):
                 with patch(
                     "labctl.mcp_server._structured_claim_advisory",
-                    return_value=[{"requested_by": "other", "reason": "please release"}],
+                    return_value=[
+                        {"requested_by": "other", "reason": "please release"}
+                    ],
                 ):
-                    with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl):
+                    with patch(
+                        "labctl.sdwire.SDWireController", return_value=mock_ctrl
+                    ):
                         with patch("time.sleep"):
                             result = json.loads(sdwire_ls("test-sbc-1", partition=1))
 
@@ -944,9 +945,7 @@ class TestMcpSDWireTools:
 
         with patch("labctl.mcp_server._get_manager", return_value=manager):
             with patch("labctl.mcp_server._check_claim", return_value=None):
-                with patch(
-                    "labctl.sdwire.SDWireController", return_value=mock_ctrl
-                ):
+                with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl):
                     with patch("time.sleep"):
                         result = json.loads(sdwire_ls("test-sbc-1", partition=1))
 
@@ -1019,8 +1018,6 @@ class TestMcpSerialTools:
 
     def test_serial_capture_by_alias(self, mock_manager):
         """Test capture resolves port by alias."""
-        from unittest.mock import MagicMock
-
         from labctl.mcp_server import serial_capture
         from labctl.serial.capture import CaptureResult
 
@@ -1902,7 +1899,7 @@ class TestMcpClaimAdvisory:
     """Tests that pending release requests surface in tool responses."""
 
     def test_advisory_appended_on_claimant_success(self, claims_env):
-        from labctl.mcp_server import claim_sbc, request_sbc_release
+        from labctl.mcp_server import claim_sbc
 
         # Claim as our session, then have someone request release
         claim_sbc(sbc_name="test-sbc-1", reason="my claim")
@@ -1985,9 +1982,7 @@ def actuator_lab(populated_manager, tmp_path, monkeypatch):
         "labctl.actuators.get_driver",
         lambda *a, **kw: mock_driver,
     )
-    monkeypatch.setattr(
-        "labctl.mcp_server._get_manager", lambda: populated_manager
-    )
+    monkeypatch.setattr("labctl.mcp_server._get_manager", lambda: populated_manager)
 
     yield {
         "manager": populated_manager,
@@ -2035,7 +2030,6 @@ class TestMcpActuatorReadTools:
 @pytest.fixture
 def admin_actuator_ops_enabled(monkeypatch):
     """Enable the privileged actuator_* MCP tools for tests that need them."""
-    from types import SimpleNamespace
 
     def _config():
         # Build a minimally-populated config with admin ops enabled.
@@ -2184,15 +2178,11 @@ class TestMcpDevicePathValidation:
         assert "path traversal not allowed" in result
         assert mock_manager.get_actuator_by_name("relay-traversal") is None
 
-    def test_empty_path_is_allowed(
-        self, mock_manager, admin_actuator_ops_enabled
-    ):
+    def test_empty_path_is_allowed(self, mock_manager, admin_actuator_ops_enabled):
         from labctl.mcp_server import actuator_add
 
         # device_path is optional — driver may discover via vid/pid/serial.
-        result = actuator_add(
-            name="relay-no-path", driver="lcus1_serial", channels=1
-        )
+        result = actuator_add(name="relay-no-path", driver="lcus1_serial", channels=1)
         assert "Added actuator" in result
 
 
@@ -2201,12 +2191,8 @@ class TestMcpBindingTools:
         from labctl.core.models import ChannelState, DriverName
         from labctl.mcp_server import bind, unbind
 
-        a = mock_manager.create_actuator(
-            "relay-bind", DriverName.LCUS1_SERIAL
-        )
-        mock_manager.add_actuator_channel(
-            a.id, 1, default_state=ChannelState.OPEN
-        )
+        a = mock_manager.create_actuator("relay-bind", DriverName.LCUS1_SERIAL)
+        mock_manager.add_actuator_channel(a.id, 1, default_state=ChannelState.OPEN)
 
         result = bind(
             sbc_name="test-sbc-1",
@@ -2230,13 +2216,9 @@ class TestMcpBindingTools:
         from labctl.core.models import ChannelState, DriverName
         from labctl.mcp_server import bind
 
-        a = mock_manager.create_actuator(
-            "relay-pol", DriverName.LCUS1_SERIAL
-        )
+        a = mock_manager.create_actuator("relay-pol", DriverName.LCUS1_SERIAL)
         # default_state=open, requesting active_when=open → should refuse.
-        mock_manager.add_actuator_channel(
-            a.id, 1, default_state=ChannelState.OPEN
-        )
+        mock_manager.add_actuator_channel(a.id, 1, default_state=ChannelState.OPEN)
         result = bind(
             sbc_name="test-sbc-1",
             purpose="recovery_mode",
@@ -2259,9 +2241,7 @@ class TestMcpBindingVerbs:
             "labctl.mcp_server._get_session_id",
             lambda: f"mcp-test-{sbc_name}",
         )
-        monkeypatch.setattr(
-            "labctl.mcp_server._get_agent_name", lambda: "mcp-test"
-        )
+        monkeypatch.setattr("labctl.mcp_server._get_agent_name", lambda: "mcp-test")
         monkeypatch.setattr(
             "labctl.mcp_server._get_config",
             lambda: __import__(
@@ -2304,9 +2284,7 @@ class TestMcpBindingVerbs:
     def test_actuation_status(self, claimed_lab):
         from labctl.mcp_server import actuation_status
 
-        result = actuation_status(
-            sbc_name="test-sbc-1", purpose="recovery_mode"
-        )
+        result = actuation_status(sbc_name="test-sbc-1", purpose="recovery_mode")
         data = json.loads(result)
         assert data["binding"]["purpose"] == "recovery_mode"
         assert data["binding"]["desired_state"] == "released"
@@ -2320,18 +2298,12 @@ class TestMcpRecoveryComposites:
         # _check_claim returns a "needs claim" message; not the OK path.
         assert "OK" not in result
 
-    def test_enter_recovery_with_claim_runs_sequence(
-        self, actuator_lab, monkeypatch
-    ):
+    def test_enter_recovery_with_claim_runs_sequence(self, actuator_lab, monkeypatch):
         from labctl.mcp_server import enter_recovery
 
         # Claim setup
-        monkeypatch.setattr(
-            "labctl.mcp_server._get_session_id", lambda: "mcp-recov"
-        )
-        monkeypatch.setattr(
-            "labctl.mcp_server._get_agent_name", lambda: "mcp-recov"
-        )
+        monkeypatch.setattr("labctl.mcp_server._get_session_id", lambda: "mcp-recov")
+        monkeypatch.setattr("labctl.mcp_server._get_agent_name", lambda: "mcp-recov")
         monkeypatch.setattr(
             "labctl.mcp_server._get_config",
             lambda: __import__(
@@ -2366,9 +2338,7 @@ class TestMcpRecoveryComposites:
             lambda plug, **kw: controller,
         )
         # Instant sleep.
-        monkeypatch.setattr(
-            "labctl.actuators.runtime.time.sleep", lambda s: None
-        )
+        monkeypatch.setattr("labctl.actuators.runtime.time.sleep", lambda s: None)
 
         result = enter_recovery(sbc_name="test-sbc-1")
         assert "OK" in result, result

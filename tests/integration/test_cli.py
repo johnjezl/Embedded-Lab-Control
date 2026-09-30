@@ -4,15 +4,14 @@ import errno
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
 from click.testing import CliRunner
-from unittest.mock import MagicMock, patch
 
-from labctl.core import audit
-from labctl.core.models import PortType
 from labctl.cli import main
-from labctl.core.models import Status
+from labctl.core import audit
+from labctl.core.models import PortType, Status
 
 
 @pytest.fixture
@@ -300,7 +299,10 @@ class TestActivityCompactHelpers:
     def test_compact_details_extracts_message_from_json(self):
         from labctl.cli import _compact_details
 
-        assert _compact_details('{"message":"Updated SBC: pi-5-1"}') == "Updated SBC: pi-5-1"
+        assert (
+            _compact_details('{"message":"Updated SBC: pi-5-1"}')
+            == "Updated SBC: pi-5-1"
+        )
 
     def test_compact_details_truncates_with_ellipsis(self):
         from labctl.cli import _compact_details
@@ -504,7 +506,8 @@ class TestPowerCycleCommand:
         controller.power_off.assert_called_once()
         controller.power_on.assert_called_once()
         mock_sleep.assert_called_with(5.0)
-        # The warning is printed to stderr; CliRunner mixes streams unless told otherwise.
+        # The warning is printed to stderr; CliRunner mixes streams unless
+        # told otherwise.
         assert "Warning" in result.output
         assert "below the SBC minimum" in result.output
 
@@ -574,10 +577,20 @@ class TestSdwireReadSafety:
                 "labctl.power.base.PowerController.from_plug",
                 return_value=mock_power,
             ):
-                with patch("labctl.sdwire.controller.SDWireController", return_value=mock_ctrl):
+                with patch(
+                    "labctl.sdwire.controller.SDWireController", return_value=mock_ctrl
+                ):
                     result = runner.invoke(
                         main,
-                        ["sdwire", "cat", "test-sbc-1", "-p", "1", "--path", "/test.txt"],
+                        [
+                            "sdwire",
+                            "cat",
+                            "test-sbc-1",
+                            "-p",
+                            "1",
+                            "--path",
+                            "/test.txt",
+                        ],
                     )
 
         assert result.exit_code != 0
@@ -604,7 +617,9 @@ class TestSdwireReadSafety:
                 "labctl.power.base.PowerController.from_plug",
                 return_value=mock_power,
             ):
-                with patch("labctl.sdwire.controller.SDWireController", return_value=mock_ctrl):
+                with patch(
+                    "labctl.sdwire.controller.SDWireController", return_value=mock_ctrl
+                ):
                     result = runner.invoke(main, ["sdwire", "info", "test-sbc-1"])
 
         assert result.exit_code != 0
@@ -631,11 +646,21 @@ class TestSdwireReadSafety:
         }
 
         with patch("labctl.cli._get_manager", return_value=manager):
-            with patch("labctl.sdwire.controller.SDWireController", return_value=mock_ctrl):
+            with patch(
+                "labctl.sdwire.controller.SDWireController", return_value=mock_ctrl
+            ):
                 with patch("time.sleep") as mock_sleep:
                     result = runner.invoke(
                         main,
-                        ["sdwire", "cat", "test-sbc-1", "-p", "1", "--path", "/test.txt"],
+                        [
+                            "sdwire",
+                            "cat",
+                            "test-sbc-1",
+                            "-p",
+                            "1",
+                            "--path",
+                            "/test.txt",
+                        ],
                     )
 
         assert result.exit_code == 0, result.output
@@ -661,11 +686,21 @@ class TestSdwireReadSafety:
         mock_ctrl.switch_to_dut.side_effect = RuntimeError("switch back failed")
 
         with patch("labctl.cli._get_manager", return_value=manager):
-            with patch("labctl.sdwire.controller.SDWireController", return_value=mock_ctrl):
+            with patch(
+                "labctl.sdwire.controller.SDWireController", return_value=mock_ctrl
+            ):
                 with patch("time.sleep"):
                     result = runner.invoke(
                         main,
-                        ["sdwire", "cat", "test-sbc-1", "-p", "1", "--path", "/test.txt"],
+                        [
+                            "sdwire",
+                            "cat",
+                            "test-sbc-1",
+                            "-p",
+                            "1",
+                            "--path",
+                            "/test.txt",
+                        ],
                     )
 
         assert result.exit_code != 0
@@ -689,7 +724,9 @@ class TestSdwireReadSafety:
         mock_ctrl.switch_to_dut.side_effect = RuntimeError("switch back failed")
 
         with patch("labctl.cli._get_manager", return_value=manager):
-            with patch("labctl.sdwire.controller.SDWireController", return_value=mock_ctrl):
+            with patch(
+                "labctl.sdwire.controller.SDWireController", return_value=mock_ctrl
+            ):
                 with patch("time.sleep"):
                     result = runner.invoke(main, ["sdwire", "info", "test-sbc-1"])
 
@@ -779,6 +816,8 @@ class TestSdwireWritePowerFlow:
         assert result.exit_code == 0, result.output
         mock_power.power_off.assert_called_once()
         mock_ctrl.switch_to_host.assert_called_once()
+
+
 class TestProxyCommands:
     """Tests for proxy-related CLI help and guidance text."""
 
@@ -787,9 +826,7 @@ class TestProxyCommands:
         db_path = tmp_path / "labctl.db"
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
-            f"database_path: {db_path}\n"
-            "proxy:\n"
-            "  port_base: 5500\n"
+            f"database_path: {db_path}\n" "proxy:\n" "  port_base: 5500\n"
         )
         return db_path, config_path
 
@@ -897,14 +934,17 @@ class TestProxyCommands:
         monkeypatch.setattr("labctl.serial.proxy.SerialProxy", FakeProxy)
 
         result = runner.invoke(
-            main, ["-c", str(config_path), "proxy", "start", "proxy-sbc", "--port", "5500"]
+            main,
+            ["-c", str(config_path), "proxy", "start", "proxy-sbc", "--port", "5500"],
         )
 
         assert result.exit_code == 0
         assert "write access: disabled (read-only)" in result.output
         assert "This proxy is read-only" in result.output
 
-    def test_proxy_start_allow_write_changes_guidance(self, runner, tmp_path, monkeypatch):
+    def test_proxy_start_allow_write_changes_guidance(
+        self, runner, tmp_path, monkeypatch
+    ):
         db_path, config_path = self._proxy_config(tmp_path)
         self._seed_proxy_sbc(db_path)
 
@@ -944,7 +984,9 @@ class TestProxyCommands:
 
         db_path, config_path = self._proxy_config(tmp_path)
         log_dir = tmp_path / "logs"
-        config_path.write_text(f"database_path: {db_path}\nproxy:\n  log_dir: {log_dir}\n")
+        config_path.write_text(
+            f"database_path: {db_path}\nproxy:\n  log_dir: {log_dir}\n"
+        )
 
         self._seed_proxy_sbc(db_path)
         write_proxy_state(
@@ -955,7 +997,9 @@ class TestProxyCommands:
             allow_write=False,
         )
 
-        result = runner.invoke(main, ["-c", str(config_path), "connect", "proxy-console"])
+        result = runner.invoke(
+            main, ["-c", str(config_path), "connect", "proxy-console"]
+        )
 
         assert result.exit_code != 0
         assert "Shared proxy is active" in result.output
@@ -967,7 +1011,9 @@ class TestProxyCommands:
 
         db_path, config_path = self._proxy_config(tmp_path)
         log_dir = tmp_path / "logs"
-        config_path.write_text(f"database_path: {db_path}\nproxy:\n  log_dir: {log_dir}\n")
+        config_path.write_text(
+            f"database_path: {db_path}\nproxy:\n  log_dir: {log_dir}\n"
+        )
 
         self._seed_proxy_sbc(db_path)
         write_proxy_state(
@@ -984,7 +1030,9 @@ class TestProxyCommands:
         assert "Refusing direct 'connect' access" in result.output
         assert "nc localhost 5500" in result.output
 
-    def test_connect_refuses_when_proxy_is_active_for_device_path(self, runner, tmp_path):
+    def test_connect_refuses_when_proxy_is_active_for_device_path(
+        self, runner, tmp_path
+    ):
         from labctl.serial.proxy import write_proxy_state
 
         db_path, config_path = self._proxy_config(tmp_path)
@@ -993,7 +1041,9 @@ class TestProxyCommands:
         real_device_path = tmp_path / "ttyUSB0"
         real_device_path.write_text("")
         device_path.symlink_to(real_device_path)
-        config_path.write_text(f"database_path: {db_path}\nproxy:\n  log_dir: {log_dir}\n")
+        config_path.write_text(
+            f"database_path: {db_path}\nproxy:\n  log_dir: {log_dir}\n"
+        )
 
         self._seed_proxy_sbc(db_path, device_path=device_path)
         write_proxy_state(
@@ -1019,7 +1069,9 @@ class TestProxyCommands:
 
         db_path, config_path = self._proxy_config(tmp_path)
         log_dir = tmp_path / "logs"
-        config_path.write_text(f"database_path: {db_path}\nproxy:\n  log_dir: {log_dir}\n")
+        config_path.write_text(
+            f"database_path: {db_path}\nproxy:\n  log_dir: {log_dir}\n"
+        )
 
         self._seed_proxy_sbc(db_path, add_debug_port=True)
         write_proxy_state(
@@ -1048,7 +1100,9 @@ class TestProxyCommands:
 
         db_path, config_path = self._proxy_config(tmp_path)
         log_dir = tmp_path / "logs"
-        config_path.write_text(f"database_path: {db_path}\nproxy:\n  log_dir: {log_dir}\n")
+        config_path.write_text(
+            f"database_path: {db_path}\nproxy:\n  log_dir: {log_dir}\n"
+        )
 
         self._seed_proxy_sbc(db_path)
         write_proxy_state(
@@ -1105,7 +1159,9 @@ class TestProxyCommands:
 
         db_path, config_path = self._proxy_config(tmp_path)
         log_dir = tmp_path / "logs"
-        config_path.write_text(f"database_path: {db_path}\nproxy:\n  log_dir: {log_dir}\n")
+        config_path.write_text(
+            f"database_path: {db_path}\nproxy:\n  log_dir: {log_dir}\n"
+        )
 
         self._seed_proxy_sbc(db_path, add_debug_port=True)
         write_proxy_state(
@@ -1551,7 +1607,8 @@ class TestConnectTcpDispatch:
             cli.subprocess, "run", lambda *a, **k: calls.append(("run", a, k))
         )
         monkeypatch.setattr(
-            cli, "_connect_tcp_raw",
+            cli,
+            "_connect_tcp_raw",
             lambda *a, **k: (_ for _ in ()).throw(
                 AssertionError("Should not enter raw mode")
             ),
@@ -1566,12 +1623,11 @@ class TestConnectTcpDispatch:
         called = []
         monkeypatch.setattr(cli.sys.stdin, "isatty", lambda: True)
         monkeypatch.setattr(cli.sys.stdout, "isatty", lambda: True)
-        monkeypatch.setattr(
-            cli, "_connect_tcp_raw", lambda h, p: called.append((h, p))
-        )
+        monkeypatch.setattr(cli, "_connect_tcp_raw", lambda h, p: called.append((h, p)))
         # Should NOT be invoked.
         monkeypatch.setattr(
-            cli.subprocess, "run",
+            cli.subprocess,
+            "run",
             lambda *a, **k: (_ for _ in ()).throw(
                 AssertionError("Should not call subprocess from TTY path")
             ),
@@ -1641,9 +1697,7 @@ class TestStatusFastMode:
 
         monkeypatch.setattr(cli, "_collect_status_power_states", boom)
 
-        result = runner.invoke(
-            cli.main, ["-c", str(config_path), "status", "--fast"]
-        )
+        result = runner.invoke(cli.main, ["-c", str(config_path), "status", "--fast"])
         assert result.exit_code == 0, result.output
         assert "fast-sbc" in result.output
         assert "ON" in result.output
@@ -1655,9 +1709,7 @@ class TestStatusFastMode:
         config_path = self._write_config(tmp_path, db_path)
         self._seed_sbc(db_path, last_power_state="off")
 
-        result = runner.invoke(
-            cli.main, ["-c", str(config_path), "status", "--fast"]
-        )
+        result = runner.invoke(cli.main, ["-c", str(config_path), "status", "--fast"])
         assert result.exit_code == 0
         assert "OFF" in result.output
 
@@ -1692,9 +1744,7 @@ class TestStatusFastMode:
             lambda *a, **k: pytest.fail("should not probe"),
         )
 
-        result = runner.invoke(
-            cli.main, ["-c", str(config_path), "status", "--fast"]
-        )
+        result = runner.invoke(cli.main, ["-c", str(config_path), "status", "--fast"])
         assert result.exit_code == 0
         # SBC line present, but POWER column should be "-"
         line = next(ln for ln in result.output.splitlines() if "fast-sbc" in ln)

@@ -181,12 +181,18 @@ class TestBindingCrud:
         sbc2 = manager.create_sbc(name="pi")
         ch2 = manager.add_actuator_channel(a.id, 2)
         manager.create_binding(
-            sbc1.id, "recovery_mode", _ch.id,
-            shape_mode=ShapeMode.LATCH, shape_active=ChannelState.CLOSED,
+            sbc1.id,
+            "recovery_mode",
+            _ch.id,
+            shape_mode=ShapeMode.LATCH,
+            shape_active=ChannelState.CLOSED,
         )
         manager.create_binding(
-            sbc2.id, "power_button", ch2.id,
-            shape_mode=ShapeMode.MOMENTARY, shape_active=ChannelState.CLOSED,
+            sbc2.id,
+            "power_button",
+            ch2.id,
+            shape_mode=ShapeMode.MOMENTARY,
+            shape_active=ChannelState.CLOSED,
             momentary_pulse_ms=200,
         )
 
@@ -199,8 +205,11 @@ class TestBindingCrud:
     def test_delete_binding(self, manager):
         sbc, _a, ch = self._setup(manager)
         b = manager.create_binding(
-            sbc.id, "recovery_mode", ch.id,
-            shape_mode=ShapeMode.LATCH, shape_active=ChannelState.CLOSED,
+            sbc.id,
+            "recovery_mode",
+            ch.id,
+            shape_mode=ShapeMode.LATCH,
+            shape_active=ChannelState.CLOSED,
         )
         assert manager.delete_binding(b.id) is True
         assert manager.get_binding(b.id) is None
@@ -208,8 +217,11 @@ class TestBindingCrud:
     def test_update_desired_state(self, manager):
         sbc, _a, ch = self._setup(manager)
         b = manager.create_binding(
-            sbc.id, "recovery_mode", ch.id,
-            shape_mode=ShapeMode.LATCH, shape_active=ChannelState.CLOSED,
+            sbc.id,
+            "recovery_mode",
+            ch.id,
+            shape_mode=ShapeMode.LATCH,
+            shape_active=ChannelState.CLOSED,
         )
         manager.update_binding_desired_state(b.id, DesiredState.ASSERTED)
         fresh = manager.get_binding(b.id)
@@ -219,8 +231,11 @@ class TestBindingCrud:
     def test_audit_log_records_create_delete(self, manager):
         sbc, _a, ch = self._setup(manager)
         b = manager.create_binding(
-            sbc.id, "recovery_mode", ch.id,
-            shape_mode=ShapeMode.LATCH, shape_active=ChannelState.CLOSED,
+            sbc.id,
+            "recovery_mode",
+            ch.id,
+            shape_mode=ShapeMode.LATCH,
+            shape_active=ChannelState.CLOSED,
         )
         manager.delete_binding(b.id)
 
@@ -246,7 +261,9 @@ class TestCommitActuationAtomicity:
         actuator = manager.create_actuator("relay", DriverName.LCUS1_SERIAL)
         ch = manager.add_actuator_channel(actuator.id, 1)
         binding = manager.create_binding(
-            sbc.id, "recovery_mode", ch.id,
+            sbc.id,
+            "recovery_mode",
+            ch.id,
             shape_mode=ShapeMode.LATCH,
             shape_active=ChannelState.CLOSED,
         )
@@ -325,7 +342,9 @@ class TestClaimComposition:
         actuator = manager.create_actuator("relay-1", DriverName.LCUS1_SERIAL)
         ch = manager.add_actuator_channel(actuator.id, 1)
         manager.create_binding(
-            sbc.id, "recovery_mode", ch.id,
+            sbc.id,
+            "recovery_mode",
+            ch.id,
             shape_mode=ShapeMode.LATCH,
             shape_active=ChannelState.CLOSED,
         )
@@ -388,13 +407,19 @@ class TestBindingConstraints:
         ch = manager.add_actuator_channel(a.id, 1)
 
         manager.create_binding(
-            sbc1.id, "recovery_mode", ch.id,
-            shape_mode=ShapeMode.LATCH, shape_active=ChannelState.CLOSED,
+            sbc1.id,
+            "recovery_mode",
+            ch.id,
+            shape_mode=ShapeMode.LATCH,
+            shape_active=ChannelState.CLOSED,
         )
         with pytest.raises(Exception):
             manager.create_binding(
-                sbc2.id, "recovery_mode", ch.id,
-                shape_mode=ShapeMode.LATCH, shape_active=ChannelState.CLOSED,
+                sbc2.id,
+                "recovery_mode",
+                ch.id,
+                shape_mode=ShapeMode.LATCH,
+                shape_active=ChannelState.CLOSED,
             )
 
     def test_one_purpose_per_sbc(self, manager):
@@ -404,11 +429,17 @@ class TestBindingConstraints:
         ch2 = manager.add_actuator_channel(a.id, 2)
 
         manager.create_binding(
-            sbc.id, "recovery_mode", ch1.id,
-            shape_mode=ShapeMode.LATCH, shape_active=ChannelState.CLOSED,
+            sbc.id,
+            "recovery_mode",
+            ch1.id,
+            shape_mode=ShapeMode.LATCH,
+            shape_active=ChannelState.CLOSED,
         )
         with pytest.raises(Exception):
             manager.create_binding(
-                sbc.id, "recovery_mode", ch2.id,
-                shape_mode=ShapeMode.LATCH, shape_active=ChannelState.CLOSED,
+                sbc.id,
+                "recovery_mode",
+                ch2.id,
+                shape_mode=ShapeMode.LATCH,
+                shape_active=ChannelState.CLOSED,
             )

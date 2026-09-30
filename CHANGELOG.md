@@ -21,6 +21,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   (D011). The server now reports labctl's version in `serverInfo`.
 - The `sdwire` extra only installs on Python ≥ 3.12 (PyPI `sdwire` requires
   it). On 3.10/3.11 SDWire commands report that the package is missing.
+- Development: `src/` and `tests/` are now clean under `black`, `isort` and
+  `flake8`, which are pinned exactly in the `dev` extra
+  (`black==26.5.1`, `isort==9.0.1`, `flake8==7.4.1`). Formatting-only apart
+  from removing dead code flagged by flake8 (unused imports/variables).
 
 ### Added
 - MCP tool annotations (`title`, `readOnlyHint`, `destructiveHint`,
