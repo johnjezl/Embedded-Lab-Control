@@ -2431,6 +2431,10 @@ class TestMcpSdkRegistration:
             "actuator_set",
             "actuator_remove",
             "enter_recovery",
+            # Move the SD mux (host, then always DUT) — see the table comment.
+            "sdwire_ls",
+            "sdwire_cat",
+            "sdwire_info",
         ],
     )
     def test_required_destructive_tools(self, name):
@@ -2506,6 +2510,67 @@ class TestMcpToolSerialization:
         for t in threads:
             t.join()
         assert peak == 1
+
+    # Identifiers that mean "this handler talks to hardware or the network".
+    _HARDWARE_ACCESS = (
+        r"PowerController|HealthChecker|SDWireController|capture_serial|"
+        r"send_serial|subprocess|socket|requests\.|get_driver|probe_actuator"
+    )
+
+    @staticmethod
+    def _is_serialized(fn):
+        from labctl.mcp_server import _serialized
+
+        return fn.__code__ is _serialized(lambda: None).__code__
+
+    def test_hardware_resources_take_the_lock(self):
+        """Every resource that touches hardware must be @_serialized.
+
+        mcp 2.x runs resources on worker threads too, so an unlocked
+        lab://power read could interleave with power_cycle on the same plug.
+        DB-only resources stay unlocked.
+        """
+        import inspect
+        import re
+
+        import anyio
+
+        import labctl.mcp_server as server
+
+        hw = re.compile(self._HARDWARE_ACCESS)
+        resources = anyio.run(server.mcp.list_resources) + anyio.run(
+            server.mcp.list_resource_templates
+        )
+        hardware, unlocked = set(), []
+        for r in resources:
+            fn = getattr(server, r.name)
+            touches_hw = bool(hw.search(inspect.getsource(inspect.unwrap(fn))))
+            if touches_hw:
+                hardware.add(r.name)
+            if touches_hw != self._is_serialized(fn):
+                unlocked.append(f"{r.name}: hardware={touches_hw}")
+        assert not unlocked, unlocked
+        # Pin today's set so a change here is a deliberate decision.
+        assert hardware == {"get_power_state", "get_health", "get_status_overview"}
+
+    def test_locked_resource_waits_for_running_tool(self, mock_manager):
+        """A lab://power read blocks while a tool holds the hardware lock."""
+        import threading
+
+        from labctl.mcp_server import _HARDWARE_LOCK, get_power_state
+
+        done = threading.Event()
+
+        def read():
+            get_power_state("test-sbc-2")  # no plug: returns without hardware
+            done.set()
+
+        with _HARDWARE_LOCK:  # stand-in for an in-flight tool call
+            t = threading.Thread(target=read)
+            t.start()
+            assert not done.wait(0.2), "resource ran while the lock was held"
+        assert done.wait(5), "resource never ran after the lock was released"
+        t.join()
 
 
 class TestMcpRunServer:

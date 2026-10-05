@@ -35,6 +35,17 @@ if [ ! -x "$LABCTL_VENV/bin/pip" ]; then
 fi
 
 # 1. Reinstall package
+# 0.2.0 renamed the distribution labctl -> embedded-lab-control. Both own the
+# same labctl/ package and `labctl` script, so remove the old one first:
+# installed side by side, a later `pip uninstall labctl` would delete the new
+# install's files. One-time migration; a no-op once the old dist is gone.
+# (If the install below then fails, running services keep their loaded code;
+# fix the error and rerun this script.)
+if "$LABCTL_VENV/bin/pip" show labctl &>/dev/null; then
+    echo "[+] Removing old 'labctl' distribution (renamed embedded-lab-control)..."
+    "$LABCTL_VENV/bin/pip" uninstall -y labctl --quiet
+fi
+
 echo "[+] Installing labctl from $PROJECT_DIR..."
 "$LABCTL_VENV/bin/pip" install "$PROJECT_DIR[web,mcp,kasa,sdwire]" --quiet
 echo "[ok] Package installed"
