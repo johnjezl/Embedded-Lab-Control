@@ -207,16 +207,17 @@ This document records significant design decisions made during development.
 ## D011: mcp 2.x SDK migration — serialized tools and explicit tool annotations
 
 - **Date**: 2026-09-29
-- **Context**: `mcp>=1.0` began resolving to mcp 2.2, where `FastMCP` became `mcp.server.mcpserver.MCPServer`. Two 2.x behavior changes matter for labctl: (a) sync tool handlers now run on worker threads instead of inline on the event loop, so tool calls can run concurrently; (b) MCP clients increasingly use tool annotations (`readOnlyHint`, `destructiveHint`, ...) to decide what to auto-approve, and the spec defaults `destructiveHint`/`openWorldHint` to *true* when unset.
+- **Context**: `mcp>=1.0` began resolving to mcp 2.2, where `FastMCP` became `mcp.server.mcpserver.MCPServer`. Two 2.x behavior changes matter for labctl: (a) sync tool *and resource* handlers now run on worker threads instead of inline on the event loop, so they can run concurrently; (b) MCP clients increasingly use tool annotations (`readOnlyHint`, `destructiveHint`, ...) to decide what to auto-approve, and the spec defaults `destructiveHint`/`openWorldHint` to *true* when unset.
 - **Options Considered**:
   1. Migrate and allow concurrent tool calls
   2. Migrate and keep 1.x one-call-at-a-time semantics with a process-wide lock
   3. Pin `mcp<2`
-- **Decision**: Option 2. Pin `mcp>=2.2,<3`; `_with_mcp_activity` holds a process-wide lock for every tool call. Every tool carries a `ToolAnnotations` entry from a single table (`_TOOL_ANNOTATION_TABLE` in `mcp_server.py`) with all five fields explicit; a unit test fails if any registered tool lacks an entry or the table has stale ones.
+- **Decision**: Option 2. Pin `mcp>=2.2,<3`; a process-wide `_HARDWARE_LOCK` is held for every tool call (via `_with_mcp_activity`) and for every resource that touches hardware (`@_serialized`: `lab://power/{sbc}`, `lab://health/{sbc}`, `lab://status`). Every tool carries a `ToolAnnotations` entry from a single table (`_TOOL_ANNOTATION_TABLE` in `mcp_server.py`) with all five fields explicit; a unit test fails if any registered tool lacks an entry or the table has stale ones.
 - **Rationale**:
   - Tools drive shared physical hardware; concurrent `power_cycle` + `flash_image` on one SBC is unsafe, and per-SBC locking is a larger design question (see issue #7). The lock is behavior-identical to 1.x.
-  - Resources and prompts stay unlocked — they are DB reads with per-call connections.
-  - One reviewable table keeps the read-only/destructive classification auditable. Ambiguous tools (`serial_send`, `boot_test`, binding verbs whose purpose is free text) are classified conservatively as destructive.
+  - Hardware-touching resources take the same lock: a `lab://status` read polls every power plug and would otherwise interleave with a `power_cycle` on the same plug. A unit test fails if a resource that references hardware APIs is not `@_serialized`.
+  - DB-only resources (11 of 14) and prompts stay unlocked — per-call SQLite connections make concurrent reads safe, and they no longer wait behind long tools such as `boot_test` (a small, deliberate improvement over 1.x).
+  - One reviewable table keeps the read-only/destructive classification auditable. Ambiguous tools (`serial_send`, `boot_test`, binding verbs whose purpose is free text) are classified conservatively as destructive. `sdwire_ls`/`sdwire_cat`/`sdwire_info` only read files but are classified destructive: they move the SD mux (host, then always DUT) and the power guard passes when the SBC has no plug (revised 2026-10-05 after code review of PR #12).
 
 ---
 

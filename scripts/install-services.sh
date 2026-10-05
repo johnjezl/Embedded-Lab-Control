@@ -52,6 +52,11 @@ python3 -m venv "$LABCTL_VENV"
 
 echo "[+] Installing labctl into venv..."
 "$LABCTL_VENV/bin/pip" install --upgrade pip
+# Rerun on a pre-0.2.0 host: drop the old `labctl` distribution (renamed
+# embedded-lab-control) so the two don't share labctl/ (see update.sh).
+if "$LABCTL_VENV/bin/pip" show labctl &>/dev/null; then
+    "$LABCTL_VENV/bin/pip" uninstall -y labctl
+fi
 "$LABCTL_VENV/bin/pip" install "$PROJECT_DIR[web]"
 
 # Verify install

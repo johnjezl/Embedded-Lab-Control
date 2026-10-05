@@ -16,9 +16,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **MCP server migrated to the mcp 2.x SDK** (`mcp>=2.2,<3`, `MCPServer`
   replaces `FastMCP`). `mcp>=1.0` had started resolving to 2.2, where
   `mcp.server.fastmcp` no longer exists and `labctl mcp` crashed on import.
-  Tools, resources and prompts are unchanged. mcp 2.x runs sync tools on
-  worker threads; labctl keeps 1.x semantics by serializing tool calls
-  (D011). The server now reports labctl's version in `serverInfo`.
+  Tools, resources and prompts are unchanged. mcp 2.x runs sync tools and
+  resources on worker threads; labctl keeps 1.x semantics by serializing tool
+  calls and the hardware-touching resources (`lab://power/{sbc}`,
+  `lab://health/{sbc}`, `lab://status`) under one lock (D011). The server
+  now reports labctl's version in `serverInfo`.
+- `scripts/update.sh` and `scripts/install-services.sh` uninstall the old
+  `labctl` distribution before installing `embedded-lab-control`, so the
+  first upgrade doesn't leave two distributions owning `labctl/` (a later
+  `pip uninstall labctl` would otherwise delete the new install).
 - The `sdwire` extra only installs on Python ≥ 3.12 (PyPI `sdwire` requires
   it). On 3.10/3.11 SDWire commands report that the package is missing.
 - Development: `src/` and `tests/` are now clean under `black`, `isort` and
@@ -30,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - MCP tool annotations (`title`, `readOnlyHint`, `destructiveHint`,
   `idempotentHint`, `openWorldHint`) on all 52 tools, defined in one table in
   `mcp_server.py`. A unit test fails if a tool is added without an entry.
+  `sdwire_ls`/`sdwire_cat`/`sdwire_info` are marked destructive (not
+  read-only): they switch the SD mux and always leave it in DUT mode.
 - `labctl mcp --host ADDR` (default `127.0.0.1`) for the HTTP transport.
 - `labctl mcp` without the `mcp` extra now prints an install hint instead of
   a traceback.

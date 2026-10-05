@@ -16,20 +16,31 @@ Delete or fold into the real release notes before publishing.
   the loopback default: the port is not reachable remotely, and even behind a
   proxy the SDK's DNS-rebinding guard returns 421 for a non-localhost `Host`.
   Remote access needs a tunnel or `--host` — which ties into auth (P1).
-- **Production venv is on mcp 1.26.0** under the `PYTHONPATH` overlay (#11).
-  Upgrading to mcp 2.x changes the dependency tree the overlay was built for
-  (`httpx` → `httpx2`, new `mcp-types`, `opentelemetry-api`); rebuild the
-  overlay or, better, fix the disk first.
-- **Tool calls remain serialized** (process-wide lock, D011), matching 1.x.
+- ~~Production venv on the `PYTHONPATH` overlay~~ — resolved 2026-10-05: disk
+  fixed, overlay drop-in and `/opt/labctl/overlay` removed, #11 closed.
+  Production is still on mcp 1.26 / labctl 0.1.0 until Phase 0 is deployed.
+- **The first Phase 0 deploy migrates the distribution.** Production has the
+  old `labctl` 0.1.0 distribution; `update.sh` now uninstalls it before
+  installing `embedded-lab-control` (otherwise both would own `labctl/`, and a
+  later `pip uninstall labctl` would delete the new install). Verified on a
+  scratch venv seeded from `11ad19f`: migration run and a same-version rerun
+  both leave exactly one distribution, `pip check` clean.
+- **Tool calls and hardware-touching resources are serialized** (process-wide
+  lock, D011), matching 1.x for everything that touches hardware.
+- `scripts/update.sh` should surface per-service start failures more loudly
+  (carried over from #11: a failed `labctl-mcp` only showed as
+  `[!!] labctl-mcp FAILED` at the end). P2.
 
 ## P1 safety
 
 - `--host 0.0.0.0` on the HTTP transport exposes all 52 tools with no auth.
   The flag's help text warns; real auth is P1.
-- `sdwire_ls` / `sdwire_cat` / `sdwire_info` are annotated read-only but
-  physically flip the SD mux to host and back, and require a *mutating* claim.
-  Annotation is accurate (no lasting change), but a user reading
-  "read-only" may not expect the mux to move.
+- `sdwire_ls` / `sdwire_cat` / `sdwire_info` (now annotated destructive) always
+  leave the mux in DUT mode, even if it was in host mode, and
+  `_sdwire_host_switch_guard_mcp` lets the switch proceed when the SBC has no
+  power plug or the plug can't be read. Consider restoring the previous mux
+  mode and failing closed when the power state is unknown; then they could be
+  re-annotated read-only.
 - `actuator_probe` is annotated read-only but writes `last_probe_*` columns.
 - `serial_capture` is read-only but opens a ser2net session that may interleave
   with another user's session (issue #7).

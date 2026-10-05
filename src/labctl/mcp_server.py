@@ -86,14 +86,17 @@ _TOOL_ANNOTATION_TABLE: dict[str, tuple[str, bool, bool, bool, bool]] = {
     # Discovery (USB scans)
     "sdwire_discover": ("Discover SDWire devices", True, False, True, True),
     "serial_discover": ("Discover USB-serial adapters", True, False, True, True),
-    # SD card mux / contents. sdwire_ls/cat/info transiently switch the mux
-    # to host and back (and refuse when powered on); they leave no change.
+    # SD card mux / contents. sdwire_ls/cat/info only read files, but they
+    # are NOT read-only: each switches the mux to host and then always to
+    # DUT, so a card left in host mode ends up on the DUT; and the power
+    # guard passes when the SBC has no power plug or the plug can't be read,
+    # so the card can be pulled from a running board.
     "sdwire_to_dut": ("Switch SD card to DUT", False, False, True, True),
     "sdwire_to_host": ("Switch SD card to host", False, True, True, True),
     "sdwire_update": ("Update files on SD card", False, True, False, True),
-    "sdwire_ls": ("List SD card directory", True, False, True, True),
-    "sdwire_cat": ("Read file from SD card", True, False, True, True),
-    "sdwire_info": ("SD card partition info", True, False, True, True),
+    "sdwire_ls": ("List SD card directory", False, True, True, True),
+    "sdwire_cat": ("Read file from SD card", False, True, True, True),
+    "sdwire_info": ("SD card partition info", False, True, True, True),
     "flash_image": ("Flash image to SD card", False, True, False, True),
     # Serial console
     "serial_capture": ("Capture serial output", True, False, True, True),
@@ -266,12 +269,29 @@ def _claim_advisory(manager, sbc_name: str) -> str:
     return "\n".join(lines)
 
 
-# mcp 2.x runs sync handlers on worker threads (1.x ran them inline on the
-# event loop, which serialized every tool call). Tools drive shared physical
-# hardware — power plugs, SD muxes, serial consoles — so keep the 1.x
-# one-at-a-time semantics rather than let e.g. power_cycle and flash_image
-# interleave on the same SBC.
-_TOOL_CALL_LOCK = threading.Lock()
+# mcp 2.x runs sync handlers (tools *and* resources) on worker threads; 1.x
+# ran them inline on the event loop, which serialized them. Tools and some
+# resources drive shared physical hardware — power plugs, SD muxes, serial
+# consoles — so keep the 1.x one-at-a-time semantics for everything that
+# touches hardware rather than let e.g. power_cycle and flash_image, or a
+# power-state read and power_cycle, interleave on the same device.
+# Not reentrant: a locked handler must not call another locked handler.
+_HARDWARE_LOCK = threading.Lock()
+
+
+def _serialized(func):
+    """Run a handler under the process-wide hardware lock (see above).
+
+    Use directly on resources that query hardware; tools get it via
+    ``_with_mcp_activity``. DB-only resources and prompts stay unlocked.
+    """
+
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        with _HARDWARE_LOCK:
+            return func(*args, **kwargs)
+
+    return wrapper
 
 
 def _with_mcp_activity(func):
@@ -280,7 +300,7 @@ def _with_mcp_activity(func):
 
     @wraps(func)
     def wrapper(*args, **kwargs):
-        with _TOOL_CALL_LOCK, audit.activity_context(_get_session_id(), "mcp"):
+        with _HARDWARE_LOCK, audit.activity_context(_get_session_id(), "mcp"):
             return func(*args, **kwargs)
 
     return wrapper
@@ -359,6 +379,7 @@ def get_sbc_details(sbc_name: str) -> str:
 
 
 @mcp.resource("lab://power/{sbc_name}")
+@_serialized
 def get_power_state(sbc_name: str) -> str:
     """Get current power state for an SBC (on/off/unknown)."""
     from labctl.power import PowerController
@@ -429,6 +450,7 @@ def list_ports() -> str:
 
 
 @mcp.resource("lab://health/{sbc_name}")
+@_serialized
 def get_health(sbc_name: str) -> str:
     """Run a live health check on an SBC and return results."""
     from labctl.core.config import load_config
@@ -483,6 +505,7 @@ def get_health(sbc_name: str) -> str:
 
 
 @mcp.resource("lab://status")
+@_serialized
 def get_status_overview() -> str:
     """Get a dashboard-style overview of all SBCs with power states."""
     from labctl.power import PowerController
