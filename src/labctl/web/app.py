@@ -42,13 +42,14 @@ def create_app(config: Config | None = None) -> Flask:
     app.config["LABCTL_CONFIG"] = config
     app.jinja_env.globals["labctl_version"] = __version__
 
-    # Set SECRET_KEY from auth config, fall back to random if empty
+    # SECRET_KEY signs the session cookie, which carries the CSRF token even
+    # when auth is disabled, so it must never be a known constant. Without a
+    # configured key, use a random per-process key (the web server is a single
+    # process); sessions then reset on restart.
     if config.auth.secret_key:
         app.config["SECRET_KEY"] = config.auth.secret_key
-    elif config.auth.enabled:
-        app.config["SECRET_KEY"] = secrets.token_hex(32)
     else:
-        app.config["SECRET_KEY"] = "labctl-dev-key"
+        app.config["SECRET_KEY"] = secrets.token_hex(32)
 
     # Set session lifetime
     app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(

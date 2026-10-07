@@ -775,3 +775,33 @@ P4 showcase. Scratch list of out-of-scope findings:
   `.gitleaksignore` for 4 reviewed false positives). Validated locally
   (actionlint, gitleaks, suite in a runner-like sandbox); first GitHub
   run happens on push.
+
+### Phase 1: Safety
+
+Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
+(P1 section).
+
+- WS1 Quick hardening
+  - ✅ Web `SECRET_KEY`: random per process when not configured (was the
+    constant `labctl-dev-key`, which signs the CSRF-bearing session)
+  - ✅ `sdwire_ls`/`sdwire_cat`/`sdwire_info` side-effect free: host-side
+    card read in place; DUT-side card switched only when the board is known
+    OFF, else refuse (`power_unknown`/`powered_on`). Re-annotated read-only
+  - ✅ #3 MCP session liveness checks process start time vs the session
+    epoch, so a recycled PID doesn't count as the original session
+  - ✅ Pre-rebase commit SHAs in `STATUS.md` / Phase 0 notes
+- WS2 Host path allowlist
+  - ☐ `mcp.allowed_read_paths` / `mcp.allowed_write_paths` (deny-all default)
+  - ☐ Enforce in `flash_image`, `sdwire_update`, `boot_test`
+    (resolve symlinks and `..` before checking)
+  - ☐ Install/update scripts create and configure `/var/lib/labctl/images`
+- WS3 Operation classification + destructive confirmation (#7)
+  - ☐ Classify every CLI command and MCP tool; docs table
+  - ☐ Two-step confirmation tokens for destructive MCP tools
+  - ☐ CLI `--dry-run` for flash/update/power-cycle; `--yes` where missing
+- WS4 MCP HTTP authentication
+  - ☐ Bearer auth backed by web users' API keys (`token_verifier`)
+  - ☐ Refuse non-loopback `--host` without auth
+  - ☐ Configurable allowed `Host` headers (reverse proxy)
+- WS5 Wrap-up
+  - ☐ Security section in `docs/MCP_SERVER.md`; deploy

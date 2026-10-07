@@ -3,10 +3,11 @@
 ## Current State
 
 - **Milestone**: Public PyPI release (`embedded-lab-control`)
-- **Sub-task**: Phase 0 — installable + mcp 2.x SDK
-- **Status**: Phase 0 complete on `release/phase0` (A SDK + annotations,
-  B packaging, C0 lint debt, C1 CI). Not yet pushed; first GitHub Actions
-  run happens on push. Next: Phase 1 (safety).
+- **Sub-task**: Phase 1 — safety (decisions: D012)
+- **Status**: Phase 0 merged (PR #12) and deployed to tarrasque on
+  2026-10-07 (`embedded-lab-control` 0.2.0.dev0, MCP on 127.0.0.1:8080).
+  Phase 1 WS1 (quick hardening) done on `release/phase1`; WS2–WS5 pending
+  (see `docs/IMPLEMENTATION.md`).
 
 ## Last Session
 
@@ -21,7 +22,7 @@
   - Python 3.10 fix in `labctl.sdwire`; sdwire extra gated on ≥ 3.12
   - 996 tests passing on 3.10 and 3.12 (baseline on mcp 2.2: 791 passed,
     13 failed, 157 errors); coverage 68%
-  - Repo clean under pinned black/isort/flake8 (`120990e`)
+  - Repo clean under pinned black/isort/flake8 (`ea3a13a`)
   - `.github/workflows/ci.yml`: 3.10–3.13 matrix (lint + pytest/coverage
     artifact) and full-history gitleaks job; 4 reviewed false positives in
     `.gitleaksignore`

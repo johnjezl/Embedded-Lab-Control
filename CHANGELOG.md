@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Security
+- Web UI: without a configured `auth.secret_key`, the session-signing key is
+  now random per process. It used to fall back to the constant
+  `labctl-dev-key` when auth was disabled; because the signed session
+  carries the CSRF token, anyone could forge it. Browser sessions now reset
+  when the web service restarts unless a key is configured.
+- MCP `sdwire_ls` / `sdwire_cat` / `sdwire_info` no longer have side effects.
+  A card already switched to the host is read in place and left there; a
+  card on the DUT side is switched to the host and back only when the
+  board's power plug reports OFF. With no power plug, an unreadable plug, or
+  an unknown state they now refuse (`power_unknown`) instead of switching
+  the card away from a possibly running board. They are annotated read-only.
+  Callers that relied on reading a plug-less SBC's card must switch it
+  explicitly with `sdwire_to_host` first.
+
+### Fixed
+- MCP claim sweeper (issue #3): a crashed `mcp-stdio` session whose PID was
+  reused by another process is now recognised as gone (the process start
+  time is compared with the session's epoch), so its claim is released as
+  `session-lost` rather than later as `expired`.
+
 ### Changed
 - **Package renamed for PyPI**: the distribution is now
   `embedded-lab-control` (`pip install embedded-lab-control`); the import
@@ -36,8 +57,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - MCP tool annotations (`title`, `readOnlyHint`, `destructiveHint`,
   `idempotentHint`, `openWorldHint`) on all 52 tools, defined in one table in
   `mcp_server.py`. A unit test fails if a tool is added without an entry.
-  `sdwire_ls`/`sdwire_cat`/`sdwire_info` are marked destructive (not
-  read-only): they switch the SD mux and always leave it in DUT mode.
 - `labctl mcp --host ADDR` (default `127.0.0.1`) for the HTTP transport.
 - `labctl mcp` without the `mcp` extra now prints an install hint instead of
   a traceback.

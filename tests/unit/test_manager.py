@@ -1,6 +1,7 @@
 """Unit tests for resource manager."""
 
 import time
+from pathlib import Path
 
 import pytest
 
@@ -1675,7 +1676,13 @@ class TestDeadSessionRelease:
         )
         time.sleep(1.2)
 
-        with patch.object(type(manager), "_is_pid_alive", return_value=True):
+        # Same process: it started before the session epoch was recorded.
+        with (
+            patch.object(type(manager), "_is_pid_alive", return_value=True),
+            patch.object(
+                type(manager), "_process_start_epoch", return_value=1699999990.0
+            ),
+        ):
             count = manager.release_dead_sessions(grace_seconds=0)
 
         assert count == 0
@@ -1713,6 +1720,124 @@ class TestDeadSessionRelease:
             count = manager.release_dead_sessions(grace_seconds=60)
 
         assert count == 0
+
+
+class TestSessionLivenessPidRecycling:
+    """Issue #3: a recycled PID must not count as the original MCP session."""
+
+    EPOCH = 1700000000  # session epoch embedded in the session ID
+
+    def _expired_claim(self, manager, session_id):
+        manager.create_sbc(name="sbc1")
+        manager.claim_sbc(
+            sbc_name="sbc1",
+            agent_name="agent",
+            session_id=session_id,
+            session_kind="mcp-stdio",
+            duration_seconds=1,
+            reason="test",
+        )
+        time.sleep(1.2)
+
+    def _release(self, manager, *, pid_alive, started):
+        from unittest.mock import patch
+
+        with (
+            patch.object(type(manager), "_is_pid_alive", return_value=pid_alive),
+            patch.object(type(manager), "_process_start_epoch", return_value=started),
+        ):
+            return manager.release_dead_sessions(grace_seconds=0)
+
+    def test_recycled_pid_releases_as_session_lost(self, manager):
+        """PID alive but its process started after the session: not ours."""
+        self._expired_claim(manager, f"mcp-stdio:4242-{self.EPOCH}")
+
+        count = self._release(manager, pid_alive=True, started=self.EPOCH + 3600.0)
+
+        assert count == 1
+        history = manager.list_claim_history("sbc1")
+        assert history[0].release_reason == ReleaseReason.SESSION_LOST
+
+    def test_original_process_kept(self, manager):
+        """PID alive and started before the epoch: the original session."""
+        self._expired_claim(manager, f"mcp-stdio:4242-{self.EPOCH}")
+
+        assert self._release(manager, pid_alive=True, started=self.EPOCH - 5.0) == 0
+
+    def test_start_within_slack_kept(self, manager):
+        """Rounding / small clock slew must not make a live session look dead."""
+        self._expired_claim(manager, f"mcp-stdio:4242-{self.EPOCH}")
+
+        assert self._release(manager, pid_alive=True, started=self.EPOCH + 1.5) == 0
+
+    def test_dead_pid_released_without_reading_start(self, manager):
+        self._expired_claim(manager, f"mcp-stdio:4242-{self.EPOCH}")
+
+        assert self._release(manager, pid_alive=False, started=None) == 1
+
+    def test_unreadable_start_time_falls_back_to_pid_check(self, manager):
+        """Non-Linux or /proc unreadable: behave as before (PID only)."""
+        self._expired_claim(manager, f"mcp-stdio:4242-{self.EPOCH}")
+
+        assert self._release(manager, pid_alive=True, started=None) == 0
+
+    def test_session_id_without_epoch_uses_pid_only(self, manager):
+        self._expired_claim(manager, "mcp-stdio:4242")
+
+        count = self._release(manager, pid_alive=True, started=self.EPOCH + 3600.0)
+
+        assert count == 0
+
+    @pytest.mark.skipif(
+        not Path("/proc/self/stat").exists(), reason="needs Linux /proc"
+    )
+    def test_real_proc_start_time_of_this_process(self):
+        """/proc parsing against a real process: this test runner."""
+        import os
+
+        from labctl.core.manager import ResourceManager
+
+        started = ResourceManager._process_start_epoch(os.getpid())
+        assert started is not None
+        assert started <= time.time() + 1
+        assert time.time() - started < 6 * 3600  # this test run began recently
+
+    @pytest.mark.skipif(
+        not Path("/proc/self/stat").exists(), reason="needs Linux /proc"
+    )
+    def test_real_recycled_pid_detected(self, manager):
+        """End to end with real /proc: our live PID + an epoch from before
+        this process existed looks exactly like a recycled PID."""
+        import os
+
+        self._expired_claim(manager, f"mcp-stdio:{os.getpid()}-{self.EPOCH}")
+
+        assert manager.release_dead_sessions(grace_seconds=0) == 1
+
+    def test_proc_stat_comm_with_spaces_and_parens(self):
+        """comm is parenthesised and may itself contain ") " sequences."""
+        from unittest.mock import mock_open, patch
+
+        from labctl.core.manager import ResourceManager
+
+        # Fields after comm: state(3) ... starttime is field 22.
+        after_comm = ["S"] + ["0"] * 18 + ["500"] + ["0"] * 10
+        stat = "77 (evil) name (x)) " + " ".join(after_comm) + "\n"
+        files = {"/proc/77/stat": stat, "/proc/stat": "cpu 1 2\nbtime 1000\n"}
+
+        def fake_open(path, *a, **k):
+            return mock_open(read_data=files[path])()
+
+        with (
+            patch("builtins.open", side_effect=fake_open),
+            patch("os.sysconf", return_value=100),
+        ):
+            assert ResourceManager._process_start_epoch(77) == 1000 + 500 / 100
+
+    def test_missing_proc_returns_none(self):
+        from labctl.core.manager import ResourceManager
+
+        assert ResourceManager._process_start_epoch(2**31 - 1) is None
 
 
 class TestPruneReleasedClaims:
