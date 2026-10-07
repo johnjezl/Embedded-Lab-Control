@@ -56,6 +56,20 @@ Delete or fold into the real release notes before publishing.
 - ~~Web UI constant `SECRET_KEY = "labctl-dev-key"`~~ — resolved in Phase 1
   WS1 (random per process). Correction to the earlier note: it was not
   harmless with auth off, because the signed session carries the CSRF token.
+- **Deploying Phase 1 WS2 to tarrasque:** MCP host file access becomes
+  deny-all. Until `mcp.allowed_read_paths` / `allowed_write_paths` are added
+  to both `/etc/labctl/config.yaml` and the service config, `flash_image`,
+  `sdwire_update` (copies) and `boot_test` (image/output_dir) over MCP refuse
+  host paths. `update.sh` creates `/var/lib/labctl/{images,output}` and
+  prints the snippet. Images currently kept elsewhere (e.g. under `/home`,
+  which `ProtectHome=yes` already hides from the service) must be moved
+  or the allowlist extended.
+- Path checks are check-then-use: the resolved path is passed on, which
+  defeats a symlink swapped in after the check for the final component, but
+  a parent directory that a lab user can write to could still be swapped
+  between check and open. Group-writable `images/` is setgid, not sticky;
+  consider opening with `O_NOFOLLOW` per component (`openat2` RESOLVE_BENEATH
+  on Linux) if the threat model includes other lab users.
 
 ## P2 release
 

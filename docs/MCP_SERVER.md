@@ -280,7 +280,7 @@ Tools perform mutations — the AI assistant calls these to take action.
 |------|------------|-------------|
 | `sdwire_to_dut` | `sbc_name` | Switch SD card to SBC (boot from SD) |
 | `sdwire_to_host` | `sbc_name` | Switch SD card to host (for flashing) |
-| `sdwire_update` | `sbc_name`, `partition`, `copies`, `renames`, `deletes`, `reboot` | Copy, rename, or delete files on SD card partition (atomic: mount, operate, unmount) |
+| `sdwire_update` | `sbc_name`, `partition`, `copies`, `renames`, `deletes`, `reboot` | Copy, rename, or delete files on SD card partition (atomic: mount, operate, unmount). Host `copies` sources must be allowlisted |
 | `sdwire_ls` | `sbc_name`, `partition`, `path`, `recursive`, `max_entries` | List directory contents on an SD card partition using a read-only mount |
 | `sdwire_cat` | `sbc_name`, `partition`, `path`, `max_bytes`, `encoding` | Read a file from an SD card partition with size and encoding guards |
 | `sdwire_info` | `sbc_name` | Return partition-table and filesystem metadata for the SD card |
@@ -289,7 +289,7 @@ Tools perform mutations — the AI assistant calls these to take action.
 | `sdwire_assign` | `sbc_name`, `device_name` | Assign SDWire device to SBC |
 | `sdwire_unassign` | `sbc_name` | Remove SDWire assignment from SBC |
 | `sdwire_discover` | | Scan for connected SDWire devices |
-| `flash_image` | `sbc_name`, `image_path`, `reboot`, `post_flash_copies` | Flash raw disk image (.img/.img.xz/.img.gz) to SD card with safety checks |
+| `flash_image` | `sbc_name`, `image_path`, `reboot`, `post_flash_copies` | Flash raw disk image (.img/.img.xz/.img.gz) to SD card with safety checks. Host paths must be allowlisted (see [Host file access](#host-file-access-allowlist)) |
 
 ### Serial I/O
 
@@ -302,7 +302,7 @@ Tools perform mutations — the AI assistant calls these to take action.
 
 | Tool | Parameters | Description |
 |------|------------|-------------|
-| `boot_test` | `sbc_name`, `expect_pattern`, `runs`, `timeout`, `image`, `dest`, `partition`, `output_dir` | Automated boot reliability testing with deploy and serial capture |
+| `boot_test` | `sbc_name`, `expect_pattern`, `runs`, `timeout`, `image`, `dest`, `partition`, `output_dir` | Automated boot reliability testing with deploy and serial capture. `image` must be in `allowed_read_paths`, `output_dir` in `allowed_write_paths` |
 
 ### Claims (Exclusive Access Coordination)
 
@@ -391,6 +391,37 @@ The assistant calls:
   Use this only on trusted networks or behind a reverse proxy with auth.
 - The server uses the same configuration and database as the CLI, so all
   operations are audited in the audit_log table.
+
+### Host file access (allowlist)
+
+Some tools take paths on the **host** machine: `flash_image` (`image_path`,
+`post_flash_copies` sources), `sdwire_update` (`copies` sources) and
+`boot_test` (`image`, `output_dir`). Over MCP these are **denied unless
+allowlisted** in `config.yaml`:
+
+```yaml
+mcp:
+  allowed_read_paths:          # images, files to copy onto SD cards
+    - /var/lib/labctl/images
+  allowed_write_paths:         # boot_test output_dir
+    - /var/lib/labctl/output
+```
+
+- Host paths must be absolute. They are resolved (symlinks and `..`) before
+  the check, so a link or `../` inside an allowed directory cannot reach
+  outside it; the resolved path is what the tool then uses.
+- Paths on the SD card itself (`dest`, `renames`, `deletes`, and the
+  `sdwire_ls`/`sdwire_cat` `path`) are not host paths and are not affected.
+- The CLI is not restricted: it already runs with the invoking user's
+  permissions.
+- `scripts/install-services.sh` creates both default directories
+  (`labctl:labctl`, mode `2775`, so members of the `labctl` group can drop
+  images in) and fresh installs get the config above from
+  `config/labctl.yaml.example`. On existing installs `scripts/update.sh`
+  creates the directories and prints the config to add; it never edits
+  config files.
+- The systemd unit already confines the service: `ProtectSystem=strict`
+  with `ReadWritePaths=/var/lib/labctl`, and `ProtectHome=yes`.
 
 ## Troubleshooting
 

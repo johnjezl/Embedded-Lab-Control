@@ -170,6 +170,61 @@ def _get_config():
     return load_config()
 
 
+def _resolve_host_path(path: str, access: str) -> tuple[str | None, str | None]:
+    """Check a host filesystem path an MCP tool wants to use (D012).
+
+    ``access`` is "read" or "write"; the matching allowlist is
+    ``mcp.allowed_read_paths`` / ``mcp.allowed_write_paths``. Returns
+    ``(resolved_path, None)`` or ``(None, "Error: ...")``.
+
+    Deny-all when the allowlist is empty. The path must be absolute; it is
+    resolved with ``realpath`` (symlinks and ``..``) *before* the prefix
+    check, so neither can escape an allowed directory. Callers should use
+    the returned resolved path from then on.
+    """
+    mcp_cfg = _get_config().mcp
+    roots = (
+        mcp_cfg.allowed_read_paths if access == "read" else mcp_cfg.allowed_write_paths
+    )
+    key = f"mcp.allowed_{access}_paths"
+    if not roots:
+        return None, (
+            f"Error: host file {access} access over MCP is disabled. "
+            f"Add the directory to {key} in config.yaml."
+        )
+    if not os.path.isabs(path):
+        return None, f"Error: host path must be absolute: {path!r}"
+    resolved = os.path.realpath(path)
+    for root in roots:
+        root_resolved = os.path.realpath(root)
+        if os.path.commonpath([resolved, root_resolved]) == root_resolved:
+            return resolved, None
+    return None, (
+        f"Error: {path!r} (resolves to {resolved!r}) is outside {key}: "
+        f"{', '.join(roots)}"
+    )
+
+
+def _resolve_copy_sources(
+    specs: list[str],
+) -> tuple[list[tuple[str, str]] | None, str | None]:
+    """Resolve the host *source* side of "source:dest" copy specs for reading.
+
+    Specs without ":" are passed through untouched (callers report them);
+    ``dest`` is a path on the SD card, not on the host, so it isn't checked.
+    """
+    pairs = []
+    for spec in specs:
+        if ":" not in spec:
+            continue
+        src, dest = spec.split(":", 1)
+        resolved, err = _resolve_host_path(src, "read")
+        if err:
+            return None, err
+        pairs.append((resolved, dest))
+    return pairs, None
+
+
 def _sbc_to_dict(sbc) -> dict:
     """Convert an SBC model to a JSON-serializable dict."""
     return sbc.to_dict(include_ids=False)
@@ -1343,7 +1398,8 @@ def sdwire_update(
     Args:
         sbc_name: Name of the SBC with an assigned SDWire device
         partition: Partition number (e.g., 1 for the first partition)
-        copies: List of "source:dest" pairs (dest is relative to partition root)
+        copies: List of "source:dest" pairs (dest is relative to partition root);
+            host sources must be absolute and inside mcp.allowed_read_paths
         renames: List of "oldname:newname" pairs (both relative to partition root)
         deletes: List of filenames to delete (relative to partition root)
         reboot: Whether to power cycle the SBC after updating
@@ -1365,13 +1421,14 @@ def sdwire_update(
     if not sbc.sdwire:
         return f"Error: No SDWire assigned to '{sbc_name}'"
 
-    # Parse copy pairs
-    file_pairs = []
+    # Parse copy pairs; host sources must be in mcp.allowed_read_paths.
+    # Checked before any power or mux change, so a refusal touches nothing.
     for spec in copies:
         if ":" not in spec:
             return f"Error: Invalid copy format '{spec}'. Use source:dest"
-        src, dest = spec.split(":", 1)
-        file_pairs.append((src, dest))
+    file_pairs, path_err = _resolve_copy_sources(copies)
+    if path_err:
+        return path_err
 
     # Parse rename pairs
     rename_pairs = []
@@ -1672,9 +1729,11 @@ def flash_image(
 
     Args:
         sbc_name: Name of the SBC with an assigned SDWire device
-        image_path: Absolute path to image file (.img, .img.xz, .img.gz)
+        image_path: Absolute host path to the image (.img, .img.xz, .img.gz);
+            must be inside mcp.allowed_read_paths
         reboot: Power on the SBC after flashing
-        post_flash_copies: Optional "source:dest" pairs to copy to boot partition after flash
+        post_flash_copies: Optional "source:dest" pairs to copy to boot partition after flash;
+            sources must be inside mcp.allowed_read_paths
     """  # noqa: E501
     import time as time_mod
 
@@ -1689,6 +1748,15 @@ def flash_image(
         return f"Error: SBC '{sbc_name}' not found"
     if not sbc.sdwire:
         return f"Error: No SDWire assigned to '{sbc_name}'"
+
+    # Host paths must be in mcp.allowed_read_paths. Checked before powering
+    # off or switching the mux, so a refusal touches nothing.
+    image_path, path_err = _resolve_host_path(image_path, "read")
+    if path_err:
+        return path_err
+    post_flash_pairs, path_err = _resolve_copy_sources(post_flash_copies)
+    if path_err:
+        return path_err
 
     ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
     flash_ok = False
@@ -1736,16 +1804,12 @@ def flash_image(
                 )
                 time_mod.sleep(2)
 
-                file_pairs = []
                 for spec in post_flash_copies:
                     if ":" not in spec:
                         parts.append(f"Skipped invalid copy: {spec}")
-                        continue
-                    src, dest = spec.split(":", 1)
-                    file_pairs.append((src, dest))
 
-                if file_pairs:
-                    copied = ctrl.update_files(1, file_pairs)
+                if post_flash_pairs:
+                    copied = ctrl.update_files(1, post_flash_pairs)
                     for f in copied["copied"]:
                         parts.append(f"Post-flash copied: {f}")
             except RuntimeError as e:
@@ -1917,10 +1981,12 @@ def boot_test(
         expect_pattern: Regex that indicates successful boot
         runs: Number of boot cycles (default: 10)
         timeout: Seconds to wait per boot (default: 30)
-        image: Image file to deploy (None = skip deploy)
+        image: Host image file to deploy (None = skip deploy); must be inside
+            mcp.allowed_read_paths
         dest: Destination filename on SD card (required with image)
         partition: Partition number for deploy (default: 1)
-        output_dir: Save per-run output to files here
+        output_dir: Save per-run output to files here; must be inside
+            mcp.allowed_write_paths
     """
     if runs < 1:
         return "Error: runs must be at least 1"
@@ -1945,6 +2011,17 @@ def boot_test(
 
     if image and not dest:
         return "Error: dest is required when image is specified"
+
+    # Host paths: the image is read, per-run output is written (D012).
+    # `dest` is a path on the SD card, not the host.
+    if image:
+        image, path_err = _resolve_host_path(image, "read")
+        if path_err:
+            return path_err
+    if output_dir:
+        output_dir, path_err = _resolve_host_path(output_dir, "write")
+        if path_err:
+            return path_err
 
     # Build deploy function
     deploy_fn = None

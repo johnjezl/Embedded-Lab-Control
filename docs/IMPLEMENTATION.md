@@ -791,10 +791,13 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
     epoch, so a recycled PID doesn't count as the original session
   - ✅ Pre-rebase commit SHAs in `STATUS.md` / Phase 0 notes
 - WS2 Host path allowlist
-  - ☐ `mcp.allowed_read_paths` / `mcp.allowed_write_paths` (deny-all default)
-  - ☐ Enforce in `flash_image`, `sdwire_update`, `boot_test`
-    (resolve symlinks and `..` before checking)
-  - ☐ Install/update scripts create and configure `/var/lib/labctl/images`
+  - ✅ `mcp.allowed_read_paths` / `mcp.allowed_write_paths` (deny-all default)
+  - ✅ Enforce in `flash_image`, `sdwire_update`, `boot_test`
+    (resolve symlinks and `..` before checking; refuse before any hardware
+    action; use the resolved path)
+  - ✅ Install script creates `/var/lib/labctl/{images,output}` and the
+    example config allowlists them; update script creates missing dirs and
+    prints the config to add (never edits config)
 - WS3 Operation classification + destructive confirmation (#7)
   - ☐ Classify every CLI command and MCP tool; docs table
   - ☐ Two-step confirmation tokens for destructive MCP tools

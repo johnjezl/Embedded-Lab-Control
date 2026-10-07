@@ -1,6 +1,7 @@
 """Unit tests for MCP server tools and resources."""
 
 import json
+import os
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -58,6 +59,18 @@ def populated_manager(manager):
     manager.assign_sdwire(sbc1.id, sdwire.id)
 
     return manager
+
+
+@pytest.fixture
+def allow_tmp_host_paths():
+    """Allow MCP host file access under /tmp (mcp.allowed_*_paths, D012)."""
+    from labctl.core.config import Config
+
+    config = Config()
+    config.mcp.allowed_read_paths = ["/tmp"]
+    config.mcp.allowed_write_paths = ["/tmp"]
+    with patch("labctl.mcp_server._get_config", return_value=config):
+        yield config
 
 
 @pytest.fixture
@@ -412,6 +425,7 @@ class TestMcpSDWireResource:
         assert sbc1["sdwire"]["name"] == "sdwire-1"
 
 
+@pytest.mark.usefixtures("allow_tmp_host_paths")
 class TestMcpSDWireTools:
     """Tests for SDWire MCP tools."""
 
@@ -584,14 +598,16 @@ class TestMcpSDWireTools:
         from labctl.mcp_server import sdwire_update
 
         result = sdwire_update(
-            sbc_name="test-sbc-2", partition=1, copies=["a.bin:b.bin"]
+            sbc_name="test-sbc-2", partition=1, copies=["/tmp/a.bin:b.bin"]
         )
         assert "No SDWire" in result
 
     def test_sdwire_update_not_found(self, mock_manager):
         from labctl.mcp_server import sdwire_update
 
-        result = sdwire_update(sbc_name="nope", partition=1, copies=["a.bin:b.bin"])
+        result = sdwire_update(
+            sbc_name="nope", partition=1, copies=["/tmp/a.bin:b.bin"]
+        )
         assert "not found" in result
 
     def test_sdwire_update_bad_copy_format(self, mock_manager):
@@ -621,7 +637,7 @@ class TestMcpSDWireTools:
                 result = sdwire_update(
                     sbc_name="test-sbc-1",
                     partition=1,
-                    copies=["local.bin:kernel.img"],
+                    copies=["/tmp/local.bin:kernel.img"],
                 )
 
         assert "Copied" in result
@@ -650,7 +666,7 @@ class TestMcpSDWireTools:
                     sdwire_update(
                         sbc_name="test-sbc-1",
                         partition=1,
-                        copies=["local.bin:kernel.img"],
+                        copies=["/tmp/local.bin:kernel.img"],
                     )
 
         claim_check.assert_called_once_with(mock_manager, "test-sbc-1", mutating=True)
@@ -677,7 +693,7 @@ class TestMcpSDWireTools:
                 result = sdwire_update(
                     sbc_name="test-sbc-1",
                     partition=1,
-                    copies=["local.bin:kernel.img"],
+                    copies=["/tmp/local.bin:kernel.img"],
                     reboot=True,
                 )
 
@@ -701,7 +717,7 @@ class TestMcpSDWireTools:
                 result = sdwire_update(
                     sbc_name="test-sbc-1",
                     partition=1,
-                    copies=["a.bin:b.bin"],
+                    copies=["/tmp/a.bin:b.bin"],
                 )
 
         assert "Error" in result
@@ -1186,6 +1202,247 @@ class TestSdwireReadToolsAreReadOnly:
             assert ann.destructive_hint is False, name
 
 
+@pytest.fixture
+def host_paths(tmp_path):
+    """A real directory layout plus a config allowlisting only `allowed/`.
+
+    Yields (allowed_dir, outside_dir, config); `_get_config` is patched.
+    """
+    from labctl.core.config import Config
+
+    allowed = tmp_path / "allowed"
+    outside = tmp_path / "outside"
+    allowed.mkdir()
+    outside.mkdir()
+    config = Config()
+    config.mcp.allowed_read_paths = [str(allowed)]
+    config.mcp.allowed_write_paths = [str(allowed / "out")]
+    with patch("labctl.mcp_server._get_config", return_value=config):
+        yield allowed, outside, config
+
+
+class TestHostPathAllowlist:
+    """_resolve_host_path: deny-all default, realpath before prefix check."""
+
+    def test_disabled_when_allowlist_empty(self):
+        from labctl.core.config import Config
+        from labctl.mcp_server import _resolve_host_path
+
+        with patch("labctl.mcp_server._get_config", return_value=Config()):
+            resolved, err = _resolve_host_path("/var/lib/labctl/images/x.img", "read")
+
+        assert resolved is None
+        assert "disabled" in err and "mcp.allowed_read_paths" in err
+
+    def test_inside_allowed_dir(self, host_paths):
+        from labctl.mcp_server import _resolve_host_path
+
+        allowed, _, _ = host_paths
+        resolved, err = _resolve_host_path(str(allowed / "img.img"), "read")
+
+        assert err is None
+        assert resolved == os.path.realpath(allowed / "img.img")
+
+    def test_outside_allowed_dir(self, host_paths):
+        from labctl.mcp_server import _resolve_host_path
+
+        _, outside, _ = host_paths
+        resolved, err = _resolve_host_path(str(outside / "secret"), "read")
+
+        assert resolved is None and "outside mcp.allowed_read_paths" in err
+
+    def test_relative_path_rejected(self, host_paths):
+        from labctl.mcp_server import _resolve_host_path
+
+        resolved, err = _resolve_host_path("img.img", "read")
+
+        assert resolved is None and "absolute" in err
+
+    def test_dotdot_escape_rejected(self, host_paths):
+        from labctl.mcp_server import _resolve_host_path
+
+        allowed, _, _ = host_paths
+        sneaky = f"{allowed}/../outside/secret"
+        resolved, err = _resolve_host_path(sneaky, "read")
+
+        assert resolved is None and "outside" in err
+
+    def test_symlink_escape_rejected(self, host_paths):
+        """A link inside the allowed dir that points outside is refused."""
+        from labctl.mcp_server import _resolve_host_path
+
+        allowed, outside, _ = host_paths
+        (outside / "secret").write_text("x")
+        (allowed / "link").symlink_to(outside / "secret")
+
+        resolved, err = _resolve_host_path(str(allowed / "link"), "read")
+
+        assert resolved is None and "outside" in err
+
+    def test_sibling_prefix_not_confused(self, host_paths):
+        """`<allowed>-evil` shares a string prefix but is not inside."""
+        from labctl.mcp_server import _resolve_host_path
+
+        allowed, _, _ = host_paths
+        evil = allowed.parent / (allowed.name + "-evil")
+        evil.mkdir()
+
+        resolved, err = _resolve_host_path(str(evil / "f"), "read")
+
+        assert resolved is None
+
+    def test_read_and_write_lists_are_separate(self, host_paths):
+        """Reading is allowed in allowed/, writing only in allowed/out."""
+        from labctl.mcp_server import _resolve_host_path
+
+        allowed, _, _ = host_paths
+        assert _resolve_host_path(str(allowed / "f"), "write")[0] is None
+        assert _resolve_host_path(str(allowed / "out" / "f"), "write")[1] is None
+
+
+class TestHostPathEnforcementInTools:
+    """Each tool refuses an out-of-allowlist path before touching hardware."""
+
+    def test_flash_image_refuses_before_power_or_mux(self, mock_manager, host_paths):
+        from labctl.mcp_server import flash_image
+
+        _, outside, _ = host_paths
+        ctrl, power = MagicMock(), MagicMock()
+        with (
+            patch("labctl.sdwire.SDWireController", return_value=ctrl),
+            patch("labctl.power.base.PowerController.from_plug", return_value=power),
+        ):
+            result = flash_image("test-sbc-1", image_path=str(outside / "x.img"))
+
+        assert "outside mcp.allowed_read_paths" in result
+        power.power_off.assert_not_called()
+        ctrl.switch_to_host.assert_not_called()
+        ctrl.flash_image.assert_not_called()
+
+    def test_flash_image_post_flash_source_checked(self, mock_manager, host_paths):
+        from labctl.mcp_server import flash_image
+
+        allowed, outside, _ = host_paths
+        ctrl = MagicMock()
+        with patch("labctl.sdwire.SDWireController", return_value=ctrl):
+            result = flash_image(
+                "test-sbc-1",
+                image_path=str(allowed / "ok.img"),
+                post_flash_copies=[f"{outside}/evil.bin:config.txt"],
+            )
+
+        assert "outside mcp.allowed_read_paths" in result
+        ctrl.switch_to_host.assert_not_called()
+
+    def test_flash_image_uses_resolved_path(self, mock_manager, host_paths, tmp_path):
+        """A symlink *into* the allowed dir is fine; the resolved path is used."""
+        from labctl.mcp_server import flash_image
+
+        allowed, _, _ = host_paths
+        (allowed / "real.img").write_bytes(b"\0")
+        (tmp_path / "alias.img").symlink_to(allowed / "real.img")
+        ctrl = MagicMock()
+        ctrl.get_block_device.return_value = "/dev/sdx"
+        ctrl.flash_image.return_value = {
+            "block_device": "/dev/sdx",
+            "bytes_written": 1,
+            "elapsed_seconds": 0.1,
+        }
+        with (
+            patch("labctl.sdwire.SDWireController", return_value=ctrl),
+            patch("labctl.power.base.PowerController.from_plug"),
+            patch("time.sleep"),
+        ):
+            flash_image("test-sbc-1", image_path=str(tmp_path / "alias.img"))
+
+        ctrl.flash_image.assert_called_once_with(os.path.realpath(allowed / "real.img"))
+
+    def test_sdwire_update_refuses_before_power_off(self, mock_manager, host_paths):
+        from labctl.mcp_server import sdwire_update
+
+        _, outside, _ = host_paths
+        ctrl, power = MagicMock(), MagicMock()
+        with (
+            patch("labctl.sdwire.SDWireController", return_value=ctrl),
+            patch("labctl.power.base.PowerController.from_plug", return_value=power),
+        ):
+            result = sdwire_update(
+                "test-sbc-1", partition=1, copies=[f"{outside}/x.bin:kernel.img"]
+            )
+
+        assert "outside mcp.allowed_read_paths" in result
+        power.power_off.assert_not_called()
+        ctrl.switch_to_host.assert_not_called()
+        ctrl.update_files.assert_not_called()
+
+    def test_sdwire_update_deny_all_by_default(self, mock_manager):
+        from labctl.core.config import Config
+        from labctl.mcp_server import sdwire_update
+
+        ctrl = MagicMock()
+        with (
+            patch("labctl.mcp_server._get_config", return_value=Config()),
+            patch("labctl.sdwire.SDWireController", return_value=ctrl),
+        ):
+            result = sdwire_update(
+                "test-sbc-1", partition=1, copies=["/srv/x.bin:kernel.img"]
+            )
+
+        assert "disabled" in result
+        ctrl.switch_to_host.assert_not_called()
+
+    def test_sdwire_update_rename_and_delete_need_no_host_paths(self, mock_manager):
+        """Renames/deletes act only on the SD card: no allowlist required."""
+        from labctl.core.config import Config
+        from labctl.mcp_server import sdwire_update
+
+        ctrl = MagicMock()
+        ctrl.update_files.return_value = {
+            "copied": [],
+            "renamed": ["a->b"],
+            "deleted": ["c"],
+        }
+        with (
+            patch("labctl.mcp_server._get_config", return_value=Config()),
+            patch("labctl.sdwire.SDWireController", return_value=ctrl),
+            patch("labctl.power.base.PowerController.from_plug"),
+            patch("time.sleep"),
+        ):
+            result = sdwire_update(
+                "test-sbc-1", partition=1, renames=["a:b"], deletes=["c"]
+            )
+
+        assert "Renamed" in result and "Deleted" in result
+
+    def test_boot_test_output_dir_must_be_writable_path(self, mock_manager, host_paths):
+        from labctl.mcp_server import boot_test
+
+        allowed, _, _ = host_paths
+        with patch("labctl.serial.boot_test.run_boot_test") as run:
+            # allowed/ is readable but only allowed/out is writable
+            result = boot_test(
+                "test-sbc-1", expect_pattern="ok", output_dir=str(allowed / "logs")
+            )
+
+        assert "outside mcp.allowed_write_paths" in result
+        run.assert_not_called()
+
+    def test_boot_test_image_checked(self, mock_manager, host_paths):
+        from labctl.mcp_server import boot_test
+
+        _, outside, _ = host_paths
+        with patch("labctl.serial.boot_test.run_boot_test") as run:
+            result = boot_test(
+                "test-sbc-1",
+                expect_pattern="ok",
+                image=str(outside / "k.img"),
+                dest="kernel.img",
+            )
+
+        assert "outside mcp.allowed_read_paths" in result
+        run.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # Serial I/O Tool tests
 # ---------------------------------------------------------------------------
@@ -1337,6 +1594,7 @@ class TestMcpSerialTools:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("allow_tmp_host_paths")
 class TestMcpFlashImage:
     """Tests for MCP flash_image tool."""
 
@@ -1453,6 +1711,7 @@ class TestMcpFlashImage:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.usefixtures("allow_tmp_host_paths")
 class TestMcpBootTest:
     """Tests for MCP boot_test tool."""
 
@@ -1495,7 +1754,7 @@ class TestMcpBootTest:
         result = boot_test(
             sbc_name="test-sbc-1",
             expect_pattern="ok",
-            image="test.bin",
+            image="/tmp/test.bin",
         )
         assert "Error" in result
         assert "dest" in result.lower()
