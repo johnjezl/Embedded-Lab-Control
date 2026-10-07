@@ -78,6 +78,23 @@ class TestAppFactory:
         assert "LABCTL_CONFIG" in app.config
         assert app.config["LABCTL_CONFIG"].serial.dev_dir == Path("/dev/lab")
 
+    def test_secret_key_random_when_not_configured(self, tmp_path):
+        """With auth off and no key, the session key must not be a constant.
+
+        The signed session carries the CSRF token, so a known key would let
+        anyone forge one. Previously this fell back to "labctl-dev-key".
+        """
+        a = create_app(Config(database_path=tmp_path / "a.db"))
+        b = create_app(Config(database_path=tmp_path / "b.db"))
+        assert a.config["SECRET_KEY"] != "labctl-dev-key"
+        assert len(a.config["SECRET_KEY"]) >= 32
+        assert a.config["SECRET_KEY"] != b.config["SECRET_KEY"]
+
+    def test_secret_key_from_config_is_used(self, tmp_path):
+        config = Config(database_path=tmp_path / "c.db")
+        config.auth.secret_key = "configured-key-for-test"
+        assert create_app(config).config["SECRET_KEY"] == "configured-key-for-test"
+
 
 class TestHealthEndpoints:
     """Tests for health check endpoints."""

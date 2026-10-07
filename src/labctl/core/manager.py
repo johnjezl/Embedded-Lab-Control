@@ -1223,13 +1223,58 @@ class ResourceManager:
         except OSError:
             return False
 
+    @staticmethod
+    def _process_start_epoch(pid: int) -> Optional[float]:
+        """Wall-clock start time of ``pid`` from /proc, or None if unknown.
+
+        Linux only: start = boot time (``btime`` in /proc/stat) + the
+        process's ``starttime`` (field 22 of /proc/<pid>/stat, in clock
+        ticks). Returns None on other platforms or any read/parse failure.
+        """
+        try:
+            with open(f"/proc/{pid}/stat") as f:
+                stat = f.read()
+            # comm (field 2) is parenthesised and may contain spaces or ")",
+            # so split after the last ")": the rest starts at field 3.
+            start_ticks = int(stat.rsplit(")", 1)[1].split()[19])
+            with open("/proc/stat") as f:
+                btime = next(
+                    int(line.split()[1]) for line in f if line.startswith("btime ")
+                )
+            return btime + start_ticks / os.sysconf("SC_CLK_TCK")
+        except (OSError, ValueError, IndexError, StopIteration):
+            return None
+
+    # Slack for comparing a process start time with a session epoch: both are
+    # derived from the wall clock (btime shifts with clock steps) and rounded.
+    _SESSION_START_SLACK_SECONDS = 2.0
+
+    def _is_session_alive(self, pid: int, epoch: Optional[int]) -> bool:
+        """True if ``pid`` is still the process that created the session.
+
+        An mcp-stdio session ID is ``mcp-stdio:<pid>-<epoch>``, where the
+        server records ``epoch`` shortly *after* it starts. So the original
+        process started at or before ``epoch``, while a process that reuses
+        the PID started after the original exited. When the start time
+        can't be read, fall back to the PID check alone.
+        """
+        if not self._is_pid_alive(pid):
+            return False
+        if epoch is None:
+            return True
+        started = self._process_start_epoch(pid)
+        if started is None:
+            return True
+        return started <= epoch + self._SESSION_START_SLACK_SECONDS
+
     def release_dead_sessions(self, grace_seconds: int = 60) -> int:
         """Release claims whose MCP stdio session process has exited.
 
-        Parses ``mcp-stdio:<pid>-<epoch>`` session IDs. If the PID is no
-        longer alive **and** the claim's deadline + grace has passed, the
-        claim is released as ``session-lost``. Claims with other
-        ``session_kind`` values (cli, web) are skipped.
+        Parses ``mcp-stdio:<pid>-<epoch>`` session IDs. If the session's
+        process is gone (dead PID, or the PID now belongs to a newer
+        process — see ``_is_session_alive``) **and** the claim's deadline +
+        grace has passed, the claim is released as ``session-lost``. Claims
+        with other ``session_kind`` values (cli, web) are skipped.
         """
         rows = self.db.execute("""
             SELECT c.*, s.name AS sbc_name
@@ -1240,14 +1285,19 @@ class ResourceManager:
         cutoff = datetime.now() - timedelta(seconds=grace_seconds)
         for row in rows:
             claim = Claim.from_row(row)
-            # Parse "mcp-stdio:<pid>-<epoch>"
+            # Parse "mcp-stdio:<pid>-<epoch>" (epoch optional for old IDs)
             try:
                 payload = claim.session_id.split(":", 1)[1]
-                pid = int(payload.split("-", 1)[0])
+                pid_part, _, epoch_part = payload.partition("-")
+                pid = int(pid_part)
             except (IndexError, ValueError):
                 continue
+            try:
+                epoch = int(epoch_part)
+            except ValueError:
+                epoch = None
 
-            if self._is_pid_alive(pid):
+            if self._is_session_alive(pid, epoch):
                 continue
 
             # PID is dead — but only release if past grace

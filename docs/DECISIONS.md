@@ -217,7 +217,20 @@ This document records significant design decisions made during development.
   - Tools drive shared physical hardware; concurrent `power_cycle` + `flash_image` on one SBC is unsafe, and per-SBC locking is a larger design question (see issue #7). The lock is behavior-identical to 1.x.
   - Hardware-touching resources take the same lock: a `lab://status` read polls every power plug and would otherwise interleave with a `power_cycle` on the same plug. A unit test fails if a resource that references hardware APIs is not `@_serialized`.
   - DB-only resources (11 of 14) and prompts stay unlocked — per-call SQLite connections make concurrent reads safe, and they no longer wait behind long tools such as `boot_test` (a small, deliberate improvement over 1.x).
-  - One reviewable table keeps the read-only/destructive classification auditable. Ambiguous tools (`serial_send`, `boot_test`, binding verbs whose purpose is free text) are classified conservatively as destructive. `sdwire_ls`/`sdwire_cat`/`sdwire_info` only read files but are classified destructive: they move the SD mux (host, then always DUT) and the power guard passes when the SBC has no plug (revised 2026-10-05 after code review of PR #12).
+  - One reviewable table keeps the read-only/destructive classification auditable. Ambiguous tools (`serial_send`, `boot_test`, binding verbs whose purpose is free text) are classified conservatively as destructive. `sdwire_ls`/`sdwire_cat`/`sdwire_info` only read files but were classified destructive: they moved the SD mux (host, then always DUT) and the power guard passed when the SBC had no plug (revised 2026-10-05 after code review of PR #12). Phase 1 workstream 1 made them side-effect free (read a host-side card in place; switch a DUT-side card only when the board is known OFF, else refuse), and they are read-only again.
+
+---
+
+## D012: Phase 1 safety model — confirmation tokens, path allowlist, MCP auth, read-only tier
+
+- **Date**: 2026-10-07
+- **Context**: Phase 1 (safety) of the public release. MCP over HTTP had no auth (safe only because it binds loopback by default), tool annotations are client-side hints the server never enforces, and four tools accept host filesystem paths (`flash_image`, `sdwire_update`, `boot_test`). Issue #7 asks which operations mutate state and whether to support a read-only access tier.
+- **Decisions** (the user accepted all four recommendations):
+  1. **Destructive MCP tools use a two-step confirmation token.** Called without a token, a destructive tool performs nothing and returns a plan plus a short-lived, single-use token bound to the tool name and its exact arguments; calling again with that token executes. Rejected: a plain `confirm=true` flag, which an agent can pass on the first call without ever seeing the plan.
+  2. **Host path allowlist, deny-all until configured.** New `mcp.allowed_read_paths` / `mcp.allowed_write_paths`; paths are resolved (symlinks, `..`) before the prefix check. Install/update scripts create and configure a default `/var/lib/labctl/images`. The CLI is exempt (it already runs with the invoking user's permissions). Rejected: a built-in default allowlist, which would silently grant access on hosts where nobody configured it.
+  3. **MCP HTTP auth reuses the web users' API keys** as bearer tokens via the SDK's `token_verifier` hook: one credential store, one place to revoke. A non-loopback `--host` is refused unless auth is enabled; allowed `Host` headers become configurable for reverse proxies. Rejected: a separate MCP-only token list.
+  4. **Read-only tier (#7): documentation only for now.** Every CLI command and MCP tool is classified (read / DB write / shared-resource lock / destructive) in `docs/`; no enforced read-only tier yet, since it needs WAL/directory-permission work for non-group readers.
+- **Rationale**: server-side enforcement where it matters (destructive actions, host paths, network exposure), defaults that fail closed, and no second credential system to maintain.
 
 ---
 

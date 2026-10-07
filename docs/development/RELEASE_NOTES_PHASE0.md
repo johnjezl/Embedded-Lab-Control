@@ -35,20 +35,17 @@ Delete or fold into the real release notes before publishing.
 
 - `--host 0.0.0.0` on the HTTP transport exposes all 52 tools with no auth.
   The flag's help text warns; real auth is P1.
-- `sdwire_ls` / `sdwire_cat` / `sdwire_info` (now annotated destructive) always
-  leave the mux in DUT mode, even if it was in host mode, and
-  `_sdwire_host_switch_guard_mcp` lets the switch proceed when the SBC has no
-  power plug or the plug can't be read. Consider restoring the previous mux
-  mode and failing closed when the power state is unknown; then they could be
-  re-annotated read-only.
+- ~~`sdwire_ls` / `sdwire_cat` / `sdwire_info` moved the mux and failed open~~
+  — resolved in Phase 1 WS1: read in place when already on host, switch only
+  when the board is known OFF, otherwise refuse; annotated read-only again.
 - `actuator_probe` is annotated read-only but writes `last_probe_*` columns.
 - `serial_capture` is read-only but opens a ser2net session that may interleave
   with another user's session (issue #7).
 - Tool annotations are hints for clients; nothing server-side enforces
   read-only vs destructive. Confirm/dry-run for destructive tools is P1.
-- Web UI falls back to a fixed `SECRET_KEY = "labctl-dev-key"` when auth is
-  disabled and no key is configured (`web/app.py`). Harmless while auth is
-  off, but a public release should not ship a constant session secret.
+- ~~Web UI constant `SECRET_KEY = "labctl-dev-key"`~~ — resolved in Phase 1
+  WS1 (random per process). Correction to the earlier note: it was not
+  harmless with auth off, because the signed session carries the CSRF token.
 
 ## P2 release
 
@@ -64,7 +61,7 @@ Delete or fold into the real release notes before publishing.
   RuntimeErrors naming `pip install sdwire` rather than the extra.
 - sdwire error text says `pip install sdwire`; on Python < 3.12 that cannot
   succeed. Consider mentioning the 3.12 requirement.
-- ~~Repo-wide lint debt~~ — resolved in `120990e` (black/isort/flake8 clean,
+- ~~Repo-wide lint debt~~ — resolved in `ea3a13a` (black/isort/flake8 clean,
   tools pinned exactly in the `dev` extra).
 - CI notes (from writing `.github/workflows/ci.yml`):
   - Test coverage is **68%** (`cli.py` 51%, `mcp_server.py` 78%); CI reports

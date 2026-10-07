@@ -61,6 +61,17 @@ def populated_manager(manager):
 
 
 @pytest.fixture
+def board_off():
+    """Power plug reports OFF, so the read-only SD tools may switch the mux."""
+    from labctl.power.base import PowerState
+
+    power = MagicMock()
+    power.get_state.return_value = PowerState.OFF
+    with patch("labctl.power.base.PowerController.from_plug", return_value=power):
+        yield power
+
+
+@pytest.fixture
 def mock_manager(populated_manager, tmp_path):
     """Patch _get_manager in mcp_server to use the test manager."""
     with patch("labctl.mcp_server._get_manager", return_value=populated_manager):
@@ -678,7 +689,7 @@ class TestMcpSDWireTools:
         assert "Error" in result
         assert "mount failed" in result
 
-    def test_sdwire_ls_success(self):
+    def test_sdwire_ls_success(self, board_off):
         from labctl.mcp_server import sdwire_ls
 
         manager = MagicMock()
@@ -687,6 +698,7 @@ class TestMcpSDWireTools:
         sbc.sdwire.device_type = "sdwirec"
         manager.get_sbc_by_name.return_value = sbc
         mock_ctrl = MagicMock()
+        mock_ctrl.get_block_device.return_value = None  # card on DUT side
         mock_ctrl.list_files.return_value = {
             "entries": [{"path": "/boot", "name": "boot", "type": "dir"}],
             "truncated": False,
@@ -707,7 +719,7 @@ class TestMcpSDWireTools:
         mock_ctrl.switch_to_host.assert_called_once()
         mock_ctrl.switch_to_dut.assert_called_once()
 
-    def test_sdwire_ls_uses_mutating_claim_check(self):
+    def test_sdwire_ls_uses_mutating_claim_check(self, board_off):
         from labctl.mcp_server import sdwire_ls
 
         manager = MagicMock()
@@ -717,6 +729,7 @@ class TestMcpSDWireTools:
         manager.get_sbc_by_name.return_value = sbc
         claim_check = MagicMock(return_value=None)
         mock_ctrl = MagicMock()
+        mock_ctrl.get_block_device.return_value = None  # card on DUT side
         mock_ctrl.list_files.return_value = {
             "entries": [],
             "truncated": False,
@@ -747,6 +760,8 @@ class TestMcpSDWireTools:
         manager.get_sbc_by_name.return_value = sbc
         mock_power = MagicMock()
         mock_power.get_state.return_value = PowerState.ON
+        mock_ctrl = MagicMock()
+        mock_ctrl.get_block_device.return_value = None  # card on DUT side
 
         with patch("labctl.mcp_server._get_manager", return_value=manager):
             with patch("labctl.mcp_server._check_claim", return_value=None):
@@ -754,12 +769,16 @@ class TestMcpSDWireTools:
                     "labctl.power.base.PowerController.from_plug",
                     return_value=mock_power,
                 ):
-                    result = json.loads(sdwire_ls("test-sbc-1", partition=1))
+                    with patch(
+                        "labctl.sdwire.SDWireController", return_value=mock_ctrl
+                    ):
+                        result = json.loads(sdwire_ls("test-sbc-1", partition=1))
 
         assert result["error"] == "powered_on"
         assert "powered on" in result["message"]
+        mock_ctrl.switch_to_host.assert_not_called()
 
-    def test_sdwire_cat_binary_content_error(self):
+    def test_sdwire_cat_binary_content_error(self, board_off):
         from labctl.mcp_server import sdwire_cat
 
         manager = MagicMock()
@@ -768,6 +787,7 @@ class TestMcpSDWireTools:
         sbc.sdwire.device_type = "sdwirec"
         manager.get_sbc_by_name.return_value = sbc
         mock_ctrl = MagicMock()
+        mock_ctrl.get_block_device.return_value = None  # card on DUT side
         mock_ctrl.read_file.side_effect = ValueError("binary_content")
 
         with patch("labctl.mcp_server._get_manager", return_value=manager):
@@ -781,7 +801,7 @@ class TestMcpSDWireTools:
         assert "base64" in result["suggestion"]
         mock_ctrl.switch_to_dut.assert_called_once()
 
-    def test_sdwire_cat_uses_mutating_claim_check(self):
+    def test_sdwire_cat_uses_mutating_claim_check(self, board_off):
         from labctl.mcp_server import sdwire_cat
 
         manager = MagicMock()
@@ -791,6 +811,7 @@ class TestMcpSDWireTools:
         manager.get_sbc_by_name.return_value = sbc
         claim_check = MagicMock(return_value=None)
         mock_ctrl = MagicMock()
+        mock_ctrl.get_block_device.return_value = None  # card on DUT side
         mock_ctrl.read_file.return_value = {
             "content": "x",
             "encoding": "text",
@@ -824,6 +845,8 @@ class TestMcpSDWireTools:
         manager.get_sbc_by_name.return_value = sbc
         mock_power = MagicMock()
         mock_power.get_state.return_value = PowerState.ON
+        mock_ctrl = MagicMock()
+        mock_ctrl.get_block_device.return_value = None  # card on DUT side
 
         with patch("labctl.mcp_server._get_manager", return_value=manager):
             with patch("labctl.mcp_server._check_claim", return_value=None):
@@ -831,12 +854,16 @@ class TestMcpSDWireTools:
                     "labctl.power.base.PowerController.from_plug",
                     return_value=mock_power,
                 ):
-                    result = json.loads(sdwire_info("test-sbc-1"))
+                    with patch(
+                        "labctl.sdwire.SDWireController", return_value=mock_ctrl
+                    ):
+                        result = json.loads(sdwire_info("test-sbc-1"))
 
         assert result["error"] == "powered_on"
         assert "powered on" in result["message"]
+        mock_ctrl.switch_to_host.assert_not_called()
 
-    def test_sdwire_info_success(self):
+    def test_sdwire_info_success(self, board_off):
         from labctl.mcp_server import sdwire_info
 
         manager = MagicMock()
@@ -845,6 +872,7 @@ class TestMcpSDWireTools:
         sbc.sdwire.device_type = "sdwirec"
         manager.get_sbc_by_name.return_value = sbc
         mock_ctrl = MagicMock()
+        mock_ctrl.get_block_device.return_value = None  # card on DUT side
         mock_ctrl.get_disk_info.return_value = {
             "device_total_bytes": 1024,
             "disklabel_type": "msdos",
@@ -865,7 +893,7 @@ class TestMcpSDWireTools:
         mock_ctrl.switch_to_host.assert_called_once()
         mock_ctrl.switch_to_dut.assert_called_once()
 
-    def test_sdwire_info_uses_mutating_claim_check(self):
+    def test_sdwire_info_uses_mutating_claim_check(self, board_off):
         from labctl.mcp_server import sdwire_info
 
         manager = MagicMock()
@@ -875,6 +903,7 @@ class TestMcpSDWireTools:
         manager.get_sbc_by_name.return_value = sbc
         claim_check = MagicMock(return_value=None)
         mock_ctrl = MagicMock()
+        mock_ctrl.get_block_device.return_value = None  # card on DUT side
         mock_ctrl.get_disk_info.return_value = {
             "device_total_bytes": 1024,
             "disklabel_type": "msdos",
@@ -894,7 +923,7 @@ class TestMcpSDWireTools:
         claim_check.assert_called_once_with(manager, "test-sbc-1", mutating=True)
         mock_sleep.assert_called_once_with(2)
 
-    def test_sdwire_ls_preserves_json_with_claim_advisory(self):
+    def test_sdwire_ls_preserves_json_with_claim_advisory(self, board_off):
         from labctl.mcp_server import sdwire_ls
 
         manager = MagicMock()
@@ -903,6 +932,7 @@ class TestMcpSDWireTools:
         sbc.sdwire.device_type = "sdwirec"
         manager.get_sbc_by_name.return_value = sbc
         mock_ctrl = MagicMock()
+        mock_ctrl.get_block_device.return_value = None  # card on DUT side
         mock_ctrl.list_files.return_value = {
             "entries": [],
             "truncated": False,
@@ -927,7 +957,7 @@ class TestMcpSDWireTools:
             {"requested_by": "other", "reason": "please release"}
         ]
 
-    def test_sdwire_ls_reports_cleanup_failure(self):
+    def test_sdwire_ls_reports_cleanup_failure(self, board_off):
         from labctl.mcp_server import sdwire_ls
 
         manager = MagicMock()
@@ -936,6 +966,7 @@ class TestMcpSDWireTools:
         sbc.sdwire.device_type = "sdwirec"
         manager.get_sbc_by_name.return_value = sbc
         mock_ctrl = MagicMock()
+        mock_ctrl.get_block_device.return_value = None  # card on DUT side
         mock_ctrl.list_files.return_value = {
             "entries": [],
             "truncated": False,
@@ -953,7 +984,7 @@ class TestMcpSDWireTools:
         assert "switch back failed" in result["message"]
         assert result["prior_response"]["partition"] == 1
 
-    def test_sdwire_ls_permission_denied(self):
+    def test_sdwire_ls_permission_denied(self, board_off):
         from labctl.mcp_server import sdwire_ls
 
         manager = MagicMock()
@@ -962,6 +993,7 @@ class TestMcpSDWireTools:
         sbc.sdwire.device_type = "sdwirec"
         manager.get_sbc_by_name.return_value = sbc
         mock_ctrl = MagicMock()
+        mock_ctrl.get_block_device.return_value = None  # card on DUT side
         mock_ctrl.list_files.side_effect = PermissionError("/root")
 
         with patch("labctl.mcp_server._get_manager", return_value=manager):
@@ -972,7 +1004,7 @@ class TestMcpSDWireTools:
 
         assert result["error"] == "permission_denied"
 
-    def test_sdwire_cat_permission_denied(self):
+    def test_sdwire_cat_permission_denied(self, board_off):
         from labctl.mcp_server import sdwire_cat
 
         manager = MagicMock()
@@ -981,6 +1013,7 @@ class TestMcpSDWireTools:
         sbc.sdwire.device_type = "sdwirec"
         manager.get_sbc_by_name.return_value = sbc
         mock_ctrl = MagicMock()
+        mock_ctrl.get_block_device.return_value = None  # card on DUT side
         mock_ctrl.read_file.side_effect = PermissionError("/etc/shadow")
 
         with patch("labctl.mcp_server._get_manager", return_value=manager):
@@ -992,6 +1025,122 @@ class TestMcpSDWireTools:
                         )
 
         assert result["error"] == "permission_denied"
+
+
+class TestSdwireReadToolsAreReadOnly:
+    """sdwire_ls/cat/info never leave a lasting change or touch a live board.
+
+    Backs their read_only=True annotation (see _sdwire_read_access).
+    """
+
+    @staticmethod
+    def _sbc(power_plug=True):
+        sbc = MagicMock()
+        sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
+        sbc.sdwire.device_type = "sdwirec"
+        if not power_plug:
+            sbc.power_plug = None
+        return sbc
+
+    @staticmethod
+    def _ctrl(on_host):
+        ctrl = MagicMock()
+        ctrl.get_block_device.return_value = "/dev/sdx" if on_host else None
+        ctrl.list_files.return_value = {
+            "entries": [],
+            "truncated": False,
+            "_truncated": False,
+        }
+        return ctrl
+
+    def _ls(self, sbc, ctrl, power=None):
+        """Call sdwire_ls with the given SBC, controller and power controller."""
+        from contextlib import ExitStack
+
+        from labctl.mcp_server import sdwire_ls
+
+        manager = MagicMock()
+        manager.get_sbc_by_name.return_value = sbc
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch("labctl.mcp_server._get_manager", return_value=manager)
+            )
+            stack.enter_context(
+                patch("labctl.mcp_server._check_claim", return_value=None)
+            )
+            stack.enter_context(
+                patch("labctl.sdwire.SDWireController", return_value=ctrl)
+            )
+            stack.enter_context(patch("time.sleep"))
+            if power is not None:
+                stack.enter_context(
+                    patch("labctl.power.base.PowerController.from_plug", **power)
+                )
+            return json.loads(sdwire_ls("test-sbc-1", partition=1))
+
+    @staticmethod
+    def _state(state):
+        power = MagicMock()
+        power.get_state.return_value = state
+        return {"return_value": power}
+
+    def test_card_already_on_host_is_read_in_place(self):
+        """Card in host mode: read it, never switch, regardless of power."""
+        from labctl.power.base import PowerState
+
+        ctrl = self._ctrl(on_host=True)
+        result = self._ls(self._sbc(), ctrl, power=self._state(PowerState.ON))
+
+        assert "entries" in result
+        ctrl.switch_to_host.assert_not_called()
+        ctrl.switch_to_dut.assert_not_called()  # left in host mode
+
+    def test_board_off_switches_and_restores(self):
+        from labctl.power.base import PowerState
+
+        ctrl = self._ctrl(on_host=False)
+        result = self._ls(self._sbc(), ctrl, power=self._state(PowerState.OFF))
+
+        assert "entries" in result
+        ctrl.switch_to_host.assert_called_once()
+        ctrl.switch_to_dut.assert_called_once()
+
+    def test_no_power_plug_refuses(self):
+        """Previously failed open and switched; now refuses (power unknown)."""
+        ctrl = self._ctrl(on_host=False)
+        result = self._ls(self._sbc(power_plug=False), ctrl)
+
+        assert result["error"] == "power_unknown"
+        assert "no power plug" in result["message"]
+        assert "sdwire_to_host" in result["message"]
+        ctrl.switch_to_host.assert_not_called()
+
+    def test_unreadable_plug_refuses(self):
+        """Previously failed open and switched; now refuses (power unknown)."""
+        ctrl = self._ctrl(on_host=False)
+        power = {"side_effect": ConnectionError("plug unreachable")}
+        result = self._ls(self._sbc(), ctrl, power=power)
+
+        assert result["error"] == "power_unknown"
+        assert "plug unreachable" in result["message"]
+        ctrl.switch_to_host.assert_not_called()
+
+    def test_unknown_power_state_refuses(self):
+        from labctl.power.base import PowerState
+
+        ctrl = self._ctrl(on_host=False)
+        result = self._ls(self._sbc(), ctrl, power=self._state(PowerState.UNKNOWN))
+
+        assert result["error"] == "power_unknown"
+        ctrl.switch_to_host.assert_not_called()
+
+    def test_annotated_read_only(self):
+        from labctl.mcp_server import TOOL_ANNOTATIONS
+
+        for name in ("sdwire_ls", "sdwire_cat", "sdwire_info"):
+            ann = TOOL_ANNOTATIONS[name]
+            assert ann.read_only_hint is True, name
+            assert ann.destructive_hint is False, name
 
 
 # ---------------------------------------------------------------------------
@@ -2431,10 +2580,6 @@ class TestMcpSdkRegistration:
             "actuator_set",
             "actuator_remove",
             "enter_recovery",
-            # Move the SD mux (host, then always DUT) — see the table comment.
-            "sdwire_ls",
-            "sdwire_cat",
-            "sdwire_info",
         ],
     )
     def test_required_destructive_tools(self, name):

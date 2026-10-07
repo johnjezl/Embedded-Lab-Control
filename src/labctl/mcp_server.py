@@ -86,17 +86,16 @@ _TOOL_ANNOTATION_TABLE: dict[str, tuple[str, bool, bool, bool, bool]] = {
     # Discovery (USB scans)
     "sdwire_discover": ("Discover SDWire devices", True, False, True, True),
     "serial_discover": ("Discover USB-serial adapters", True, False, True, True),
-    # SD card mux / contents. sdwire_ls/cat/info only read files, but they
-    # are NOT read-only: each switches the mux to host and then always to
-    # DUT, so a card left in host mode ends up on the DUT; and the power
-    # guard passes when the SBC has no power plug or the plug can't be read,
-    # so the card can be pulled from a running board.
+    # SD card mux / contents. sdwire_ls/cat/info are read-only by
+    # construction (_sdwire_read_access): a card already on the host is read
+    # in place and left there; a card on the DUT is switched to host and back
+    # only when the board is known to be OFF, otherwise they refuse.
     "sdwire_to_dut": ("Switch SD card to DUT", False, False, True, True),
     "sdwire_to_host": ("Switch SD card to host", False, True, True, True),
     "sdwire_update": ("Update files on SD card", False, True, False, True),
-    "sdwire_ls": ("List SD card directory", False, True, True, True),
-    "sdwire_cat": ("Read file from SD card", False, True, True, True),
-    "sdwire_info": ("SD card partition info", False, True, True, True),
+    "sdwire_ls": ("List SD card directory", True, False, True, True),
+    "sdwire_cat": ("Read file from SD card", True, False, True, True),
+    "sdwire_info": ("SD card partition info", True, False, True, True),
     "flash_image": ("Flash image to SD card", False, True, False, True),
     # Serial console
     "serial_capture": ("Capture serial output", True, False, True, True),
@@ -353,6 +352,64 @@ def _sdwire_host_switch_guard_mcp(
         return None
 
     return None
+
+
+def _sdwire_read_power_refusal(sbc_name: str, sbc) -> str | None:
+    """Strict power check for the read-only SD tools: proceed only on OFF.
+
+    Unlike ``_sdwire_host_switch_guard_mcp`` (used by the explicit, destructive
+    ``sdwire_to_host``), this fails closed: no power plug, an unreadable plug,
+    or an UNKNOWN state all refuse, because pulling the card from a running
+    board can corrupt it. Returns a ``_sdwire_read_error`` payload or None.
+    """
+    from labctl.power import PowerController
+    from labctl.power.base import PowerState
+
+    hint = (
+        "Power the board off, or switch the card explicitly with "
+        "sdwire_to_host, then retry."
+    )
+    if not sbc.power_plug:
+        return _sdwire_read_error(
+            "power_unknown",
+            f"{sbc_name} has no power plug, so labctl can't confirm it is off. " + hint,
+        )
+    try:
+        state = PowerController.from_plug(sbc.power_plug).get_state()
+    except Exception as e:
+        return _sdwire_read_error(
+            "power_unknown", f"Could not read power state of {sbc_name}: {e}. " + hint
+        )
+    if state == PowerState.ON:
+        return _sdwire_read_error(
+            "powered_on",
+            f"{sbc_name} is powered on. Power off before switching SD to host mode.",
+        )
+    if state != PowerState.OFF:
+        return _sdwire_read_error(
+            "power_unknown", f"Power state of {sbc_name} is {state.value}. " + hint
+        )
+    return None
+
+
+def _sdwire_read_access(sbc_name: str, sbc, ctrl) -> tuple[bool, str | None]:
+    """Decide how a read-only SD tool may reach the card without side effects.
+
+    Returns ``(needs_switch, refusal)``:
+    - Card already on the host (a block device with media is present): read
+      it in place and leave the mux alone; the DUT is not using the card, so
+      its power state doesn't matter.
+    - Card on the DUT: switch to host and back only if the board is known to
+      be OFF (see ``_sdwire_read_power_refusal``); otherwise refuse.
+    Callers hold the hardware lock, so detection and switching aren't raced
+    by other MCP calls.
+    """
+    if ctrl.get_block_device() is not None:
+        return False, None
+    refusal = _sdwire_read_power_refusal(sbc_name, sbc)
+    if refusal:
+        return False, refusal
+    return True, None
 
 
 # ---------------------------------------------------------------------------
@@ -1377,19 +1434,19 @@ def sdwire_ls(
         return _sdwire_read_error("sbc_not_found", f"SBC '{sbc_name}' not found")
     if not sbc.sdwire:
         return _sdwire_read_error("no_sdwire", f"No SDWire assigned to '{sbc_name}'")
-    guard_err = _sdwire_host_switch_guard_mcp(sbc_name, sbc)
-    if guard_err:
-        return _sdwire_read_error("powered_on", guard_err.removeprefix("Error: "))
-
     ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    needs_switch, refusal = _sdwire_read_access(sbc_name, sbc, ctrl)
+    if refusal:
+        return refusal
     host_switched = False
     cleanup_error: RuntimeError | None = None
     response: str
 
     try:
-        ctrl.switch_to_host()
-        host_switched = True
-        time.sleep(2)
+        if needs_switch:
+            ctrl.switch_to_host()
+            host_switched = True
+            time.sleep(2)
         result = ctrl.list_files(
             partition=partition,
             path=path,
@@ -1456,19 +1513,19 @@ def sdwire_cat(
         return _sdwire_read_error("sbc_not_found", f"SBC '{sbc_name}' not found")
     if not sbc.sdwire:
         return _sdwire_read_error("no_sdwire", f"No SDWire assigned to '{sbc_name}'")
-    guard_err = _sdwire_host_switch_guard_mcp(sbc_name, sbc)
-    if guard_err:
-        return _sdwire_read_error("powered_on", guard_err.removeprefix("Error: "))
-
     ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    needs_switch, refusal = _sdwire_read_access(sbc_name, sbc, ctrl)
+    if refusal:
+        return refusal
     host_switched = False
     cleanup_error: RuntimeError | None = None
     response: str
 
     try:
-        ctrl.switch_to_host()
-        host_switched = True
-        time.sleep(2)
+        if needs_switch:
+            ctrl.switch_to_host()
+            host_switched = True
+            time.sleep(2)
         result = ctrl.read_file(
             partition=partition,
             path=path,
@@ -1547,19 +1604,19 @@ def sdwire_info(sbc_name: str) -> str:
         return _sdwire_read_error("sbc_not_found", f"SBC '{sbc_name}' not found")
     if not sbc.sdwire:
         return _sdwire_read_error("no_sdwire", f"No SDWire assigned to '{sbc_name}'")
-    guard_err = _sdwire_host_switch_guard_mcp(sbc_name, sbc)
-    if guard_err:
-        return _sdwire_read_error("powered_on", guard_err.removeprefix("Error: "))
-
     ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    needs_switch, refusal = _sdwire_read_access(sbc_name, sbc, ctrl)
+    if refusal:
+        return refusal
     host_switched = False
     cleanup_error: RuntimeError | None = None
     response: str
 
     try:
-        ctrl.switch_to_host()
-        host_switched = True
-        time.sleep(2)
+        if needs_switch:
+            ctrl.switch_to_host()
+            host_switched = True
+            time.sleep(2)
         result = ctrl.get_disk_info()
         payload = json.dumps(
             {
