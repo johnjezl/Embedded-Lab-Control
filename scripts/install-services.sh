@@ -101,6 +101,13 @@ chmod 750 "$SYSTEM_CONFIG_DIR"
 chmod 640 "$SYSTEM_CONFIG_FILE"
 echo "[ok] Secured shared config: $SYSTEM_CONFIG_FILE (root:labctl, 640)"
 
+# MCP host-file allowlist directories (mcp.allowed_read/write_paths in the
+# example config). Setgid + group-writable so members of the labctl group
+# can drop images in and the files stay readable by the service.
+mkdir -p "$LABCTL_HOME/images" "$LABCTL_HOME/output"
+chmod 2775 "$LABCTL_HOME/images" "$LABCTL_HOME/output"
+echo "[ok] MCP image/output directories: $LABCTL_HOME/{images,output}"
+
 chown -R labctl:labctl "$LABCTL_HOME"
 
 # 4. Set up udev rules file (group-writable so labctl users don't need sudo)

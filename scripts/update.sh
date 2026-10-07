@@ -82,6 +82,27 @@ chmod 750 "$SYSTEM_CONFIG_DIR"
 chmod 640 "$SYSTEM_CONFIG_FILE"
 echo "[ok] Shared config permissions repaired"
 
+# 3b. MCP host-file allowlist (0.2.0+): deny-all unless configured. Create
+# the default directories if missing (never touching existing ones), and
+# point at the config keys if they aren't set. Config files are not edited.
+for dir in /var/lib/labctl/images /var/lib/labctl/output; do
+    if [ ! -d "$dir" ]; then
+        mkdir -p "$dir"
+        chown labctl:labctl "$dir"
+        chmod 2775 "$dir"
+        echo "[ok] Created $dir"
+    fi
+done
+if ! grep -Eq '^[[:space:]]+allowed_read_paths:' "$SYSTEM_CONFIG_FILE"; then
+    echo "[!!] MCP host file access is disabled (deny-all) until configured."
+    echo "     flash_image / sdwire_update / boot_test over MCP will refuse"
+    echo "     host paths. To allow the default directories, add to both"
+    echo "     $SYSTEM_CONFIG_FILE and $SERVICE_CONFIG_FILE:"
+    echo "       mcp:"
+    echo "         allowed_read_paths: [/var/lib/labctl/images]"
+    echo "         allowed_write_paths: [/var/lib/labctl/output]"
+fi
+
 # 4. Verify install
 VERSION=$("$LABCTL_VENV/bin/labctl" --version 2>&1 || true)
 echo "[ok] $VERSION"

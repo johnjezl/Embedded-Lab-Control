@@ -43,6 +43,32 @@ def _expand_path(value: str | Path) -> Path:
     return Path(os.path.expandvars(str(value))).expanduser()
 
 
+def _path_list(section: dict, key: str) -> list[str]:
+    """Read a list of absolute directory paths (an allowlist) from config.
+
+    Accepts a list or a single string. ``~`` and ``$VARS`` are expanded.
+    Relative or non-string entries are skipped with a warning: an allowlist
+    root that silently depended on the working directory would be a trap.
+    """
+    raw = section.get(key) or []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        logger.warning("Config: %s must be a list of paths; ignoring", key)
+        return []
+    paths = []
+    for entry in raw:
+        if not isinstance(entry, str) or not entry:
+            logger.warning("Config: %s entry %r is not a path; ignoring", key, entry)
+            continue
+        path = _expand_path(entry)
+        if not path.is_absolute():
+            logger.warning("Config: %s entry %r is not absolute; ignoring", key, entry)
+            continue
+        paths.append(str(path))
+    return paths
+
+
 def _path_exists(path: Path) -> bool:
     """Best-effort existence check that tolerates unreadable paths."""
     try:
@@ -230,9 +256,16 @@ class McpConfig:
     ``actuator_set``) over MCP. Defaults to False because raw
     ``actuator_set`` lets an agent bypass the binding layer; operators
     deploying MCP behind a trusted transport can flip this on.
+
+    ``allowed_read_paths`` / ``allowed_write_paths`` list the host
+    directories MCP tools may read (images, files to copy onto an SD card)
+    or write (boot-test output). Both default to empty, which denies all
+    host file access over MCP (D012); the CLI is not affected.
     """
 
     allow_admin_actuator_ops: bool = False
+    allowed_read_paths: list[str] = field(default_factory=list)
+    allowed_write_paths: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -358,6 +391,8 @@ class Config:
 
         mcp = McpConfig(
             allow_admin_actuator_ops=mcp_data.get("allow_admin_actuator_ops", False),
+            allowed_read_paths=_path_list(mcp_data, "allowed_read_paths"),
+            allowed_write_paths=_path_list(mcp_data, "allowed_write_paths"),
         )
 
         database = DatabaseConfig(
@@ -449,6 +484,8 @@ class Config:
             },
             "mcp": {
                 "allow_admin_actuator_ops": self.mcp.allow_admin_actuator_ops,
+                "allowed_read_paths": list(self.mcp.allowed_read_paths),
+                "allowed_write_paths": list(self.mcp.allowed_write_paths),
             },
             "database": {
                 "timeout_seconds": self.database.timeout_seconds,

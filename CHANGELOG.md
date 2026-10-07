@@ -7,6 +7,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Security
+- **MCP host file access is now allowlisted (breaking).** `flash_image`
+  (`image_path`, `post_flash_copies` sources), `sdwire_update` (`copies`
+  sources) and `boot_test` (`image`, `output_dir`) only accept absolute host
+  paths inside the new `mcp.allowed_read_paths` / `mcp.allowed_write_paths`
+  settings. Both default to empty, which denies all host file access over
+  MCP. Paths are resolved (symlinks, `..`) before the check and are refused
+  before any power or SD-mux change. The CLI is unaffected. Fresh installs
+  get `/var/lib/labctl/images` (read) and `/var/lib/labctl/output` (write);
+  `scripts/update.sh` creates those directories on existing hosts and prints
+  the config to add (D012).
 - Web UI: without a configured `auth.secret_key`, the session-signing key is
   now random per process. It used to fall back to the constant
   `labctl-dev-key` when auth was disabled; because the signed session

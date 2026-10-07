@@ -104,6 +104,69 @@ class TestKasaConfig:
         assert config.kasa.password == "secret123"
 
 
+class TestMcpHostPathConfig:
+    """mcp.allowed_read_paths / allowed_write_paths (D012)."""
+
+    def test_default_denies_all(self):
+        config = Config.from_dict({})
+        assert config.mcp.allowed_read_paths == []
+        assert config.mcp.allowed_write_paths == []
+
+    def test_from_dict(self):
+        config = Config.from_dict(
+            {
+                "mcp": {
+                    "allowed_read_paths": ["/var/lib/labctl/images", "/srv/fw"],
+                    "allowed_write_paths": ["/var/lib/labctl/output"],
+                }
+            }
+        )
+        assert config.mcp.allowed_read_paths == ["/var/lib/labctl/images", "/srv/fw"]
+        assert config.mcp.allowed_write_paths == ["/var/lib/labctl/output"]
+
+    def test_single_string_accepted(self):
+        config = Config.from_dict({"mcp": {"allowed_read_paths": "/srv/fw"}})
+        assert config.mcp.allowed_read_paths == ["/srv/fw"]
+
+    def test_tilde_and_env_expanded(self, monkeypatch):
+        monkeypatch.setenv("HOME", "/home/tester")
+        monkeypatch.setenv("FW_DIR", "/srv/fw")
+        config = Config.from_dict(
+            {"mcp": {"allowed_read_paths": ["~/images", "$FW_DIR/boards"]}}
+        )
+        assert config.mcp.allowed_read_paths == [
+            "/home/tester/images",
+            "/srv/fw/boards",
+        ]
+
+    def test_relative_and_bad_entries_skipped(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            config = Config.from_dict(
+                {"mcp": {"allowed_read_paths": ["images", "", 42, "/ok"]}}
+            )
+        assert config.mcp.allowed_read_paths == ["/ok"]
+        assert "not absolute" in caplog.text
+
+    def test_non_list_ignored(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            config = Config.from_dict({"mcp": {"allowed_write_paths": {"a": 1}}})
+        assert config.mcp.allowed_write_paths == []
+        assert "must be a list" in caplog.text
+
+    def test_roundtrip(self):
+        original = Config.from_dict(
+            {
+                "mcp": {
+                    "allowed_read_paths": ["/a"],
+                    "allowed_write_paths": ["/b"],
+                }
+            }
+        )
+        restored = Config.from_dict(original.to_dict())
+        assert restored.mcp.allowed_read_paths == ["/a"]
+        assert restored.mcp.allowed_write_paths == ["/b"]
+
+
 class TestClaimsConfig:
     """Tests for ClaimsConfig dataclass."""
 

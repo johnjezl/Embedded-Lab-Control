@@ -50,6 +50,19 @@ ser2net:
 #   username: "your-tplink-email@example.com"
 #   password: "your-tplink-password"
 
+# MCP server (`labctl mcp`): host file access is denied unless listed here.
+# allowed_read_paths:  directories tools may read (flash images, files to
+#                      copy onto SD cards: flash_image, sdwire_update, boot_test)
+# allowed_write_paths: directories tools may write (boot_test output_dir)
+# Paths are resolved (symlinks, "..") before the check. The CLI is not
+# restricted by these settings. scripts/install-services.sh creates both
+# directories (group-writable by `labctl`).
+mcp:
+  allowed_read_paths:
+    - /var/lib/labctl/images
+  allowed_write_paths:
+    - /var/lib/labctl/output
+
 # Database path for SBC and resource tracking
 database_path: ~/.config/labctl/labctl.db
 
