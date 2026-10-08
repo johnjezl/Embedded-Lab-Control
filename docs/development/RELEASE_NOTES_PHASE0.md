@@ -49,6 +49,13 @@ Delete or fold into the real release notes before publishing.
 
 ## P2 release
 
+- **sudoers gap:** the controller runs `sudo blkid` (`get_disk_info`, used
+  by `sdwire_info`, and partition listing), but neither the README's
+  sudoers line nor tarrasque's `/etc/sudoers.d/labctl` allows `blkid`, and
+  the README also lists `partprobe`, which tarrasque's file lacks. Under the
+  service (no TTY) those calls fail. The install script doesn't write this
+  rule at all. Generate it from one list in `install-services.sh` (P2).
+
 - ~~No LICENSE file~~ — resolved by `11ad19f` on main (MIT, © 2026 John
   Jezl). Verified: wheel ships `dist-info/licenses/LICENSE` with
   `License-Expression: MIT` / `License-File: LICENSE`; sdist includes it.

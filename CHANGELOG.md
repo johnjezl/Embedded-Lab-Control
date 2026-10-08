@@ -13,7 +13,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   carries the CSRF token, anyone could forge it. Browser sessions now reset
   when the web service restarts unless a key is configured.
 - MCP `sdwire_ls` / `sdwire_cat` / `sdwire_info` no longer have side effects.
-  A card already switched to the host is read in place and left there; a
+  A card already switched to the host is read in place and left there
+  (host mode is confirmed with a one-sector `sudo dd` read, because the
+  reader's reported size can stay stale for a while after a switch); a
   card on the DUT side is switched to the host and back only when the
   board's power plug reports OFF. With no power plug, an unreadable plug, or
   an unknown state they now refuse (`power_unknown`) instead of switching

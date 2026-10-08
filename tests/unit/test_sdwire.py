@@ -1,5 +1,6 @@
 """Unit tests for SDWire controller."""
 
+import subprocess
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
@@ -492,6 +493,75 @@ class TestUpdateFiles:
                                 [],
                                 deletes=["../../../etc/passwd"],
                             )
+
+
+class TestCardOnHost:
+    """card_on_host re-checks the reader instead of trusting /sys size.
+
+    After a switch to DUT the size can stay non-zero until the kernel next
+    checks for media; a one-sector `sudo dd` read forces that check.
+    """
+
+    @staticmethod
+    def _run(returncode=0, stderr=""):
+        result = MagicMock()
+        result.returncode = returncode
+        result.stderr = stderr
+        return result
+
+    def test_no_block_device_means_dut(self):
+        ctrl = SDWireController("s")
+        with (
+            patch.object(ctrl, "get_block_device", return_value=None),
+            patch("subprocess.run") as run,
+        ):
+            assert ctrl.card_on_host() is False
+        run.assert_not_called()
+
+    def test_readable_media_means_host(self):
+        ctrl = SDWireController("s")
+        with (
+            patch.object(ctrl, "get_block_device", return_value="/dev/sdx"),
+            patch("subprocess.run", return_value=self._run(0)) as run,
+        ):
+            assert ctrl.card_on_host() is True
+        cmd = run.call_args.args[0]
+        # Read-only probe: one sector to /dev/null, non-interactive sudo.
+        assert cmd[:3] == ["sudo", "-n", "dd"]
+        assert "if=/dev/sdx" in cmd and "of=/dev/null" in cmd
+        assert "count=1" in cmd
+
+    def test_no_medium_means_stale_size_dut(self):
+        """The reviewer's case: size still > 0 but the card is on the DUT."""
+        ctrl = SDWireController("s")
+        stderr = "dd: failed to open '/dev/sdx': No medium found\n"
+        with (
+            patch.object(ctrl, "get_block_device", return_value="/dev/sdx"),
+            patch("subprocess.run", return_value=self._run(1, stderr)),
+        ):
+            assert ctrl.card_on_host() is False
+
+    def test_other_probe_failure_falls_back_to_size(self):
+        """e.g. no sudo rights: can't verify, keep the size-based answer."""
+        ctrl = SDWireController("s")
+        stderr = "sudo: a password is required\n"
+        with (
+            patch.object(ctrl, "get_block_device", return_value="/dev/sdx"),
+            patch("subprocess.run", return_value=self._run(1, stderr)),
+        ):
+            assert ctrl.card_on_host() is True
+
+    @pytest.mark.parametrize(
+        "exc",
+        [FileNotFoundError("sudo"), subprocess.TimeoutExpired("dd", 10)],
+    )
+    def test_probe_unavailable_falls_back_to_size(self, exc):
+        ctrl = SDWireController("s")
+        with (
+            patch.object(ctrl, "get_block_device", return_value="/dev/sdx"),
+            patch("subprocess.run", side_effect=exc),
+        ):
+            assert ctrl.card_on_host() is True
 
 
 class TestBlockDeviceHelpers:
