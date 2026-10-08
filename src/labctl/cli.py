@@ -105,10 +105,12 @@ def destructive_command(action: str):
         @functools.wraps(f)
         def wrapper(*args, yes: bool = False, **kwargs):
             if not yes and not kwargs.get("dry_run") and _stdin_is_tty():
+                # Identity checks: `0 in (None, False, ())` is True in Python
+                # (0 == False), which would hide e.g. channel=0 or delay=0.
                 shown = ", ".join(
                     f"{k}={v}"
                     for k, v in kwargs.items()
-                    if k != "dry_run" and v not in (None, False, ())
+                    if k != "dry_run" and v is not None and v is not False and v != ()
                 )
                 suffix = f" ({shown})" if shown else ""
                 click.confirm(f"{action}{suffix}. Continue?", abort=True)
@@ -1376,7 +1378,15 @@ def sdwire_flash_cmd(
             f"overwrite the whole SD card with {image} "
             f"({image.stat().st_size} bytes)"
         )
-        steps.extend(f"copy {spec} to the boot partition" for spec in post_copies)
+        for spec in post_copies:
+            # Mirror the real run: specs without ":" are skipped with a warning.
+            if ":" not in spec:
+                click.echo(
+                    f"Warning: Invalid --copy format '{spec}', would skip", err=True
+                )
+                continue
+            src, dest = spec.split(":", 1)
+            steps.append(f"copy {src} -> {dest} on the boot partition")
         steps.append("switch the card back to the board")
         if not no_reboot and sbc.power_plug:
             steps.append(f"power-cycle {sbc_name}")
