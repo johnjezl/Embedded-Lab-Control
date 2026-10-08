@@ -4914,12 +4914,14 @@ def mcp_cmd(ctx: click.Context, http_port: int | None, host: str) -> None:
     By default uses stdio transport for local AI tool integration
     (Claude Desktop, Claude Code, etc.). Use --http for remote access.
     """
-    # The MCP server loads its own config on every call (load_config() with
-    # no path), so `labctl -c FILE mcp` used to ignore FILE and pick up
-    # ~/.config/labctl/config.yaml instead. LABCTL_CONFIG is checked before
-    # the user config, so export the -c path to make it authoritative.
+    # The MCP server (and code it calls, e.g. Kasa credential lookup) loads
+    # config itself on every call, with no path, so `labctl -c FILE mcp`
+    # used to ignore FILE. Export it, exclusively: like an explicit path,
+    # a missing or broken FILE then means defaults (deny-all host access),
+    # never a fallback to ~/.config/labctl or /etc/labctl.
     if ctx.obj.get("config_path"):
         os.environ["LABCTL_CONFIG"] = str(ctx.obj["config_path"])
+        os.environ["LABCTL_CONFIG_EXCLUSIVE"] = "1"
     try:
         from labctl.mcp_server import run_server
     except ModuleNotFoundError as e:

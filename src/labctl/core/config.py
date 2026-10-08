@@ -526,6 +526,13 @@ def load_config(
     4. /etc/labctl/config.yaml
     5. Default values
 
+    An explicit path is the only file tried: if it's missing or fails to
+    load, defaults are used, never another config. LABCTL_CONFIG normally
+    falls through to 3 and 4; with LABCTL_CONFIG_EXCLUSIVE=1 it behaves
+    like an explicit path. `labctl -c FILE mcp` sets both, so every
+    load_config() in the server process (including e.g. Kasa credential
+    lookups) uses FILE and only FILE.
+
     Environment variable overrides:
     - LABCTL_DEV_DIR: Override serial.dev_dir
     - LABCTL_BASE_TCP_PORT: Override serial.base_tcp_port
@@ -548,7 +555,8 @@ def load_config(
         paths_to_try = []
         if env_path:
             paths_to_try.append(_expand_path(env_path))
-        paths_to_try.extend([_default_config_file(), SYSTEM_CONFIG_FILE])
+        if not (env_path and os.environ.get("LABCTL_CONFIG_EXCLUSIVE") == "1"):
+            paths_to_try.extend([_default_config_file(), SYSTEM_CONFIG_FILE])
 
     # Try to load from file
     config_data = {}

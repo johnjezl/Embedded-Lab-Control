@@ -60,7 +60,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   its config itself on every call and ignored `-c`, so it read
   `~/.config/labctl/config.yaml` first (for the systemd unit: the service
   user's config, not the `/etc/labctl/config.yaml` the unit names). This
-  matters now that the MCP host-file allowlist lives in config.
+  matters now that the MCP host-file allowlist lives in config. FILE is
+  exclusive, as with any explicit path: if it later goes missing or fails
+  to parse, the server uses defaults (deny-all), never another config. The
+  same exclusive mode is available as `LABCTL_CONFIG_EXCLUSIVE=1` alongside
+  `LABCTL_CONFIG`; plain `LABCTL_CONFIG` still falls back as documented.
 - MCP claim sweeper (issue #3): a crashed `mcp-stdio` session whose PID was
   reused by another process is now recognised as gone (the process start
   time is compared with the session's epoch), so its claim is released as

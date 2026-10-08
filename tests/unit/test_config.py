@@ -3,6 +3,8 @@
 import logging
 from pathlib import Path
 
+import pytest
+
 import labctl.core.config as config_module
 from labctl.core.config import (
     ClaimsConfig,
@@ -165,6 +167,43 @@ class TestMcpHostPathConfig:
         restored = Config.from_dict(original.to_dict())
         assert restored.mcp.allowed_read_paths == ["/a"]
         assert restored.mcp.allowed_write_paths == ["/b"]
+
+
+class TestExclusiveConfigEnv:
+    """Review #8 of #14: `labctl -c FILE mcp` exports FILE via LABCTL_CONFIG;
+    with LABCTL_CONFIG_EXCLUSIVE=1 a missing/broken FILE must give defaults
+    (deny-all), never fall through to another config with other settings."""
+
+    @pytest.fixture
+    def user_config(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        (home / ".config" / "labctl").mkdir(parents=True)
+        (home / ".config" / "labctl" / "config.yaml").write_text(
+            "mcp:\n  allowed_read_paths: [/from/user/config]\n"
+        )
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        monkeypatch.delenv("LABCTL_CONFIG_EXCLUSIVE", raising=False)
+        return tmp_path
+
+    @pytest.mark.parametrize("broken", ["missing", "yaml_error"])
+    def test_exclusive_never_falls_through(self, user_config, monkeypatch, broken):
+        from labctl.core.config import load_config
+
+        cfg = user_config / "explicit.yaml"
+        if broken == "yaml_error":
+            cfg.write_text("mcp: [unclosed\n")
+        monkeypatch.setenv("LABCTL_CONFIG", str(cfg))
+        monkeypatch.setenv("LABCTL_CONFIG_EXCLUSIVE", "1")
+
+        assert load_config().mcp.allowed_read_paths == []  # defaults, deny-all
+
+    def test_non_exclusive_keeps_documented_fallback(self, user_config, monkeypatch):
+        from labctl.core.config import load_config
+
+        monkeypatch.setenv("LABCTL_CONFIG", str(user_config / "missing.yaml"))
+
+        assert load_config().mcp.allowed_read_paths == ["/from/user/config"]
 
 
 class TestEmptyOrMalformedSections:
