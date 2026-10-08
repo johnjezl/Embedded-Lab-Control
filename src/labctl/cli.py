@@ -352,6 +352,7 @@ def main(
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
     ctx.obj["quiet"] = quiet
+    ctx.obj["config_path"] = config_path
     ctx.obj["config"] = load_config(config_path)
 
     # Initialize logging
@@ -4913,6 +4914,12 @@ def mcp_cmd(ctx: click.Context, http_port: int | None, host: str) -> None:
     By default uses stdio transport for local AI tool integration
     (Claude Desktop, Claude Code, etc.). Use --http for remote access.
     """
+    # The MCP server loads its own config on every call (load_config() with
+    # no path), so `labctl -c FILE mcp` used to ignore FILE and pick up
+    # ~/.config/labctl/config.yaml instead. LABCTL_CONFIG is checked before
+    # the user config, so export the -c path to make it authoritative.
+    if ctx.obj.get("config_path"):
+        os.environ["LABCTL_CONFIG"] = str(ctx.obj["config_path"])
     try:
         from labctl.mcp_server import run_server
     except ModuleNotFoundError as e:
