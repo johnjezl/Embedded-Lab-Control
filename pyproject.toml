@@ -95,3 +95,6 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_functions = ["test_*"]
 addopts = "-v"
+markers = [
+    "confirmation: run with MCP destructive-tool confirmation enabled (D012)",
+]

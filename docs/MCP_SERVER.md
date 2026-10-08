@@ -391,6 +391,37 @@ The assistant calls:
   Use this only on trusted networks or behind a reverse proxy with auth.
 - The server uses the same configuration and database as the CLI, so all
   operations are audited in the audit_log table.
+- Every tool and resource is classified (read / db-write / shared-resource /
+  system-write / hardware / destructive) in
+  [`docs/OPERATIONS.md`](OPERATIONS.md), alongside the CLI commands.
+
+### Confirmation for destructive tools
+
+Tool annotations (`destructiveHint` etc.) are only hints a client may
+ignore, so the server enforces confirmation itself. By default every tool
+annotated destructive (power off/cycle, flashing, SD file changes,
+`serial_send`, deleting records, actuator/binding verbs, recovery, force
+release: 23 tools) is a two-step call:
+
+1. Called normally, it **does nothing** and returns a plan:
+   ```json
+   {"status": "confirmation_required", "tool": "power_off",
+    "arguments": {"sbc_name": "pi-5-1"}, "confirm_token": "…",
+    "expires_in_seconds": 120, "message": "…"}
+   ```
+2. Called again with **the same arguments** plus `confirm_token`, it acts.
+
+Tokens are random, single-use, expire after 120 s, and are bound to the tool
+and its exact arguments (defaults included). A token used for a different
+call, used twice, or expired returns `confirmation_failed` and does nothing.
+These tools show an extra optional `confirm_token` parameter in their
+schema and say "DESTRUCTIVE: requires confirmation" in their description.
+
+```yaml
+mcp:
+  confirm_destructive: true      # default; false turns the step off
+  confirm_exempt: [serial_send]  # tools that skip it, e.g. for console work
+```
 
 ### Host file access (allowlist)
 

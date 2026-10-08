@@ -424,15 +424,165 @@ def _serialized(func):
     return wrapper
 
 
-def _with_mcp_activity(func):
-    """Serialize one tool call and scope audit attribution to the MCP session."""
-    from labctl.core import audit
+# ---------------------------------------------------------------------------
+# Two-step confirmation for destructive tools (D012)
+# ---------------------------------------------------------------------------
+#
+# Annotations are hints a client may ignore, so the server enforces them:
+# a tool annotated destructive, called without a token, does nothing and
+# returns a plan plus a confirm_token. The token is random, single-use,
+# expires after _CONFIRM_TTL_SECONDS, and is bound to the tool name and a
+# digest of the exact (defaulted) arguments, so it can't be replayed or
+# reused for a different call. Any attempt consumes it.
+
+_CONFIRM_TTL_SECONDS = 120
+_DESTRUCTIVE_TOOLS = frozenset(
+    name for name, ann in TOOL_ANNOTATIONS.items() if ann.destructive_hint
+)
+_pending_confirmations: dict[str, tuple[str, str, float]] = {}
+_confirm_lock = threading.Lock()
+
+
+def _confirmation_required(tool_name: str) -> bool:
+    """Whether ``tool_name`` must be confirmed (config: mcp.confirm_*)."""
+    if tool_name not in _DESTRUCTIVE_TOOLS:
+        return False
+    mcp_cfg = _get_config().mcp
+    return mcp_cfg.confirm_destructive and tool_name not in mcp_cfg.confirm_exempt
+
+
+def _call_digest(tool_name: str, arguments: dict) -> str:
+    import hashlib
+
+    canonical = json.dumps(
+        {"tool": tool_name, "args": arguments}, sort_keys=True, default=str
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+def _issue_confirmation(tool_name: str, arguments: dict) -> str:
+    import secrets
+
+    token = secrets.token_urlsafe(16)
+    now = _time_mod.monotonic()
+    with _confirm_lock:
+        # Drop expired tokens so the table can't grow without bound.
+        for stale in [
+            t for t, (_, _, exp) in _pending_confirmations.items() if exp < now
+        ]:
+            del _pending_confirmations[stale]
+        _pending_confirmations[token] = (
+            tool_name,
+            _call_digest(tool_name, arguments),
+            now + _CONFIRM_TTL_SECONDS,
+        )
+    title = TOOL_ANNOTATIONS[tool_name].title
+    return json.dumps(
+        {
+            "status": "confirmation_required",
+            "tool": tool_name,
+            "action": title,
+            "arguments": arguments,
+            "confirm_token": token,
+            "expires_in_seconds": _CONFIRM_TTL_SECONDS,
+            "message": (
+                f"'{title}' is destructive and has NOT been performed. Review "
+                f"the arguments, then call {tool_name} again with exactly the "
+                "same arguments plus confirm_token to proceed."
+            ),
+        },
+        indent=2,
+        default=str,
+    )
+
+
+def _redeem_confirmation(tool_name: str, arguments: dict, token: str) -> str | None:
+    """Consume ``token``; return None if valid for this call, else an error."""
+    with _confirm_lock:
+        entry = _pending_confirmations.pop(token, None)
+    if entry is None:
+        return "unknown or already-used confirm_token"
+    issued_for, digest, expires = entry
+    if _time_mod.monotonic() > expires:
+        return "confirm_token expired"
+    if issued_for != tool_name or digest != _call_digest(tool_name, arguments):
+        return (
+            "confirm_token was issued for a different call (tool or arguments differ)"
+        )
+    return None
+
+
+def _with_confirmation(func):
+    """Add the confirm_token step to a destructive tool (see above).
+
+    The wrapper exposes an extra optional ``confirm_token`` parameter in
+    the tool's signature (so it appears in the MCP input schema) and adds a
+    note to the description. Non-destructive tools are returned unchanged.
+    """
+    import inspect
+
+    name = func.__name__
+    if name not in _DESTRUCTIVE_TOOLS:
+        return func
+    sig = inspect.signature(func)
 
     @wraps(func)
+    def wrapper(*args, confirm_token: Optional[str] = None, **kwargs):
+        if not _confirmation_required(name):
+            return func(*args, **kwargs)
+        bound = sig.bind(*args, **kwargs)
+        bound.apply_defaults()
+        arguments = dict(bound.arguments)
+        if confirm_token is None:
+            return _issue_confirmation(name, arguments)
+        problem = _redeem_confirmation(name, arguments, confirm_token)
+        if problem:
+            return json.dumps(
+                {
+                    "status": "confirmation_failed",
+                    "tool": name,
+                    "error": problem,
+                    "message": "Nothing was done. Call again without "
+                    "confirm_token to get a new plan and token.",
+                }
+            )
+        return func(*args, **kwargs)
+
+    params = list(sig.parameters.values())
+    params.append(
+        inspect.Parameter(
+            "confirm_token",
+            inspect.Parameter.KEYWORD_ONLY,
+            default=None,
+            annotation=Optional[str],
+        )
+    )
+    wrapper.__signature__ = sig.replace(parameters=params)
+    wrapper.__doc__ = (func.__doc__ or "").rstrip() + (
+        "\n\n    DESTRUCTIVE: requires confirmation. The first call returns a "
+        "plan and confirm_token and does nothing; call again with the same "
+        "arguments plus confirm_token to act.\n"
+    )
+    return wrapper
+
+
+def _with_mcp_activity(func):
+    """Serialize one tool call and scope audit attribution to the MCP session.
+
+    Destructive tools also get the two-step confirmation (_with_confirmation),
+    applied inside the lock so plan and execution see consistent state.
+    """
+    from labctl.core import audit
+
+    inner = _with_confirmation(func)
+
+    @wraps(inner)
     def wrapper(*args, **kwargs):
         with _HARDWARE_LOCK, audit.activity_context(_get_session_id(), "mcp"):
-            return func(*args, **kwargs)
+            return inner(*args, **kwargs)
 
+    if hasattr(inner, "__signature__"):
+        wrapper.__signature__ = inner.__signature__
     return wrapper
 
 

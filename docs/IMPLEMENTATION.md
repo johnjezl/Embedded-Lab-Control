@@ -804,8 +804,11 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
 - WS3 Operation classification + destructive confirmation (#7) — in progress
   - ✅ Review follow-ups from #14: precise open-error messages, NUL-byte
     host paths refused cleanly
-  - ☐ Classify every CLI command and MCP tool; docs table
-  - ☐ Two-step confirmation tokens for destructive MCP tools
+  - ✅ Classify every CLI command and MCP tool; docs table
+    (`docs/OPERATIONS.md`, kept in sync by tests/unit/test_operations_doc.py)
+  - ✅ Two-step confirmation tokens for destructive MCP tools
+    (23 tools, from the annotation table; `mcp.confirm_destructive`,
+    `mcp.confirm_exempt`)
   - ☐ CLI `--dry-run` for flash/update/power-cycle; `--yes` where missing
 - WS4 MCP HTTP authentication
   - ☐ Bearer auth backed by web users' API keys (`token_verifier`)

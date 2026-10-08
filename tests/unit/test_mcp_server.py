@@ -61,6 +61,18 @@ def populated_manager(manager):
     return manager
 
 
+@pytest.fixture(autouse=True)
+def _skip_destructive_confirmation(request):
+    """Most tests exercise a tool's own behaviour, so skip the two-step
+    confirmation (D012) unless a test is marked ``confirmation``; those
+    test the confirmation flow itself."""
+    if request.node.get_closest_marker("confirmation"):
+        yield
+        return
+    with patch("labctl.mcp_server._confirmation_required", return_value=False):
+        yield
+
+
 @pytest.fixture
 def allow_tmp_host_paths(request, tmp_path):
     """Allow MCP host file access under a per-test directory (D012).
@@ -3308,3 +3320,181 @@ class TestMcpCliCommand:
         assert result.exit_code == 1
         assert "embedded-lab-control[mcp]" in result.output
         assert "Traceback" not in result.output
+
+
+@pytest.mark.confirmation
+class TestDestructiveConfirmation:
+    """Two-step confirmation for destructive MCP tools (D012)."""
+
+    @pytest.fixture
+    def env(self, mock_manager):
+        """test-sbc-1 has a plug; power controller and config are fakes."""
+        from labctl.core.config import Config
+
+        config = Config()
+        power = MagicMock()
+        power.power_off.return_value = True
+        with (
+            patch("labctl.mcp_server._get_config", return_value=config),
+            patch("labctl.power.base.PowerController.from_plug", return_value=power),
+        ):
+            yield config, power
+
+    @staticmethod
+    def _plan(result):
+        data = json.loads(result)
+        assert data["status"] == "confirmation_required", data
+        return data
+
+    def test_first_call_does_nothing_and_returns_plan(self, env):
+        from labctl.mcp_server import power_off
+
+        _, power = env
+        plan = self._plan(power_off(sbc_name="test-sbc-1"))
+
+        power.power_off.assert_not_called()
+        assert plan["tool"] == "power_off"
+        assert plan["arguments"] == {"sbc_name": "test-sbc-1"}
+        assert plan["confirm_token"] and plan["expires_in_seconds"] == 120
+        assert "NOT been performed" in plan["message"]
+
+    def test_second_call_with_token_acts(self, env):
+        from labctl.mcp_server import power_off
+
+        _, power = env
+        token = self._plan(power_off(sbc_name="test-sbc-1"))["confirm_token"]
+        result = power_off(sbc_name="test-sbc-1", confirm_token=token)
+
+        assert result.startswith("Power OFF: test-sbc-1")
+        power.power_off.assert_called_once()
+
+    def test_token_is_single_use(self, env):
+        from labctl.mcp_server import power_off
+
+        _, power = env
+        token = self._plan(power_off(sbc_name="test-sbc-1"))["confirm_token"]
+        power_off(sbc_name="test-sbc-1", confirm_token=token)
+        again = json.loads(power_off(sbc_name="test-sbc-1", confirm_token=token))
+
+        assert again["status"] == "confirmation_failed"
+        assert "already-used" in again["error"]
+        assert power.power_off.call_count == 1
+
+    def test_token_bound_to_arguments(self, env):
+        """A token for one SBC can't be spent on another; it's consumed."""
+        from labctl.mcp_server import power_off
+
+        _, power = env
+        token = self._plan(power_off(sbc_name="test-sbc-1"))["confirm_token"]
+        wrong = json.loads(power_off(sbc_name="test-sbc-2", confirm_token=token))
+        retry = json.loads(power_off(sbc_name="test-sbc-1", confirm_token=token))
+
+        assert wrong["status"] == "confirmation_failed"
+        assert "different call" in wrong["error"]
+        assert retry["status"] == "confirmation_failed"  # consumed by the miss
+        power.power_off.assert_not_called()
+
+    def test_token_bound_to_tool(self, env):
+        from labctl.mcp_server import power_cycle, power_off
+
+        _, power = env
+        token = self._plan(power_off(sbc_name="test-sbc-1"))["confirm_token"]
+        result = json.loads(
+            power_cycle(sbc_name="test-sbc-1", delay=3.0, confirm_token=token)
+        )
+
+        assert result["status"] == "confirmation_failed"
+        power.power_cycle.assert_not_called()
+
+    def test_defaults_are_part_of_the_binding(self, env):
+        """power_cycle(delay omitted) == power_cycle(delay=3.0): same call."""
+        from labctl.mcp_server import power_cycle
+
+        _, power = env
+        power.power_cycle.return_value = True
+        token = self._plan(power_cycle(sbc_name="test-sbc-1"))["confirm_token"]
+        power_cycle(sbc_name="test-sbc-1", delay=3.0, confirm_token=token)
+
+        power.power_cycle.assert_called_once()
+
+    def test_expired_token_refused(self, env):
+        from labctl import mcp_server
+        from labctl.mcp_server import power_off
+
+        _, power = env
+        token = self._plan(power_off(sbc_name="test-sbc-1"))["confirm_token"]
+        later = mcp_server._time_mod.monotonic() + 121
+        with patch.object(mcp_server._time_mod, "monotonic", return_value=later):
+            result = json.loads(power_off(sbc_name="test-sbc-1", confirm_token=token))
+
+        assert result["status"] == "confirmation_failed"
+        assert "expired" in result["error"]
+        power.power_off.assert_not_called()
+
+    def test_unknown_token_refused(self, env):
+        from labctl.mcp_server import power_off
+
+        _, power = env
+        result = json.loads(power_off(sbc_name="test-sbc-1", confirm_token="nope"))
+
+        assert result["status"] == "confirmation_failed"
+        power.power_off.assert_not_called()
+
+    def test_non_destructive_tool_never_asks(self, env):
+        from labctl.mcp_server import power_on
+
+        _, power = env
+        power.power_on.return_value = True
+        assert power_on(sbc_name="test-sbc-1").startswith("Power ON")
+
+    def test_disabled_by_config(self, env):
+        from labctl.mcp_server import power_off
+
+        config, power = env
+        config.mcp.confirm_destructive = False
+
+        assert power_off(sbc_name="test-sbc-1").startswith("Power OFF")
+
+    def test_exempt_tool_skips_confirmation_only_for_itself(self, env):
+        from labctl.mcp_server import power_cycle, power_off
+
+        config, power = env
+        config.mcp.confirm_exempt = ["power_off"]
+
+        assert power_off(sbc_name="test-sbc-1").startswith("Power OFF")
+        self._plan(power_cycle(sbc_name="test-sbc-1"))
+        power.power_cycle.assert_not_called()
+
+    def test_every_destructive_tool_requires_confirmation(self):
+        """Enforcement: the destructive set comes from the annotation table,
+        and exactly those tools expose confirm_token in their MCP schema."""
+        import anyio
+
+        from labctl.mcp_server import _DESTRUCTIVE_TOOLS, TOOL_ANNOTATIONS, mcp
+
+        expected = {n for n, a in TOOL_ANNOTATIONS.items() if a.destructive_hint}
+        assert _DESTRUCTIVE_TOOLS == expected
+        for tool in anyio.run(mcp.list_tools):
+            has_token = "confirm_token" in tool.input_schema["properties"]
+            assert has_token == (tool.name in expected), tool.name
+            if has_token:
+                assert "DESTRUCTIVE" in tool.description
+
+    def test_two_step_flow_through_the_sdk(self, env):
+        """What a real MCP client sees: plan, then act with the token."""
+        import anyio
+
+        from labctl.mcp_server import mcp
+
+        _, power = env
+        first = anyio.run(mcp.call_tool, "power_off", {"sbc_name": "test-sbc-1"})
+        token = json.loads(first.content[0].text)["confirm_token"]
+        power.power_off.assert_not_called()
+
+        second = anyio.run(
+            mcp.call_tool,
+            "power_off",
+            {"sbc_name": "test-sbc-1", "confirm_token": token},
+        )
+        assert second.content[0].text.startswith("Power OFF")
+        power.power_off.assert_called_once()
