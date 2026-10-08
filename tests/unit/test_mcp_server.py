@@ -3176,12 +3176,33 @@ class TestMcpRunServer:
 
     @pytest.fixture
     def run_env(self):
+        from labctl.core.config import Config
+
         with (
             patch("labctl.mcp_server.mcp") as fake_mcp,
             patch("labctl.mcp_server._start_expiry_thread"),
             patch("atexit.register"),
+            patch("labctl.mcp_server._get_config", return_value=Config()),
         ):
             yield fake_mcp
+
+    def test_unknown_confirm_exemption_warned_at_startup(self, run_env, caplog):
+        """A typo in mcp.confirm_exempt fails safe but must not be silent."""
+        import logging
+
+        from labctl.core.config import Config
+        from labctl.mcp_server import run_server
+
+        config = Config()
+        config.mcp.confirm_exempt = ["serial_send", "power_of"]
+        with (
+            patch("labctl.mcp_server._get_config", return_value=config),
+            caplog.at_level(logging.WARNING, logger="labctl.mcp_server"),
+        ):
+            run_server(transport="stdio")
+
+        assert "unknown tool name(s), ignored: power_of" in caplog.text
+        assert "serial_send" not in caplog.text
 
     def test_http_passes_port_and_default_host(self, run_env):
         from labctl.mcp_server import run_server

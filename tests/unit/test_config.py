@@ -186,6 +186,28 @@ class TestMcpConfirmConfig:
         restored = Config.from_dict(config.to_dict())
         assert restored.mcp.confirm_exempt == ["serial_send"]
 
+    def test_blank_value_keeps_confirmation_on(self, tmp_path):
+        """Review #2 of #15: `confirm_destructive:` with no value parses as
+        None; bool(None) is False and silently disabled the safety step."""
+        from labctl.core.config import load_config
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("mcp:\n  confirm_destructive:\n")
+        assert load_config(cfg).mcp.confirm_destructive is True
+
+    def test_explicit_false_turns_it_off(self, tmp_path):
+        from labctl.core.config import load_config
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("mcp:\n  confirm_destructive: false\n")
+        assert load_config(cfg).mcp.confirm_destructive is False
+
+    def test_non_boolean_keeps_it_on_with_warning(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            config = Config.from_dict({"mcp": {"confirm_destructive": "maybe"}})
+        assert config.mcp.confirm_destructive is True
+        assert "must be true or false" in caplog.text
+
     def test_exempt_single_string_and_bad_entries(self, caplog):
         assert Config.from_dict(
             {"mcp": {"confirm_exempt": "serial_send"}}
