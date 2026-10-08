@@ -764,7 +764,10 @@ class TestMcpSDWireTools:
                             sdwire_ls("test-sbc-1", partition=1)
 
         claim_check.assert_called_once_with(manager, "test-sbc-1", mutating=True)
-        mock_sleep.assert_called_once_with(2)
+        # One re-check before treating the card as on the DUT, then wait
+        # for it to be readable instead of a fixed sleep.
+        mock_sleep.assert_called_once_with(1.0)
+        mock_ctrl.wait_for_host.assert_called_once()
 
     def test_sdwire_ls_rejects_powered_on(self):
         from labctl.mcp_server import sdwire_ls
@@ -849,7 +852,10 @@ class TestMcpSDWireTools:
                             sdwire_cat("test-sbc-1", partition=1, path="/file.txt")
 
         claim_check.assert_called_once_with(manager, "test-sbc-1", mutating=True)
-        mock_sleep.assert_called_once_with(2)
+        # One re-check before treating the card as on the DUT, then wait
+        # for it to be readable instead of a fixed sleep.
+        mock_sleep.assert_called_once_with(1.0)
+        mock_ctrl.wait_for_host.assert_called_once()
 
     def test_sdwire_info_rejects_powered_on(self):
         from labctl.mcp_server import sdwire_info
@@ -939,7 +945,10 @@ class TestMcpSDWireTools:
                             sdwire_info("test-sbc-1")
 
         claim_check.assert_called_once_with(manager, "test-sbc-1", mutating=True)
-        mock_sleep.assert_called_once_with(2)
+        # One re-check before treating the card as on the DUT, then wait
+        # for it to be readable instead of a fixed sleep.
+        mock_sleep.assert_called_once_with(1.0)
+        mock_ctrl.wait_for_host.assert_called_once()
 
     def test_sdwire_ls_preserves_json_with_claim_advisory(self, board_off):
         from labctl.mcp_server import sdwire_ls
@@ -1112,6 +1121,22 @@ class TestSdwireReadToolsAreReadOnly:
         assert "entries" in result
         ctrl.switch_to_host.assert_not_called()
         ctrl.switch_to_dut.assert_not_called()  # left in host mode
+
+    def test_card_still_initialising_on_host_is_rechecked(self):
+        """Review #4 finding: switched to host by another process moments ago.
+
+        The first probe says "not on host" (card still initialising); the
+        re-check sees it. It must be read in place, never switched to DUT.
+        """
+        from labctl.power.base import PowerState
+
+        ctrl = self._ctrl(on_host=False)
+        ctrl.card_on_host.side_effect = [False, True]
+        result = self._ls(self._sbc(), ctrl, power=self._state(PowerState.OFF))
+
+        assert "entries" in result
+        ctrl.switch_to_host.assert_not_called()
+        ctrl.switch_to_dut.assert_not_called()
 
     def test_board_off_switches_and_restores(self):
         from labctl.power.base import PowerState

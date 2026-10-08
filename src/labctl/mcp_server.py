@@ -392,6 +392,10 @@ def _sdwire_read_power_refusal(sbc_name: str, sbc) -> str | None:
     return None
 
 
+# Second look before treating the card as on the DUT (see below).
+_HOST_RECHECK_SECONDS = 1.0
+
+
 def _sdwire_read_access(sbc_name: str, sbc, ctrl) -> tuple[bool, str | None]:
     """Decide how a read-only SD tool may reach the card without side effects.
 
@@ -406,6 +410,13 @@ def _sdwire_read_access(sbc_name: str, sbc, ctrl) -> tuple[bool, str | None]:
     by other calls in this MCP server. Other processes (the CLI, another
     MCP server) are not covered; claims are the cross-process guard.
     """
+    if ctrl.card_on_host():
+        return False, None
+    # A card switched to the host moments ago by another process (CLI,
+    # another session) may still be initialising and probe as "no medium".
+    # Concluding "on DUT" would make the cleanup switch it there, so check
+    # once more before deciding. (The mux can't be read back directly.)
+    _time_mod.sleep(_HOST_RECHECK_SECONDS)
     if ctrl.card_on_host():
         return False, None
     refusal = _sdwire_read_power_refusal(sbc_name, sbc)
@@ -1428,8 +1439,6 @@ def sdwire_ls(
     max_entries: int = 1000,
 ) -> str:
     """List directory contents on an SBC SD card partition."""
-    import time
-
     from labctl.sdwire import SDWireController
 
     manager = _get_manager()
@@ -1453,7 +1462,7 @@ def sdwire_ls(
         if needs_switch:
             ctrl.switch_to_host()
             host_switched = True
-            time.sleep(2)
+            ctrl.wait_for_host()
         result = ctrl.list_files(
             partition=partition,
             path=path,
@@ -1506,8 +1515,6 @@ def sdwire_cat(
     encoding: str = "text",
 ) -> str:
     """Read a file from an SBC SD card partition."""
-    import time
-
     from labctl.sdwire import SDWireController
     from labctl.sdwire.controller import SDWireSymlinkError
 
@@ -1532,7 +1539,7 @@ def sdwire_cat(
         if needs_switch:
             ctrl.switch_to_host()
             host_switched = True
-            time.sleep(2)
+            ctrl.wait_for_host()
         result = ctrl.read_file(
             partition=partition,
             path=path,
@@ -1598,8 +1605,6 @@ def sdwire_cat(
 @_with_mcp_activity
 def sdwire_info(sbc_name: str) -> str:
     """Return partition-table metadata for an SBC SD card."""
-    import time
-
     from labctl.sdwire import SDWireController
 
     manager = _get_manager()
@@ -1623,7 +1628,7 @@ def sdwire_info(sbc_name: str) -> str:
         if needs_switch:
             ctrl.switch_to_host()
             host_switched = True
-            time.sleep(2)
+            ctrl.wait_for_host()
         result = ctrl.get_disk_info()
         payload = json.dumps(
             {

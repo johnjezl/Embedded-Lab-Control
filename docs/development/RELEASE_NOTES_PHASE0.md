@@ -33,6 +33,16 @@ Delete or fold into the real release notes before publishing.
 
 ## P1 safety
 
+- **SD mux position can't be read back.** The MCP read tools infer it from a
+  media probe (`card_on_host`), re-check once after 1 s, and every switch
+  to host (MCP and CLI `sdwire host`) now waits until the card is readable.
+  A truly concurrent switch by another process can still be misjudged;
+  claims are the guard for that.
+- **CLI parity:** `labctl sdwire ls`/`cat`/`info` still use the older
+  behaviour (power guard fails open with no plug; always switch to host and
+  back). The MCP tools are fixed because agents may call them unprompted;
+  align the CLI later.
+
 - `--host 0.0.0.0` on the HTTP transport exposes all 52 tools with no auth.
   The flag's help text warns; real auth is P1.
 - ~~`sdwire_ls` / `sdwire_cat` / `sdwire_info` moved the mux and failed open~~
