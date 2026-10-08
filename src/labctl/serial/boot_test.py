@@ -17,6 +17,27 @@ from labctl.serial.capture import capture_serial_output
 logger = logging.getLogger(__name__)
 
 
+def _write_run_file(path: Path, text: str) -> None:
+    """Write one run's output without following a planted link.
+
+    The output directory may be shared (e.g. group-writable
+    /var/lib/labctl/output), and the content is console output the DUT
+    controls. A symlink planted at ``run_NN.txt`` would otherwise redirect
+    the write to any file the service user can write, so open with
+    O_NOFOLLOW (fails with ELOOP on a symlink), and refuse a file with
+    other hard links. Raises OSError on refusal.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+    try:
+        if os.fstat(fd).st_nlink > 1:
+            raise OSError(f"refusing to write {path}: it has other hard links")
+        os.ftruncate(fd, 0)
+        with os.fdopen(fd, "w", closefd=False) as f:
+            f.write(text)
+    finally:
+        os.close(fd)
+
+
 @dataclass
 class BootRunResult:
     """Result of a single boot run."""
@@ -191,7 +212,10 @@ def run_boot_test(
         # Save per-run output
         if output_dir and run_result.output:
             run_file = Path(output_dir) / f"run_{i:02d}.txt"
-            run_file.write_text(run_result.output)
+            try:
+                _write_run_file(run_file, run_result.output)
+            except OSError as e:
+                logger.warning("Not writing %s: %s", run_file, e)
 
         if progress_fn:
             progress_fn(i, runs, run_result)

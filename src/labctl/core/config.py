@@ -43,6 +43,23 @@ def _expand_path(value: str | Path) -> Path:
     return Path(os.path.expandvars(str(value))).expanduser()
 
 
+def _section(data: dict, key: str) -> dict:
+    """A config section as a dict, tolerating an empty or malformed one.
+
+    A header with everything under it commented out (``mcp:`` followed only
+    by ``#`` lines) parses as None; ``data.get(key, {})`` then returned None
+    and every labctl command crashed in from_dict. Treat None as an empty
+    section; ignore (with a warning) anything that isn't a mapping.
+    """
+    value = data.get(key)
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        logger.warning("Config: section %r is not a mapping; ignoring", key)
+        return {}
+    return value
+
+
 def _path_list(section: dict, key: str) -> list[str]:
     """Read a list of absolute directory paths (an allowlist) from config.
 
@@ -290,16 +307,16 @@ class Config:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Config":
         """Create Config from dictionary."""
-        serial_data = data.get("serial", {})
-        ser2net_data = data.get("ser2net", {})
-        proxy_data = data.get("proxy", {})
-        health_data = data.get("health", {})
-        auth_data = data.get("auth", {})
-        web_data = data.get("web", {})
-        kasa_data = data.get("kasa", {})
-        claims_data = data.get("claims", {})
-        mcp_data = data.get("mcp", {})
-        database_data = data.get("database", {})
+        serial_data = _section(data, "serial")
+        ser2net_data = _section(data, "ser2net")
+        proxy_data = _section(data, "proxy")
+        health_data = _section(data, "health")
+        auth_data = _section(data, "auth")
+        web_data = _section(data, "web")
+        kasa_data = _section(data, "kasa")
+        claims_data = _section(data, "claims")
+        mcp_data = _section(data, "mcp")
+        database_data = _section(data, "database")
 
         serial = SerialConfig(
             dev_dir=_expand_path(serial_data.get("dev_dir", "/dev/lab")),

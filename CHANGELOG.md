@@ -43,6 +43,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   follow-up read doesn't misjudge the mux position.
 
 ### Fixed
+- A config section header with nothing under it (e.g. `mcp:` followed only
+  by commented-out entries) no longer crashes every labctl command; it
+  counts as an empty section. A section that isn't a mapping is ignored
+  with a warning.
+- Boot-test per-run output files (`run_NN.txt`) are written with
+  `O_NOFOLLOW` and refused if hard-linked, so a link planted in a shared
+  output directory can't redirect the (DUT-controlled) output into another
+  file. The default `/var/lib/labctl/output` is now also sticky (`3775`).
 - `labctl -c FILE mcp` now makes the MCP server use FILE. The server loads
   its config itself on every call and ignored `-c`, so it read
   `~/.config/labctl/config.yaml` first (for the systemd unit: the service

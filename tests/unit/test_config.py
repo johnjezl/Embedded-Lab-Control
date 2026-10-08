@@ -167,6 +167,34 @@ class TestMcpHostPathConfig:
         assert restored.mcp.allowed_write_paths == ["/b"]
 
 
+class TestEmptyOrMalformedSections:
+    """Review #4 of #14: `mcp:` with only commented-out entries parses as
+    None and crashed every labctl command (true for any section)."""
+
+    def test_empty_mcp_section_is_deny_all(self, tmp_path):
+        from labctl.core.config import load_config
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            "mcp:\n" "  # allowed_read_paths:\n" "  #   - /var/lib/labctl/images\n"
+        )
+        config = load_config(cfg)
+        assert config.mcp.allowed_read_paths == []
+        assert config.mcp.allowed_write_paths == []
+
+    def test_any_empty_section_loads(self):
+        sections = ["serial", "ser2net", "proxy", "health", "auth", "web"]
+        sections += ["kasa", "claims", "mcp", "database"]
+        config = Config.from_dict({name: None for name in sections})
+        assert config.mcp.allowed_read_paths == []
+
+    def test_non_mapping_section_ignored_with_warning(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            config = Config.from_dict({"mcp": ["/not", "/a/mapping"]})
+        assert config.mcp.allowed_read_paths == []
+        assert "'mcp' is not a mapping" in caplog.text
+
+
 class TestClaimsConfig:
     """Tests for ClaimsConfig dataclass."""
 

@@ -418,8 +418,11 @@ mcp:
 - The CLI is not restricted: it already runs with the invoking user's
   permissions.
 - `scripts/install-services.sh` creates both default directories
-  (`labctl:labctl`, mode `2775`, so members of the `labctl` group can drop
-  images in) and fresh installs get the config above from
+  (`labctl:labctl`; `images/` mode `2775` so members of the `labctl` group
+  can drop images in; `output/` mode `3775`, sticky, so they can't replace
+  the service's run files). Boot-test run files are written with
+  `O_NOFOLLOW`, so a symlink planted in `output/` is refused, not followed.
+  Fresh installs get the config above from
   `config/labctl.yaml.example`. On existing installs `scripts/update.sh`
   creates the directories and prints the config to add; it never edits
   config files.
