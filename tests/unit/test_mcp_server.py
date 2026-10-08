@@ -698,7 +698,7 @@ class TestMcpSDWireTools:
         sbc.sdwire.device_type = "sdwirec"
         manager.get_sbc_by_name.return_value = sbc
         mock_ctrl = MagicMock()
-        mock_ctrl.get_block_device.return_value = None  # card on DUT side
+        mock_ctrl.card_on_host.return_value = False  # card on DUT side
         mock_ctrl.list_files.return_value = {
             "entries": [{"path": "/boot", "name": "boot", "type": "dir"}],
             "truncated": False,
@@ -729,7 +729,7 @@ class TestMcpSDWireTools:
         manager.get_sbc_by_name.return_value = sbc
         claim_check = MagicMock(return_value=None)
         mock_ctrl = MagicMock()
-        mock_ctrl.get_block_device.return_value = None  # card on DUT side
+        mock_ctrl.card_on_host.return_value = False  # card on DUT side
         mock_ctrl.list_files.return_value = {
             "entries": [],
             "truncated": False,
@@ -761,7 +761,7 @@ class TestMcpSDWireTools:
         mock_power = MagicMock()
         mock_power.get_state.return_value = PowerState.ON
         mock_ctrl = MagicMock()
-        mock_ctrl.get_block_device.return_value = None  # card on DUT side
+        mock_ctrl.card_on_host.return_value = False  # card on DUT side
 
         with patch("labctl.mcp_server._get_manager", return_value=manager):
             with patch("labctl.mcp_server._check_claim", return_value=None):
@@ -787,7 +787,7 @@ class TestMcpSDWireTools:
         sbc.sdwire.device_type = "sdwirec"
         manager.get_sbc_by_name.return_value = sbc
         mock_ctrl = MagicMock()
-        mock_ctrl.get_block_device.return_value = None  # card on DUT side
+        mock_ctrl.card_on_host.return_value = False  # card on DUT side
         mock_ctrl.read_file.side_effect = ValueError("binary_content")
 
         with patch("labctl.mcp_server._get_manager", return_value=manager):
@@ -811,7 +811,7 @@ class TestMcpSDWireTools:
         manager.get_sbc_by_name.return_value = sbc
         claim_check = MagicMock(return_value=None)
         mock_ctrl = MagicMock()
-        mock_ctrl.get_block_device.return_value = None  # card on DUT side
+        mock_ctrl.card_on_host.return_value = False  # card on DUT side
         mock_ctrl.read_file.return_value = {
             "content": "x",
             "encoding": "text",
@@ -846,7 +846,7 @@ class TestMcpSDWireTools:
         mock_power = MagicMock()
         mock_power.get_state.return_value = PowerState.ON
         mock_ctrl = MagicMock()
-        mock_ctrl.get_block_device.return_value = None  # card on DUT side
+        mock_ctrl.card_on_host.return_value = False  # card on DUT side
 
         with patch("labctl.mcp_server._get_manager", return_value=manager):
             with patch("labctl.mcp_server._check_claim", return_value=None):
@@ -872,7 +872,7 @@ class TestMcpSDWireTools:
         sbc.sdwire.device_type = "sdwirec"
         manager.get_sbc_by_name.return_value = sbc
         mock_ctrl = MagicMock()
-        mock_ctrl.get_block_device.return_value = None  # card on DUT side
+        mock_ctrl.card_on_host.return_value = False  # card on DUT side
         mock_ctrl.get_disk_info.return_value = {
             "device_total_bytes": 1024,
             "disklabel_type": "msdos",
@@ -903,7 +903,7 @@ class TestMcpSDWireTools:
         manager.get_sbc_by_name.return_value = sbc
         claim_check = MagicMock(return_value=None)
         mock_ctrl = MagicMock()
-        mock_ctrl.get_block_device.return_value = None  # card on DUT side
+        mock_ctrl.card_on_host.return_value = False  # card on DUT side
         mock_ctrl.get_disk_info.return_value = {
             "device_total_bytes": 1024,
             "disklabel_type": "msdos",
@@ -932,7 +932,7 @@ class TestMcpSDWireTools:
         sbc.sdwire.device_type = "sdwirec"
         manager.get_sbc_by_name.return_value = sbc
         mock_ctrl = MagicMock()
-        mock_ctrl.get_block_device.return_value = None  # card on DUT side
+        mock_ctrl.card_on_host.return_value = False  # card on DUT side
         mock_ctrl.list_files.return_value = {
             "entries": [],
             "truncated": False,
@@ -966,7 +966,7 @@ class TestMcpSDWireTools:
         sbc.sdwire.device_type = "sdwirec"
         manager.get_sbc_by_name.return_value = sbc
         mock_ctrl = MagicMock()
-        mock_ctrl.get_block_device.return_value = None  # card on DUT side
+        mock_ctrl.card_on_host.return_value = False  # card on DUT side
         mock_ctrl.list_files.return_value = {
             "entries": [],
             "truncated": False,
@@ -993,7 +993,7 @@ class TestMcpSDWireTools:
         sbc.sdwire.device_type = "sdwirec"
         manager.get_sbc_by_name.return_value = sbc
         mock_ctrl = MagicMock()
-        mock_ctrl.get_block_device.return_value = None  # card on DUT side
+        mock_ctrl.card_on_host.return_value = False  # card on DUT side
         mock_ctrl.list_files.side_effect = PermissionError("/root")
 
         with patch("labctl.mcp_server._get_manager", return_value=manager):
@@ -1013,7 +1013,7 @@ class TestMcpSDWireTools:
         sbc.sdwire.device_type = "sdwirec"
         manager.get_sbc_by_name.return_value = sbc
         mock_ctrl = MagicMock()
-        mock_ctrl.get_block_device.return_value = None  # card on DUT side
+        mock_ctrl.card_on_host.return_value = False  # card on DUT side
         mock_ctrl.read_file.side_effect = PermissionError("/etc/shadow")
 
         with patch("labctl.mcp_server._get_manager", return_value=manager):
@@ -1045,7 +1045,7 @@ class TestSdwireReadToolsAreReadOnly:
     @staticmethod
     def _ctrl(on_host):
         ctrl = MagicMock()
-        ctrl.get_block_device.return_value = "/dev/sdx" if on_host else None
+        ctrl.card_on_host.return_value = on_host
         ctrl.list_files.return_value = {
             "entries": [],
             "truncated": False,

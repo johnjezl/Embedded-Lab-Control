@@ -396,15 +396,17 @@ def _sdwire_read_access(sbc_name: str, sbc, ctrl) -> tuple[bool, str | None]:
     """Decide how a read-only SD tool may reach the card without side effects.
 
     Returns ``(needs_switch, refusal)``:
-    - Card already on the host (a block device with media is present): read
-      it in place and leave the mux alone; the DUT is not using the card, so
+    - Card already on the host (``ctrl.card_on_host()``, which re-checks the
+      reader for media rather than trusting a possibly stale size): read it
+      in place and leave the mux alone; the DUT is not using the card, so
       its power state doesn't matter.
     - Card on the DUT: switch to host and back only if the board is known to
       be OFF (see ``_sdwire_read_power_refusal``); otherwise refuse.
     Callers hold the hardware lock, so detection and switching aren't raced
-    by other MCP calls.
+    by other calls in this MCP server. Other processes (the CLI, another
+    MCP server) are not covered; claims are the cross-process guard.
     """
-    if ctrl.get_block_device() is not None:
+    if ctrl.card_on_host():
         return False, None
     refusal = _sdwire_read_power_refusal(sbc_name, sbc)
     if refusal:

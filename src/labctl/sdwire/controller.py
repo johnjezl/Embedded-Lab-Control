@@ -112,6 +112,51 @@ class SDWireController:
         except RuntimeError:
             return None
 
+    def card_on_host(self) -> bool:
+        """True if the SD card is currently switched to the host.
+
+        ``get_block_device()`` relies on ``/sys/block/<dev>/size``, which can
+        stay non-zero after a switch to DUT until the kernel next checks the
+        reader for media (it polls removable disks only if
+        ``block.events_dfl_poll_msecs`` is set, ~2 s by default on many
+        distros, and otherwise only on open). Reading one sector forces that
+        check: with the card gone, the open fails with "No medium found".
+        ``sudo dd`` is already permitted for flashing.
+
+        Outcomes: read OK -> on host; "No medium found" -> on DUT (stale
+        size); any other failure (no sudo rights, timeout) -> can't verify,
+        so fall back to the size check alone.
+        """
+        block_dev = self.get_block_device()
+        if not block_dev:
+            return False
+        try:
+            probe = subprocess.run(
+                [
+                    "sudo",
+                    "-n",
+                    "dd",
+                    f"if={block_dev}",
+                    "of=/dev/null",
+                    "bs=512",
+                    "count=1",
+                    "status=none",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            logger.debug("Media probe of %s unavailable: %s", block_dev, e)
+            return True
+        if probe.returncode == 0:
+            return True
+        if "No medium found" in probe.stderr:
+            logger.debug("Block device %s: stale size, no medium", block_dev)
+            return False
+        logger.debug("Media probe of %s failed: %s", block_dev, probe.stderr.strip())
+        return True
+
     def flash_image(
         self,
         image_path: str,
