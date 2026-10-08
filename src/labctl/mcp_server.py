@@ -193,6 +193,9 @@ def _resolve_host_path(path: str, access: str) -> tuple[str | None, str | None]:
             f"Error: host file {access} access over MCP is disabled. "
             f"Add the directory to {key} in config.yaml."
         )
+    if "\0" in path:
+        # realpath() raises ValueError on an embedded NUL; refuse cleanly.
+        return None, "Error: host path contains a NUL byte"
     if not os.path.isabs(path):
         return None, f"Error: host path must be absolute: {path!r}"
     resolved = os.path.realpath(path)
@@ -206,6 +209,21 @@ def _resolve_host_path(path: str, access: str) -> tuple[str | None, str | None]:
     return None, (
         f"Error: {path!r} is outside {key} (symlinks and '..' are "
         f"resolved before checking): {', '.join(roots)}"
+    )
+
+
+def _host_open_error(path: str, e: OSError) -> str:
+    """User-facing message for a failed safe open of a checked host path."""
+    if e.errno == errno.EINVAL:
+        return f"Error: not a regular file: {path!r}"
+    if e.errno == errno.ENOENT:
+        return f"Error: file not found: {path!r}"
+    if e.errno in (errno.EACCES, errno.EPERM):
+        return f"Error: permission denied: {path!r}"
+    # ELOOP/ENOTDIR: a symlink appeared on the path after the check.
+    return (
+        f"Error: could not open {path!r} safely (it may have changed "
+        f"since it was checked): {e.strerror or e}"
     )
 
 
@@ -226,12 +244,7 @@ def _open_host_read(path: str) -> tuple[int | None, str | None]:
         # Refuses non-regular files (e.g. a planted FIFO) without blocking.
         fd = open_file_nofollow(resolved, os.O_RDONLY)
     except OSError as e:
-        if e.errno == errno.EINVAL:
-            return None, f"Error: not a regular file: {path!r}"
-        return None, (
-            f"Error: could not open {path!r} safely (it may have changed "
-            f"since it was checked): {e.strerror or e}"
-        )
+        return None, _host_open_error(path, e)
     return fd, None
 
 
@@ -249,14 +262,7 @@ def _open_host_write_dir(path: str) -> tuple[int | None, str | None, str | None]
     try:
         return open_dir_nofollow(resolved, create=True), resolved, None
     except OSError as e:
-        return (
-            None,
-            None,
-            (
-                f"Error: could not open {path!r} safely (it may have changed "
-                f"since it was checked): {e.strerror or e}"
-            ),
-        )
+        return None, None, _host_open_error(path, e)
 
 
 def _open_copy_sources(

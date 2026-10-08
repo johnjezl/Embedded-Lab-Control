@@ -781,7 +781,7 @@ P4 showcase. Scratch list of out-of-scope findings:
 Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
 (P1 section).
 
-- WS1 Quick hardening
+- WS1 Quick hardening — merged (PR #13, 5 review rounds)
   - ✅ Web `SECRET_KEY`: random per process when not configured (was the
     constant `labctl-dev-key`, which signs the CSRF-bearing session)
   - ✅ `sdwire_ls`/`sdwire_cat`/`sdwire_info` side-effect free: host-side
@@ -790,15 +790,20 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
   - ✅ #3 MCP session liveness checks process start time vs the session
     epoch, so a recycled PID doesn't count as the original session
   - ✅ Pre-rebase commit SHAs in `STATUS.md` / Phase 0 notes
-- WS2 Host path allowlist
+- WS2 Host path allowlist — merged (PR #14, 9 review rounds)
   - ✅ `mcp.allowed_read_paths` / `mcp.allowed_write_paths` (deny-all default)
   - ✅ Enforce in `flash_image`, `sdwire_update`, `boot_test`
     (resolve symlinks and `..` before checking; refuse before any hardware
-    action; use the resolved path)
+    action)
+  - ✅ Open at check time without following symlinks
+    (`labctl/core/safe_open.py`), refuse FIFOs/non-regular files, do all
+    I/O by descriptor; raw images streamed into `sudo dd` (review hardening)
   - ✅ Install script creates `/var/lib/labctl/{images,output}` and the
     example config allowlists them; update script creates missing dirs and
     prints the config to add (never edits config)
-- WS3 Operation classification + destructive confirmation (#7)
+- WS3 Operation classification + destructive confirmation (#7) — in progress
+  - ✅ Review follow-ups from #14: precise open-error messages, NUL-byte
+    host paths refused cleanly
   - ☐ Classify every CLI command and MCP tool; docs table
   - ☐ Two-step confirmation tokens for destructive MCP tools
   - ☐ CLI `--dry-run` for flash/update/power-cycle; `--yes` where missing
