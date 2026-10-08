@@ -43,6 +43,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   follow-up read doesn't misjudge the mux position.
 
 ### Fixed
+- `labctl -c FILE mcp` now makes the MCP server use FILE. The server loads
+  its config itself on every call and ignored `-c`, so it read
+  `~/.config/labctl/config.yaml` first (for the systemd unit: the service
+  user's config, not the `/etc/labctl/config.yaml` the unit names). This
+  matters now that the MCP host-file allowlist lives in config.
 - MCP claim sweeper (issue #3): a crashed `mcp-stdio` session whose PID was
   reused by another process is now recognised as gone (the process start
   time is compared with the session's epoch), so its claim is released as

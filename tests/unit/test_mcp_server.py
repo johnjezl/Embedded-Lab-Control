@@ -3144,6 +3144,47 @@ class TestMcpRunServer:
 class TestMcpCliCommand:
     """`labctl mcp` CLI flag plumbing."""
 
+    def test_config_flag_reaches_mcp_server(self, tmp_path, monkeypatch):
+        """`labctl -c FILE mcp` must make the MCP server read FILE.
+
+        Review #3 of #14: the server calls load_config() itself, so -c was
+        ignored and ~/.config/labctl/config.yaml won (the systemd unit's
+        `-c /etc/labctl/config.yaml` had no effect). Here a user config with
+        a different allowlist exists and must lose to -c.
+        """
+        from click.testing import CliRunner
+
+        from labctl.cli import main
+
+        home = tmp_path / "home"
+        (home / ".config" / "labctl").mkdir(parents=True)
+        (home / ".config" / "labctl" / "config.yaml").write_text(
+            "mcp:\n  allowed_read_paths: [/from/user/config]\n"
+        )
+        explicit = tmp_path / "explicit.yaml"
+        explicit.write_text(
+            f"database_path: {tmp_path / 'x.db'}\n"
+            "mcp:\n  allowed_read_paths: [/from/explicit/config]\n"
+        )
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        # mcp_cmd writes os.environ["LABCTL_CONFIG"] directly; setenv first so
+        # monkeypatch records the variable and restores it after the test.
+        monkeypatch.setenv("LABCTL_CONFIG", "placeholder")
+        monkeypatch.delenv("LABCTL_CONFIG")
+        seen = {}
+
+        def fake_run_server(**kwargs):
+            from labctl.mcp_server import _get_config
+
+            seen["read"] = _get_config().mcp.allowed_read_paths
+
+        with patch("labctl.mcp_server.run_server", side_effect=fake_run_server):
+            result = CliRunner().invoke(main, ["-c", str(explicit), "mcp"])
+
+        assert result.exit_code == 0, result.output
+        assert seen["read"] == ["/from/explicit/config"]
+
     def test_http_with_host(self):
         from click.testing import CliRunner
 

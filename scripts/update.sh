@@ -93,13 +93,25 @@ for dir in /var/lib/labctl/images /var/lib/labctl/output; do
         echo "[ok] Created $dir"
     fi
 done
-# Check both keys in both files: the systemd MCP unit reads the /etc file
-# (-c), a stdio `labctl mcp` run as labctl reads the service config first.
+# Check both keys in both files (the systemd unit passes -c /etc/...;
+# a `labctl mcp` run as labctl without -c reads the service config first;
+# the drift check above keeps them identical). Parse with labctl's own
+# loader (installed in step 1), so YAML flow style, empty lists and keys
+# under the wrong section are judged exactly as the server will.
 MISSING_ALLOWLIST=""
 for cfg in "$SYSTEM_CONFIG_FILE" "$SERVICE_CONFIG_FILE"; do
     [ -f "$cfg" ] || continue
     for key in allowed_read_paths allowed_write_paths; do
-        if ! grep -Eq "^[[:space:]]+${key}:" "$cfg"; then
+        if ! "$LABCTL_VENV/bin/python" - "$cfg" "$key" 2>/dev/null <<'PY'
+import sys
+from pathlib import Path
+
+from labctl.core.config import load_config
+
+config = load_config(Path(sys.argv[1]))
+sys.exit(0 if getattr(config.mcp, sys.argv[2]) else 1)
+PY
+        then
             MISSING_ALLOWLIST="$MISSING_ALLOWLIST $cfg:$key"
         fi
     done
