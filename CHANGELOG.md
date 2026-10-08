@@ -108,8 +108,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Destructive CLI commands (19: `power off`/`cycle`, `sdwire flash`/`update`/
   `host`/`unassign`, `serial send`, `actuator set`, binding verbs, recovery,
   `force-release`, `boot-test`, record removals) take `--yes/-y` and ask for
-  confirmation, but only on an interactive terminal: scripts, CI and agents
-  are unaffected. `power cycle`, `sdwire flash` and `sdwire update` take
+  confirmation, but only when stdin is a terminal: cron, CI, systemd, pipes
+  and agents' tool calls are not asked. Scripts run from an interactive
+  shell inherit the terminal and will be asked: add `--yes` to them. `power cycle`, `sdwire flash` and `sdwire update` take
   `--dry-run` (validate and print the plan; change nothing).
 - `docs/OPERATIONS.md`: every CLI command, MCP tool and MCP resource
   classified as read / db-write / shared-resource / system-write /

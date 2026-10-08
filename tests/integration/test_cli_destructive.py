@@ -177,6 +177,8 @@ class TestReviewRound1:
         config, _, tmp_path = lab
         image = tmp_path / "os.img"
         image.write_bytes(b"\0")
+        cmdline = tmp_path / "cmdline.txt"
+        cmdline.write_text("console=serial0")
 
         result = run(
             config,
@@ -187,11 +189,42 @@ class TestReviewRound1:
             "-c",
             "config.txt",
             "-c",
-            "cmdline.txt:cmdline.txt",
+            f"{cmdline}:cmdline.txt",
             "--dry-run",
         )
 
         assert result.exit_code == 0, result.output
-        assert "Invalid --copy format 'config.txt', would skip" in result.output
+        assert "Invalid --copy format 'config.txt', skipping" in result.output
         assert "copy config.txt" not in result.output
-        assert "copy cmdline.txt -> cmdline.txt on the boot partition" in result.output
+        assert f"copy {cmdline} -> cmdline.txt on the boot partition" in result.output
+
+
+class TestReviewRound4:
+    """A missing --copy source must stop `sdwire flash` before anything is
+    touched; it used to fail only after the whole card was overwritten."""
+
+    @pytest.mark.parametrize("dry_run", [True, False])
+    def test_missing_copy_source_fails_before_any_action(self, lab, dry_run):
+        config, power, tmp_path = lab
+        image = tmp_path / "os.img"
+        image.write_bytes(b"\0")
+        args = [
+            "sdwire",
+            "flash",
+            "pi-1",
+            str(image),
+            "-c",
+            f"{tmp_path}/missing-config.txt:config.txt",
+            "--yes",
+        ]
+        if dry_run:
+            args.append("--dry-run")
+        ctrl = MagicMock()
+        with patch("labctl.sdwire.controller.SDWireController", return_value=ctrl):
+            result = run(config, *args)
+
+        assert result.exit_code != 0
+        assert "--copy source not found" in result.output
+        power.power_off.assert_not_called()
+        ctrl.switch_to_host.assert_not_called()
+        ctrl.flash_image.assert_not_called()

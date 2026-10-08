@@ -95,8 +95,10 @@ def _stdin_is_tty() -> bool:
 def destructive_command(action: str):
     """Add ``--yes/-y`` and an interactive confirmation to a destructive command.
 
-    Asks only when stdin is a terminal (D012, Phase 1 WS3): scripts, CI and
-    agents running labctl non-interactively behave exactly as before.
+    Asks only when stdin is a terminal (D012, Phase 1 WS3), so callers
+    without one (cron, CI, systemd, pipes, agents' tool calls) are not
+    asked. A script started from an interactive shell inherits that
+    terminal and *is* asked: such scripts should pass ``--yes``.
     ``--yes`` skips the question; so does ``--dry-run`` on commands that
     have it. Apply directly below the ``@group.command(...)`` line.
     """
@@ -1362,6 +1364,20 @@ def sdwire_flash_cmd(
         click.echo(f"Error: No SDWire assigned to '{sbc_name}'", err=True)
         sys.exit(1)
 
+    # Parse and check post-flash copies up front (real run and dry run): a
+    # missing source used to fail only after the whole card was overwritten,
+    # leaving the board on a half-set-up card.
+    post_pairs: list[tuple[str, str]] = []
+    for spec in post_copies:
+        if ":" not in spec:
+            click.echo(f"Warning: Invalid --copy format '{spec}', skipping", err=True)
+            continue
+        src, dest = spec.split(":", 1)
+        if not Path(src).is_file():
+            click.echo(f"Error: --copy source not found: {src}", err=True)
+            sys.exit(1)
+        post_pairs.append((src, dest))
+
     if dry_run:
         from labctl.sdwire.controller import _validate_image_file
 
@@ -1378,15 +1394,9 @@ def sdwire_flash_cmd(
             f"overwrite the whole SD card with {image} "
             f"({image.stat().st_size} bytes)"
         )
-        for spec in post_copies:
-            # Mirror the real run: specs without ":" are skipped with a warning.
-            if ":" not in spec:
-                click.echo(
-                    f"Warning: Invalid --copy format '{spec}', would skip", err=True
-                )
-                continue
-            src, dest = spec.split(":", 1)
-            steps.append(f"copy {src} -> {dest} on the boot partition")
+        steps.extend(
+            f"copy {src} -> {dest} on the boot partition" for src, dest in post_pairs
+        )
         steps.append("switch the card back to the board")
         if not no_reboot and sbc.power_plug:
             steps.append(f"power-cycle {sbc_name}")
@@ -1431,7 +1441,7 @@ def sdwire_flash_cmd(
         )
 
         # Post-flash copies
-        if post_copies:
+        if post_pairs:
             import subprocess
 
             click.echo("Re-reading partition table...")
@@ -1442,15 +1452,7 @@ def sdwire_flash_cmd(
             )
             time.sleep(2)
 
-            file_pairs = []
-            for spec in post_copies:
-                if ":" not in spec:
-                    click.echo(
-                        f"Warning: Invalid --copy format '{spec}', skipping", err=True
-                    )
-                    continue
-                src, dest = spec.split(":", 1)
-                file_pairs.append((src, dest))
+            file_pairs = post_pairs  # parsed and checked before flashing
 
             if file_pairs:
                 click.echo("Copying files to boot partition...")
