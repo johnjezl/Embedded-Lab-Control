@@ -496,10 +496,10 @@ class TestUpdateFiles:
 
 
 class TestCardOnHost:
-    """card_on_host re-checks the reader instead of trusting /sys size.
+    """card_on_host probes the reader instead of trusting the cached size.
 
-    After a switch to DUT the size can stay non-zero until the kernel next
-    checks for media; a one-sector `sudo dd` read forces that check.
+    The cached /sys size lags a mux switch in both directions; a one-sector
+    `sudo dd` read forces the kernel to re-check for media.
     """
 
     @staticmethod
@@ -509,59 +509,188 @@ class TestCardOnHost:
         result.stderr = stderr
         return result
 
-    def test_no_block_device_means_dut(self):
+    def _check(self, *, node="/dev/sdx", run=None, size_has_media=False):
         ctrl = SDWireController("s")
+        run_patch = (
+            patch("subprocess.run", side_effect=run)
+            if isinstance(run, BaseException)
+            else patch("subprocess.run", return_value=run)
+        )
         with (
-            patch.object(ctrl, "get_block_device", return_value=None),
-            patch("subprocess.run") as run,
+            patch.object(ctrl, "_block_node", return_value=node),
+            patch(
+                "labctl.sdwire.controller._block_device_has_media",
+                return_value=size_has_media,
+            ),
+            run_patch as mock_run,
         ):
-            assert ctrl.card_on_host() is False
+            return ctrl.card_on_host(), mock_run
+
+    def test_no_device_node_means_dut(self):
+        on_host, run = self._check(node=None)
+        assert on_host is False
         run.assert_not_called()
 
     def test_readable_media_means_host(self):
-        ctrl = SDWireController("s")
-        with (
-            patch.object(ctrl, "get_block_device", return_value="/dev/sdx"),
-            patch("subprocess.run", return_value=self._run(0)) as run,
-        ):
-            assert ctrl.card_on_host() is True
+        on_host, run = self._check(run=self._run(0))
+        assert on_host is True
         cmd = run.call_args.args[0]
         # Read-only probe: one sector to /dev/null, non-interactive sudo.
         assert cmd[:3] == ["sudo", "-n", "dd"]
         assert "if=/dev/sdx" in cmd and "of=/dev/null" in cmd
         assert "count=1" in cmd
 
-    def test_no_medium_means_stale_size_dut(self):
-        """The reviewer's case: size still > 0 but the card is on the DUT."""
-        ctrl = SDWireController("s")
-        stderr = "dd: failed to open '/dev/sdx': No medium found\n"
-        with (
-            patch.object(ctrl, "get_block_device", return_value="/dev/sdx"),
-            patch("subprocess.run", return_value=self._run(1, stderr)),
-        ):
-            assert ctrl.card_on_host() is False
+    def test_probe_runs_in_c_locale(self):
+        """dd's message is matched in English, so force LC_ALL=C."""
+        _, run = self._check(run=self._run(0))
+        assert run.call_args.kwargs["env"]["LC_ALL"] == "C"
 
-    def test_other_probe_failure_falls_back_to_size(self):
-        """e.g. no sudo rights: can't verify, keep the size-based answer."""
-        ctrl = SDWireController("s")
+    def test_just_switched_to_host_size_still_zero(self):
+        """Review #2 finding 1: size not updated yet, card already readable."""
+        on_host, _ = self._check(run=self._run(0), size_has_media=False)
+        assert on_host is True
+
+    def test_no_medium_with_stale_size_means_dut(self):
+        """Review #1 finding: size still > 0 but the card is on the DUT."""
+        stderr = "dd: failed to open '/dev/sdx': No medium found\n"
+        on_host, _ = self._check(run=self._run(1, stderr), size_has_media=True)
+        assert on_host is False
+
+    @pytest.mark.parametrize("size_has_media", [True, False])
+    def test_inconclusive_probe_falls_back_to_size(self, size_has_media):
+        """e.g. no sudo rights: can't verify, use the cached size."""
         stderr = "sudo: a password is required\n"
-        with (
-            patch.object(ctrl, "get_block_device", return_value="/dev/sdx"),
-            patch("subprocess.run", return_value=self._run(1, stderr)),
-        ):
-            assert ctrl.card_on_host() is True
+        on_host, _ = self._check(
+            run=self._run(1, stderr), size_has_media=size_has_media
+        )
+        assert on_host is size_has_media
 
     @pytest.mark.parametrize(
         "exc",
         [FileNotFoundError("sudo"), subprocess.TimeoutExpired("dd", 10)],
     )
     def test_probe_unavailable_falls_back_to_size(self, exc):
+        on_host, _ = self._check(run=exc, size_has_media=True)
+        assert on_host is True
+
+
+class TestWaitForHost:
+    def test_returns_device_once_card_readable(self):
         ctrl = SDWireController("s")
         with (
+            patch.object(ctrl, "card_on_host", side_effect=[False, False, True]),
             patch.object(ctrl, "get_block_device", return_value="/dev/sdx"),
-            patch("subprocess.run", side_effect=exc),
+            patch("time.sleep") as sleep,
         ):
-            assert ctrl.card_on_host() is True
+            assert ctrl.wait_for_host(timeout=10, interval=0.5) == "/dev/sdx"
+        assert sleep.call_count == 2
+
+    def test_times_out(self):
+        ctrl = SDWireController("s")
+        clock = iter([0.0, 0.0, 5.0, 11.0])
+        with (
+            patch.object(ctrl, "card_on_host", return_value=False),
+            patch("time.monotonic", side_effect=lambda: next(clock)),
+            patch("time.sleep"),
+        ):
+            assert ctrl.wait_for_host(timeout=10) is None
+
+
+class TestReadOnlyMountNeverReplaysJournal:
+    """Review #2 finding 3: `-o ro` alone replays a dirty ext4 journal."""
+
+    @staticmethod
+    def _lsblk(fstype):
+        out = MagicMock()
+        out.stdout = f"{fstype}\n"
+        return out
+
+    @pytest.mark.parametrize(
+        "fstype,expected",
+        [
+            ("ext4", [["noload"]]),
+            ("ext3", [["noload"]]),
+            ("xfs", [["norecovery"]]),
+            ("btrfs", [["rescue=nologreplay"], ["nologreplay"]]),
+            ("vfat", [[]]),
+            ("", [["noload"], []]),
+        ],
+    )
+    def test_options_by_fstype(self, fstype, expected):
+        from labctl.sdwire.controller import _ro_no_replay
+
+        with patch("subprocess.run", return_value=self._lsblk(fstype)):
+            assert _ro_no_replay("/dev/sdx2") == expected
+
+    def test_lsblk_unavailable_tries_noload_first(self):
+        from labctl.sdwire.controller import _ro_no_replay
+
+        with patch("subprocess.run", side_effect=FileNotFoundError("lsblk")):
+            assert _ro_no_replay("/dev/sdx2") == [["noload"], []]
+
+    def test_host_mount_ro_ext4_uses_noload(self):
+        ctrl = SDWireController("s")
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return self._lsblk("ext4")
+
+        with (
+            patch.object(ctrl, "get_block_device", return_value="/dev/sdx"),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            with ctrl.host_mount(2, mode="ro"):
+                pass
+
+        mount = next(c for c in calls if c[:2] == ["sudo", "mount"])
+        opts = mount[mount.index("-o") + 1].split(",")
+        assert opts[0] == "ro" and "noload" in opts
+
+    def test_unknown_fs_falls_back_when_noload_rejected(self):
+        """vfat rejects `noload`; the retry without it must still be ro."""
+        ctrl = SDWireController("s")
+        mounts = []
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "lsblk":
+                return self._lsblk("")
+            if cmd[:2] == ["sudo", "mount"]:
+                opts = cmd[cmd.index("-o") + 1]
+                mounts.append(opts)
+                if "noload" in opts:
+                    raise subprocess.CalledProcessError(32, cmd, stderr="bad option")
+            return MagicMock()
+
+        with (
+            patch.object(ctrl, "get_block_device", return_value="/dev/sdx"),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            with ctrl.host_mount(1, mode="ro"):
+                pass
+
+        assert len(mounts) == 2
+        assert "noload" in mounts[0]
+        assert mounts[1].startswith("ro,") and "noload" not in mounts[1]
+
+    def test_rw_mount_unchanged(self):
+        ctrl = SDWireController("s")
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return MagicMock()
+
+        with (
+            patch.object(ctrl, "get_block_device", return_value="/dev/sdx"),
+            patch("subprocess.run", side_effect=fake_run),
+        ):
+            with ctrl.host_mount(1, mode="rw"):
+                pass
+
+        assert not any(c[0] == "lsblk" for c in calls)
+        mount = next(c for c in calls if c[:2] == ["sudo", "mount"])
+        assert "ro" not in mount[mount.index("-o") + 1].split(",")
 
 
 class TestBlockDeviceHelpers:

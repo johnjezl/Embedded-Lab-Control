@@ -452,13 +452,18 @@ class TestMcpSDWireTools:
         assert "switched to DUT" in result
         mock_ctrl_instance.switch_to_dut.assert_called_once()
 
-    def test_sdwire_to_host_with_device(self, mock_manager):
+    def test_sdwire_to_host_with_device(self, mock_manager, board_off):
+        """Waits for the card to be readable and reports its device.
+
+        board_off: test-sbc-1 has a (fixture) Tasmota plug; without the mock
+        the power guard made a real HTTP call and waited out a 5 s timeout.
+        """
         from unittest.mock import MagicMock
 
         from labctl.mcp_server import sdwire_to_host
 
         mock_ctrl_instance = MagicMock()
-        mock_ctrl_instance.get_block_device.return_value = "/dev/sdb"
+        mock_ctrl_instance.wait_for_host.return_value = "/dev/sdb"
 
         with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl_instance):
             result = sdwire_to_host(sbc_name="test-sbc-1")
@@ -466,6 +471,19 @@ class TestMcpSDWireTools:
         assert "switched to host" in result
         assert "/dev/sdb" in result
         mock_ctrl_instance.switch_to_host.assert_called_once()
+        mock_ctrl_instance.wait_for_host.assert_called_once()
+
+    def test_sdwire_to_host_warns_when_card_not_readable(self, mock_manager, board_off):
+        from labctl.mcp_server import sdwire_to_host
+
+        mock_ctrl = MagicMock()
+        mock_ctrl.wait_for_host.return_value = None
+
+        with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl):
+            result = sdwire_to_host(sbc_name="test-sbc-1")
+
+        assert "switched to host" in result
+        assert "not readable on the host within 10s" in result
 
     def test_sdwire_to_host_uses_mutating_claim_check(self, mock_manager):
         from labctl.mcp_server import sdwire_to_host

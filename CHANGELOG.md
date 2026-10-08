@@ -15,13 +15,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - MCP `sdwire_ls` / `sdwire_cat` / `sdwire_info` no longer have side effects.
   A card already switched to the host is read in place and left there
   (host mode is confirmed with a one-sector `sudo dd` read, because the
-  reader's reported size can stay stale for a while after a switch); a
+  reader's reported size lags a switch in either direction); a
   card on the DUT side is switched to the host and back only when the
   board's power plug reports OFF. With no power plug, an unreadable plug, or
   an unknown state they now refuse (`power_unknown`) instead of switching
   the card away from a possibly running board. They are annotated read-only.
   Callers that relied on reading a plug-less SBC's card must switch it
   explicitly with `sdwire_to_host` first.
+- Read-only SD card mounts (`sdwire_ls`/`sdwire_cat` and the CLI
+  equivalents) no longer replay a dirty filesystem journal, which wrote to
+  the card despite `-o ro`: ext2/3/4 mount with `noload`, XFS/F2FS with
+  `norecovery`, btrfs with `rescue=nologreplay`.
+- MCP `sdwire_to_host` now waits (up to 10 s) until the card is readable on
+  the host before returning, and warns if it isn't, so an immediate
+  follow-up read doesn't misjudge the mux position.
 
 ### Fixed
 - MCP claim sweeper (issue #3): a crashed `mcp-stdio` session whose PID was

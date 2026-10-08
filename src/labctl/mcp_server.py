@@ -1298,10 +1298,15 @@ def sdwire_to_host(sbc_name: str, force: bool = False) -> str:
     try:
         ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
         ctrl.switch_to_host()
-        block_dev = ctrl.get_block_device()
+        # Wait until the card is actually readable, so a follow-up call
+        # (e.g. sdwire_ls) sees it on the host instead of racing USB
+        # enumeration / media detection.
+        block_dev = ctrl.wait_for_host()
         msg = f"SD card switched to host: {sbc_name}"
         if block_dev:
             msg += f" (block device: {block_dev})"
+        else:
+            msg += " (warning: card not readable on the host within 10s)"
         advisory = _claim_advisory(manager, sbc_name)
         return f"{msg}\n\n{advisory}" if advisory else msg
     except RuntimeError as e:
