@@ -3501,6 +3501,52 @@ class TestDestructiveConfirmation:
             if has_token:
                 assert "DESTRUCTIVE" in tool.description
 
+    def test_expiry_judged_on_arrival_not_after_lock_wait(self, env):
+        """Review #3 of #15: a confirming call that arrives in time must not
+        be refused as expired just because it queued behind a long tool
+        (boot_test, flash) holding the hardware lock."""
+        import threading
+        import time
+
+        from labctl import mcp_server
+        from labctl.mcp_server import _HARDWARE_LOCK, power_off
+
+        _, power = env
+        token = self._plan(power_off(sbc_name="test-sbc-1"))["confirm_token"]
+        box = {}
+
+        def confirm():
+            box["result"] = power_off(sbc_name="test-sbc-1", confirm_token=token)
+
+        with _HARDWARE_LOCK:  # a long tool call is running
+            t = threading.Thread(target=confirm)
+            t.start()
+            # The token must be checked and consumed on arrival, *while* the
+            # lock is still held (before, redemption waited for the lock, so
+            # a long wait could push it past the TTL).
+            deadline = time.monotonic() + 5
+            while token in mcp_server._pending_confirmations:
+                assert time.monotonic() < deadline, "token not redeemed on arrival"
+                time.sleep(0.01)
+            assert "result" not in box  # ...but the action waits for the lock
+        t.join(5)
+
+        assert box["result"].startswith("Power OFF"), box["result"]
+        power.power_off.assert_called_once()
+
+    def test_description_warns_first_call_may_act(self):
+        """Confirmation can be exempted/disabled in config, so the tool
+        description must not promise a harmless first call."""
+        import anyio
+
+        from labctl.mcp_server import mcp
+
+        tools = {t.name: t for t in anyio.run(mcp.list_tools)}
+        desc = tools["serial_send"].description
+        assert "By default this requires confirmation" in desc
+        assert "the action WAS performed" in desc
+        assert "Never call this just to preview" in desc
+
     def test_two_step_flow_through_the_sdk(self, env):
         """What a real MCP client sees: plan, then act with the token."""
         import anyio
