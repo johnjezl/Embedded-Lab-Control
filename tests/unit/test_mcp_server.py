@@ -1288,6 +1288,34 @@ class TestHostPathAllowlist:
 
         assert resolved is None and "outside" in err
 
+    def test_nul_byte_refused_cleanly(self, host_paths):
+        """realpath() raises ValueError on NUL; must be a normal refusal."""
+        from labctl.mcp_server import _resolve_host_path
+
+        allowed, _, _ = host_paths
+        resolved, err = _resolve_host_path(f"{allowed}/a\0b.img", "read")
+
+        assert resolved is None and "NUL" in err
+
+    def test_open_errors_say_what_happened(self, host_paths):
+        """Missing / unreadable files get precise messages, not "may have
+        changed since it was checked" (that's for a swapped symlink)."""
+        from labctl.mcp_server import _open_host_read
+
+        allowed, _, _ = host_paths
+        _, err = _open_host_read(str(allowed / "missing.img"))
+        assert "file not found" in err
+
+        locked = allowed / "locked.img"
+        locked.write_text("x")
+        locked.chmod(0o000)
+        try:
+            if not os.access(locked, os.R_OK):  # not root
+                _, err = _open_host_read(str(locked))
+                assert "permission denied" in err
+        finally:
+            locked.chmod(0o644)
+
     def test_refusal_does_not_reveal_symlink_target(self, host_paths):
         """Review #2 of #14: the error must not echo the realpath, or a
         client could map symlink targets anywhere on the host."""
