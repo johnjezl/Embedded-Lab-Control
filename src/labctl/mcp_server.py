@@ -558,10 +558,17 @@ def _with_confirmation(func):
         )
     )
     wrapper.__signature__ = sig.replace(parameters=params)
+    # The description is fixed at import, but confirmation can be turned off
+    # or exempted per tool in config, so it must not promise a harmless
+    # first call: say what the default is and how to tell what happened.
     wrapper.__doc__ = (func.__doc__ or "").rstrip() + (
-        "\n\n    DESTRUCTIVE: requires confirmation. The first call returns a "
+        "\n\n    DESTRUCTIVE. By default this requires confirmation: a call "
+        "without confirm_token returns status=confirmation_required with a "
         "plan and confirm_token and does nothing; call again with the same "
-        "arguments plus confirm_token to act.\n"
+        "arguments plus confirm_token to act. The server can be configured "
+        "to skip confirmation (mcp.confirm_destructive / mcp.confirm_exempt): "
+        "if a response is not status=confirmation_required, the action WAS "
+        "performed. Never call this just to preview.\n"
     )
     return wrapper
 
@@ -569,21 +576,21 @@ def _with_confirmation(func):
 def _with_mcp_activity(func):
     """Serialize one tool call and scope audit attribution to the MCP session.
 
-    Destructive tools also get the two-step confirmation (_with_confirmation),
-    applied inside the lock so plan and execution see consistent state.
+    Destructive tools also get the two-step confirmation (_with_confirmation)
+    as the *outer* layer: a plan is issued, and a confirm_token checked and
+    consumed, when the call arrives, before waiting for the hardware lock.
+    Otherwise a confirming call queued behind a long boot_test/flash could
+    be refused as expired although it arrived in time. Issuing a plan
+    touches no hardware, so it needs no lock.
     """
     from labctl.core import audit
 
-    inner = _with_confirmation(func)
-
-    @wraps(inner)
-    def wrapper(*args, **kwargs):
+    @wraps(func)
+    def locked(*args, **kwargs):
         with _HARDWARE_LOCK, audit.activity_context(_get_session_id(), "mcp"):
-            return inner(*args, **kwargs)
+            return func(*args, **kwargs)
 
-    if hasattr(inner, "__signature__"):
-        wrapper.__signature__ = inner.__signature__
-    return wrapper
+    return _with_confirmation(locked)
 
 
 def _sdwire_read_error(error: str, message: str, **extra) -> str:

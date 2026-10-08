@@ -423,6 +423,12 @@ mcp:
   confirm_exempt: [serial_send]  # tools that skip it, e.g. for console work
 ```
 
+With the step turned off or a tool exempted, the **first call acts
+immediately**. Clients should never call a destructive tool "to preview":
+if the response is not `status: confirmation_required`, the action was
+performed. Only an explicit `false` disables the step (a blank value keeps
+it on), and unknown names in `confirm_exempt` are logged at startup.
+
 ### Host file access (allowlist)
 
 Some tools take paths on the **host** machine: `flash_image` (`image_path`,
