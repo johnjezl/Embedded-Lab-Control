@@ -495,6 +495,98 @@ class TestUpdateFiles:
                             )
 
 
+class TestNamesFollowTheCallersPath:
+    """Callers read a resolved (checked) path but keep the name they gave.
+
+    Review #1 of #14: a symlinked image or copy source must keep its
+    format / file name, not take the resolved target's.
+    """
+
+    @staticmethod
+    def _card(ctrl, card_dir):
+        """Make update_files operate on a real directory as the 'card'."""
+        from labctl.sdwire.controller import _MountedPartition
+
+        @contextmanager
+        def fake_mount(partition, mode="ro", owner_mount=False):
+            yield _MountedPartition(str(card_dir), owner_mount=owner_mount)
+
+        return patch.object(ctrl, "host_mount", fake_mount)
+
+    def test_copy_into_directory_uses_source_name(self, tmp_path):
+        card = tmp_path / "card"
+        (card / "boot").mkdir(parents=True)
+        src = tmp_path / "Image-6.1.55-g1a2b"
+        src.write_text("kernel")
+        ctrl = SDWireController("s")
+
+        with (
+            patch.object(ctrl, "get_block_device", return_value="/dev/sdx"),
+            self._card(ctrl, card),
+        ):
+            ctrl.update_files(1, [(str(src), "boot")], source_names=["Image"])
+
+        assert (card / "boot" / "Image").read_text() == "kernel"
+        assert not (card / "boot" / "Image-6.1.55-g1a2b").exists()
+
+    def test_without_source_names_behaviour_unchanged(self, tmp_path):
+        card = tmp_path / "card"
+        (card / "boot").mkdir(parents=True)
+        src = tmp_path / "Image-6.1.55"
+        src.write_text("kernel")
+        ctrl = SDWireController("s")
+
+        with (
+            patch.object(ctrl, "get_block_device", return_value="/dev/sdx"),
+            self._card(ctrl, card),
+        ):
+            ctrl.update_files(1, [(str(src), "boot")])
+
+        assert (card / "boot" / "Image-6.1.55").exists()
+
+    def test_explicit_file_destination_unaffected(self, tmp_path):
+        card = tmp_path / "card"
+        card.mkdir()
+        src = tmp_path / "k-123"
+        src.write_text("kernel")
+        ctrl = SDWireController("s")
+
+        with (
+            patch.object(ctrl, "get_block_device", return_value="/dev/sdx"),
+            self._card(ctrl, card),
+        ):
+            ctrl.update_files(1, [(str(src), "kernel8.img")], source_names=["x"])
+
+        assert (card / "kernel8.img").read_text() == "kernel"
+
+    def test_flash_format_follows_format_name(self, tmp_path):
+        """build-4711 has no extension; format_name says .img.xz -> xz path."""
+        from labctl.sdwire.controller import _validate_image_file
+
+        blob = tmp_path / "build-4711"
+        blob.write_bytes(b"\0")
+        # Validation passes on the name, existence is checked on the path.
+        _validate_image_file(str(blob), str(tmp_path / "latest.img.xz"))
+        with pytest.raises(RuntimeError, match="Unsupported image format"):
+            _validate_image_file(str(blob))
+
+        ctrl = SDWireController("s")
+        with (
+            patch.object(ctrl, "get_block_device", return_value="/dev/sdx"),
+            patch("labctl.sdwire.controller._validate_block_device"),
+            patch("labctl.sdwire.controller.subprocess.Popen") as popen,
+            patch("labctl.sdwire.controller.subprocess.run"),
+            patch("os.path.getsize", return_value=1),
+        ):
+            popen.return_value.communicate.return_value = (b"", b"")
+            popen.return_value.wait.return_value = 0
+            popen.return_value.returncode = 0
+            ctrl.flash_image(str(blob), format_name="latest.img.xz")
+
+        first = popen.call_args_list[0].args[0]
+        assert first == ["xz", "-dc", str(blob)]  # decompress, read the blob
+
+
 class TestCardOnHost:
     """card_on_host probes the reader instead of trusting the cached size.
 

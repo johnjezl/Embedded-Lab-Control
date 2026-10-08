@@ -207,22 +207,27 @@ def _resolve_host_path(path: str, access: str) -> tuple[str | None, str | None]:
 
 def _resolve_copy_sources(
     specs: list[str],
-) -> tuple[list[tuple[str, str]] | None, str | None]:
+) -> tuple[list[tuple[str, str]], list[str], str | None]:
     """Resolve the host *source* side of "source:dest" copy specs for reading.
 
-    Specs without ":" are passed through untouched (callers report them);
-    ``dest`` is a path on the SD card, not on the host, so it isn't checked.
+    Returns ``(pairs, names, error)``: ``pairs`` are (resolved source, dest)
+    so the file actually read is the one that was checked; ``names`` are the
+    file names the caller gave, so a symlinked source copied into a
+    directory keeps the caller's name (``update_files(source_names=...)``).
+    Specs without ":" are skipped (callers report them); ``dest`` is a path
+    on the SD card, not on the host, so it isn't checked.
     """
-    pairs = []
+    pairs, names = [], []
     for spec in specs:
         if ":" not in spec:
             continue
         src, dest = spec.split(":", 1)
         resolved, err = _resolve_host_path(src, "read")
         if err:
-            return None, err
+            return [], [], err
         pairs.append((resolved, dest))
-    return pairs, None
+        names.append(os.path.basename(src))
+    return pairs, names, None
 
 
 def _sbc_to_dict(sbc) -> dict:
@@ -1426,7 +1431,7 @@ def sdwire_update(
     for spec in copies:
         if ":" not in spec:
             return f"Error: Invalid copy format '{spec}'. Use source:dest"
-    file_pairs, path_err = _resolve_copy_sources(copies)
+    file_pairs, source_names, path_err = _resolve_copy_sources(copies)
     if path_err:
         return path_err
 
@@ -1460,6 +1465,7 @@ def sdwire_update(
             file_pairs,
             renames=rename_pairs or None,
             deletes=list(deletes) or None,
+            source_names=source_names or None,
         )
 
         ctrl.switch_to_dut()
@@ -1751,10 +1757,12 @@ def flash_image(
 
     # Host paths must be in mcp.allowed_read_paths. Checked before powering
     # off or switching the mux, so a refusal touches nothing.
-    image_path, path_err = _resolve_host_path(image_path, "read")
+    image_resolved, path_err = _resolve_host_path(image_path, "read")
     if path_err:
         return path_err
-    post_flash_pairs, path_err = _resolve_copy_sources(post_flash_copies)
+    post_flash_pairs, post_flash_names, path_err = _resolve_copy_sources(
+        post_flash_copies
+    )
     if path_err:
         return path_err
 
@@ -1784,7 +1792,9 @@ def flash_image(
             return "Error: Block device not found after switching to host (waited 10s)"
 
         # Flash image (includes safety validation)
-        result = ctrl.flash_image(image_path)
+        # Read the checked (resolved) file; the format follows the name
+        # the caller gave (latest.img.xz -> build-4711 is still xz).
+        result = ctrl.flash_image(image_resolved, format_name=image_path)
         flash_ok = True
 
         parts = [
@@ -1809,7 +1819,9 @@ def flash_image(
                         parts.append(f"Skipped invalid copy: {spec}")
 
                 if post_flash_pairs:
-                    copied = ctrl.update_files(1, post_flash_pairs)
+                    copied = ctrl.update_files(
+                        1, post_flash_pairs, source_names=post_flash_names
+                    )
                     for f in copied["copied"]:
                         parts.append(f"Post-flash copied: {f}")
             except RuntimeError as e:
@@ -2015,7 +2027,7 @@ def boot_test(
     # Host paths: the image is read, per-run output is written (D012).
     # `dest` is a path on the SD card, not the host.
     if image:
-        image, path_err = _resolve_host_path(image, "read")
+        image_resolved, path_err = _resolve_host_path(image, "read")
         if path_err:
             return path_err
     if output_dir:
@@ -2035,7 +2047,11 @@ def boot_test(
             ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
             ctrl.switch_to_host()
             time_mod.sleep(2)
-            ctrl.update_files(partition, [(image, dest)])
+            ctrl.update_files(
+                partition,
+                [(image_resolved, dest)],
+                source_names=[os.path.basename(image)],
+            )
             ctrl.switch_to_dut()
 
         deploy_fn = _deploy

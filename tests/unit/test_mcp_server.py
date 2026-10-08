@@ -1334,13 +1334,20 @@ class TestHostPathEnforcementInTools:
         assert "outside mcp.allowed_read_paths" in result
         ctrl.switch_to_host.assert_not_called()
 
-    def test_flash_image_uses_resolved_path(self, mock_manager, host_paths, tmp_path):
-        """A symlink *into* the allowed dir is fine; the resolved path is used."""
+    def test_flash_image_reads_resolved_path_but_keeps_format_name(
+        self, mock_manager, host_paths
+    ):
+        """Review #1 of #14: `latest.img.xz` -> `build-4711` (no extension).
+
+        The checked (resolved) file is what gets read, but the format must
+        follow the name the caller gave, or this would fail with
+        "Unsupported image format" (or write xz data raw).
+        """
         from labctl.mcp_server import flash_image
 
         allowed, _, _ = host_paths
-        (allowed / "real.img").write_bytes(b"\0")
-        (tmp_path / "alias.img").symlink_to(allowed / "real.img")
+        (allowed / "build-4711").write_bytes(b"\0")
+        (allowed / "latest.img.xz").symlink_to(allowed / "build-4711")
         ctrl = MagicMock()
         ctrl.get_block_device.return_value = "/dev/sdx"
         ctrl.flash_image.return_value = {
@@ -1353,9 +1360,65 @@ class TestHostPathEnforcementInTools:
             patch("labctl.power.base.PowerController.from_plug"),
             patch("time.sleep"),
         ):
-            flash_image("test-sbc-1", image_path=str(tmp_path / "alias.img"))
+            flash_image("test-sbc-1", image_path=str(allowed / "latest.img.xz"))
 
-        ctrl.flash_image.assert_called_once_with(os.path.realpath(allowed / "real.img"))
+        ctrl.flash_image.assert_called_once_with(
+            os.path.realpath(allowed / "build-4711"),
+            format_name=str(allowed / "latest.img.xz"),
+        )
+
+    def test_symlinked_copy_source_keeps_callers_name(self, mock_manager, host_paths):
+        """Review #1 of #14: `Image` -> `Image-6.1.55-g1a2b` copied into `/`
+        must land as `Image` (the board boots `Image`), while the resolved
+        file is what's read."""
+        from labctl.mcp_server import sdwire_update
+
+        allowed, _, _ = host_paths
+        (allowed / "Image-6.1.55-g1a2b").write_bytes(b"\0")
+        (allowed / "Image").symlink_to(allowed / "Image-6.1.55-g1a2b")
+        ctrl = MagicMock()
+        ctrl.update_files.return_value = {"copied": ["/"], "renamed": [], "deleted": []}
+        with (
+            patch("labctl.sdwire.SDWireController", return_value=ctrl),
+            patch("labctl.power.base.PowerController.from_plug"),
+            patch("time.sleep"),
+        ):
+            sdwire_update("test-sbc-1", partition=1, copies=[f"{allowed}/Image:/"])
+
+        args, kwargs = ctrl.update_files.call_args
+        assert args[1] == [(os.path.realpath(allowed / "Image-6.1.55-g1a2b"), "/")]
+        assert kwargs["source_names"] == ["Image"]
+
+    def test_boot_test_deploy_keeps_callers_name(self, mock_manager, host_paths):
+        from labctl.mcp_server import boot_test
+
+        allowed, _, _ = host_paths
+        (allowed / "k-123").write_bytes(b"\0")
+        (allowed / "kernel.img").symlink_to(allowed / "k-123")
+        ctrl = MagicMock()
+        captured = {}
+
+        def fake_run_boot_test(**kwargs):
+            kwargs["deploy_fn"]()  # exercise the deploy closure
+            captured.update(kwargs)
+            return MagicMock(format_summary=lambda: "ok")
+
+        with (
+            patch("labctl.sdwire.SDWireController", return_value=ctrl),
+            patch("labctl.serial.boot_test.run_boot_test", fake_run_boot_test),
+            patch("time.sleep"),
+        ):
+            boot_test(
+                "test-sbc-1",
+                expect_pattern="ok",
+                image=str(allowed / "kernel.img"),
+                dest="/",
+            )
+
+        args, kwargs = ctrl.update_files.call_args
+        assert args[1] == [(os.path.realpath(allowed / "k-123"), "/")]
+        assert kwargs["source_names"] == ["kernel.img"]
+        assert captured["image"] == str(allowed / "kernel.img")  # for reporting
 
     def test_sdwire_update_refuses_before_power_off(self, mock_manager, host_paths):
         from labctl.mcp_server import sdwire_update
