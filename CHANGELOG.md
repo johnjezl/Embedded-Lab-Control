@@ -13,9 +13,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   paths inside the new `mcp.allowed_read_paths` / `mcp.allowed_write_paths`
   settings. Both default to empty, which denies all host file access over
   MCP. Paths are resolved (symlinks, `..`) before the check and are refused
-  before any power or SD-mux change; the checked file is what gets read,
-  while image format and copied file names follow the path given. The CLI
-  is unaffected. Fresh installs
+  before any power or SD-mux change. Checked files and directories are
+  opened at check time without following symlinks (`labctl.core.safe_open`)
+  and all later I/O uses those handles, so a symlink swapped in after the
+  check can't redirect it; raw images are streamed into `sudo dd` instead
+  of being opened by root. Image format and copied file names follow the
+  path given. The CLI is unaffected. Fresh installs
   get `/var/lib/labctl/images` (read) and `/var/lib/labctl/output` (write);
   `scripts/update.sh` creates those directories on existing hosts and prints
   the config to add (D012).

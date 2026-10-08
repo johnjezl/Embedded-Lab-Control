@@ -17,7 +17,7 @@ from labctl.serial.capture import capture_serial_output
 logger = logging.getLogger(__name__)
 
 
-def _write_run_file(path: Path, text: str) -> None:
+def _write_run_file(path: Path | str, text: str, dir_fd: Optional[int] = None) -> None:
     """Write one run's output without following a planted link.
 
     The output directory may be shared (e.g. group-writable
@@ -25,9 +25,11 @@ def _write_run_file(path: Path, text: str) -> None:
     controls. A symlink planted at ``run_NN.txt`` would otherwise redirect
     the write to any file the service user can write, so open with
     O_NOFOLLOW (fails with ELOOP on a symlink), and refuse a file with
-    other hard links. Raises OSError on refusal.
+    other hard links. With ``dir_fd`` (a checked directory handle) the
+    file is created relative to it, so the directory path itself can't
+    be swapped either. Raises OSError on refusal.
     """
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o644, dir_fd=dir_fd)
     try:
         if os.fstat(fd).st_nlink > 1:
             raise OSError(f"refusing to write {path}: it has other hard links")
@@ -160,6 +162,7 @@ def run_boot_test(
     dest: str | None = None,
     partition: int = 1,
     output_dir: str | None = None,
+    output_dir_fd: Optional[int] = None,
     progress_fn=None,
 ) -> BootTestResult:
     """Run automated boot reliability test.
@@ -177,6 +180,9 @@ def run_boot_test(
         dest: Destination filename (for reporting)
         partition: Partition number (for reporting)
         output_dir: Save per-run output to files here
+        output_dir_fd: Optional open handle for ``output_dir`` (already
+            checked and created by the caller); files are created
+            relative to it and ``output_dir`` is only used for messages
         progress_fn: Optional callback(run_number, total, result) for progress
     """
     result = BootTestResult(
@@ -193,8 +199,8 @@ def run_boot_test(
     if deploy_fn:
         deploy_fn()
 
-    # Create output dir if needed
-    if output_dir:
+    # Create output dir if needed (a caller-provided handle already exists)
+    if output_dir and output_dir_fd is None:
         os.makedirs(output_dir, exist_ok=True)
 
     for i in range(1, runs + 1):
@@ -211,9 +217,13 @@ def run_boot_test(
 
         # Save per-run output
         if output_dir and run_result.output:
-            run_file = Path(output_dir) / f"run_{i:02d}.txt"
+            name = f"run_{i:02d}.txt"
+            run_file = Path(output_dir) / name
             try:
-                _write_run_file(run_file, run_result.output)
+                if output_dir_fd is not None:
+                    _write_run_file(name, run_result.output, dir_fd=output_dir_fd)
+                else:
+                    _write_run_file(run_file, run_result.output)
             except OSError as e:
                 logger.warning("Not writing %s: %s", run_file, e)
 

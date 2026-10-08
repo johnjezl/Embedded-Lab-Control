@@ -16,6 +16,7 @@ Usage:
 import json
 import logging
 import os
+import stat
 import sys
 import threading
 import time as _time_mod
@@ -208,29 +209,90 @@ def _resolve_host_path(path: str, access: str) -> tuple[str | None, str | None]:
     )
 
 
-def _resolve_copy_sources(
-    specs: list[str],
-) -> tuple[list[tuple[str, str]], list[str], str | None]:
-    """Resolve the host *source* side of "source:dest" copy specs for reading.
+def _open_host_read(path: str) -> tuple[int | None, str | None]:
+    """Check ``path`` against mcp.allowed_read_paths and open it, no symlinks.
 
-    Returns ``(pairs, names, error)``: ``pairs`` are (resolved source, dest)
-    so the file actually read is the one that was checked; ``names`` are the
+    Returns ``(fd, None)`` or ``(None, "Error: ...")``. The file is opened
+    at check time (``safe_open``: every component O_NOFOLLOW on the
+    resolved path) and callers read from the descriptor, so a symlink
+    swapped in afterwards can't redirect the read. Caller closes the fd.
+    """
+    from labctl.core.safe_open import open_file_nofollow
+
+    resolved, err = _resolve_host_path(path, "read")
+    if err:
+        return None, err
+    try:
+        fd = open_file_nofollow(resolved, os.O_RDONLY)
+    except OSError as e:
+        return None, (
+            f"Error: could not open {path!r} safely (it may have changed "
+            f"since it was checked): {e.strerror or e}"
+        )
+    if not stat.S_ISREG(os.fstat(fd).st_mode):
+        os.close(fd)
+        return None, f"Error: not a regular file: {path!r}"
+    return fd, None
+
+
+def _open_host_write_dir(path: str) -> tuple[int | None, str | None, str | None]:
+    """Check ``path`` against mcp.allowed_write_paths; open/create it safely.
+
+    Returns ``(dir_fd, resolved, None)`` or ``(None, None, "Error: ...")``.
+    Files must then be created relative to ``dir_fd``. Caller closes it.
+    """
+    from labctl.core.safe_open import open_dir_nofollow
+
+    resolved, err = _resolve_host_path(path, "write")
+    if err:
+        return None, None, err
+    try:
+        return open_dir_nofollow(resolved, create=True), resolved, None
+    except OSError as e:
+        return (
+            None,
+            None,
+            (
+                f"Error: could not open {path!r} safely (it may have changed "
+                f"since it was checked): {e.strerror or e}"
+            ),
+        )
+
+
+def _open_copy_sources(
+    specs: list[str],
+) -> tuple[list[tuple[int, str]], list[str], str | None]:
+    """Check and open the host *source* side of "source:dest" copy specs.
+
+    Returns ``(pairs, names, error)``: ``pairs`` are (open fd, dest), read
+    from directly so the checked file is what's copied; ``names`` are the
     file names the caller gave, so a symlinked source copied into a
     directory keeps the caller's name (``update_files(source_names=...)``).
     Specs without ":" are skipped (callers report them); ``dest`` is a path
-    on the SD card, not on the host, so it isn't checked.
+    on the SD card, not on the host, so it isn't checked. On error, any
+    descriptors already opened are closed. Caller closes the rest
+    (``_close_fds``).
     """
     pairs, names = [], []
     for spec in specs:
         if ":" not in spec:
             continue
         src, dest = spec.split(":", 1)
-        resolved, err = _resolve_host_path(src, "read")
+        fd, err = _open_host_read(src)
         if err:
+            _close_fds(pairs)
             return [], [], err
-        pairs.append((resolved, dest))
+        pairs.append((fd, dest))
         names.append(os.path.basename(src))
     return pairs, names, None
+
+
+def _close_fds(pairs: list[tuple[int, str]]) -> None:
+    for fd, _ in pairs:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 def _sbc_to_dict(sbc) -> dict:
@@ -1429,14 +1491,9 @@ def sdwire_update(
     if not sbc.sdwire:
         return f"Error: No SDWire assigned to '{sbc_name}'"
 
-    # Parse copy pairs; host sources must be in mcp.allowed_read_paths.
-    # Checked before any power or mux change, so a refusal touches nothing.
     for spec in copies:
         if ":" not in spec:
             return f"Error: Invalid copy format '{spec}'. Use source:dest"
-    file_pairs, source_names, path_err = _resolve_copy_sources(copies)
-    if path_err:
-        return path_err
 
     # Parse rename pairs
     rename_pairs = []
@@ -1445,6 +1502,12 @@ def sdwire_update(
             return f"Error: Invalid rename format '{spec}'. Use oldname:newname"
         old_name, new_name = spec.split(":", 1)
         rename_pairs.append((old_name, new_name))
+
+    # Host copy sources must be in mcp.allowed_read_paths; they're opened
+    # now (and read by descriptor later), before any power or mux change.
+    file_pairs, source_names, path_err = _open_copy_sources(copies)
+    if path_err:
+        return path_err
 
     ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
 
@@ -1493,6 +1556,8 @@ def sdwire_update(
         return f"{summary}\n\n{advisory}" if advisory else summary
     except RuntimeError as e:
         return f"Error: {e}"
+    finally:
+        _close_fds(file_pairs)
 
 
 @mcp.tool(annotations=TOOL_ANNOTATIONS["sdwire_ls"])
@@ -1758,15 +1823,15 @@ def flash_image(
     if not sbc.sdwire:
         return f"Error: No SDWire assigned to '{sbc_name}'"
 
-    # Host paths must be in mcp.allowed_read_paths. Checked before powering
-    # off or switching the mux, so a refusal touches nothing.
-    image_resolved, path_err = _resolve_host_path(image_path, "read")
+    # Host paths must be in mcp.allowed_read_paths. Checked and opened
+    # before powering off or switching the mux, so a refusal touches
+    # nothing; the data is then read from these descriptors, never by path.
+    image_fd, path_err = _open_host_read(image_path)
     if path_err:
         return path_err
-    post_flash_pairs, post_flash_names, path_err = _resolve_copy_sources(
-        post_flash_copies
-    )
+    post_flash_pairs, post_flash_names, path_err = _open_copy_sources(post_flash_copies)
     if path_err:
+        os.close(image_fd)
         return path_err
 
     ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
@@ -1795,9 +1860,9 @@ def flash_image(
             return "Error: Block device not found after switching to host (waited 10s)"
 
         # Flash image (includes safety validation)
-        # Read the checked (resolved) file; the format follows the name
+        # Read the checked, already-open file; the format follows the name
         # the caller gave (latest.img.xz -> build-4711 is still xz).
-        result = ctrl.flash_image(image_resolved, format_name=image_path)
+        result = ctrl.flash_image(image_path, image_fd=image_fd)
         flash_ok = True
 
         parts = [
@@ -1853,6 +1918,9 @@ def flash_image(
         except Exception:
             pass
         return f"Error: {e}"
+    finally:
+        os.close(image_fd)
+        _close_fds(post_flash_pairs)
 
 
 # ---------------------------------------------------------------------------
@@ -2028,14 +2096,18 @@ def boot_test(
         return "Error: dest is required when image is specified"
 
     # Host paths: the image is read, per-run output is written (D012).
-    # `dest` is a path on the SD card, not the host.
+    # Both are checked and opened now; I/O then goes through these
+    # descriptors, never the paths. `dest` is a path on the SD card.
+    image_fd = output_dir_fd = None
     if image:
-        image_resolved, path_err = _resolve_host_path(image, "read")
+        image_fd, path_err = _open_host_read(image)
         if path_err:
             return path_err
     if output_dir:
-        output_dir, path_err = _resolve_host_path(output_dir, "write")
+        output_dir_fd, output_dir, path_err = _open_host_write_dir(output_dir)
         if path_err:
+            if image_fd is not None:
+                os.close(image_fd)
             return path_err
 
     # Build deploy function
@@ -2052,7 +2124,7 @@ def boot_test(
             time_mod.sleep(2)
             ctrl.update_files(
                 partition,
-                [(image_resolved, dest)],
+                [(image_fd, dest)],
                 source_names=[os.path.basename(image)],
             )
             ctrl.switch_to_dut()
@@ -2080,12 +2152,17 @@ def boot_test(
             dest=dest,
             partition=partition,
             output_dir=output_dir,
+            output_dir_fd=output_dir_fd,
         )
         result_str = result.format_summary()
         advisory = _claim_advisory(manager, sbc_name)
         return f"{result_str}\n\n{advisory}" if advisory else result_str
     except RuntimeError as e:
         return f"Error: {e}"
+    finally:
+        for fd in (image_fd, output_dir_fd):
+            if fd is not None:
+                os.close(fd)
 
 
 # ---------------------------------------------------------------------------
