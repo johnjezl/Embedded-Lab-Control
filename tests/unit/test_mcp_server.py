@@ -1279,6 +1279,22 @@ class TestHostPathAllowlist:
 
         assert resolved is None and "outside" in err
 
+    def test_refusal_does_not_reveal_symlink_target(self, host_paths):
+        """Review #2 of #14: the error must not echo the realpath, or a
+        client could map symlink targets anywhere on the host."""
+        from labctl.mcp_server import _resolve_host_path
+
+        allowed, outside, _ = host_paths
+        hidden = outside / "hidden-target-name"
+        hidden.write_text("x")
+        probe = outside / "probe-link"
+        probe.symlink_to(hidden)
+
+        _, err = _resolve_host_path(str(probe), "read")
+
+        assert "hidden-target-name" not in err
+        assert str(probe) in err  # the caller's own input is fine to repeat
+
     def test_sibling_prefix_not_confused(self, host_paths):
         """`<allowed>-evil` shares a string prefix but is not inside."""
         from labctl.mcp_server import _resolve_host_path

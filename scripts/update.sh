@@ -93,11 +93,23 @@ for dir in /var/lib/labctl/images /var/lib/labctl/output; do
         echo "[ok] Created $dir"
     fi
 done
-if ! grep -Eq '^[[:space:]]+allowed_read_paths:' "$SYSTEM_CONFIG_FILE"; then
-    echo "[!!] MCP host file access is disabled (deny-all) until configured."
-    echo "     flash_image / sdwire_update / boot_test over MCP will refuse"
-    echo "     host paths. To allow the default directories, add to both"
-    echo "     $SYSTEM_CONFIG_FILE and $SERVICE_CONFIG_FILE:"
+# Check both keys in both files: the systemd MCP unit reads the /etc file
+# (-c), a stdio `labctl mcp` run as labctl reads the service config first.
+MISSING_ALLOWLIST=""
+for cfg in "$SYSTEM_CONFIG_FILE" "$SERVICE_CONFIG_FILE"; do
+    [ -f "$cfg" ] || continue
+    for key in allowed_read_paths allowed_write_paths; do
+        if ! grep -Eq "^[[:space:]]+${key}:" "$cfg"; then
+            MISSING_ALLOWLIST="$MISSING_ALLOWLIST $cfg:$key"
+        fi
+    done
+done
+if [ -n "$MISSING_ALLOWLIST" ]; then
+    echo "[!!] MCP host file access is deny-all where not configured; missing:"
+    for item in $MISSING_ALLOWLIST; do echo "       $item"; done
+    echo "     flash_image / sdwire_update (read) and boot_test output_dir"
+    echo "     (write) over MCP refuse host paths until set. To allow the"
+    echo "     default directories, add to both config files:"
     echo "       mcp:"
     echo "         allowed_read_paths: [/var/lib/labctl/images]"
     echo "         allowed_write_paths: [/var/lib/labctl/output]"

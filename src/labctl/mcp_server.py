@@ -199,9 +199,12 @@ def _resolve_host_path(path: str, access: str) -> tuple[str | None, str | None]:
         root_resolved = os.path.realpath(root)
         if os.path.commonpath([resolved, root_resolved]) == root_resolved:
             return resolved, None
+    # Don't echo `resolved`: realpath follows symlinks anywhere on the host,
+    # so repeating it would let a client map symlink targets (e.g. under
+    # /proc or home directories) that the allowlist is meant to hide.
     return None, (
-        f"Error: {path!r} (resolves to {resolved!r}) is outside {key}: "
-        f"{', '.join(roots)}"
+        f"Error: {path!r} is outside {key} (symlinks and '..' are "
+        f"resolved before checking): {', '.join(roots)}"
     )
 
 
