@@ -375,3 +375,57 @@ class TestRunFileWritesDoNotFollowLinks:
         assert result.passed_count == 2
         assert victim.read_text() == "precious"
         assert (out / "run_02.txt").read_text() == "slmos>"
+
+
+class TestUnsavedOutputIsReported:
+    """Review #7 of #14: a run file that can't be written must not vanish
+    silently; the summary (what MCP returns) has to say so."""
+
+    def _run(self, out, runs=2):
+        from labctl.serial.capture import CaptureResult
+
+        with patch("labctl.serial.boot_test.capture_serial_output") as cap:
+            cap.return_value = CaptureResult(
+                output="ok", lines=1, pattern_matched=True, elapsed_seconds=1.0
+            )
+            return run_boot_test(
+                sbc_name="s",
+                expect_pattern="ok",
+                tcp_host="localhost",
+                tcp_port=4000,
+                power_cycle_fn=MagicMock(),
+                runs=runs,
+                timeout=1.0,
+                output_dir=str(out),
+            )
+
+    def test_unwritable_existing_file_reported(self, tmp_path):
+        """e.g. run_01.txt left by another user (EACCES as the service)."""
+        import os
+
+        out = tmp_path / "out"
+        out.mkdir()
+        stale = out / "run_01.txt"
+        stale.write_text("someone else's")
+        stale.chmod(0o444)
+        if os.access(stale, os.W_OK):  # running as root: can't simulate
+            return
+
+        result = self._run(out)
+
+        assert result.passed_count == 2  # the boots themselves still count
+        assert len(result.output_errors) == 1
+        assert result.output_errors[0].startswith("run_01.txt:")
+        summary = result.format_summary()
+        assert "1 run output file(s) were NOT saved" in summary
+        assert "run_01.txt" in summary
+        assert (out / "run_02.txt").read_text() == "ok"
+
+    def test_clean_run_has_no_warning(self, tmp_path):
+        out = tmp_path / "out"
+        out.mkdir()
+
+        result = self._run(out)
+
+        assert result.output_errors == []
+        assert "NOT saved" not in result.format_summary()

@@ -54,6 +54,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `O_NOFOLLOW` and refused if hard-linked, so a link planted in a shared
   output directory can't redirect the (DUT-controlled) output into another
   file. The default `/var/lib/labctl/output` is now also sticky (`3775`).
+  A run file that can't be written no longer fails the whole boot test;
+  the summary (also the MCP result) lists every file that wasn't saved.
 - `labctl -c FILE mcp` now makes the MCP server use FILE. The server loads
   its config itself on every call and ignored `-c`, so it read
   `~/.config/labctl/config.yaml` first (for the systemd unit: the service
