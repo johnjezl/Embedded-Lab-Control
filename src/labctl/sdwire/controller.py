@@ -112,24 +112,27 @@ class SDWireController:
         except RuntimeError:
             return None
 
-    def card_on_host(self) -> bool:
-        """True if the SD card is currently switched to the host.
+    def _block_node(self) -> Optional[str]:
+        """The reader's block device node, whether or not it has media."""
+        try:
+            node = getattr(self._get_device(), "block_dev", None)
+        except RuntimeError:
+            return None
+        return node if node and os.path.exists(node) else None
 
-        ``get_block_device()`` relies on ``/sys/block/<dev>/size``, which can
-        stay non-zero after a switch to DUT until the kernel next checks the
-        reader for media (it polls removable disks only if
-        ``block.events_dfl_poll_msecs`` is set, ~2 s by default on many
-        distros, and otherwise only on open). Reading one sector forces that
-        check: with the card gone, the open fails with "No medium found".
-        ``sudo dd`` is already permitted for flashing.
+    @staticmethod
+    def _probe_media(block_dev: str) -> Optional[bool]:
+        """Force the kernel to re-check the reader for media.
 
-        Outcomes: read OK -> on host; "No medium found" -> on DUT (stale
-        size); any other failure (no sudo rights, timeout) -> can't verify,
-        so fall back to the size check alone.
+        ``/sys/block/<dev>/size`` lags a mux switch in both directions until
+        the kernel next checks the reader (it polls removable disks only if
+        ``block.events_dfl_poll_msecs`` is set, ~2 s on many distros, and
+        otherwise only on open). Opening the device forces the check, so a
+        one-sector read to /dev/null (``sudo dd`` is already permitted for
+        flashing) answers: True = readable media, False = "No medium found",
+        None = can't tell (no sudo rights, timeout, other errors). LC_ALL=C
+        keeps dd's message in English so the match is locale-independent.
         """
-        block_dev = self.get_block_device()
-        if not block_dev:
-            return False
         try:
             probe = subprocess.run(
                 [
@@ -145,17 +148,51 @@ class SDWireController:
                 capture_output=True,
                 text=True,
                 timeout=10,
+                env={**os.environ, "LC_ALL": "C"},
             )
         except (OSError, subprocess.TimeoutExpired) as e:
             logger.debug("Media probe of %s unavailable: %s", block_dev, e)
-            return True
+            return None
         if probe.returncode == 0:
             return True
         if "No medium found" in probe.stderr:
-            logger.debug("Block device %s: stale size, no medium", block_dev)
             return False
         logger.debug("Media probe of %s failed: %s", block_dev, probe.stderr.strip())
-        return True
+        return None
+
+    def card_on_host(self) -> bool:
+        """True if the SD card is currently switched to the host.
+
+        Probes the reader (``_probe_media``) whenever its device node
+        exists, even if the cached size says 0, so neither a just-switched-
+        to-host card nor a just-switched-to-DUT card is misjudged. If the
+        probe can't tell, fall back to the cached size.
+        """
+        node = self._block_node()
+        if not node:
+            return False
+        probed = self._probe_media(node)
+        if probed is not None:
+            return probed
+        return _block_device_has_media(node)
+
+    def wait_for_host(
+        self, timeout: float = 10.0, interval: float = 0.5
+    ) -> Optional[str]:
+        """After ``switch_to_host``, wait until the card is readable.
+
+        Returns the block device, or None if it didn't appear in time
+        (USB re-enumeration and media detection take a moment).
+        """
+        import time
+
+        deadline = time.monotonic() + timeout
+        while True:
+            if self.card_on_host():
+                return self.get_block_device() or self._block_node()
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(interval)
 
     def flash_image(
         self,
@@ -385,32 +422,38 @@ class SDWireController:
 
         part_dev = f"{block_dev}{partition}"
         mount_point = tempfile.mkdtemp(prefix="labctl-sdwire-")
-        options = ["nosuid", "nodev", "noexec", "noatime"]
+        base = ["nosuid", "nodev", "noexec", "noatime"]
         if mode == "ro":
-            options.insert(0, "ro")
+            attempts = [["ro", *extra, *base] for extra in _ro_no_replay(part_dev)]
         else:
-            options.insert(0, f"uid={os.getuid()},gid={os.getgid()}")
+            attempts = [[f"uid={os.getuid()},gid={os.getgid()}", *base]]
 
         logger.info("Mounting %s at %s (%s)", part_dev, mount_point, mode)
 
-        try:
-            subprocess.run(
-                [
-                    "sudo",
-                    "mount",
-                    "-o",
-                    ",".join(options),
-                    part_dev,
-                    mount_point,
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        except subprocess.CalledProcessError as e:
+        last_err: Optional[subprocess.CalledProcessError] = None
+        for options in attempts:
+            try:
+                subprocess.run(
+                    [
+                        "sudo",
+                        "mount",
+                        "-o",
+                        ",".join(options),
+                        part_dev,
+                        mount_point,
+                    ],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                last_err = None
+                break
+            except subprocess.CalledProcessError as e:
+                last_err = e
+        if last_err is not None:
             os.rmdir(mount_point)
-            stderr = (e.stderr or "").strip()
-            raise RuntimeError(f"Failed to mount {part_dev}: {stderr}") from e
+            stderr = (last_err.stderr or "").strip()
+            raise RuntimeError(f"Failed to mount {part_dev}: {stderr}") from last_err
 
         mount = _MountedPartition(mount_point, owner_mount=owner_mount)
         try:
@@ -838,6 +881,38 @@ def _validate_image_file(image_path: str) -> None:
             f"Unsupported image format: {image_path}. "
             f"Supported: {', '.join(supported)}"
         )
+
+
+def _ro_no_replay(part_dev: str) -> list[list[str]]:
+    """Extra mount options, in order to try, so a read-only mount never writes.
+
+    A plain ``-o ro`` mount of ext3/ext4 (and XFS) still replays a dirty
+    journal, which writes to the card; a dirty journal is normal after a
+    board loses power. ``noload`` / ``norecovery`` skip the replay (the view
+    may then miss the last unflushed changes, which is fine for reading).
+    The filesystem type comes from ``lsblk`` (udev's probe; no root needed).
+    If it's unknown, try ``noload`` first and fall back to plain ``ro`` only
+    when the filesystem rejects the option, which non-ext ones (vfat) do.
+    """
+    try:
+        fstype = subprocess.run(
+            ["lsblk", "-no", "FSTYPE", part_dev],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        fstype = ""
+    if fstype in {"ext2", "ext3", "ext4"}:
+        return [["noload"]]
+    if fstype in {"xfs", "f2fs"}:
+        return [["norecovery"]]
+    if fstype == "btrfs":
+        # rescue=nologreplay on kernels >= 5.9, nologreplay before that
+        return [["rescue=nologreplay"], ["nologreplay"]]
+    if fstype:
+        return [[]]  # known non-journal-replaying type (e.g. vfat, exfat)
+    return [["noload"], []]
 
 
 def _block_device_has_media(block_dev: str) -> bool:
