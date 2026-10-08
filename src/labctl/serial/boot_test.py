@@ -72,6 +72,9 @@ class BootTestResult:
     dest: Optional[str] = None
     partition: Optional[int] = None
     runs: list[BootRunResult] = field(default_factory=list)
+    # Per-run output files that couldn't be written (name: reason); the boot
+    # results still stand, but the caller must be told the logs are missing.
+    output_errors: list[str] = field(default_factory=list)
 
     @property
     def passed_count(self) -> int:
@@ -153,6 +156,14 @@ class BootTestResult:
             if errors:
                 lines.append(f"  - Errors: {errors}")
 
+        if self.output_errors:
+            lines.append("")
+            lines.append(
+                f"WARNING: {len(self.output_errors)} run output file(s) "
+                "were NOT saved:"
+            )
+            lines.extend(f"  - {err}" for err in self.output_errors)
+
         return "\n".join(lines)
 
 
@@ -233,6 +244,7 @@ def run_boot_test(
                     _write_run_file(run_file, run_result.output)
             except OSError as e:
                 logger.warning("Not writing %s: %s", run_file, e)
+                result.output_errors.append(f"{name}: {e.strerror or e}")
 
         if progress_fn:
             progress_fn(i, runs, run_result)
