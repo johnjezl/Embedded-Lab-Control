@@ -1251,10 +1251,14 @@ def sdwire_host_cmd(ctx: click.Context, sbc_name: str, force: bool) -> None:
     try:
         ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
         ctrl.switch_to_host()
-        block_dev = ctrl.get_block_device()
+        # Return only once the card is readable, so a follow-up command or
+        # MCP read sees it on the host (same as the MCP sdwire_to_host).
+        block_dev = ctrl.wait_for_host()
         msg = f"SD card switched to host: {sbc_name}"
         if block_dev:
             msg += f" ({block_dev})"
+        else:
+            msg += " (warning: card not readable on the host within 10s)"
         click.echo(msg)
     except RuntimeError as e:
         click.echo(f"Error: {e}", err=True)

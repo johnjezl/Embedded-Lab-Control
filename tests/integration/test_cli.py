@@ -666,6 +666,33 @@ class TestSdwireReadSafety:
         assert result.exit_code == 0, result.output
         mock_sleep.assert_called_once_with(2)
 
+    @pytest.mark.parametrize(
+        "block_dev,expected",
+        [("/dev/sdx", "(/dev/sdx)"), (None, "not readable on the host within 10s")],
+    )
+    def test_sdwire_host_waits_until_card_readable(self, runner, block_dev, expected):
+        """`sdwire host` returns only once the card is readable (or warns)."""
+        sbc = MagicMock()
+        sbc.name = "test-sbc-1"
+        sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
+        sbc.sdwire.device_type = "sdwirec"
+        sbc.power_plug = None
+        manager = MagicMock()
+        manager.get_sbc_by_name.return_value = sbc
+        mock_ctrl = MagicMock()
+        mock_ctrl.wait_for_host.return_value = block_dev
+
+        with patch("labctl.cli._get_manager", return_value=manager):
+            with patch(
+                "labctl.sdwire.controller.SDWireController", return_value=mock_ctrl
+            ):
+                result = runner.invoke(main, ["sdwire", "host", "test-sbc-1"])
+
+        assert result.exit_code == 0, result.output
+        mock_ctrl.switch_to_host.assert_called_once()
+        mock_ctrl.wait_for_host.assert_called_once()
+        assert expected in result.output
+
     def test_sdwire_cat_reports_cleanup_failure(self, runner):
         sbc = MagicMock()
         sbc.name = "test-sbc-1"
