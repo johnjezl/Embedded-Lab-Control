@@ -160,3 +160,38 @@ def test_every_destructive_cli_command_has_yes():
             continue
         opts = [o.opts for o in commands[name].params if isinstance(o, click.Option)]
         assert any("--yes" in o for o in opts), name
+
+
+class TestReviewRound1:
+    def test_prompt_shows_zero_valued_arguments(self, lab):
+        """`0 in (None, False, ())` is True in Python; delay=0 / channel=0
+        must still be shown in what the user is asked to approve."""
+        config, power, _ = lab
+        with patch("labctl.cli._stdin_is_tty", return_value=True):
+            result = run(config, "power", "cycle", "pi-1", "--delay", "0", input="n\n")
+
+        assert "delay=0" in result.output
+        power.power_off.assert_not_called()
+
+    def test_flash_dry_run_skips_malformed_copy_like_real_run(self, lab):
+        config, _, tmp_path = lab
+        image = tmp_path / "os.img"
+        image.write_bytes(b"\0")
+
+        result = run(
+            config,
+            "sdwire",
+            "flash",
+            "pi-1",
+            str(image),
+            "-c",
+            "config.txt",
+            "-c",
+            "cmdline.txt:cmdline.txt",
+            "--dry-run",
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Invalid --copy format 'config.txt', would skip" in result.output
+        assert "copy config.txt" not in result.output
+        assert "copy cmdline.txt -> cmdline.txt on the boot partition" in result.output
