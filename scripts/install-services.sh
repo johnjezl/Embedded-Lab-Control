@@ -103,9 +103,12 @@ echo "[ok] Secured shared config: $SYSTEM_CONFIG_FILE (root:labctl, 640)"
 
 # MCP host-file allowlist directories (mcp.allowed_read/write_paths in the
 # example config). Setgid + group-writable so members of the labctl group
-# can drop images in and the files stay readable by the service.
+# can drop images in and the files stay readable by the service. output/
+# is also sticky (3775): group members can't remove or rename the
+# service's run files to plant a symlink in their place.
 mkdir -p "$LABCTL_HOME/images" "$LABCTL_HOME/output"
-chmod 2775 "$LABCTL_HOME/images" "$LABCTL_HOME/output"
+chmod 2775 "$LABCTL_HOME/images"
+chmod 3775 "$LABCTL_HOME/output"
 echo "[ok] MCP image/output directories: $LABCTL_HOME/{images,output}"
 
 chown -R labctl:labctl "$LABCTL_HOME"

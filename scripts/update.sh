@@ -85,12 +85,15 @@ echo "[ok] Shared config permissions repaired"
 # 3b. MCP host-file allowlist (0.2.0+): deny-all unless configured. Create
 # the default directories if missing (never touching existing ones), and
 # point at the config keys if they aren't set. Config files are not edited.
-for dir in /var/lib/labctl/images /var/lib/labctl/output; do
+# output/ is also sticky (3775), as in install-services.sh.
+for spec in /var/lib/labctl/images:2775 /var/lib/labctl/output:3775; do
+    dir="${spec%%:*}"
+    mode="${spec##*:}"
     if [ ! -d "$dir" ]; then
         mkdir -p "$dir"
         chown labctl:labctl "$dir"
-        chmod 2775 "$dir"
-        echo "[ok] Created $dir"
+        chmod "$mode" "$dir"
+        echo "[ok] Created $dir (mode $mode)"
     fi
 done
 # Check both keys in both files (the systemd unit passes -c /etc/...;

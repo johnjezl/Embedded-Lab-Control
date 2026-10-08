@@ -305,3 +305,73 @@ class TestRunBootTest:
         assert result.passed_count == 0
         assert result.failed_count == 2
         assert "connection refused" in result.runs[0].error
+
+
+class TestRunFileWritesDoNotFollowLinks:
+    """Review #4 of #14: output_dir may be group-writable; a link planted at
+    run_NN.txt must not redirect DUT-controlled output to another file."""
+
+    def test_writes_and_overwrites_regular_file(self, tmp_path):
+        from labctl.serial.boot_test import _write_run_file
+
+        target = tmp_path / "run_01.txt"
+        _write_run_file(target, "first, longer content")
+        _write_run_file(target, "second")
+        assert target.read_text() == "second"
+
+    def test_symlink_refused_and_target_untouched(self, tmp_path):
+        import pytest
+
+        from labctl.serial.boot_test import _write_run_file
+
+        victim = tmp_path / "service-config.yaml"
+        victim.write_text("precious")
+        (tmp_path / "run_01.txt").symlink_to(victim)
+
+        with pytest.raises(OSError):
+            _write_run_file(tmp_path / "run_01.txt", "attacker-controlled")
+        assert victim.read_text() == "precious"
+
+    def test_hardlink_refused_and_target_untouched(self, tmp_path):
+        import os
+
+        import pytest
+
+        from labctl.serial.boot_test import _write_run_file
+
+        victim = tmp_path / "service-config.yaml"
+        victim.write_text("precious")
+        os.link(victim, tmp_path / "run_01.txt")
+
+        with pytest.raises(OSError, match="hard links"):
+            _write_run_file(tmp_path / "run_01.txt", "attacker-controlled")
+        assert victim.read_text() == "precious"  # not truncated either
+
+    def test_run_continues_past_a_planted_link(self, tmp_path):
+        """The boot test still runs; only the poisoned file is skipped."""
+        from labctl.serial.capture import CaptureResult
+
+        victim = tmp_path / "victim"
+        victim.write_text("precious")
+        out = tmp_path / "out"
+        out.mkdir()
+        (out / "run_01.txt").symlink_to(victim)
+
+        with patch("labctl.serial.boot_test.capture_serial_output") as cap:
+            cap.return_value = CaptureResult(
+                output="slmos>", lines=1, pattern_matched=True, elapsed_seconds=1.0
+            )
+            result = run_boot_test(
+                sbc_name="s",
+                expect_pattern="slmos>",
+                tcp_host="localhost",
+                tcp_port=4000,
+                power_cycle_fn=MagicMock(),
+                runs=2,
+                timeout=5.0,
+                output_dir=str(out),
+            )
+
+        assert result.passed_count == 2
+        assert victim.read_text() == "precious"
+        assert (out / "run_02.txt").read_text() == "slmos>"
