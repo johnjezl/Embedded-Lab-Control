@@ -86,6 +86,24 @@ def _path_list(section: dict, key: str) -> list[str]:
     return paths
 
 
+def _safety_flag(section: dict, key: str, default: bool = True) -> bool:
+    """Read an on/off safety switch: only an explicit boolean counts.
+
+    A key left blank (``confirm_destructive:``) parses as None, and
+    ``bool(None)`` would silently turn the safety off. Blank keeps the safe
+    default; any other non-boolean also keeps it, with a warning.
+    """
+    value = section.get(key)
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    logger.warning(
+        "Config: %s must be true or false, got %r; keeping %s", key, value, default
+    )
+    return default
+
+
 def _name_list(section: dict, key: str) -> list[str]:
     """Read a list of names (strings) from config; skip non-strings."""
     raw = section.get(key) or []
@@ -432,7 +450,7 @@ class Config:
             allow_admin_actuator_ops=mcp_data.get("allow_admin_actuator_ops", False),
             allowed_read_paths=_path_list(mcp_data, "allowed_read_paths"),
             allowed_write_paths=_path_list(mcp_data, "allowed_write_paths"),
-            confirm_destructive=bool(mcp_data.get("confirm_destructive", True)),
+            confirm_destructive=_safety_flag(mcp_data, "confirm_destructive"),
             confirm_exempt=_name_list(mcp_data, "confirm_exempt"),
         )
 

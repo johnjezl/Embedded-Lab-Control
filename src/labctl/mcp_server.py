@@ -3323,6 +3323,20 @@ def _start_expiry_thread(interval: int = 30):
     return t
 
 
+def _warn_unknown_confirm_exemptions() -> None:
+    """Log mcp.confirm_exempt names that aren't tools (likely typos).
+
+    An unknown name fails safe (the intended tool keeps asking for
+    confirmation), but silently; say so once at startup.
+    """
+    unknown = sorted(set(_get_config().mcp.confirm_exempt) - set(TOOL_ANNOTATIONS))
+    if unknown:
+        logger.warning(
+            "mcp.confirm_exempt lists unknown tool name(s), ignored: %s",
+            ", ".join(unknown),
+        )
+
+
 def run_server(
     transport: str = "stdio", http_port: int = 8080, host: str = "127.0.0.1"
 ):
@@ -3341,6 +3355,7 @@ def run_server(
 
     atexit.register(_release_session_claims)
     _start_expiry_thread(interval=30)
+    _warn_unknown_confirm_exemptions()
 
     if transport == "stdio":
         mcp.run(transport="stdio")
