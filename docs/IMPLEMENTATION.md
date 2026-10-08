@@ -809,7 +809,8 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
   - ✅ Two-step confirmation tokens for destructive MCP tools
     (23 tools, from the annotation table; `mcp.confirm_destructive`,
     `mcp.confirm_exempt`)
-  - ☐ CLI `--dry-run` for flash/update/power-cycle; `--yes` where missing
+  - ✅ CLI `--dry-run` for flash/update/power-cycle; `--yes` on all 19
+    destructive commands that lacked it, asking only on a terminal
 - WS4 MCP HTTP authentication
   - ☐ Bearer auth backed by web users' API keys (`token_verifier`)
   - ☐ Refuse non-loopback `--host` without auth

@@ -5,6 +5,7 @@ Provides commands for managing serial ports, connections, and lab resources.
 """
 
 import concurrent.futures
+import functools
 import json
 import logging
 import os
@@ -82,6 +83,45 @@ class AliasedGroup(click.Group):
                 args = parts + args[1:]
 
         return super().resolve_command(ctx, args)
+
+
+def _stdin_is_tty() -> bool:
+    try:
+        return sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
+def destructive_command(action: str):
+    """Add ``--yes/-y`` and an interactive confirmation to a destructive command.
+
+    Asks only when stdin is a terminal (D012, Phase 1 WS3): scripts, CI and
+    agents running labctl non-interactively behave exactly as before.
+    ``--yes`` skips the question; so does ``--dry-run`` on commands that
+    have it. Apply directly below the ``@group.command(...)`` line.
+    """
+
+    def decorator(f):
+        @functools.wraps(f)
+        def wrapper(*args, yes: bool = False, **kwargs):
+            if not yes and not kwargs.get("dry_run") and _stdin_is_tty():
+                shown = ", ".join(
+                    f"{k}={v}"
+                    for k, v in kwargs.items()
+                    if k != "dry_run" and v not in (None, False, ())
+                )
+                suffix = f" ({shown})" if shown else ""
+                click.confirm(f"{action}{suffix}. Continue?", abort=True)
+            return f(*args, **kwargs)
+
+        return click.option(
+            "--yes",
+            "-y",
+            is_flag=True,
+            help="Don't ask for confirmation (it is only asked on a terminal).",
+        )(wrapper)
+
+    return decorator
 
 
 def _get_manager(ctx: click.Context) -> ResourceManager:
@@ -1177,6 +1217,7 @@ def sdwire_assign_cmd(ctx: click.Context, sbc_name: str, device_name: str) -> No
 
 
 @sdwire_group.command("unassign")
+@destructive_command("Remove the SDWire assignment")
 @click.argument("sbc_name")
 @click.pass_context
 def sdwire_unassign_cmd(ctx: click.Context, sbc_name: str) -> None:
@@ -1221,6 +1262,7 @@ def sdwire_dut_cmd(ctx: click.Context, sbc_name: str) -> None:
 
 
 @sdwire_group.command("host")
+@destructive_command("Switch the SD card to the host (away from the board)")
 @click.argument("sbc_name")
 @click.option("--force", is_flag=True, help="Override power-on safety check")
 @click.pass_context
@@ -1267,6 +1309,7 @@ def sdwire_host_cmd(ctx: click.Context, sbc_name: str, force: bool) -> None:
 
 
 @sdwire_group.command("flash")
+@destructive_command("Overwrite the whole SD card")
 @click.argument("sbc_name")
 @click.argument("image", type=click.Path(exists=True, path_type=Path))
 @click.option("--no-reboot", is_flag=True, help="Don't power cycle after flashing")
@@ -1277,6 +1320,11 @@ def sdwire_host_cmd(ctx: click.Context, sbc_name: str, force: bool) -> None:
     multiple=True,
     help="Copy file to boot partition after flash (source:dest)",
 )
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show what would happen and change nothing.",
+)
 @click.pass_context
 def sdwire_flash_cmd(
     ctx: click.Context,
@@ -1284,6 +1332,7 @@ def sdwire_flash_cmd(
     image: Path,
     no_reboot: bool,
     post_copies: tuple[str, ...],
+    dry_run: bool,
 ) -> None:
     """Flash an SD card image to an SBC's SDWire.
 
@@ -1310,6 +1359,29 @@ def sdwire_flash_cmd(
     if not sbc.sdwire:
         click.echo(f"Error: No SDWire assigned to '{sbc_name}'", err=True)
         sys.exit(1)
+
+    if dry_run:
+        from labctl.sdwire.controller import _validate_image_file
+
+        try:
+            _validate_image_file(str(image))
+        except RuntimeError as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+        steps = []
+        if sbc.power_plug:
+            steps.append(f"power off {sbc_name}")
+        steps.append(f"switch SDWire {sbc.sdwire.serial_number} to host")
+        steps.append(
+            f"overwrite the whole SD card with {image} "
+            f"({image.stat().st_size} bytes)"
+        )
+        steps.extend(f"copy {spec} to the boot partition" for spec in post_copies)
+        steps.append("switch the card back to the board")
+        if not no_reboot and sbc.power_plug:
+            steps.append(f"power-cycle {sbc_name}")
+        click.echo("Dry run: would " + "; ".join(steps) + ". Nothing changed.")
+        return
 
     ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
     flash_ok = False
@@ -1405,6 +1477,7 @@ def sdwire_flash_cmd(
 
 
 @sdwire_group.command("update")
+@destructive_command("Change files on the SD card")
 @click.argument("sbc_name")
 @click.option(
     "--partition",
@@ -1435,6 +1508,11 @@ def sdwire_flash_cmd(
     help="Delete file (relative to partition root)",
 )
 @click.option("--reboot", is_flag=True, help="Power cycle the SBC after updating")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show what would happen and change nothing.",
+)
 @click.pass_context
 def sdwire_update_cmd(
     ctx: click.Context,
@@ -1444,6 +1522,7 @@ def sdwire_update_cmd(
     renames: tuple[str, ...],
     deletes: tuple[str, ...],
     reboot: bool,
+    dry_run: bool,
 ) -> None:
     """Copy, rename, and/or delete files on a partition on an SBC's SD card.
 
@@ -1506,6 +1585,23 @@ def sdwire_update_cmd(
 
     # Deletes are just filenames, no parsing needed
     delete_list = list(deletes)
+
+    if dry_run:
+        steps = []
+        if sbc.power_plug:
+            steps.append(f"power off {sbc_name}")
+        steps.append(
+            f"switch SDWire {sbc.sdwire.serial_number} to host and mount "
+            f"partition {partition}"
+        )
+        steps.extend(f"copy {src} -> {dest}" for src, dest in file_pairs)
+        steps.extend(f"rename {old} -> {new}" for old, new in rename_pairs)
+        steps.extend(f"delete {name}" for name in delete_list)
+        steps.append("unmount and switch the card back to the board")
+        if reboot and sbc.power_plug:
+            steps.append(f"power-cycle {sbc_name}")
+        click.echo("Dry run: would " + "; ".join(steps) + ". Nothing changed.")
+        return
 
     ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
 
@@ -2221,6 +2317,7 @@ def _resolve_send_pacing(
 
 
 @serial_group.command("send")
+@destructive_command("Send to a running board's console")
 @click.argument("port_name")
 @click.argument("data")
 @click.option(
@@ -2412,6 +2509,7 @@ def port_assign_cmd(
 
 
 @port_group.command("remove")
+@destructive_command("Remove the serial port assignment")
 @click.argument("sbc_name")
 @click.argument("port_type", type=click.Choice([t.value for t in PortType]))
 @click.pass_context
@@ -2543,6 +2641,7 @@ def network_set_cmd(
 
 
 @network_group.command("remove")
+@destructive_command("Remove the network address")
 @click.argument("sbc_name")
 @click.argument("address_type", type=click.Choice([t.value for t in AddressType]))
 @click.pass_context
@@ -2704,6 +2803,7 @@ def plug_assign_cmd(
 
 
 @plug_group.command("remove")
+@destructive_command("Remove the power plug assignment")
 @click.argument("sbc_name")
 @click.pass_context
 def plug_remove_cmd(ctx: click.Context, sbc_name: str) -> None:
@@ -2817,6 +2917,7 @@ def power_on_cmd(ctx: click.Context, sbc_name: str) -> None:
 
 
 @power_group.command("off")
+@destructive_command("Power off")
 @click.argument("sbc_name")
 @click.pass_context
 def power_off_cmd(ctx: click.Context, sbc_name: str) -> None:
@@ -2869,6 +2970,7 @@ def _resolve_cycle_delay(sbc, requested: float | None) -> tuple[float, str | Non
 
 
 @power_group.command("cycle")
+@destructive_command("Power cycle")
 @click.argument("sbc_name")
 @click.option(
     "--delay",
@@ -2882,8 +2984,15 @@ def _resolve_cycle_delay(sbc, requested: float | None) -> tuple[float, str | Non
         "with a warning."
     ),
 )
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show what would happen and change nothing.",
+)
 @click.pass_context
-def power_cycle_cmd(ctx: click.Context, sbc_name: str, delay: float | None) -> None:
+def power_cycle_cmd(
+    ctx: click.Context, sbc_name: str, delay: float | None, dry_run: bool
+) -> None:
     """Power cycle an SBC (off, wait, on)."""
     manager = _get_manager(ctx)
     controller, sbc = _get_power_controller(manager, sbc_name)
@@ -2891,6 +3000,15 @@ def power_cycle_cmd(ctx: click.Context, sbc_name: str, delay: float | None) -> N
     effective_delay, warning = _resolve_cycle_delay(sbc, delay)
     if warning:
         click.echo(f"Warning: {warning}", err=True)
+
+    if dry_run:
+        plug = sbc.power_plug
+        click.echo(
+            f"Dry run: would power-cycle {sbc_name} via {plug.plug_type.value} "
+            f"plug {plug.address} (index {plug.plug_index}): off, wait "
+            f"{effective_delay}s, apply pre-power bindings, on. Nothing changed."
+        )
+        return
 
     click.echo(f"Power cycling {sbc_name} (delay: {effective_delay}s)...")
     # power_cycle expands to off → sleep → apply pre_power bindings → on,
@@ -3191,6 +3309,7 @@ def actuator_probe_cmd(ctx: click.Context, name: str) -> None:
 
 
 @actuator_group.command("set")
+@destructive_command("Drive a relay channel directly")
 @click.argument("name")
 @click.argument("channel", type=int)
 @click.argument("state", type=_channel_state_choice())
@@ -3393,6 +3512,7 @@ def bind_cmd(
 
 
 @main.command("unbind")
+@destructive_command("Remove the binding")
 @click.argument("sbc_name")
 @click.argument("purpose")
 @click.pass_context
@@ -3461,6 +3581,7 @@ def _run_actuator_verb(ctx, sbc_name: str, purpose: str, fn):
 
 
 @bindings_group.command("actuate")
+@destructive_command("Assert the binding")
 @click.argument("sbc_name")
 @click.argument("purpose")
 @click.pass_context
@@ -3473,6 +3594,7 @@ def bindings_actuate_cmd(ctx: click.Context, sbc_name: str, purpose: str) -> Non
 
 
 @bindings_group.command("release")
+@destructive_command("Release the binding")
 @click.argument("sbc_name")
 @click.argument("purpose")
 @click.pass_context
@@ -3485,6 +3607,7 @@ def bindings_release_cmd(ctx: click.Context, sbc_name: str, purpose: str) -> Non
 
 
 @bindings_group.command("press")
+@destructive_command("Pulse the binding")
 @click.argument("sbc_name")
 @click.argument("purpose")
 @click.pass_context
@@ -3547,6 +3670,7 @@ def _run_composite(ctx, sbc_name: str, fn_name: str, fn) -> None:
 
 
 @main.command("enter-recovery")
+@destructive_command("Enter recovery (power off, assert strap, power on)")
 @click.argument("sbc_name")
 @click.pass_context
 def enter_recovery_cmd(ctx: click.Context, sbc_name: str) -> None:
@@ -3566,6 +3690,7 @@ def enter_recovery_cmd(ctx: click.Context, sbc_name: str) -> None:
 
 
 @main.command("exit-recovery")
+@destructive_command("Exit recovery (power cycle without the strap)")
 @click.argument("sbc_name")
 @click.pass_context
 def exit_recovery_cmd(ctx: click.Context, sbc_name: str) -> None:
@@ -4235,6 +4360,7 @@ def renew_cmd(ctx: click.Context, sbc_name: str, duration: str | None) -> None:
 
 
 @main.command("force-release")
+@destructive_command("Force-release another user's claim")
 @click.argument("sbc_name")
 @click.option("--reason", "-r", required=True, help="Why the override is needed")
 @click.pass_context
@@ -5003,6 +5129,7 @@ def web_cmd(
 
 
 @main.command("boot-test")
+@destructive_command("Run a boot test (repeated power cycles)")
 @click.argument("sbc_name")
 @click.option(
     "--image",

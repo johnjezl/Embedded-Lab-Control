@@ -106,7 +106,13 @@ the tool and its exact arguments. Configure with `mcp.confirm_destructive`
 
 ## CLI commands
 
-"Prompts" means the command asks for confirmation (skip with `--yes`).
+"Prompts" means the command asks for confirmation before acting (skip with
+`--yes`). Every destructive command does. They ask **only on an interactive
+terminal**: scripts, CI and agents running labctl non-interactively are not
+prompted and behave as before. The exceptions are the older `remove`,
+`sdwire remove`, `serial remove`, `actuator remove` and `power-all`, which
+also ask (and abort without `--yes`) when stdin is not a terminal.
+`power cycle`, `sdwire flash` and `sdwire update` also take `--dry-run`.
 
 | Command | Class | Prompts | Notes |
 |---|---|---|---|
@@ -116,15 +122,15 @@ the tool and its exact arguments. Configure with `mcp.confirm_destructive`
 | `actuator list` | read |  |  |
 | `actuator probe` | shared-resource |  | Briefly opens the relay's serial port; records last_probe_* |
 | `actuator remove` | destructive | yes | Deletes the actuator and its bindings |
-| `actuator set` | destructive |  | Drives a relay channel directly, bypassing bindings |
+| `actuator set` | destructive | yes | Drives a relay channel directly, bypassing bindings |
 | `add` | db-write |  |  |
 | `bind` | db-write |  |  |
-| `bindings actuate` | destructive |  | Purpose is free text (power button, reset, strap...) |
+| `bindings actuate` | destructive | yes | Purpose is free text (power button, reset, strap...) |
 | `bindings list` | read |  |  |
-| `bindings press` | destructive |  | As above |
-| `bindings release` | destructive |  | As above |
+| `bindings press` | destructive | yes | As above |
+| `bindings release` | destructive | yes | As above |
 | `bindings status` | read |  |  |
-| `boot-test` | destructive |  | Repeated power cycles; optional image deploy; writes run files |
+| `boot-test` | destructive | yes | Repeated power cycles; optional image deploy; writes run files |
 | `claim` | db-write |  |  |
 | `claims expire` | db-write |  | Releases other agents' expired/dead claims; prunes history |
 | `claims history` | read |  |  |
@@ -135,10 +141,10 @@ the tool and its exact arguments. Configure with `mcp.confirm_destructive`
 | `connect` | shared-resource |  | Interactive console; what you type reaches the board |
 | `console` | shared-resource |  | As `connect` |
 | `edit` | db-write |  |  |
-| `enter-recovery` | destructive |  | Power off, assert strap, power on |
-| `exit-recovery` | destructive |  | Power cycle with the strap released |
+| `enter-recovery` | destructive | yes | Power off, assert strap, power on |
+| `exit-recovery` | destructive | yes | Power cycle with the strap released |
 | `export` | read |  | Writes a file only with `-o` |
-| `force-release` | destructive |  | Overrides another user's claim |
+| `force-release` | destructive | yes | Overrides another user's claim |
 | `health-check` | shared-resource |  | Opens each ser2net port briefly; writes status rows only with `-u` |
 | `import` | db-write |  | Skips existing SBCs; `-u` overwrites their ports/addresses/plugs |
 | `info` | read |  |  |
@@ -146,16 +152,16 @@ the tool and its exact arguments. Configure with `mcp.confirm_destructive`
 | `log` | shared-resource |  | Holds the console session; appends to a host file (default `./<sbc>-<ts>.log`) |
 | `mcp` | server |  | Long-running; see the MCP tables |
 | `monitor` | shared-resource |  | Long-running; writes status, power-cache, alert and audit rows; opens ser2net ports each cycle |
-| `network remove` | destructive |  | Deletes a record |
+| `network remove` | destructive | yes | Deletes a record |
 | `network set` | db-write |  |  |
 | `plug assign` | db-write |  |  |
-| `plug remove` | destructive |  | Deletes a record |
+| `plug remove` | destructive | yes | Deletes a record |
 | `port assign` | db-write |  |  |
 | `port list` | read |  |  |
-| `port remove` | destructive |  | Deletes a record |
+| `port remove` | destructive | yes | Deletes a record |
 | `ports` | read |  |  |
-| `power cycle` | destructive |  |  |
-| `power off` | destructive |  |  |
+| `power cycle` | destructive | yes | `--dry-run` |
+| `power off` | destructive | yes |  |
 | `power on` | hardware |  |  |
 | `power status` | read |  |  |
 | `power-all` | destructive | yes | Every SBC (or a project) at once |
@@ -170,14 +176,14 @@ the tool and its exact arguments. Configure with `mcp.confirm_destructive`
 | `sdwire cat` | hardware |  | Switches the SD card to the host and back (see note below) |
 | `sdwire discover` | read |  |  |
 | `sdwire dut` | hardware |  |  |
-| `sdwire flash` | destructive |  | Overwrites the whole SD card |
-| `sdwire host` | destructive |  | Pulls the card from the board (`--force` skips the power check) |
+| `sdwire flash` | destructive | yes | Overwrites the whole SD card; `--dry-run` |
+| `sdwire host` | destructive | yes | Pulls the card from the board (`--force` skips the power check) |
 | `sdwire info` | hardware |  | As `sdwire cat` |
 | `sdwire list` | read |  |  |
 | `sdwire ls` | hardware |  | As `sdwire cat` |
 | `sdwire remove` | destructive | yes | Deletes a record |
-| `sdwire unassign` | destructive |  | Deletes an association |
-| `sdwire update` | destructive |  | Copies/renames/deletes files on the card |
+| `sdwire unassign` | destructive | yes | Deletes an association |
+| `sdwire update` | destructive | yes | Copies/renames/deletes files on the card; `--dry-run` |
 | `ser2net generate` | system-write |  | Writes `/etc/ser2net.yaml` only with `--install` (or `-o` file) |
 | `ser2net reload` | system-write |  | Restarts ser2net: drops every live console session |
 | `serial add` | db-write |  |  |
@@ -187,13 +193,13 @@ the tool and its exact arguments. Configure with `mcp.confirm_destructive`
 | `serial remove` | destructive | yes | Deletes a record |
 | `serial rename` | db-write |  |  |
 | `serial repair` | db-write |  | Dry run unless `--apply` |
-| `serial send` | destructive |  | Types into a running board's console (no proxy guard) |
+| `serial send` | destructive | yes | Types into a running board's console (no proxy guard) |
 | `serial udev` | system-write |  | Writes udev rules only with `--install`; reloads with `--reload` |
 | `services status` | read |  |  |
 | `sessions` | read |  |  |
 | `ssh` | shared-resource |  | Interactive shell on the board |
 | `status` | read |  | Queries plugs live; `--fast` reads cached state |
-| `unbind` | destructive |  | Deletes a binding |
+| `unbind` | destructive | yes | Deletes a binding |
 | `user add` | read |  | Prints a config snippet |
 | `user generate-key` | read |  |  |
 | `user hash-password` | read |  |  |

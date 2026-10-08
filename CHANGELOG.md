@@ -105,6 +105,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   from removing dead code flagged by flake8 (unused imports/variables).
 
 ### Added
+- Destructive CLI commands (19: `power off`/`cycle`, `sdwire flash`/`update`/
+  `host`/`unassign`, `serial send`, `actuator set`, binding verbs, recovery,
+  `force-release`, `boot-test`, record removals) take `--yes/-y` and ask for
+  confirmation, but only on an interactive terminal: scripts, CI and agents
+  are unaffected. `power cycle`, `sdwire flash` and `sdwire update` take
+  `--dry-run` (validate and print the plan; change nothing).
 - `docs/OPERATIONS.md`: every CLI command, MCP tool and MCP resource
   classified as read / db-write / shared-resource / system-write /
   hardware / destructive (issue #7). A test keeps it in sync with the code.
