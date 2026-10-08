@@ -597,13 +597,42 @@ class TestWaitForHost:
 
 
 class TestReadOnlyMountNeverReplaysJournal:
-    """Review #2 finding 3: `-o ro` alone replays a dirty ext4 journal."""
+    """`-o ro` alone replays a dirty ext4/XFS/F2FS/btrfs journal (a write)."""
 
     @staticmethod
-    def _lsblk(fstype):
-        out = MagicMock()
-        out.stdout = f"{fstype}\n"
-        return out
+    def _fake_run(*, lsblk="", head=None, head_rc=0, mount_fails=False, log=None):
+        """subprocess.run stand-in: lsblk, `sudo dd` signature read, mount."""
+
+        def run(cmd, **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            if cmd[0] == "lsblk":
+                if isinstance(lsblk, BaseException):
+                    raise lsblk
+                result.stdout = f"{lsblk}\n"
+            elif cmd[:3] == ["sudo", "-n", "dd"]:
+                if isinstance(head, BaseException):
+                    raise head
+                result.returncode = head_rc
+                result.stdout = head if head is not None else b""
+            elif cmd[:2] == ["sudo", "mount"]:
+                if log is not None:
+                    log.append(cmd[cmd.index("-o") + 1])
+                if mount_fails:
+                    raise subprocess.CalledProcessError(32, cmd, stderr="nope")
+            return result
+
+        return run
+
+    @staticmethod
+    def _image(fstype):
+        """A fake partition head carrying `fstype`'s signature."""
+        from labctl.sdwire.controller import _FS_PROBE_BYTES, _REPLAYING_FS_MAGIC
+
+        data = bytearray(_FS_PROBE_BYTES)
+        offset, magic = _REPLAYING_FS_MAGIC[fstype]
+        data[offset : offset + len(magic)] = magic
+        return bytes(data)
 
     @pytest.mark.parametrize(
         "fstype,expected",
@@ -611,67 +640,102 @@ class TestReadOnlyMountNeverReplaysJournal:
             ("ext4", [["noload"]]),
             ("ext3", [["noload"]]),
             ("xfs", [["norecovery"]]),
+            ("f2fs", [["norecovery"]]),
             ("btrfs", [["rescue=nologreplay"], ["nologreplay"]]),
             ("vfat", [[]]),
-            ("", [["noload"], []]),
         ],
     )
-    def test_options_by_fstype(self, fstype, expected):
+    def test_options_by_lsblk_fstype(self, fstype, expected):
         from labctl.sdwire.controller import _ro_no_replay
 
-        with patch("subprocess.run", return_value=self._lsblk(fstype)):
+        with patch("subprocess.run", side_effect=self._fake_run(lsblk=fstype)):
             assert _ro_no_replay("/dev/sdx2") == expected
 
-    def test_lsblk_unavailable_tries_noload_first(self):
+    @pytest.mark.parametrize(
+        "magic_fs,expected",
+        [
+            ("ext4", [["noload"]]),
+            ("xfs", [["norecovery"]]),
+            ("f2fs", [["norecovery"]]),
+            ("btrfs", [["rescue=nologreplay"], ["nologreplay"]]),
+        ],
+    )
+    def test_udev_not_ready_signature_decides(self, magic_fs, expected):
+        """Review #3 finding: lsblk empty right after a switch."""
         from labctl.sdwire.controller import _ro_no_replay
 
-        with patch("subprocess.run", side_effect=FileNotFoundError("lsblk")):
-            assert _ro_no_replay("/dev/sdx2") == [["noload"], []]
+        run = self._fake_run(lsblk="", head=self._image(magic_fs))
+        with patch("subprocess.run", side_effect=run):
+            assert _ro_no_replay("/dev/sdx2") == expected
+
+    def test_no_signature_means_plain_ro_is_safe(self):
+        """e.g. vfat: no replaying signature, so plain ro."""
+        from labctl.sdwire.controller import _FS_PROBE_BYTES, _ro_no_replay
+
+        run = self._fake_run(lsblk="", head=bytes(_FS_PROBE_BYTES))
+        with patch("subprocess.run", side_effect=run):
+            assert _ro_no_replay("/dev/sdx1") == [[]]
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"head": b"", "head_rc": 1},  # dd failed
+            {"head": FileNotFoundError("sudo")},  # no sudo
+            {"head": subprocess.TimeoutExpired("dd", 10)},
+        ],
+    )
+    def test_type_undeterminable_never_plain_ro(self, kwargs):
+        """Unknown type: noload only, no fallback to a replaying plain ro."""
+        from labctl.sdwire.controller import _ro_no_replay
+
+        run = self._fake_run(lsblk=FileNotFoundError("lsblk"), **kwargs)
+        with patch("subprocess.run", side_effect=run):
+            assert _ro_no_replay("/dev/sdx2") == [["noload"]]
+
+    def test_signature_offsets(self):
+        """Pin the on-disk magic locations against the format specs."""
+        from labctl.sdwire.controller import _REPLAYING_FS_MAGIC
+
+        assert _REPLAYING_FS_MAGIC["ext4"] == (1080, (0xEF53).to_bytes(2, "little"))
+        assert _REPLAYING_FS_MAGIC["f2fs"] == (
+            1024,
+            (0xF2F52010).to_bytes(4, "little"),
+        )
+        assert _REPLAYING_FS_MAGIC["xfs"] == (0, b"XFSB")
+        assert _REPLAYING_FS_MAGIC["btrfs"] == (0x10040, b"_BHRfS_M")
 
     def test_host_mount_ro_ext4_uses_noload(self):
         ctrl = SDWireController("s")
-        calls = []
-
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            return self._lsblk("ext4")
-
+        mounts = []
         with (
             patch.object(ctrl, "get_block_device", return_value="/dev/sdx"),
-            patch("subprocess.run", side_effect=fake_run),
+            patch(
+                "subprocess.run",
+                side_effect=self._fake_run(lsblk="ext4", log=mounts),
+            ),
         ):
             with ctrl.host_mount(2, mode="ro"):
                 pass
 
-        mount = next(c for c in calls if c[:2] == ["sudo", "mount"])
-        opts = mount[mount.index("-o") + 1].split(",")
+        opts = mounts[0].split(",")
         assert opts[0] == "ro" and "noload" in opts
 
-    def test_unknown_fs_falls_back_when_noload_rejected(self):
-        """vfat rejects `noload`; the retry without it must still be ro."""
+    def test_undeterminable_type_mount_failure_is_reported(self):
+        """The reviewer's race: no blind retry with plain ro after a failure."""
         ctrl = SDWireController("s")
         mounts = []
-
-        def fake_run(cmd, **kwargs):
-            if cmd[0] == "lsblk":
-                return self._lsblk("")
-            if cmd[:2] == ["sudo", "mount"]:
-                opts = cmd[cmd.index("-o") + 1]
-                mounts.append(opts)
-                if "noload" in opts:
-                    raise subprocess.CalledProcessError(32, cmd, stderr="bad option")
-            return MagicMock()
-
+        run = self._fake_run(
+            lsblk="", head=b"", head_rc=1, mount_fails=True, log=mounts
+        )
         with (
             patch.object(ctrl, "get_block_device", return_value="/dev/sdx"),
-            patch("subprocess.run", side_effect=fake_run),
+            patch("subprocess.run", side_effect=run),
         ):
-            with ctrl.host_mount(1, mode="ro"):
-                pass
+            with pytest.raises(RuntimeError, match="Failed to mount"):
+                with ctrl.host_mount(2, mode="ro"):
+                    pass
 
-        assert len(mounts) == 2
-        assert "noload" in mounts[0]
-        assert mounts[1].startswith("ro,") and "noload" not in mounts[1]
+        assert len(mounts) == 1 and "noload" in mounts[0]
 
     def test_rw_mount_unchanged(self):
         ctrl = SDWireController("s")

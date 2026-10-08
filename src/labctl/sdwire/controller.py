@@ -883,16 +883,64 @@ def _validate_image_file(image_path: str) -> None:
         )
 
 
+# On-disk signatures of the filesystems whose read-only mount would replay
+# a journal/log: (offset, magic). Used when udev hasn't probed the partition.
+_REPLAYING_FS_MAGIC = {
+    "ext4": (1080, b"\x53\xef"),  # s_magic 0xEF53 (ext2/3/4)
+    "xfs": (0, b"XFSB"),
+    "f2fs": (1024, b"\x10\x20\xf5\xf2"),  # 0xF2F52010 little-endian
+    "btrfs": (65600, b"_BHRfS_M"),
+}
+_FS_PROBE_BYTES = 17 * 4096  # covers the btrfs superblock at 64 KiB
+
+
+def _fs_by_magic(part_dev: str) -> Optional[str]:
+    """Identify a journal-replaying filesystem from its on-disk signature.
+
+    Returns a key of ``_REPLAYING_FS_MAGIC``, ``"other"`` if none matches
+    (no journal replay to worry about), or None if the partition can't be
+    read. Reads the first 68 KiB with ``sudo dd`` (already permitted).
+    """
+    try:
+        head = subprocess.run(
+            [
+                "sudo",
+                "-n",
+                "dd",
+                f"if={part_dev}",
+                "bs=4096",
+                f"count={_FS_PROBE_BYTES // 4096}",
+                "status=none",
+            ],
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if head.returncode != 0 or not head.stdout:
+        return None
+    data = head.stdout
+    for fstype, (offset, magic) in _REPLAYING_FS_MAGIC.items():
+        if data[offset : offset + len(magic)] == magic:
+            return fstype
+    return "other"
+
+
 def _ro_no_replay(part_dev: str) -> list[list[str]]:
     """Extra mount options, in order to try, so a read-only mount never writes.
 
-    A plain ``-o ro`` mount of ext3/ext4 (and XFS) still replays a dirty
-    journal, which writes to the card; a dirty journal is normal after a
-    board loses power. ``noload`` / ``norecovery`` skip the replay (the view
-    may then miss the last unflushed changes, which is fine for reading).
-    The filesystem type comes from ``lsblk`` (udev's probe; no root needed).
-    If it's unknown, try ``noload`` first and fall back to plain ``ro`` only
-    when the filesystem rejects the option, which non-ext ones (vfat) do.
+    A plain ``-o ro`` mount of ext3/ext4 (and XFS, F2FS, btrfs) still
+    replays a dirty journal/log, which writes to the card; a dirty journal
+    is normal after a board loses power. ``noload`` / ``norecovery`` /
+    ``nologreplay`` skip the replay (the view may then miss the last
+    unflushed changes, which is fine for reading).
+
+    The type comes from ``lsblk`` (udev's probe, no root). udev probes
+    asynchronously, so right after a mux switch it may not know yet; then
+    the on-disk signature decides (``_fs_by_magic``). Plain ``ro`` is used
+    only for a filesystem positively identified as non-replaying. If the
+    type can't be determined at all, only ``noload`` is tried: a clear mount
+    failure beats a silent write.
     """
     try:
         fstype = subprocess.run(
@@ -903,16 +951,19 @@ def _ro_no_replay(part_dev: str) -> list[list[str]]:
         ).stdout.strip()
     except (OSError, subprocess.TimeoutExpired):
         fstype = ""
+    if not fstype:
+        fstype = _fs_by_magic(part_dev) or ""
     if fstype in {"ext2", "ext3", "ext4"}:
         return [["noload"]]
     if fstype in {"xfs", "f2fs"}:
         return [["norecovery"]]
     if fstype == "btrfs":
-        # rescue=nologreplay on kernels >= 5.9, nologreplay before that
+        # Both skip log replay: rescue=nologreplay on kernels >= 5.9,
+        # nologreplay before that.
         return [["rescue=nologreplay"], ["nologreplay"]]
     if fstype:
-        return [[]]  # known non-journal-replaying type (e.g. vfat, exfat)
-    return [["noload"], []]
+        return [[]]  # identified, non-replaying (e.g. vfat, exfat, "other")
+    return [["noload"]]
 
 
 def _block_device_has_media(block_dev: str) -> bool:
