@@ -3202,8 +3202,9 @@ class TestMcpCliCommand:
         monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
         # mcp_cmd writes os.environ["LABCTL_CONFIG"] directly; setenv first so
         # monkeypatch records the variable and restores it after the test.
-        monkeypatch.setenv("LABCTL_CONFIG", "placeholder")
-        monkeypatch.delenv("LABCTL_CONFIG")
+        for var in ("LABCTL_CONFIG", "LABCTL_CONFIG_EXCLUSIVE"):
+            monkeypatch.setenv(var, "placeholder")
+            monkeypatch.delenv(var)
         seen = {}
 
         def fake_run_server(**kwargs):
@@ -3216,6 +3217,13 @@ class TestMcpCliCommand:
 
         assert result.exit_code == 0, result.output
         assert seen["read"] == ["/from/explicit/config"]
+
+        # Review #8 of #14: if the -c file breaks mid-session, the server
+        # must fall back to defaults (deny-all), not the user config.
+        from labctl.mcp_server import _get_config
+
+        explicit.write_text("mcp: [unclosed\n")
+        assert _get_config().mcp.allowed_read_paths == []
 
     def test_http_with_host(self):
         from click.testing import CliRunner
