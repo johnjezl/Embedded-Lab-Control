@@ -232,7 +232,7 @@ This document records significant design decisions made during development.
   4. **Read-only tier (#7): documentation only for now.** Every CLI command and MCP tool is classified (read / DB write / shared-resource lock / destructive) in `docs/`; no enforced read-only tier yet, since it needs WAL/directory-permission work for non-group readers.
 - **Rationale**: server-side enforcement where it matters (destructive actions, host paths, network exposure), defaults that fail closed, and no second credential system to maintain.
 - **Follow-up decisions (2026-10-08, WS3)**:
-  - Destructive CLI commands ask for confirmation **only on an interactive terminal** (with `--yes` to skip); non-interactive callers (scripts, CI, agents via Bash) run unchanged. Rejected: always requiring `--yes`, which would break existing scripts and agent workflows. The five commands that already prompted keep their stricter behaviour.
+  - Destructive CLI commands ask for confirmation **only on an interactive terminal** (with `--yes` to skip); callers without a terminal on stdin (cron, CI, systemd, pipes, agents' tool calls) run unchanged; scripts started from an interactive shell inherit the terminal and must pass `--yes`. Rejected: always requiring `--yes`, which would break existing scripts and agent workflows. The five commands that already prompted keep their stricter behaviour.
   - `serial_send` keeps MCP confirmation **on** by default even though it doubles the calls for console work; operators opt out with `mcp.confirm_exempt: [serial_send]`.
 
 ---

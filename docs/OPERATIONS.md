@@ -108,8 +108,10 @@ the tool and its exact arguments. Configure with `mcp.confirm_destructive`
 
 "Prompts" means the command asks for confirmation before acting (skip with
 `--yes`). Every destructive command does. They ask **only on an interactive
-terminal**: scripts, CI and agents running labctl non-interactively are not
-prompted and behave as before. The exceptions are the older `remove`,
+terminal**, i.e. when stdin is a terminal. Callers without one (cron, CI,
+systemd, pipes, agents' tool calls) are not asked. A shell script started
+from an interactive terminal inherits it and **is** asked, so add `--yes` to
+scripted destructive commands. The exceptions are the older `remove`,
 `sdwire remove`, `serial remove`, `actuator remove` and `power-all`, which
 also ask (and abort without `--yes`) when stdin is not a terminal.
 `power cycle`, `sdwire flash` and `sdwire update` also take `--dry-run`.
