@@ -11,6 +11,7 @@ Supported device types:
 import logging
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 from contextlib import contextmanager
@@ -200,6 +201,7 @@ class SDWireController:
         block_size: str = "4M",
         timeout: int = 1800,
         format_name: Optional[str] = None,
+        image_fd: Optional[int] = None,
     ) -> dict:
         """Write an image to the SD card.
 
@@ -214,6 +216,11 @@ class SDWireController:
                 differs from ``image_path``. Callers that resolved a symlink
                 (e.g. ``latest.img.xz`` -> ``build-4711``) pass the name the
                 user gave, so the format still follows it.
+            image_fd: An already-open, checked descriptor for the image. When
+                given, the data is read from it (fed to xz/gzip/dd on stdin)
+                and ``image_path`` is only used for messages, so nothing
+                re-opens the path after the caller's check, and root (dd)
+                never opens a host path at all.
 
         Returns:
             Dict with bytes_written and elapsed_seconds.
@@ -232,8 +239,12 @@ class SDWireController:
 
         # Safety checks
         _validate_block_device(block_dev)
-        _validate_image_file(image_path, format_name)
+        _validate_image_file(image_path, format_name, image_fd=image_fd)
         fmt = format_name or image_path
+        if image_fd is not None:
+            os.lseek(image_fd, 0, os.SEEK_SET)
+        # Read from the checked descriptor when given, else from the path.
+        source = ["-"] if image_fd is not None else [image_path]
 
         logger.info(
             "Flashing %s to %s via SDWire %s",
@@ -248,7 +259,8 @@ class SDWireController:
             if fmt.endswith(".xz"):
                 # Pipe: xz -dc image | sudo dd of=dev bs=4M oflag=sync
                 decompress = subprocess.Popen(
-                    ["xz", "-dc", image_path],
+                    ["xz", "-dc", *source],
+                    stdin=image_fd,
                     stdout=subprocess.PIPE,
                 )
                 dd = subprocess.Popen(
@@ -273,7 +285,8 @@ class SDWireController:
                     )
             elif fmt.endswith(".gz"):
                 decompress = subprocess.Popen(
-                    ["gzip", "-dc", image_path],
+                    ["gzip", "-dc", *source],
+                    stdin=image_fd,
                     stdout=subprocess.PIPE,
                 )
                 dd = subprocess.Popen(
@@ -297,16 +310,20 @@ class SDWireController:
                         f"dd failed: {dd_stderr.decode('utf-8', errors='replace')}"
                     )
             else:
+                # With a descriptor, dd reads stdin: root never opens the
+                # host path, so a swapped symlink can't redirect the read.
+                dd_input = [] if image_fd is not None else [f"if={image_path}"]
                 subprocess.run(
                     [
                         "sudo",
                         "dd",
-                        f"if={image_path}",
+                        *dd_input,
                         f"of={block_dev}",
                         f"bs={block_size}",
                         "status=progress",
                         "conv=fsync",
                     ],
+                    stdin=image_fd,
                     check=True,
                     timeout=timeout,
                 )
@@ -314,7 +331,11 @@ class SDWireController:
             subprocess.run(["sudo", "sync"], check=True)
 
             elapsed = time_mod.monotonic() - start
-            image_size = os.path.getsize(image_path)
+            image_size = (
+                os.fstat(image_fd).st_size
+                if image_fd is not None
+                else os.path.getsize(image_path)
+            )
 
             return {
                 "bytes_written": image_size,
@@ -329,7 +350,7 @@ class SDWireController:
     def update_files(
         self,
         partition: int,
-        file_pairs: list[tuple[str, str]],
+        file_pairs: list[tuple[str | int, str]],
         renames: list[tuple[str, str]] | None = None,
         deletes: list[str] | None = None,
         source_names: list[str] | None = None,
@@ -341,7 +362,9 @@ class SDWireController:
 
         Args:
             partition: Partition number (e.g., 1 for /dev/sdb1)
-            file_pairs: List of (source_path, dest_path_relative_to_partition_root)
+            file_pairs: List of (source, dest_path_relative_to_partition_root);
+                source is a host path or an already-open, checked file
+                descriptor (read from directly, never re-opened by path)
             renames: List of (old_name, new_name) relative to partition root
             deletes: List of filenames relative to partition root
             source_names: Optional file names for the copies, aligned with
@@ -378,7 +401,10 @@ class SDWireController:
                     os.makedirs(dest_dir, exist_ok=True)
 
                 logger.info("Copying %s -> %s", src, dest_relative)
-                shutil.copy2(src, dest)
+                if isinstance(src, int):
+                    _copy_from_fd(src, dest)
+                else:
+                    shutil.copy2(src, dest)
                 result["copied"].append(dest_relative)
 
             # 2. Renames
@@ -880,15 +906,42 @@ def _validate_block_device(block_dev: str) -> None:
         pass  # /proc/mounts not available — skip check
 
 
-def _validate_image_file(image_path: str, format_name: Optional[str] = None) -> None:
+def _copy_from_fd(src_fd: int, dest: str) -> None:
+    """Copy an open file to ``dest`` like ``shutil.copy2``, by descriptor.
+
+    Reads from the start of ``src_fd`` (the caller's checked handle), then
+    copies mode and timestamps best-effort (FAT filesystems may refuse).
+    """
+    os.lseek(src_fd, 0, os.SEEK_SET)
+    with open(dest, "wb") as out:
+        while chunk := os.read(src_fd, 1024 * 1024):
+            out.write(chunk)
+    st = os.fstat(src_fd)
+    try:
+        os.chmod(dest, stat.S_IMODE(st.st_mode))
+        os.utime(dest, ns=(st.st_atime_ns, st.st_mtime_ns))
+    except OSError as e:
+        logger.debug("Could not copy metadata to %s: %s", dest, e)
+
+
+def _validate_image_file(
+    image_path: str,
+    format_name: Optional[str] = None,
+    image_fd: Optional[int] = None,
+) -> None:
     """Validate an image file before flashing.
+
+    With ``image_fd`` the open file itself is checked (no path lookup).
 
     Raises:
         RuntimeError: If the file is invalid.
     """
-    if not os.path.exists(image_path):
+    if image_fd is not None:
+        if not stat.S_ISREG(os.fstat(image_fd).st_mode):
+            raise RuntimeError(f"Not a regular file: {image_path}")
+    elif not os.path.exists(image_path):
         raise RuntimeError(f"Image file not found: {image_path}")
-    if not os.path.isfile(image_path):
+    elif not os.path.isfile(image_path):
         raise RuntimeError(f"Not a regular file: {image_path}")
 
     supported = (".img", ".img.xz", ".img.gz")

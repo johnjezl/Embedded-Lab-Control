@@ -409,8 +409,12 @@ mcp:
 
 - Host paths must be absolute. They are resolved (symlinks and `..`) before
   the check, so a link or `../` inside an allowed directory cannot reach
-  outside it. The tool then reads the resolved (checked) file, while the
-  image format and the copied file's name follow the path you gave: a
+  outside it. The checked file is then opened immediately, without
+  following any symlink on its path, and everything after that (flashing,
+  copying, writing boot-test output) uses that open handle, never the path.
+  Swapping a file or directory for a symlink after the check has no effect,
+  and raw images are streamed into `sudo dd` rather than opened by root.
+  The image format and the copied file's name follow the path you gave: a
   symlink `latest.img.xz` -> `build-4711` is still flashed as xz, and
   `Image` -> `Image-6.1.55` copied into a directory lands as `Image`.
 - Paths on the SD card itself (`dest`, `renames`, `deletes`, and the

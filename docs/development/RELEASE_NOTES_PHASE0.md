@@ -64,12 +64,16 @@ Delete or fold into the real release notes before publishing.
   prints the snippet. Images currently kept elsewhere (e.g. under `/home`,
   which `ProtectHome=yes` already hides from the service) must be moved
   or the allowlist extended.
-- Path checks are check-then-use: the resolved path is passed on, which
-  defeats a symlink swapped in after the check for the final component, but
-  a parent directory that a lab user can write to could still be swapped
-  between check and open. Group-writable `images/` is setgid, not sticky;
-  consider opening with `O_NOFOLLOW` per component (`openat2` RESOLVE_BENEATH
-  on Linux) if the threat model includes other lab users.
+- ~~Path checks were check-then-use~~ — closed in PR #14 (review #5): host
+  files are opened at check time by walking the resolved path with
+  `O_NOFOLLOW` on every component (`labctl/core/safe_open.py`), and all I/O
+  then goes through the descriptor; raw images are piped into `sudo dd`'s
+  stdin, so root never opens a host path. This mattered because a `labctl`
+  group member could otherwise have swapped a checked image for a symlink
+  to a root-only file and had `sudo dd` write it to a card readable via
+  `sdwire_cat`. Remaining assumption: `fs.protected_hardlinks=1` (default on
+  Ubuntu/Debian), which stops group members hard-linking files they can't
+  read into `images/`.
 
 ## P2 release
 

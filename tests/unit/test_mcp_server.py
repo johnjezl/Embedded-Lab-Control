@@ -62,13 +62,22 @@ def populated_manager(manager):
 
 
 @pytest.fixture
-def allow_tmp_host_paths():
-    """Allow MCP host file access under /tmp (mcp.allowed_*_paths, D012)."""
+def allow_tmp_host_paths(request, tmp_path):
+    """Allow MCP host file access under a per-test directory (D012).
+
+    The tools open host files at check time, so the files the tests name
+    must exist: they're created here, and test classes use
+    ``self.host_dir`` to build paths.
+    """
     from labctl.core.config import Config
 
+    for name in ("local.bin", "a.bin", "test.img", "test.bin"):
+        (tmp_path / name).write_bytes(b"\0")
+    if request.instance is not None:
+        request.instance.host_dir = tmp_path
     config = Config()
-    config.mcp.allowed_read_paths = ["/tmp"]
-    config.mcp.allowed_write_paths = ["/tmp"]
+    config.mcp.allowed_read_paths = [str(tmp_path)]
+    config.mcp.allowed_write_paths = [str(tmp_path)]
     with patch("labctl.mcp_server._get_config", return_value=config):
         yield config
 
@@ -598,7 +607,7 @@ class TestMcpSDWireTools:
         from labctl.mcp_server import sdwire_update
 
         result = sdwire_update(
-            sbc_name="test-sbc-2", partition=1, copies=["/tmp/a.bin:b.bin"]
+            sbc_name="test-sbc-2", partition=1, copies=[f"{self.host_dir}/a.bin:b.bin"]
         )
         assert "No SDWire" in result
 
@@ -606,7 +615,7 @@ class TestMcpSDWireTools:
         from labctl.mcp_server import sdwire_update
 
         result = sdwire_update(
-            sbc_name="nope", partition=1, copies=["/tmp/a.bin:b.bin"]
+            sbc_name="nope", partition=1, copies=[f"{self.host_dir}/a.bin:b.bin"]
         )
         assert "not found" in result
 
@@ -637,7 +646,7 @@ class TestMcpSDWireTools:
                 result = sdwire_update(
                     sbc_name="test-sbc-1",
                     partition=1,
-                    copies=["/tmp/local.bin:kernel.img"],
+                    copies=[f"{self.host_dir}/local.bin:kernel.img"],
                 )
 
         assert "Copied" in result
@@ -666,7 +675,7 @@ class TestMcpSDWireTools:
                     sdwire_update(
                         sbc_name="test-sbc-1",
                         partition=1,
-                        copies=["/tmp/local.bin:kernel.img"],
+                        copies=[f"{self.host_dir}/local.bin:kernel.img"],
                     )
 
         claim_check.assert_called_once_with(mock_manager, "test-sbc-1", mutating=True)
@@ -693,7 +702,7 @@ class TestMcpSDWireTools:
                 result = sdwire_update(
                     sbc_name="test-sbc-1",
                     partition=1,
-                    copies=["/tmp/local.bin:kernel.img"],
+                    copies=[f"{self.host_dir}/local.bin:kernel.img"],
                     reboot=True,
                 )
 
@@ -717,7 +726,7 @@ class TestMcpSDWireTools:
                 result = sdwire_update(
                     sbc_name="test-sbc-1",
                     partition=1,
-                    copies=["/tmp/a.bin:b.bin"],
+                    copies=[f"{self.host_dir}/a.bin:b.bin"],
                 )
 
         assert "Error" in result
@@ -1339,6 +1348,7 @@ class TestHostPathEnforcementInTools:
         from labctl.mcp_server import flash_image
 
         allowed, outside, _ = host_paths
+        (allowed / "ok.img").write_bytes(b"\0")
         ctrl = MagicMock()
         with patch("labctl.sdwire.SDWireController", return_value=ctrl):
             result = flash_image(
@@ -1366,11 +1376,18 @@ class TestHostPathEnforcementInTools:
         (allowed / "latest.img.xz").symlink_to(allowed / "build-4711")
         ctrl = MagicMock()
         ctrl.get_block_device.return_value = "/dev/sdx"
-        ctrl.flash_image.return_value = {
-            "block_device": "/dev/sdx",
-            "bytes_written": 1,
-            "elapsed_seconds": 0.1,
-        }
+        seen = {}
+
+        def fake_flash(path, image_fd=None, **kwargs):
+            # The tool closes the fd afterwards; inspect it during the call.
+            seen["ino"] = os.fstat(image_fd).st_ino
+            return {
+                "block_device": "/dev/sdx",
+                "bytes_written": 1,
+                "elapsed_seconds": 0,
+            }
+
+        ctrl.flash_image.side_effect = fake_flash
         with (
             patch("labctl.sdwire.SDWireController", return_value=ctrl),
             patch("labctl.power.base.PowerController.from_plug"),
@@ -1378,10 +1395,9 @@ class TestHostPathEnforcementInTools:
         ):
             flash_image("test-sbc-1", image_path=str(allowed / "latest.img.xz"))
 
-        ctrl.flash_image.assert_called_once_with(
-            os.path.realpath(allowed / "build-4711"),
-            format_name=str(allowed / "latest.img.xz"),
-        )
+        (path_arg,), kwargs = ctrl.flash_image.call_args
+        assert path_arg == str(allowed / "latest.img.xz")  # name -> format
+        assert seen["ino"] == os.stat(allowed / "build-4711").st_ino
 
     def test_symlinked_copy_source_keeps_callers_name(self, mock_manager, host_paths):
         """Review #1 of #14: `Image` -> `Image-6.1.55-g1a2b` copied into `/`
@@ -1393,7 +1409,14 @@ class TestHostPathEnforcementInTools:
         (allowed / "Image-6.1.55-g1a2b").write_bytes(b"\0")
         (allowed / "Image").symlink_to(allowed / "Image-6.1.55-g1a2b")
         ctrl = MagicMock()
-        ctrl.update_files.return_value = {"copied": ["/"], "renamed": [], "deleted": []}
+        seen = {}
+
+        def fake_update(partition, pairs, **kwargs):
+            seen["pairs"] = [(os.fstat(fd).st_ino, dest) for fd, dest in pairs]
+            seen["names"] = kwargs["source_names"]
+            return {"copied": ["/"], "renamed": [], "deleted": []}
+
+        ctrl.update_files.side_effect = fake_update
         with (
             patch("labctl.sdwire.SDWireController", return_value=ctrl),
             patch("labctl.power.base.PowerController.from_plug"),
@@ -1401,9 +1424,9 @@ class TestHostPathEnforcementInTools:
         ):
             sdwire_update("test-sbc-1", partition=1, copies=[f"{allowed}/Image:/"])
 
-        args, kwargs = ctrl.update_files.call_args
-        assert args[1] == [(os.path.realpath(allowed / "Image-6.1.55-g1a2b"), "/")]
-        assert kwargs["source_names"] == ["Image"]
+        target_ino = os.stat(allowed / "Image-6.1.55-g1a2b").st_ino
+        assert seen["pairs"] == [(target_ino, "/")]
+        assert seen["names"] == ["Image"]
 
     def test_boot_test_deploy_keeps_callers_name(self, mock_manager, host_paths):
         from labctl.mcp_server import boot_test
@@ -1413,6 +1436,12 @@ class TestHostPathEnforcementInTools:
         (allowed / "kernel.img").symlink_to(allowed / "k-123")
         ctrl = MagicMock()
         captured = {}
+
+        def fake_update(partition, pairs, **kwargs):
+            captured["pairs"] = [(os.fstat(fd).st_ino, dest) for fd, dest in pairs]
+            captured["names"] = kwargs["source_names"]
+
+        ctrl.update_files.side_effect = fake_update
 
         def fake_run_boot_test(**kwargs):
             kwargs["deploy_fn"]()  # exercise the deploy closure
@@ -1431,9 +1460,8 @@ class TestHostPathEnforcementInTools:
                 dest="/",
             )
 
-        args, kwargs = ctrl.update_files.call_args
-        assert args[1] == [(os.path.realpath(allowed / "k-123"), "/")]
-        assert kwargs["source_names"] == ["kernel.img"]
+        assert captured["pairs"] == [(os.stat(allowed / "k-123").st_ino, "/")]
+        assert captured["names"] == ["kernel.img"]
         assert captured["image"] == str(allowed / "kernel.img")  # for reporting
 
     def test_sdwire_update_refuses_before_power_off(self, mock_manager, host_paths):
@@ -1680,14 +1708,18 @@ class TestMcpFlashImage:
     def test_flash_image_sbc_not_found(self, mock_manager):
         from labctl.mcp_server import flash_image
 
-        result = flash_image(sbc_name="nonexistent", image_path="/tmp/test.img")
+        result = flash_image(
+            sbc_name="nonexistent", image_path=f"{self.host_dir}/test.img"
+        )
         assert "Error" in result
         assert "not found" in result
 
     def test_flash_image_no_sdwire(self, mock_manager):
         from labctl.mcp_server import flash_image
 
-        result = flash_image(sbc_name="test-sbc-2", image_path="/tmp/test.img")
+        result = flash_image(
+            sbc_name="test-sbc-2", image_path=f"{self.host_dir}/test.img"
+        )
         assert "Error" in result
         assert "No SDWire" in result
 
@@ -1709,7 +1741,7 @@ class TestMcpFlashImage:
                 mock_power.return_value = MagicMock()
                 result = flash_image(
                     sbc_name="test-sbc-1",
-                    image_path="/tmp/test.img",
+                    image_path=f"{self.host_dir}/test.img",
                 )
 
         assert "Flashed" in result
@@ -1738,7 +1770,7 @@ class TestMcpFlashImage:
             ):
                 result = flash_image(
                     sbc_name="test-sbc-1",
-                    image_path="/tmp/test.img",
+                    image_path=f"{self.host_dir}/test.img",
                     reboot=True,
                 )
 
@@ -1757,7 +1789,7 @@ class TestMcpFlashImage:
             with patch("labctl.power.base.PowerController.from_plug"):
                 result = flash_image(
                     sbc_name="test-sbc-1",
-                    image_path="/tmp/test.img",
+                    image_path=f"{self.host_dir}/test.img",
                 )
 
         assert "Error" in result
@@ -1776,7 +1808,7 @@ class TestMcpFlashImage:
             with patch("labctl.power.base.PowerController.from_plug"):
                 result = flash_image(
                     sbc_name="test-sbc-1",
-                    image_path="/tmp/test.img",
+                    image_path=f"{self.host_dir}/test.img",
                 )
 
         assert "Error" in result
@@ -1833,7 +1865,7 @@ class TestMcpBootTest:
         result = boot_test(
             sbc_name="test-sbc-1",
             expect_pattern="ok",
-            image="/tmp/test.bin",
+            image=f"{self.host_dir}/test.bin",
         )
         assert "Error" in result
         assert "dest" in result.lower()
