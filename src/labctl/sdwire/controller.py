@@ -199,6 +199,7 @@ class SDWireController:
         image_path: str,
         block_size: str = "4M",
         timeout: int = 1800,
+        format_name: Optional[str] = None,
     ) -> dict:
         """Write an image to the SD card.
 
@@ -206,9 +207,13 @@ class SDWireController:
         card is already switched to host mode.
 
         Args:
-            image_path: Path to the image file
+            image_path: Path to the image file (what is actually read)
             block_size: Block size for dd (default: 4M)
             timeout: Max seconds for the write (default: 1800 / 30 min)
+            format_name: Name whose extension selects the format, if it
+                differs from ``image_path``. Callers that resolved a symlink
+                (e.g. ``latest.img.xz`` -> ``build-4711``) pass the name the
+                user gave, so the format still follows it.
 
         Returns:
             Dict with bytes_written and elapsed_seconds.
@@ -227,7 +232,8 @@ class SDWireController:
 
         # Safety checks
         _validate_block_device(block_dev)
-        _validate_image_file(image_path)
+        _validate_image_file(image_path, format_name)
+        fmt = format_name or image_path
 
         logger.info(
             "Flashing %s to %s via SDWire %s",
@@ -239,7 +245,7 @@ class SDWireController:
         start = time_mod.monotonic()
 
         try:
-            if image_path.endswith(".xz"):
+            if fmt.endswith(".xz"):
                 # Pipe: xz -dc image | sudo dd of=dev bs=4M oflag=sync
                 decompress = subprocess.Popen(
                     ["xz", "-dc", image_path],
@@ -265,7 +271,7 @@ class SDWireController:
                     raise RuntimeError(
                         f"dd failed: {dd_stderr.decode('utf-8', errors='replace')}"
                     )
-            elif image_path.endswith(".gz"):
+            elif fmt.endswith(".gz"):
                 decompress = subprocess.Popen(
                     ["gzip", "-dc", image_path],
                     stdout=subprocess.PIPE,
@@ -326,6 +332,7 @@ class SDWireController:
         file_pairs: list[tuple[str, str]],
         renames: list[tuple[str, str]] | None = None,
         deletes: list[str] | None = None,
+        source_names: list[str] | None = None,
     ) -> dict[str, list[str]]:
         """Copy, rename, and/or delete files on a partition on the SD card.
 
@@ -337,6 +344,11 @@ class SDWireController:
             file_pairs: List of (source_path, dest_path_relative_to_partition_root)
             renames: List of (old_name, new_name) relative to partition root
             deletes: List of filenames relative to partition root
+            source_names: Optional file names for the copies, aligned with
+                ``file_pairs``. When a destination is an existing
+                directory the copy is named after this instead of the
+                source path, so a caller that resolved a symlink (e.g.
+                ``Image`` -> ``Image-6.1.55``) still gets ``Image``.
 
         Returns:
             Dict with keys "copied", "renamed", "deleted", each a list of strings.
@@ -354,8 +366,12 @@ class SDWireController:
         result = {"copied": [], "renamed": [], "deleted": []}
         with self.host_mount(partition, mode="rw", owner_mount=True) as mount:
             # 1. Copies
-            for src, dest_relative in file_pairs:
+            for i, (src, dest_relative) in enumerate(file_pairs):
                 dest = mount.resolve_path(dest_relative)
+                if source_names and os.path.isdir(dest):
+                    dest = mount.resolve_path(
+                        os.path.join(dest_relative, source_names[i])
+                    )
 
                 dest_dir = os.path.dirname(dest)
                 if dest_dir and not os.path.exists(dest_dir):
@@ -864,7 +880,7 @@ def _validate_block_device(block_dev: str) -> None:
         pass  # /proc/mounts not available — skip check
 
 
-def _validate_image_file(image_path: str) -> None:
+def _validate_image_file(image_path: str, format_name: Optional[str] = None) -> None:
     """Validate an image file before flashing.
 
     Raises:
@@ -876,10 +892,10 @@ def _validate_image_file(image_path: str) -> None:
         raise RuntimeError(f"Not a regular file: {image_path}")
 
     supported = (".img", ".img.xz", ".img.gz")
-    if not any(image_path.endswith(ext) for ext in supported):
+    name = format_name or image_path
+    if not any(name.endswith(ext) for ext in supported):
         raise RuntimeError(
-            f"Unsupported image format: {image_path}. "
-            f"Supported: {', '.join(supported)}"
+            f"Unsupported image format: {name}. " f"Supported: {', '.join(supported)}"
         )
 
 

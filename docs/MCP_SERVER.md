@@ -409,7 +409,10 @@ mcp:
 
 - Host paths must be absolute. They are resolved (symlinks and `..`) before
   the check, so a link or `../` inside an allowed directory cannot reach
-  outside it; the resolved path is what the tool then uses.
+  outside it. The tool then reads the resolved (checked) file, while the
+  image format and the copied file's name follow the path you gave: a
+  symlink `latest.img.xz` -> `build-4711` is still flashed as xz, and
+  `Image` -> `Image-6.1.55` copied into a directory lands as `Image`.
 - Paths on the SD card itself (`dest`, `renames`, `deletes`, and the
   `sdwire_ls`/`sdwire_cat` `path`) are not host paths and are not affected.
 - The CLI is not restricted: it already runs with the invoking user's
