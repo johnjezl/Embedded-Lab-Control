@@ -13,7 +13,9 @@ never the path, for the actual I/O.
 """
 
 import errno
+import fcntl
 import os
+import stat
 
 # Intermediate directories need only search permission with O_PATH (Linux);
 # fall back to O_RDONLY elsewhere. O_DIRECTORY|O_NOFOLLOW makes a symlinked
@@ -53,17 +55,40 @@ def _walk(parts: list[str], *, create: bool, mode: int) -> int:
     return fd
 
 
-def open_file_nofollow(path: str, flags: int = os.O_RDONLY, mode: int = 0o644) -> int:
-    """Open the file at absolute, normalized ``path`` with no symlink anywhere.
+def open_regular_nonblocking(
+    name: str, flags: int, mode: int = 0o644, dir_fd: int | None = None
+) -> int:
+    """Open ``name`` (O_NOFOLLOW), insisting it is a regular file.
 
-    Raises OSError (ELOOP/ENOTDIR) if any component is a symlink.
+    Opened with O_NONBLOCK so a FIFO planted in a shared directory can't
+    block the open (which would hang the caller while it holds locks);
+    anything that isn't a regular file is closed and refused with OSError;
+    O_NONBLOCK is then cleared for normal I/O.
+    """
+    fd = os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK, mode, dir_fd=dir_fd)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise OSError(errno.EINVAL, f"not a regular file: {name}")
+        fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) & ~os.O_NONBLOCK)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def open_file_nofollow(path: str, flags: int = os.O_RDONLY, mode: int = 0o644) -> int:
+    """Open the regular file at absolute, normalized ``path``, no symlinks.
+
+    Raises OSError (ELOOP/ENOTDIR) if any component is a symlink, and
+    (EINVAL) if the target isn't a regular file (e.g. a FIFO); never blocks
+    on opening a FIFO.
     """
     parts = _components(path)
     if not parts:
         raise IsADirectoryError(errno.EISDIR, "path is the root directory")
     parent = _walk(parts[:-1], create=False, mode=0o755)
     try:
-        return os.open(parts[-1], flags | os.O_NOFOLLOW, mode, dir_fd=parent)
+        return open_regular_nonblocking(parts[-1], flags, mode, dir_fd=parent)
     finally:
         os.close(parent)
 

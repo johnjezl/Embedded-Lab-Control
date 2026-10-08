@@ -13,10 +13,10 @@ Usage:
     python -m labctl.mcp_server
 """
 
+import errno
 import json
 import logging
 import os
-import stat
 import sys
 import threading
 import time as _time_mod
@@ -223,15 +223,15 @@ def _open_host_read(path: str) -> tuple[int | None, str | None]:
     if err:
         return None, err
     try:
+        # Refuses non-regular files (e.g. a planted FIFO) without blocking.
         fd = open_file_nofollow(resolved, os.O_RDONLY)
     except OSError as e:
+        if e.errno == errno.EINVAL:
+            return None, f"Error: not a regular file: {path!r}"
         return None, (
             f"Error: could not open {path!r} safely (it may have changed "
             f"since it was checked): {e.strerror or e}"
         )
-    if not stat.S_ISREG(os.fstat(fd).st_mode):
-        os.close(fd)
-        return None, f"Error: not a regular file: {path!r}"
     return fd, None
 
 

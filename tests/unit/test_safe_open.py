@@ -178,3 +178,110 @@ class TestControllerReadsDescriptors:
             os.close(fd)
 
         assert (card / "boot" / "Image").read_text() == "kernel"
+
+
+def _finishes(fn, seconds=3.0):
+    """Run fn in a daemon thread; return (finished, result_or_exception).
+
+    A FIFO open that blocks would hang the test forever; this turns a
+    regression into a clear failure instead.
+    """
+    import threading
+
+    box = {}
+
+    def run():
+        try:
+            box["value"] = fn()
+        except BaseException as e:  # noqa: BLE001 - surfaced to the test
+            box["value"] = e
+
+    t = threading.Thread(target=run, daemon=True)
+    t.start()
+    t.join(seconds)
+    return not t.is_alive(), box.get("value")
+
+
+class TestFifoNeverBlocks:
+    """Review #6 of #14: a FIFO planted in a shared directory blocked the
+    open forever while the tool held _HARDWARE_LOCK (all MCP calls hang)."""
+
+    def test_open_file_nofollow_refuses_fifo(self, tmp_path):
+        fifo = tmp_path / "x.img"
+        os.mkfifo(fifo)
+        finished, value = _finishes(lambda: open_file_nofollow(str(fifo)))
+        assert finished, "open blocked on a FIFO"
+        assert isinstance(value, OSError)
+
+    def test_open_host_read_reports_not_regular(self, tmp_path):
+        from labctl.core.config import Config
+        from labctl.mcp_server import _open_host_read
+
+        images = tmp_path / "images"
+        images.mkdir()
+        os.mkfifo(images / "x.img")
+        config = Config()
+        config.mcp.allowed_read_paths = [str(images)]
+
+        with patch("labctl.mcp_server._get_config", return_value=config):
+            finished, value = _finishes(lambda: _open_host_read(str(images / "x.img")))
+        assert finished, "_open_host_read blocked on a FIFO"
+        fd, err = value
+        assert fd is None and "not a regular file" in err
+
+    def test_run_file_fifo_without_reader_refused(self, tmp_path):
+        from labctl.serial.boot_test import _write_run_file
+
+        os.mkfifo(tmp_path / "run_01.txt")
+        finished, value = _finishes(
+            lambda: _write_run_file(tmp_path / "run_01.txt", "console")
+        )
+        assert finished, "write open blocked on a FIFO"
+        assert isinstance(value, OSError)
+
+    def test_run_file_fifo_with_reader_refused_nothing_leaks(self, tmp_path):
+        """With a reader attached the open succeeds; the type check refuses."""
+        from labctl.serial.boot_test import _write_run_file
+
+        fifo = tmp_path / "run_01.txt"
+        os.mkfifo(fifo)
+        reader = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)  # the "attacker"
+        try:
+            finished, value = _finishes(lambda: _write_run_file(fifo, "console"))
+            assert finished and isinstance(value, OSError)
+            try:
+                leaked = os.read(reader, 100)
+            except BlockingIOError:
+                leaked = b""
+            assert leaked == b""
+        finally:
+            os.close(reader)
+
+    def test_boot_test_continues_past_fifo(self, tmp_path):
+        from labctl.serial.boot_test import run_boot_test
+        from labctl.serial.capture import CaptureResult
+
+        out = tmp_path / "out"
+        out.mkdir()
+        os.mkfifo(out / "run_01.txt")
+
+        def go():
+            with patch("labctl.serial.boot_test.capture_serial_output") as cap:
+                cap.return_value = CaptureResult(
+                    output="ok", lines=1, pattern_matched=True, elapsed_seconds=1
+                )
+                return run_boot_test(
+                    sbc_name="s",
+                    expect_pattern="ok",
+                    tcp_host="localhost",
+                    tcp_port=4000,
+                    power_cycle_fn=MagicMock(),
+                    runs=2,
+                    timeout=1.0,
+                    output_dir=str(out),
+                )
+
+        finished, result = _finishes(go)
+        assert finished, "boot_test blocked on a FIFO run file"
+        assert result.passed_count == 2
+        assert (out / "run_02.txt").read_text() == "ok"

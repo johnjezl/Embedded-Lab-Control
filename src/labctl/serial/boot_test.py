@@ -25,11 +25,18 @@ def _write_run_file(path: Path | str, text: str, dir_fd: Optional[int] = None) -
     controls. A symlink planted at ``run_NN.txt`` would otherwise redirect
     the write to any file the service user can write, so open with
     O_NOFOLLOW (fails with ELOOP on a symlink), and refuse a file with
-    other hard links. With ``dir_fd`` (a checked directory handle) the
-    file is created relative to it, so the directory path itself can't
-    be swapped either. Raises OSError on refusal.
+    other hard links. Anything that isn't a regular file (e.g. a planted
+    FIFO, which would otherwise block the open forever while the caller
+    holds the hardware lock) is refused without blocking. With ``dir_fd``
+    (a checked directory handle) the file is created relative to it, so the
+    directory path itself can't be swapped either. Raises OSError on
+    refusal.
     """
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o644, dir_fd=dir_fd)
+    from labctl.core.safe_open import open_regular_nonblocking
+
+    fd = open_regular_nonblocking(
+        str(path), os.O_WRONLY | os.O_CREAT, 0o644, dir_fd=dir_fd
+    )
     try:
         if os.fstat(fd).st_nlink > 1:
             raise OSError(f"refusing to write {path}: it has other hard links")
