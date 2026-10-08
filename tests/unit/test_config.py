@@ -169,6 +169,33 @@ class TestMcpHostPathConfig:
         assert restored.mcp.allowed_write_paths == ["/b"]
 
 
+class TestMcpConfirmConfig:
+    """mcp.confirm_destructive / mcp.confirm_exempt (D012)."""
+
+    def test_defaults_on_no_exemptions(self):
+        config = Config.from_dict({})
+        assert config.mcp.confirm_destructive is True
+        assert config.mcp.confirm_exempt == []
+
+    def test_from_dict_and_roundtrip(self):
+        config = Config.from_dict(
+            {"mcp": {"confirm_destructive": False, "confirm_exempt": ["serial_send"]}}
+        )
+        assert config.mcp.confirm_destructive is False
+        assert config.mcp.confirm_exempt == ["serial_send"]
+        restored = Config.from_dict(config.to_dict())
+        assert restored.mcp.confirm_exempt == ["serial_send"]
+
+    def test_exempt_single_string_and_bad_entries(self, caplog):
+        assert Config.from_dict(
+            {"mcp": {"confirm_exempt": "serial_send"}}
+        ).mcp.confirm_exempt == ["serial_send"]
+        with caplog.at_level(logging.WARNING):
+            config = Config.from_dict({"mcp": {"confirm_exempt": ["power_off", 3]}})
+        assert config.mcp.confirm_exempt == ["power_off"]
+        assert "non-string" in caplog.text
+
+
 class TestExclusiveConfigEnv:
     """Review #8 of #14: `labctl -c FILE mcp` exports FILE via LABCTL_CONFIG;
     with LABCTL_CONFIG_EXCLUSIVE=1 a missing/broken FILE must give defaults

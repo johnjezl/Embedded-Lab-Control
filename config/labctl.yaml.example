@@ -62,6 +62,10 @@ mcp:
     - /var/lib/labctl/images
   allowed_write_paths:
     - /var/lib/labctl/output
+  # Destructive tools (power off/cycle, flash, serial_send, ...) need a
+  # second call with the confirm_token the first call returns.
+  # confirm_destructive: true
+  # confirm_exempt: [serial_send]
 
 # Database path for SBC and resource tracking
 database_path: ~/.config/labctl/labctl.db

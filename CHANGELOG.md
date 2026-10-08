@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Security
+- **Destructive MCP tools now require a two-step confirmation (breaking for
+  MCP clients).** The 23 tools annotated destructive (power off/cycle,
+  flashing, SD updates, `serial_send`, deletions, actuator/binding verbs,
+  recovery, force release) return a plan and a single-use `confirm_token`
+  on the first call and act only when called again with the same arguments
+  plus that token (120 s expiry, bound to tool and arguments). Configure
+  with `mcp.confirm_destructive` (default `true`) and `mcp.confirm_exempt`.
+  See `docs/MCP_SERVER.md` (D012).
 - **MCP host file access is now allowlisted (breaking).** `flash_image`
   (`image_path`, `post_flash_copies` sources), `sdwire_update` (`copies`
   sources) and `boot_test` (`image`, `output_dir`) only accept absolute host
@@ -97,6 +105,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   from removing dead code flagged by flake8 (unused imports/variables).
 
 ### Added
+- `docs/OPERATIONS.md`: every CLI command, MCP tool and MCP resource
+  classified as read / db-write / shared-resource / system-write /
+  hardware / destructive (issue #7). A test keeps it in sync with the code.
 - MCP tool annotations (`title`, `readOnlyHint`, `destructiveHint`,
   `idempotentHint`, `openWorldHint`) on all 52 tools, defined in one table in
   `mcp_server.py`. A unit test fails if a tool is added without an entry.

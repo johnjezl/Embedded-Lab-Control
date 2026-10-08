@@ -86,6 +86,20 @@ def _path_list(section: dict, key: str) -> list[str]:
     return paths
 
 
+def _name_list(section: dict, key: str) -> list[str]:
+    """Read a list of names (strings) from config; skip non-strings."""
+    raw = section.get(key) or []
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, list):
+        logger.warning("Config: %s must be a list of names; ignoring", key)
+        return []
+    names = [n for n in raw if isinstance(n, str) and n]
+    if len(names) != len(raw):
+        logger.warning("Config: %s has non-string entries; ignoring them", key)
+    return names
+
+
 def _path_exists(path: Path) -> bool:
     """Best-effort existence check that tolerates unreadable paths."""
     try:
@@ -278,11 +292,19 @@ class McpConfig:
     directories MCP tools may read (images, files to copy onto an SD card)
     or write (boot-test output). Both default to empty, which denies all
     host file access over MCP (D012); the CLI is not affected.
+
+    ``confirm_destructive`` (default True) makes every MCP tool annotated
+    destructive a two-step call: the first call returns a plan and a
+    single-use ``confirm_token``; only a second call with that token and the
+    same arguments acts (D012). ``confirm_exempt`` lists tool names that
+    skip this (e.g. ``serial_send`` for heavy interactive console use).
     """
 
     allow_admin_actuator_ops: bool = False
     allowed_read_paths: list[str] = field(default_factory=list)
     allowed_write_paths: list[str] = field(default_factory=list)
+    confirm_destructive: bool = True
+    confirm_exempt: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -410,6 +432,8 @@ class Config:
             allow_admin_actuator_ops=mcp_data.get("allow_admin_actuator_ops", False),
             allowed_read_paths=_path_list(mcp_data, "allowed_read_paths"),
             allowed_write_paths=_path_list(mcp_data, "allowed_write_paths"),
+            confirm_destructive=bool(mcp_data.get("confirm_destructive", True)),
+            confirm_exempt=_name_list(mcp_data, "confirm_exempt"),
         )
 
         database = DatabaseConfig(
@@ -503,6 +527,8 @@ class Config:
                 "allow_admin_actuator_ops": self.mcp.allow_admin_actuator_ops,
                 "allowed_read_paths": list(self.mcp.allowed_read_paths),
                 "allowed_write_paths": list(self.mcp.allowed_write_paths),
+                "confirm_destructive": self.mcp.confirm_destructive,
+                "confirm_exempt": list(self.mcp.confirm_exempt),
             },
             "database": {
                 "timeout_seconds": self.database.timeout_seconds,
