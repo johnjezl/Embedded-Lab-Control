@@ -317,20 +317,44 @@ def _sbc_to_dict(sbc) -> dict:
     return sbc.to_dict(include_ids=False)
 
 
-# --- Session identity (MCP stdio: one process = one session) ---
+# --- Session identity ---
+#
+# stdio: one process = one session. Over authenticated HTTP each user is
+# its own claimant (`<process id>:<username>`), so one user's claims stop
+# another's mutating calls; unauthenticated HTTP clients share the process
+# identity. The claim sweep still sees the process id at the front.
 
 _SERVER_START_EPOCH = int(_time_mod.time())
 _SESSION_ID = f"mcp-stdio:{os.getpid()}-{_SERVER_START_EPOCH}"
 _SESSION_KIND = "mcp-stdio"
-_AGENT_NAME: str | None = None
+_AGENT_NAME: str | None = None  # stdio / unauthenticated HTTP
+_USER_AGENT_NAMES: dict[str, str] = {}  # authenticated HTTP, per user
 
 
 def _get_session_id() -> str:
-    return _SESSION_ID
+    user = _authenticated_user()
+    return f"{_SESSION_ID}:{user}" if user else _SESSION_ID
 
 
 def _get_agent_name() -> str:
+    user = _authenticated_user()
+    if user:
+        return _USER_AGENT_NAMES.get(user) or user
     return _AGENT_NAME or f"unnamed-{_SESSION_ID[:16]}"
+
+
+def _set_agent_name(name: str) -> None:
+    global _AGENT_NAME
+    user = _authenticated_user()
+    if user:
+        _USER_AGENT_NAMES[user] = name
+    else:
+        _AGENT_NAME = name
+
+
+def _is_process_session(session_id: str) -> bool:
+    """True for this process's session IDs (any user)."""
+    return session_id == _SESSION_ID or session_id.startswith(_SESSION_ID + ":")
 
 
 # --- Claim enforcement helper ---
@@ -515,15 +539,19 @@ def _redeem_confirmation(tool_name: str, arguments: dict, token: str) -> str | N
     Over authenticated HTTP a token is only good for the user it was issued
     to: tokens are random, but they appear in tool output and transcripts.
     """
+    user = _authenticated_user()
     with _confirm_lock:
-        entry = _pending_confirmations.pop(token, None)
+        entry = _pending_confirmations.get(token)
+        # Another user's attempt must not burn the owner's token.
+        if entry is not None and entry[3] == user:
+            del _pending_confirmations[token]
     if entry is None:
         return "unknown or already-used confirm_token"
     issued_for, digest, expires, issued_to = entry
+    if issued_to != user:
+        return "confirm_token was issued to a different user"
     if _time_mod.monotonic() > expires:
         return "confirm_token expired"
-    if issued_to != _authenticated_user():
-        return "confirm_token was issued to a different user"
     if issued_for != tool_name or digest != _call_digest(tool_name, arguments):
         return (
             "confirm_token was issued for a different call (tool or arguments differ)"
@@ -606,9 +634,8 @@ def _with_mcp_activity(func):
 
     @wraps(func)
     def locked(*args, **kwargs):
-        user = _authenticated_user()
-        actor = f"{_get_session_id()}:{user}" if user else _get_session_id()
-        with _HARDWARE_LOCK, audit.activity_context(actor, "mcp"):
+        # The session ID names the user over authenticated HTTP.
+        with _HARDWARE_LOCK, audit.activity_context(_get_session_id(), "mcp"):
             return func(*args, **kwargs)
 
     return _with_confirmation(locked)
@@ -2424,12 +2451,10 @@ def claim_sbc(
         agent_name: Self-declared agent identifier
         context: Optional metadata (git branch, ticket, etc.)
     """
-    global _AGENT_NAME
-
     from labctl.core.models import ClaimConflict, UnknownSBCError
 
     if agent_name:
-        _AGENT_NAME = agent_name
+        _set_agent_name(agent_name)
 
     config = _get_config()
     duration_s = duration_minutes * 60
@@ -3300,11 +3325,10 @@ def _release_session_claims():
     """Best-effort release of claims held by this MCP session on exit."""
     try:
         manager = _get_manager()
-        session_id = _get_session_id()
         for claim in manager.list_active_claims():
-            if claim.session_id == session_id:
+            if _is_process_session(claim.session_id):
                 try:
-                    manager.release_claim(claim.sbc_name, session_id)
+                    manager.release_claim(claim.sbc_name, claim.session_id)
                     logger.info(
                         "Released claim on '%s' (session exit)",
                         claim.sbc_name,
@@ -3421,11 +3445,31 @@ def _authenticated_user() -> str | None:
     return token.client_id if token is not None else None
 
 
+def _header_name_host(entry: str, origin: bool) -> str:
+    """The host part of an allowed_hosts ("name[:port]") or
+    allowed_origins ("scheme://name[:port]") entry."""
+    from urllib.parse import urlsplit
+
+    try:
+        return urlsplit(entry if origin else f"//{entry}").hostname or entry
+    except ValueError:
+        return entry
+
+
+def _non_loopback_header_names(mcp_cfg) -> list[str]:
+    """Configured allowed Host/Origin names that aren't loopback."""
+    names = [(e, _header_name_host(e, False)) for e in mcp_cfg.allowed_hosts]
+    names += [(e, _header_name_host(e, True)) for e in mcp_cfg.allowed_origins]
+    return [entry for entry, name in names if not _is_loopback(name)]
+
+
 def _http_auth_required(host: str, config) -> bool:
     """Decide whether the HTTP transport requires API keys, or refuse to start.
 
-    Raises McpStartupError for a non-loopback bind without authentication,
-    and for auth.enabled with no usable API key (nobody could connect).
+    Raises McpStartupError for a server reachable beyond loopback without
+    authentication (a non-loopback bind, or a loopback bind that accepts a
+    non-loopback Host/Origin, i.e. sits behind a proxy), and for
+    auth.enabled with no usable API key (nobody could connect).
     """
     if config.auth.enabled:
         keyed = [
@@ -3446,11 +3490,22 @@ def _http_auth_required(host: str, config) -> bool:
                     _MIN_API_KEY_LENGTH,
                 )
         return True
+    how = (
+        "Set auth.enabled: true and give users an api_key (clients then send "
+        "'Authorization: Bearer <api_key>')"
+    )
     if not _is_loopback(host):
         raise McpStartupError(
             f"Refusing to serve MCP over HTTP on {host} without authentication. "
-            "Set auth.enabled: true and give users an api_key (clients then send "
-            "'Authorization: Bearer <api_key>'), or bind to 127.0.0.1."
+            f"{how}, or bind to 127.0.0.1."
+        )
+    exposed = _non_loopback_header_names(config.mcp)
+    if exposed:
+        raise McpStartupError(
+            "Refusing to serve MCP over HTTP without authentication while "
+            f"mcp.allowed_hosts/allowed_origins accept {', '.join(exposed)}: "
+            "a proxy would expose every tool unauthenticated. "
+            f"{how}, or remove those entries."
         )
     return False
 
@@ -3477,8 +3532,13 @@ def _transport_security(host: str, mcp_cfg):
     if not hosts:
         logger.warning(
             "mcp.allowed_hosts is not set: Host headers are not checked on %s "
-            "(API keys are still required)",
+            "(API keys are still required)%s",
             host,
+            (
+                "; mcp.allowed_origins is ignored without allowed_hosts"
+                if origins
+                else ""
+            ),
         )
         return None
     return TransportSecuritySettings(

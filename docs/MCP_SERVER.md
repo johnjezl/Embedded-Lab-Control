@@ -88,13 +88,17 @@ that user's `api_key`.
   rotating a key takes effect without restarting the server.
 - Each MCP session belongs to the user who opened it; another user's key
   can't drive it, and destructive-tool `confirm_token`s are only valid for
-  the user they were issued to.
-- Audit log entries for tool calls record the user
-  (`<session>:<username>`).
-- The server **refuses to start** on a non-loopback `--host` unless auth is
-  enabled, and refuses `auth.enabled: true` when no user has an `api_key`.
-- Without auth (the default), it listens on loopback only and anyone who
-  can connect locally can call every tool; the startup log says so.
+  (and only consumed by) the user they were issued to.
+- Each user is a separate claimant: one user's claim blocks another's
+  mutating calls, and the default agent name is the username. Claims and
+  audit entries record `<server session>:<username>`.
+- The server **refuses to start** without auth when it would be reachable
+  beyond loopback: on a non-loopback `--host`, or when `mcp.allowed_hosts`
+  / `allowed_origins` accept a non-loopback name (a reverse proxy). It also
+  refuses `auth.enabled: true` when no user has an `api_key`.
+- Without auth (the default), it listens on loopback only, all clients
+  share one claimant identity, and anyone who can connect locally can call
+  every tool; the startup log says so.
 
 #### Host header checks
 
@@ -109,8 +113,10 @@ mcp:
   allowed_origins: ["https://lab.example.com"]             # browser clients
 ```
 
-On a non-loopback bind, `Host` is checked only when `allowed_hosts` is set
-(a warning is logged otherwise); API keys are required there regardless.
+Accepting a non-loopback name requires auth (see above). On a non-loopback
+bind, `Host` and `Origin` are checked only when `allowed_hosts` is set (a
+warning is logged otherwise, also noting an `allowed_origins` that is
+therefore ignored); API keys are required there regardless.
 
 For remote access, either tunnel (`ssh -L 8080:127.0.0.1:8080 tarrasque`),
 put a TLS-terminating reverse proxy in front of the loopback server, or

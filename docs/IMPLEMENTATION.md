@@ -815,7 +815,9 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
 - WS4 MCP HTTP authentication — in progress
   - ✅ Bearer auth backed by web users' API keys (SDK `token_verifier`;
     keys re-read per request; sessions bound to the user; audit records it)
-  - ✅ Refuse non-loopback `--host` without auth, and auth without any key
+  - ✅ Refuse non-loopback `--host` (or non-loopback allowed Host/Origin
+    names) without auth, and auth without any key
+  - ✅ Per-user claim identity over authenticated HTTP
   - ✅ Configurable allowed `Host`/`Origin` headers (`mcp.allowed_hosts`,
     `mcp.allowed_origins`) on top of the loopback names
   - ✅ Review follow-ups from #15: confirm tokens bound to the

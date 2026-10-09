@@ -126,6 +126,39 @@ class TestHttpAuthPolicy:
         with pytest.raises(McpStartupError, match="no user in auth.users has an"):
             _http_auth_required("127.0.0.1", config)
 
+    @pytest.mark.parametrize(
+        "hosts,origins",
+        [
+            (["lab.example.com"], []),
+            (["lab.example.com:*"], []),
+            (["10.0.0.5:8080"], []),
+            ([], ["https://lab.example.com"]),
+        ],
+    )
+    def test_proxy_names_without_auth_refused(self, hosts, origins):
+        """Loopback bind, but accepting a public name means a proxy can
+        expose it: refuse without auth."""
+        from labctl.mcp_server import McpStartupError, _http_auth_required
+
+        config = _config(enabled=False, allowed_hosts=hosts, allowed_origins=origins)
+        with pytest.raises(McpStartupError, match="would expose"):
+            _http_auth_required("127.0.0.1", config)
+
+    def test_loopback_names_without_auth_allowed(self):
+        from labctl.mcp_server import _http_auth_required
+
+        config = _config(
+            enabled=False,
+            allowed_hosts=["localhost:*", "127.0.0.1:8080", "[::1]:*"],
+            allowed_origins=["http://localhost:3000"],
+        )
+        assert _http_auth_required("127.0.0.1", config) is False
+
+    def test_proxy_names_with_auth_allowed(self):
+        from labctl.mcp_server import _http_auth_required
+
+        assert _http_auth_required("127.0.0.1", _config(allowed_hosts=["lab"])) is True
+
     def test_short_key_warns(self, caplog):
         from labctl.mcp_server import _http_auth_required
 
@@ -176,6 +209,14 @@ class TestTransportSecurity:
 
         assert _transport_security("0.0.0.0", _config().mcp) is None
         assert "allowed_hosts is not set" in caplog.text
+        assert "allowed_origins is ignored" not in caplog.text
+
+    def test_non_loopback_origins_without_hosts_warns_ignored(self, caplog):
+        from labctl.mcp_server import _transport_security
+
+        mcp_cfg = _config(allowed_origins=["https://lab.example.com"]).mcp
+        assert _transport_security("0.0.0.0", mcp_cfg) is None
+        assert "allowed_origins is ignored without allowed_hosts" in caplog.text
 
 
 class TestRunServerRefuses:

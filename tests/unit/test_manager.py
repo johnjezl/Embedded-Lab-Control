@@ -1781,6 +1781,13 @@ class TestSessionLivenessPidRecycling:
 
         assert self._release(manager, pid_alive=True, started=None) == 0
 
+    def test_recycled_pid_detected_for_user_session(self, manager):
+        """Authenticated MCP HTTP IDs end in ":<username>"; the epoch is
+        still parsed, so a recycled PID is still caught."""
+        self._expired_claim(manager, f"mcp-stdio:4242-{self.EPOCH}:alice")
+
+        assert self._release(manager, pid_alive=True, started=self.EPOCH + 3600.0) == 1
+
     def test_session_id_without_epoch_uses_pid_only(self, manager):
         self._expired_claim(manager, "mcp-stdio:4242")
 

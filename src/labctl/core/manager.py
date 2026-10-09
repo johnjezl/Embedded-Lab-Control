@@ -1293,7 +1293,8 @@ class ResourceManager:
             except (IndexError, ValueError):
                 continue
             try:
-                epoch = int(epoch_part)
+                # Authenticated MCP HTTP appends ":<username>".
+                epoch = int(epoch_part.split(":", 1)[0])
             except ValueError:
                 epoch = None
 
