@@ -131,7 +131,7 @@ class TestHttpAuthPolicy:
         from labctl.mcp_server import McpStartupError, _http_auth_required
 
         config = _config(users=[UserConfig(username="web-only", password_hash="h")])
-        with pytest.raises(McpStartupError, match="no user in auth.users has an"):
+        with pytest.raises(McpStartupError, match="no user in auth.users has a usable"):
             _http_auth_required("127.0.0.1", config)
 
     @pytest.mark.parametrize(
@@ -171,9 +171,20 @@ class TestHttpAuthPolicy:
         from labctl.mcp_server import McpStartupError, _http_auth_required
 
         config = _config(users=[UserConfig(username=1001, api_key=ALICE_KEY)])
-        with pytest.raises(McpStartupError, match="api_key and a username"):
+        with pytest.raises(McpStartupError, match="no user in auth.users has a usable"):
             _http_auth_required("127.0.0.1", config)
-        assert "quote numeric usernames" in caplog.text
+        assert "auth.users[0] ignored" in caplog.text
+        assert "username is missing or not a string" in caplog.text
+        assert "api_key is not a string" not in caplog.text
+
+    def test_numeric_api_key_blamed_correctly(self, caplog):
+        from labctl.mcp_server import McpStartupError, _http_auth_required
+
+        config = _config(users=[UserConfig(username="alice", api_key=1234567890)])
+        with pytest.raises(McpStartupError):
+            _http_auth_required("127.0.0.1", config)
+        assert "api_key is not a string" in caplog.text
+        assert "username is missing" not in caplog.text
 
     def test_short_key_warns(self, caplog):
         from labctl.mcp_server import _http_auth_required

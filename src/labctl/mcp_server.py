@@ -3473,20 +3473,26 @@ def _http_auth_required(host: str, config) -> bool:
     """
     if config.auth.enabled:
         keyed = config.auth.key_users()
-        unusable = [u for u in config.auth.users if u.api_key and u not in keyed]
-        if unusable:
+        for index, user in enumerate(config.auth.users):
+            if not user.api_key or user in keyed:
+                continue
+            # Both fields must be strings; YAML loads unquoted digits as int.
+            problems = []
+            if not isinstance(user.api_key, str):
+                problems.append("api_key is not a string (quote it)")
+            if not isinstance(user.username, str) or not user.username:
+                problems.append("username is missing or not a string (quote it)")
             logger.warning(
-                "%d auth.users entr%s with an api_key but no usable (string) "
-                "username ignored; quote numeric usernames",
-                len(unusable),
-                "y" if len(unusable) == 1 else "ies",
+                "auth.users[%d] ignored for API key auth: %s",
+                index,
+                "; ".join(problems),
             )
         if not keyed:
             raise McpStartupError(
-                "auth.enabled is true but no user in auth.users has an api_key "
-                "and a username, "
-                "so no MCP client could authenticate. Add one "
-                "(generate with: labctl user generate-key)."
+                "auth.enabled is true but no user in auth.users has a usable "
+                "api_key (a string, with a string username), so no MCP client "
+                "could authenticate. Add one (generate with: labctl user "
+                "generate-key); see the warnings above for ignored entries."
             )
         for user in keyed:
             if len(user.api_key) < _MIN_API_KEY_LENGTH:
