@@ -135,11 +135,16 @@ fi
 # or auth with no usable API key, makes labctl-mcp refuse to start. Run the
 # server's own startup check against the config and bind address the unit
 # uses, so the outcome is known before the restart below.
-if systemctl is-enabled labctl-mcp &>/dev/null && [ -f "$SYSTEM_CONFIG_FILE" ]; then
-    MCP_UNIT=/etc/systemd/system/labctl-mcp.service
-    MCP_HOST=$(grep -oE -- '--host[= ]+[^ ]+' "$MCP_UNIT" 2>/dev/null | head -1 | sed -E 's/--host[= ]+//')
+if systemctl is-enabled labctl-mcp &>/dev/null; then
+    # The effective command line, drop-ins included (daemon-reload ran in
+    # step 2; the unit file itself was just replaced by the shipped one).
+    MCP_EXEC=$(systemctl show -p ExecStart --value labctl-mcp 2>/dev/null || true)
+    MCP_HOST=$(grep -oE -- '--host[= ]+[^ ;]+' <<<"$MCP_EXEC" | tail -1 | sed -E 's/^--host[= ]+//' || true)
+    MCP_CFG=$(grep -oE -- '(^| )(-c|--config)[= ]+[^ ;]+' <<<"$MCP_EXEC" | tail -1 | sed -E 's/^ ?(-c|--config)[= ]+//' || true)
     # stderr is kept: it carries labctl's warnings about ignored auth.users.
-    MCP_AUTH=$("$LABCTL_VENV/bin/python" - "$SYSTEM_CONFIG_FILE" "${MCP_HOST:-127.0.0.1}" <<'PY'
+    # `|| true`: under set -e a crash here must reach the "Could not check"
+    # branch, not abort the update before the services restart.
+    MCP_AUTH=$("$LABCTL_VENV/bin/python" - "${MCP_CFG:-$SYSTEM_CONFIG_FILE}" "${MCP_HOST:-127.0.0.1}" <<'PY' || true
 import sys
 from pathlib import Path
 
@@ -169,6 +174,7 @@ PY
             ;;
         *)
             echo "[!!] Could not check labctl-mcp authentication settings"
+            echo "     (config ${MCP_CFG:-$SYSTEM_CONFIG_FILE}, host ${MCP_HOST:-127.0.0.1})"
             ;;
     esac
 fi
