@@ -7,6 +7,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Security
+- `install-services.sh` and `update.sh` make the service copy of the config
+  (`/var/lib/labctl/.config/labctl/config.yaml`, which holds the same API
+  keys and credentials as `/etc/labctl/config.yaml`) mode `640`; it was
+  created world-readable under a world-traversable directory.
 - **MCP over HTTP now authenticates with the web users' API keys (breaking
   for HTTP clients when `auth.enabled` is true).** With auth enabled, every
   request to `labctl mcp --http` needs `Authorization: Bearer <api_key>`

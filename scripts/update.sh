@@ -80,6 +80,12 @@ fi
 chown root:labctl "$SYSTEM_CONFIG_DIR" "$SYSTEM_CONFIG_FILE"
 chmod 750 "$SYSTEM_CONFIG_DIR"
 chmod 640 "$SYSTEM_CONFIG_FILE"
+# The service copy carries the same secrets (API keys, Kasa credentials)
+# and sits under world-traversable /var/lib/labctl.
+if [ -f "$SERVICE_CONFIG_FILE" ]; then
+    chown labctl:labctl "$SERVICE_CONFIG_FILE"
+    chmod 640 "$SERVICE_CONFIG_FILE"
+fi
 echo "[ok] Shared config permissions repaired"
 
 # 3b. MCP host-file allowlist (0.2.0+): deny-all unless configured. Create

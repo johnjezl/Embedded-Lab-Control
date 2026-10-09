@@ -447,7 +447,7 @@ decisions: D011, D012 in [`DECISIONS.md`](DECISIONS.md).
 | Privileged actuator tools | `actuator_add/remove/set` (raw actuator access, bypassing bindings) | off | `mcp.allow_admin_actuator_ops` |
 | Claims | An agent's claim on a board blocks other agents' mutating calls on it | on | `claims.*` |
 | Serialization | One tool call (and hardware-reading resource) at a time | always | — |
-| Audit | Every change is recorded with the actor (`<session>[:<user>]`) | always | `labctl activity` / web `/activity` page |
+| Audit | Every change is recorded with the actor (`<session>[:<user>]`) | always | `labctl activity tail` / `export`, web `/activity` page |
 | systemd unit | `ProtectSystem=strict`, `ProtectHome=yes`, writes only to `/var/lib/labctl` | as shipped | `config/systemd/labctl-mcp.service` |
 
 Every tool and resource is classified (read / db-write / shared-resource /
@@ -467,8 +467,11 @@ system-write / hardware / destructive) in
 - The CLI is not restricted by any of the `mcp.*` settings; it runs with
   the invoking user's permissions and asks for confirmation on a terminal
   (`--yes` to skip).
-- API keys are stored in plain text in the config file; keep it readable
-  only by root and the `labctl` group (`update.sh` repairs permissions).
+- API keys are stored in plain text in the config files
+  (`/etc/labctl/config.yaml` and the service copy
+  `/var/lib/labctl/.config/labctl/config.yaml`); `install-services.sh` and
+  `update.sh` make both mode `640`, readable only by root/`labctl` and the
+  `labctl` group. Anyone in that group can read every key.
 
 ### Deployment checklist
 
@@ -489,7 +492,8 @@ system-write / hardware / destructive) in
    (e.g. `serial_send` for heavy console work).
 6. Turn on claims (`claims.enabled`, default) when several agents share
    boards, and ask agents to claim before working.
-7. Review the audit trail (`labctl activity`, or the web `/activity` page) after
+7. Review the audit trail (`labctl activity tail` / `labctl activity
+   export`, or the web `/activity` page) after
    unattended runs.
 
 `scripts/update.sh` checks items 2 and 4 against the installed config and
