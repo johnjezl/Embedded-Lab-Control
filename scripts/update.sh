@@ -146,7 +146,11 @@ if systemctl is-enabled labctl-mcp &>/dev/null; then
     # step 2; the unit file itself was just replaced by the shipped one).
     MCP_EXEC=$(systemctl show -p ExecStart --value labctl-mcp 2>/dev/null || true)
     MCP_HOST=$(grep -oE -- '--host[= ]+[^ ;]+' <<<"$MCP_EXEC" | tail -1 | sed -E 's/^--host[= ]+//' || true)
-    MCP_CFG=$(grep -oE -- '(^| )(-c|--config)[= ]+[^ ;]+' <<<"$MCP_EXEC" | tail -1 | sed -E 's/^ ?(-c|--config)[= ]+//' || true)
+    MCP_CFG=$(grep -oE -- '(^| )(-c ?|--config[= ]+)[^ ;-][^ ;]*' <<<"$MCP_EXEC" | tail -1 | sed -E 's/^ ?(-c ?|--config[= ]+)//' || true)
+    if [ -z "$MCP_CFG" ]; then
+        # No -c: a drop-in may set LABCTL_CONFIG instead.
+        MCP_CFG=$(systemctl show -p Environment --value labctl-mcp 2>/dev/null | grep -oE '(^| )LABCTL_CONFIG=[^ ]+' | tail -1 | sed -E 's/^ ?LABCTL_CONFIG=//' || true)
+    fi
     # stderr is kept: it carries labctl's warnings about ignored auth.users.
     # `|| true`: under set -e a crash here must reach the "Could not check"
     # branch, not abort the update before the services restart.
@@ -170,17 +174,20 @@ PY
             echo "[!!] labctl-mcp now requires API keys (auth.enabled is true):"
             echo "     MCP HTTP clients must send 'Authorization: Bearer <api_key>'"
             echo "     (a user's api_key from auth.users). See docs/MCP_SERVER.md."
+            echo "     (checked ${MCP_CFG:-$SYSTEM_CONFIG_FILE}, host ${MCP_HOST:-127.0.0.1})"
             ;;
         none)
             echo "[ok] labctl-mcp: loopback only, no authentication (auth.enabled is false)"
+            echo "     (checked ${MCP_CFG:-$SYSTEM_CONFIG_FILE}, host ${MCP_HOST:-127.0.0.1})"
             ;;
         refused:*)
             echo "[!!] labctl-mcp will refuse to start with this config:"
             echo "     ${MCP_AUTH#refused: }"
+            echo "     (checked ${MCP_CFG:-$SYSTEM_CONFIG_FILE}, host ${MCP_HOST:-127.0.0.1})"
             ;;
         *)
             echo "[!!] Could not check labctl-mcp authentication settings"
-            echo "     (config ${MCP_CFG:-$SYSTEM_CONFIG_FILE}, host ${MCP_HOST:-127.0.0.1})"
+            echo "     (checked ${MCP_CFG:-$SYSTEM_CONFIG_FILE}, host ${MCP_HOST:-127.0.0.1})"
             ;;
     esac
 fi
