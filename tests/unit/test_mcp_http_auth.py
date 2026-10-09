@@ -292,6 +292,70 @@ class TestRunServerRefuses:
         assert isinstance(mcp_server.mcp._token_verifier, mcp_server._ApiKeyVerifier)
 
 
+class TestConfigPinning:
+    """Per-request reloads must not fall back to another config file."""
+
+    @pytest.fixture
+    def two_configs(self, tmp_path, monkeypatch):
+        """A user config (alice's key) and a stand-in system config (bob's)."""
+        from labctl.core import config as config_mod
+
+        xdg = tmp_path / "xdg"
+        (xdg / "labctl").mkdir(parents=True)
+        user_cfg = xdg / "labctl" / "config.yaml"
+        system_cfg = tmp_path / "system.yaml"
+        auth = (
+            "auth:\n  enabled: true\n  users:\n"
+            "    - username: {u}\n      api_key: {k}\n"
+        )
+        user_cfg.write_text(auth.format(u="alice", k=ALICE_KEY))
+        system_cfg.write_text(auth.format(u="bob", k=BOB_KEY))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+        monkeypatch.setattr(config_mod, "SYSTEM_CONFIG_FILE", system_cfg)
+        # Registered so monkeypatch restores whatever pinning sets.
+        monkeypatch.setenv("LABCTL_CONFIG", "")
+        monkeypatch.setenv("LABCTL_CONFIG_EXCLUSIVE", "")
+        monkeypatch.delenv("LABCTL_CONFIG")
+        monkeypatch.delenv("LABCTL_CONFIG_EXCLUSIVE")
+        return user_cfg
+
+    def test_source_path_recorded(self, two_configs):
+        from labctl.core.config import load_config
+
+        assert load_config().source_path == two_configs
+
+    def test_unpinned_broken_user_config_falls_back(self, two_configs):
+        """The hazard: without pinning, bob's /etc key would be accepted."""
+        from labctl.core.config import load_config
+
+        two_configs.write_text("auth: [unclosed\n")
+        assert load_config().auth.user_for_api_key(BOB_KEY) is not None
+
+    def test_pinned_broken_config_fails_closed(self, two_configs):
+        from labctl.core.config import load_config
+        from labctl.mcp_server import _pin_config_file
+
+        _pin_config_file(load_config())
+        two_configs.write_text("auth: [unclosed\n")
+        config = load_config()
+        assert config.auth.user_for_api_key(BOB_KEY) is None
+        assert config.auth.user_for_api_key(ALICE_KEY) is None
+
+    def test_run_server_pins_when_auth_required(self, two_configs, http_auth_restore):
+        import os
+
+        from labctl import mcp_server
+
+        with (
+            patch.object(mcp_server, "_start_expiry_thread"),
+            patch("atexit.register"),
+            patch.object(mcp_server.mcp, "run"),
+        ):
+            mcp_server.run_server(transport="http", host="127.0.0.1", http_port=9)
+        assert os.environ["LABCTL_CONFIG"] == str(two_configs)
+        assert os.environ["LABCTL_CONFIG_EXCLUSIVE"] == "1"
+
+
 # ---------------------------------------------------------------------------
 # Real HTTP requests against the SDK app: pins how _enable_http_auth plugs
 # into the SDK (it sets attributes the SDK reads when building the app).

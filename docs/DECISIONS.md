@@ -236,7 +236,7 @@ This document records significant design decisions made during development.
   - `serial_send` keeps MCP confirmation **on** by default even though it doubles the calls for console work; operators opt out with `mcp.confirm_exempt: [serial_send]`.
 - **Follow-up decisions (2026-10-08, WS4)**:
   - MCP HTTP auth follows the existing `auth.enabled` switch (no separate MCP setting): enabled means every HTTP request needs a user's API key, on loopback too, since other local users can reach 127.0.0.1. Disabled keeps today's unauthenticated loopback server. `auth.enabled` with no API key at all refuses to start rather than run a server nobody can use. No override flag for an unauthenticated non-loopback bind: a proxy on the same host can use loopback.
-  - Keys are re-read from the config per request (revocation without restart; a broken config fails closed). Sessions are bound to the authenticating user by the SDK, and confirm tokens to the user they were issued to.
+  - Keys are re-read from the config per request (revocation without restart). The config file loaded at startup is pinned, as with `-c`, so a broken or missing file fails closed instead of falling back to another config. Sessions are bound to the authenticating user by the SDK, and confirm tokens to the user they were issued to.
   - Non-loopback binds check `Host` only when `mcp.allowed_hosts` is set (warning otherwise): the reachable names can't be guessed, and auth is mandatory there.
 
 ---

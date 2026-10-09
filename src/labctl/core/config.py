@@ -387,6 +387,8 @@ class Config:
         default_factory=lambda: _default_config_dir() / "labctl.db"
     )
     log_level: str = "WARNING"
+    # The file this config was loaded from (None: defaults); not serialized.
+    source_path: Optional[Path] = field(default=None, compare=False, repr=False)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Config":
@@ -652,11 +654,13 @@ def load_config(
 
     # Try to load from file
     config_data = {}
+    loaded_from = None
     for path in paths_to_try:
         if _path_exists(path):
             try:
                 with open(path) as f:
                     config_data = yaml.safe_load(f) or {}
+                loaded_from = path
                 break
             except Exception as e:
                 logger.warning("Failed to load config from %s: %s", path, e)
@@ -664,6 +668,7 @@ def load_config(
 
     # Create config from loaded data (or defaults)
     config = Config.from_dict(config_data)
+    config.source_path = loaded_from
 
     # Apply environment variable overrides
     config = _apply_env_overrides(config)
