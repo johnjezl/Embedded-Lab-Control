@@ -13,9 +13,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   for a user in `auth.users` (401 otherwise); keys are re-read per request,
   so revoking one needs no restart. Sessions are bound to the user that
   opened them, destructive-tool confirm tokens to the user they were issued
-  to, and audit entries record the user. The server refuses to start on a
-  non-loopback `--host` without auth, or with auth enabled but no API key
-  configured. New `mcp.allowed_hosts` / `mcp.allowed_origins` accept extra
+  to, and each user is a separate claimant (one user's claim blocks
+  another's mutating calls); claims and audit entries record the user. The
+  server refuses to start without auth when reachable beyond loopback (a
+  non-loopback `--host`, or non-loopback names in `mcp.allowed_hosts` /
+  `allowed_origins`), or with auth enabled but no API key configured. New `mcp.allowed_hosts` / `mcp.allowed_origins` accept extra
   `Host` / `Origin` headers (e.g. a reverse proxy's public name) on top of
   the loopback names. See `docs/MCP_SERVER.md` (D012).
 - API key lookups (web and MCP) no longer raise on a non-ASCII key in a

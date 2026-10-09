@@ -2440,6 +2440,46 @@ class TestMcpClaimEnforcement:
             result = power_on(sbc_name="test-sbc-1")
         assert "Power ON" in result
 
+    def test_authenticated_users_are_separate_claimants(self, claims_env):
+        """Over authenticated HTTP, alice's claim blocks bob's mutating
+        calls, bob can't release it, and each user has an agent name."""
+        from labctl.mcp_server import claim_sbc, power_on, release_sbc
+
+        with patch("labctl.mcp_server._authenticated_user", return_value="alice"):
+            claimed = json.loads(claim_sbc(sbc_name="test-sbc-1", reason="mine"))
+        assert claimed["status"] == "claimed"
+        active = claims_env.get_active_claim("test-sbc-1")
+        assert active.session_id == "test-session-1:alice"
+        assert claimed["claim"]["agent_name"] == "alice"
+
+        with (
+            patch("labctl.mcp_server._authenticated_user", return_value="bob"),
+            patch("labctl.power.base.PowerController.from_plug") as power,
+        ):
+            blocked = json.loads(power_on(sbc_name="test-sbc-1"))
+            not_released = json.loads(release_sbc(sbc_name="test-sbc-1"))
+        assert blocked["error"] == "sbc_claimed"
+        power.assert_not_called()
+        assert not_released.get("status") != "released"
+
+        with (
+            patch("labctl.mcp_server._authenticated_user", return_value="alice"),
+            patch("labctl.power.base.PowerController.from_plug") as power,
+        ):
+            power.return_value.power_on.return_value = True
+            assert "Power ON" in power_on(sbc_name="test-sbc-1")
+
+    def test_agent_name_is_per_user(self, claims_env):
+        from labctl import mcp_server
+
+        with patch.dict(mcp_server._USER_AGENT_NAMES, clear=True):
+            with patch.object(mcp_server, "_authenticated_user", return_value="alice"):
+                mcp_server._set_agent_name("alice-bot")
+                assert mcp_server._get_agent_name() == "alice-bot"
+            with patch.object(mcp_server, "_authenticated_user", return_value="bob"):
+                assert mcp_server._get_agent_name() == "bob"
+            assert mcp_server._get_agent_name() == "test-agent"
+
     def test_power_on_allowed_when_unclaimed(self, claims_env):
         from labctl.mcp_server import power_on
 
@@ -2491,6 +2531,25 @@ class TestMcpAtexitAndSweep:
         )
         _release_session_claims()
         assert claims_env.get_active_claim("test-sbc-1") is not None
+
+    def test_release_session_claims_includes_http_users(self, claims_env):
+        """Per-user claims of this process go too; a session ID that merely
+        starts with ours (another process) is left alone."""
+        from labctl.mcp_server import _release_session_claims, claim_sbc
+
+        with patch("labctl.mcp_server._authenticated_user", return_value="alice"):
+            claim_sbc(sbc_name="test-sbc-1", reason="alice")
+        claims_env.claim_sbc(
+            sbc_name="test-sbc-2",
+            agent_name="other",
+            session_id="test-session-10",
+            session_kind="mcp-stdio",
+            duration_seconds=600,
+            reason="other process",
+        )
+        _release_session_claims()
+        assert claims_env.get_active_claim("test-sbc-1") is None
+        assert claims_env.get_active_claim("test-sbc-2") is not None
 
 
 class TestMcpClaimMetricsResource:
@@ -3444,6 +3503,19 @@ class TestDestructiveConfirmation:
 
         with patch("labctl.mcp_server._authenticated_user", return_value="alice"):
             token = self._plan(power_off(sbc_name="test-sbc-1"))["confirm_token"]
+            result = power_off(sbc_name="test-sbc-1", confirm_token=token)
+        assert result.startswith("Power OFF: test-sbc-1")
+
+    def test_other_users_attempt_does_not_burn_token(self, env):
+        """A token leaked to another user stays valid for its owner."""
+        from labctl.mcp_server import power_off
+
+        _, power = env
+        with patch("labctl.mcp_server._authenticated_user", return_value="alice"):
+            token = self._plan(power_off(sbc_name="test-sbc-1"))["confirm_token"]
+        with patch("labctl.mcp_server._authenticated_user", return_value="bob"):
+            power_off(sbc_name="test-sbc-1", confirm_token=token)
+        with patch("labctl.mcp_server._authenticated_user", return_value="alice"):
             result = power_off(sbc_name="test-sbc-1", confirm_token=token)
         assert result.startswith("Power OFF: test-sbc-1")
 
