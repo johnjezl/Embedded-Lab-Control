@@ -112,6 +112,11 @@ chmod 3775 "$LABCTL_HOME/output"
 echo "[ok] MCP image/output directories: $LABCTL_HOME/{images,output}"
 
 chown -R labctl:labctl "$LABCTL_HOME"
+# The service copy of the config holds the same secrets (API keys, Kasa
+# credentials) as /etc/labctl/config.yaml, and $LABCTL_HOME is world-
+# traversable (2775): keep it unreadable to other users.
+chmod 640 "$LABCTL_CONFIG/config.yaml"
+echo "[ok] Secured service config: $LABCTL_CONFIG/config.yaml (labctl:labctl, 640)"
 
 # 4. Set up udev rules file (group-writable so labctl users don't need sudo)
 echo "[+] Setting up udev rules file..."
