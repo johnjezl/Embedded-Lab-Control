@@ -37,10 +37,7 @@ def get_user_by_username(
 
 def get_user_by_api_key(auth_config: AuthConfig, api_key: str) -> Optional[UserConfig]:
     """Look up a user by API key using constant-time comparison."""
-    for user in auth_config.users:
-        if user.api_key and hmac.compare_digest(user.api_key, api_key):
-            return user
-    return None
+    return auth_config.user_for_api_key(api_key)
 
 
 def verify_password(user: UserConfig, password: str) -> bool:

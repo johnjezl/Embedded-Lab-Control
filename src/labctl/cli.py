@@ -5043,7 +5043,8 @@ def sessions_cmd(ctx: click.Context, sbc_name: str | None) -> None:
     "--host",
     default="127.0.0.1",
     show_default=True,
-    help="Bind address for --http. Use 0.0.0.0 only behind an auth proxy.",
+    help="Bind address for --http. Non-loopback addresses require auth.enabled "
+    "with user API keys (clients send 'Authorization: Bearer <api_key>').",
 )
 @click.pass_context
 def mcp_cmd(ctx: click.Context, http_port: int | None, host: str) -> None:
@@ -5061,7 +5062,7 @@ def mcp_cmd(ctx: click.Context, http_port: int | None, host: str) -> None:
         os.environ["LABCTL_CONFIG"] = str(ctx.obj["config_path"])
         os.environ["LABCTL_CONFIG_EXCLUSIVE"] = "1"
     try:
-        from labctl.mcp_server import run_server
+        from labctl.mcp_server import McpStartupError, run_server
     except ModuleNotFoundError as e:
         # Only translate a missing `mcp` SDK (the optional extra); any other
         # missing module is a real bug and should keep its traceback.
@@ -5074,7 +5075,10 @@ def mcp_cmd(ctx: click.Context, http_port: int | None, host: str) -> None:
 
     if http_port:
         click.echo(f"Starting MCP server (HTTP on {host}:{http_port})...")
-        run_server(transport="http", http_port=http_port, host=host)
+        try:
+            run_server(transport="http", http_port=http_port, host=host)
+        except McpStartupError as e:
+            raise click.ClickException(str(e)) from e
     else:
         # stdio mode — no output to stdout (it's the JSON-RPC channel)
         run_server(transport="stdio")

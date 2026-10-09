@@ -1272,6 +1272,27 @@ class TestHostPathAllowlist:
 
         assert resolved is None and "outside mcp.allowed_read_paths" in err
 
+    def test_write_dir_file_in_the_way(self, host_paths):
+        """A regular file where the output directory should be is reported
+        as such, not as a possible race."""
+        from labctl.mcp_server import _open_host_write_dir
+
+        allowed, _, _ = host_paths
+        (allowed / "out").mkdir()
+        (allowed / "out" / "run").write_text("x")
+        fd, resolved, err = _open_host_write_dir(str(allowed / "out" / "run"))
+        assert fd is None and resolved is None
+        assert err.startswith("Error: not a directory:")
+
+    def test_write_dir_missing_parents_created(self, host_paths):
+        from labctl.mcp_server import _open_host_write_dir
+
+        allowed, _, _ = host_paths
+        fd, resolved, err = _open_host_write_dir(str(allowed / "out" / "a" / "b"))
+        assert err is None
+        os.close(fd)
+        assert (allowed / "out" / "a" / "b").is_dir()
+
     def test_relative_path_rejected(self, host_paths):
         from labctl.mcp_server import _resolve_host_path
 
@@ -3208,17 +3229,24 @@ class TestMcpRunServer:
         from labctl.mcp_server import run_server
 
         run_server(transport="http", http_port=8080)
-        run_env.run.assert_called_once_with(
-            transport="streamable-http", host="127.0.0.1", port=8080
-        )
+        run_env.run.assert_called_once()
+        kwargs = run_env.run.call_args.kwargs
+        assert kwargs["transport"] == "streamable-http"
+        assert (kwargs["host"], kwargs["port"]) == ("127.0.0.1", 8080)
+        assert kwargs["transport_security"].enable_dns_rebinding_protection
 
     def test_http_passes_custom_host(self, run_env):
+        """A non-loopback host needs auth (tests/unit/test_mcp_http_auth.py)."""
+        from labctl.core.config import Config, UserConfig
         from labctl.mcp_server import run_server
 
-        run_server(transport="http", http_port=9123, host="0.0.0.0")
-        run_env.run.assert_called_once_with(
-            transport="streamable-http", host="0.0.0.0", port=9123
-        )
+        config = Config()
+        config.auth.enabled = True
+        config.auth.users = [UserConfig(username="u", api_key="k" * 32)]
+        with patch("labctl.mcp_server._get_config", return_value=config):
+            run_server(transport="http", http_port=9123, host="0.0.0.0")
+        kwargs = run_env.run.call_args.kwargs
+        assert (kwargs["host"], kwargs["port"]) == ("0.0.0.0", 9123)
 
     def test_stdio(self, run_env):
         from labctl.mcp_server import run_server
@@ -3400,6 +3428,24 @@ class TestDestructiveConfirmation:
         assert again["status"] == "confirmation_failed"
         assert "already-used" in again["error"]
         assert power.power_off.call_count == 1
+
+    def test_token_bound_to_authenticated_user(self, env):
+        """Over authenticated HTTP, another user can't spend the token."""
+        from labctl.mcp_server import power_off
+
+        _, power = env
+        with patch("labctl.mcp_server._authenticated_user", return_value="alice"):
+            token = self._plan(power_off(sbc_name="test-sbc-1"))["confirm_token"]
+        with patch("labctl.mcp_server._authenticated_user", return_value="bob"):
+            stolen = json.loads(power_off(sbc_name="test-sbc-1", confirm_token=token))
+        assert stolen["status"] == "confirmation_failed"
+        assert "different user" in stolen["error"]
+        power.power_off.assert_not_called()
+
+        with patch("labctl.mcp_server._authenticated_user", return_value="alice"):
+            token = self._plan(power_off(sbc_name="test-sbc-1"))["confirm_token"]
+            result = power_off(sbc_name="test-sbc-1", confirm_token=token)
+        assert result.startswith("Power OFF: test-sbc-1")
 
     def test_token_bound_to_arguments(self, env):
         """A token for one SBC can't be spent on another; it's consumed."""

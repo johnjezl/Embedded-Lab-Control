@@ -70,18 +70,53 @@ JSON-RPC messages. All logging goes to stderr.
 
 ```bash
 labctl mcp --http 8080                  # binds 127.0.0.1:8080 (default)
-labctl mcp --http 8080 --host 0.0.0.0   # all interfaces — see note below
+labctl mcp --http 8080 --host 0.0.0.0   # all interfaces — requires auth
 ```
 
 Uses the Streamable HTTP transport (endpoint `/mcp`) on the specified port.
 Useful for multi-client scenarios or accessing the lab from a different machine.
 
-`--host` defaults to `127.0.0.1`. When bound to loopback, the MCP SDK also
-enables DNS-rebinding protection, so requests whose `Host` header is not
-`localhost`/`127.0.0.1`/`[::1]` are rejected with `421 Misdirected Request`
-(this includes a reverse proxy that forwards the public host name).
-For remote access either tunnel (`ssh -L 8080:127.0.0.1:8080 tarrasque`) or
-bind a non-loopback address on a trusted network.
+#### Authentication
+
+HTTP authentication uses the same users and API keys as the web REST API
+(D012): when `auth.enabled` is `true`, every request must carry
+`Authorization: Bearer <api_key>` for a user in `auth.users`, otherwise it
+gets `401`. Generate a key with `labctl user generate-key` and put it in
+that user's `api_key`.
+
+- Keys are re-read from the config on every request, so removing or
+  rotating a key takes effect without restarting the server.
+- Each MCP session belongs to the user who opened it; another user's key
+  can't drive it, and destructive-tool `confirm_token`s are only valid for
+  the user they were issued to.
+- Audit log entries for tool calls record the user
+  (`<session>:<username>`).
+- The server **refuses to start** on a non-loopback `--host` unless auth is
+  enabled, and refuses `auth.enabled: true` when no user has an `api_key`.
+- Without auth (the default), it listens on loopback only and anyone who
+  can connect locally can call every tool; the startup log says so.
+
+#### Host header checks
+
+The server rejects requests whose `Host` header it doesn't expect with
+`421 Misdirected Request` (DNS-rebinding protection). Bound to loopback it
+accepts `127.0.0.1`, `localhost` and `[::1]` on any port. A reverse proxy
+that forwards its public name needs that name added:
+
+```yaml
+mcp:
+  allowed_hosts: ["lab.example.com", "lab.example.com:*"]  # name:* = any port
+  allowed_origins: ["https://lab.example.com"]             # browser clients
+```
+
+On a non-loopback bind, `Host` is checked only when `allowed_hosts` is set
+(a warning is logged otherwise); API keys are required there regardless.
+
+For remote access, either tunnel (`ssh -L 8080:127.0.0.1:8080 tarrasque`),
+put a TLS-terminating reverse proxy in front of the loopback server, or
+bind a reachable address with auth enabled. The server itself speaks plain
+HTTP, so keys cross the network in clear text unless a tunnel or proxy
+provides TLS.
 
 ### Running as a systemd service
 
@@ -104,21 +139,20 @@ The service runs on `127.0.0.1:8080` by default. Edit the service file to
 change the port or add `--host`. (Before 0.2.0 the port argument was
 ignored and the server silently bound `127.0.0.1:8000`.)
 
-Remote clients connect via HTTP (requires a tunnel, or `--host` set to a
-reachable address):
+Remote clients connect via HTTP (through a tunnel, a proxy, or `--host`
+set to a reachable address), sending their API key when auth is enabled:
 
 ```json
 {
   "mcpServers": {
     "labctl": {
-      "url": "http://tarrasque:8080/mcp"
+      "type": "http",
+      "url": "http://127.0.0.1:8080/mcp",
+      "headers": { "Authorization": "Bearer <api_key>" }
     }
   }
 }
 ```
-
-**Note:** The HTTP transport currently has no authentication. Only run on
-trusted networks or behind a reverse proxy with auth.
 
 ### Direct Python invocation
 
@@ -387,8 +421,10 @@ The assistant calls:
 - The MCP server has full access to lab resources — it can power cycle boards,
   modify the database, and run health checks.
 - In stdio mode, access is limited to the local user running the client.
-- In HTTP mode, there is currently no authentication on the MCP endpoint.
-  Use this only on trusted networks or behind a reverse proxy with auth.
+- In HTTP mode, clients authenticate with a web user's API key as a bearer
+  token when `auth.enabled` is true; without auth the server only listens
+  on loopback (see [Authentication](#authentication)). Use TLS (tunnel or
+  proxy) for anything beyond the local host.
 - The server uses the same configuration and database as the CLI, so all
   operations are audited in the audit_log table.
 - Every tool and resource is classified (read / db-write / shared-resource /
@@ -412,8 +448,10 @@ release: 23 tools) is a two-step call:
 2. Called again with **the same arguments** plus `confirm_token`, it acts.
 
 Tokens are random, single-use, expire after 120 s, and are bound to the tool
-and its exact arguments (defaults included). A token used for a different
-call, used twice, or expired returns `confirmation_failed` and does nothing.
+and its exact arguments (defaults included); over authenticated HTTP they
+are also bound to the user they were issued to. A token used for a different
+call or by a different user, used twice, or expired returns
+`confirmation_failed` and does nothing.
 These tools show an extra optional `confirm_token` parameter in their
 schema and say "DESTRUCTIVE: requires confirmation" in their description.
 

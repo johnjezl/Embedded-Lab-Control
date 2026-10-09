@@ -22,7 +22,9 @@ ser2net:
   # Enable ser2net integration (set to false for direct serial only)
   enabled: true
 
-# Authentication (disabled by default)
+# Authentication (disabled by default). Also secures `labctl mcp --http`:
+# with auth enabled, MCP HTTP clients must send
+# "Authorization: Bearer <api_key>" using one of these users' API keys.
 # auth:
 #   enabled: true
 #   secret_key: "generate-a-random-string"
@@ -66,6 +68,11 @@ mcp:
   # second call with the confirm_token the first call returns.
   # confirm_destructive: true
   # confirm_exempt: [serial_send]
+  # HTTP transport: extra accepted Host / Origin headers, e.g. when a
+  # reverse proxy forwards its public name ("name:*" = any port). Loopback
+  # names are always accepted when bound to 127.0.0.1.
+  # allowed_hosts: ["lab.example.com", "lab.example.com:*"]
+  # allowed_origins: ["https://lab.example.com"]
 
 # Database path for SBC and resource tracking
 database_path: ~/.config/labctl/labctl.db

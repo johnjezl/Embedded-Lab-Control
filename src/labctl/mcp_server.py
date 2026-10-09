@@ -262,6 +262,17 @@ def _open_host_write_dir(path: str) -> tuple[int | None, str | None, str | None]
     try:
         return open_dir_nofollow(resolved, create=True), resolved, None
     except OSError as e:
+        if e.errno == errno.ENOTDIR:
+            # Missing directories are created, so this is a file in the way
+            # (the path was resolved, so a symlink here appeared since).
+            return (
+                None,
+                None,
+                (
+                    f"Error: not a directory: {path!r} (a file is in the way, "
+                    "or the path changed since it was checked)"
+                ),
+            )
         return None, None, _host_open_error(path, e)
 
 
@@ -439,7 +450,8 @@ _CONFIRM_TTL_SECONDS = 120
 _DESTRUCTIVE_TOOLS = frozenset(
     name for name, ann in TOOL_ANNOTATIONS.items() if ann.destructive_hint
 )
-_pending_confirmations: dict[str, tuple[str, str, float]] = {}
+# token -> (tool, call digest, expiry, user it was issued to; None = no auth)
+_pending_confirmations: dict[str, tuple[str, str, float, str | None]] = {}
 _confirm_lock = threading.Lock()
 
 
@@ -468,13 +480,14 @@ def _issue_confirmation(tool_name: str, arguments: dict) -> str:
     with _confirm_lock:
         # Drop expired tokens so the table can't grow without bound.
         for stale in [
-            t for t, (_, _, exp) in _pending_confirmations.items() if exp < now
+            t for t, (_, _, exp, _) in _pending_confirmations.items() if exp < now
         ]:
             del _pending_confirmations[stale]
         _pending_confirmations[token] = (
             tool_name,
             _call_digest(tool_name, arguments),
             now + _CONFIRM_TTL_SECONDS,
+            _authenticated_user(),
         )
     title = TOOL_ANNOTATIONS[tool_name].title
     return json.dumps(
@@ -497,14 +510,20 @@ def _issue_confirmation(tool_name: str, arguments: dict) -> str:
 
 
 def _redeem_confirmation(tool_name: str, arguments: dict, token: str) -> str | None:
-    """Consume ``token``; return None if valid for this call, else an error."""
+    """Consume ``token``; return None if valid for this call, else an error.
+
+    Over authenticated HTTP a token is only good for the user it was issued
+    to: tokens are random, but they appear in tool output and transcripts.
+    """
     with _confirm_lock:
         entry = _pending_confirmations.pop(token, None)
     if entry is None:
         return "unknown or already-used confirm_token"
-    issued_for, digest, expires = entry
+    issued_for, digest, expires, issued_to = entry
     if _time_mod.monotonic() > expires:
         return "confirm_token expired"
+    if issued_to != _authenticated_user():
+        return "confirm_token was issued to a different user"
     if issued_for != tool_name or digest != _call_digest(tool_name, arguments):
         return (
             "confirm_token was issued for a different call (tool or arguments differ)"
@@ -587,7 +606,9 @@ def _with_mcp_activity(func):
 
     @wraps(func)
     def locked(*args, **kwargs):
-        with _HARDWARE_LOCK, audit.activity_context(_get_session_id(), "mcp"):
+        user = _authenticated_user()
+        actor = f"{_get_session_id()}:{user}" if user else _get_session_id()
+        with _HARDWARE_LOCK, audit.activity_context(actor, "mcp"):
             return func(*args, **kwargs)
 
     return _with_confirmation(locked)
@@ -3344,6 +3365,147 @@ def _warn_unknown_confirm_exemptions() -> None:
         )
 
 
+# ---------------------------------------------------------------------------
+# HTTP transport security (D012 WS4)
+# ---------------------------------------------------------------------------
+#
+# HTTP clients authenticate with `Authorization: Bearer <api key>`, where the
+# keys are the web users' (auth.users[].api_key), whenever auth.enabled is
+# true. Without auth the server only listens on loopback. The SDK's bearer
+# middleware does the checking and binds each MCP session to the user that
+# created it, so one user can't drive another's session by its ID.
+
+_MIN_API_KEY_LENGTH = 16
+
+
+class McpStartupError(RuntimeError):
+    """The MCP server refuses to start with this configuration."""
+
+
+def _is_loopback(host: str) -> bool:
+    """True when ``host`` is a loopback bind address (hostnames: localhost only)."""
+    import ipaddress
+
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
+class _ApiKeyVerifier:
+    """SDK token verifier: a bearer token is valid if it is a user's API key.
+
+    Re-reads the config on every request, so removing or rotating a key in
+    the config file takes effect without a restart; a missing or broken
+    config has no users and so fails closed.
+    """
+
+    async def verify_token(self, token: str):
+        import anyio
+        from mcp.server.auth.provider import AccessToken
+
+        config = await anyio.to_thread.run_sync(_get_config)
+        user = config.auth.user_for_api_key(token)
+        if user is None:
+            return None
+        return AccessToken(token=token, client_id=user.username, scopes=[])
+
+
+def _authenticated_user() -> str | None:
+    """Username behind the current HTTP request, or None (stdio / no auth)."""
+    from mcp.server.auth.middleware.auth_context import get_access_token
+
+    token = get_access_token()
+    return token.client_id if token is not None else None
+
+
+def _http_auth_required(host: str, config) -> bool:
+    """Decide whether the HTTP transport requires API keys, or refuse to start.
+
+    Raises McpStartupError for a non-loopback bind without authentication,
+    and for auth.enabled with no usable API key (nobody could connect).
+    """
+    if config.auth.enabled:
+        keyed = [
+            u for u in config.auth.users if isinstance(u.api_key, str) and u.api_key
+        ]
+        if not keyed:
+            raise McpStartupError(
+                "auth.enabled is true but no user in auth.users has an api_key, "
+                "so no MCP client could authenticate. Add one "
+                "(generate with: labctl user generate-key)."
+            )
+        for user in keyed:
+            if len(user.api_key) < _MIN_API_KEY_LENGTH:
+                logger.warning(
+                    "API key for user %r is shorter than %d characters; "
+                    "use a long random key",
+                    user.username,
+                    _MIN_API_KEY_LENGTH,
+                )
+        return True
+    if not _is_loopback(host):
+        raise McpStartupError(
+            f"Refusing to serve MCP over HTTP on {host} without authentication. "
+            "Set auth.enabled: true and give users an api_key (clients then send "
+            "'Authorization: Bearer <api_key>'), or bind to 127.0.0.1."
+        )
+    return False
+
+
+def _transport_security(host: str, mcp_cfg):
+    """Host/Origin header checks (DNS-rebinding protection) for HTTP.
+
+    Loopback binds always accept the loopback names, plus any configured
+    ``mcp.allowed_hosts`` / ``allowed_origins`` (e.g. a reverse proxy's
+    public name). A non-loopback bind is checked only when hosts are
+    configured: its reachable names can't be guessed, and API-key auth is
+    mandatory there anyway.
+    """
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    hosts = list(mcp_cfg.allowed_hosts)
+    origins = list(mcp_cfg.allowed_origins)
+    if _is_loopback(host):
+        bind = f"[{host.strip('[]')}]" if ":" in host else host
+        for name in dict.fromkeys(["127.0.0.1", "localhost", "[::1]", bind]):
+            hosts.append(f"{name}:*")
+            origins.append(f"http://{name}:*")
+            origins.append(f"https://{name}:*")
+    if not hosts:
+        logger.warning(
+            "mcp.allowed_hosts is not set: Host headers are not checked on %s "
+            "(API keys are still required)",
+            host,
+        )
+        return None
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=list(dict.fromkeys(hosts)),
+        allowed_origins=list(dict.fromkeys(origins)),
+    )
+
+
+def _enable_http_auth() -> None:
+    """Make the HTTP app require bearer tokens checked by _ApiKeyVerifier.
+
+    The SDK only takes a token verifier in the MCPServer constructor, but
+    `mcp` is built at import (the tool decorators need it) before we know
+    the transport, so set the two attributes streamable_http_app() reads.
+    test_mcp_server pins this against the SDK with real HTTP requests.
+    """
+    from mcp.server.auth.settings import AuthSettings
+
+    # issuer_url is mandatory but unused: with no OAuth provider and no
+    # resource_server_url the SDK neither serves nor advertises it.
+    mcp.settings.auth = AuthSettings(
+        issuer_url="http://localhost", resource_server_url=None
+    )
+    mcp._token_verifier = _ApiKeyVerifier()
+
+
 def run_server(
     transport: str = "stdio", http_port: int = 8080, host: str = "127.0.0.1"
 ):
@@ -3353,12 +3515,29 @@ def run_server(
         transport: "stdio" or "http" (streamable HTTP).
         http_port: TCP port for the HTTP transport.
         host: Bind address for the HTTP transport. Defaults to loopback;
-            pass "0.0.0.0" only behind an authenticating proxy.
+            any other address requires auth.enabled with API keys.
+
+    Raises:
+        McpStartupError: the HTTP settings are unsafe or unusable.
     """
     import atexit
 
     if transport not in ("stdio", "http"):
         raise ValueError(f"Unknown transport: {transport}")
+
+    security = None
+    if transport == "http":
+        config = _get_config()
+        if _http_auth_required(host, config):
+            _enable_http_auth()
+            logger.info("MCP HTTP: API key authentication required")
+        else:
+            logger.warning(
+                "MCP HTTP on %s without authentication (auth.enabled is false); "
+                "any local user can call tools",
+                host,
+            )
+        security = _transport_security(host, config.mcp)
 
     atexit.register(_release_session_claims)
     _start_expiry_thread(interval=30)
@@ -3367,7 +3546,12 @@ def run_server(
     if transport == "stdio":
         mcp.run(transport="stdio")
     else:
-        mcp.run(transport="streamable-http", host=host, port=http_port)
+        mcp.run(
+            transport="streamable-http",
+            host=host,
+            port=http_port,
+            transport_security=security,
+        )
 
 
 if __name__ == "__main__":
