@@ -801,7 +801,8 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
   - ✅ Install script creates `/var/lib/labctl/{images,output}` and the
     example config allowlists them; update script creates missing dirs and
     prints the config to add (never edits config)
-- WS3 Operation classification + destructive confirmation (#7) — in progress
+- WS3 Operation classification + destructive confirmation (#7) — merged
+  (PR #15, 5 review rounds)
   - ✅ Review follow-ups from #14: precise open-error messages, NUL-byte
     host paths refused cleanly
   - ✅ Classify every CLI command and MCP tool; docs table
@@ -811,9 +812,13 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
     `mcp.confirm_exempt`)
   - ✅ CLI `--dry-run` for flash/update/power-cycle; `--yes` on all 19
     destructive commands that lacked it, asking only on a terminal
-- WS4 MCP HTTP authentication
-  - ☐ Bearer auth backed by web users' API keys (`token_verifier`)
-  - ☐ Refuse non-loopback `--host` without auth
-  - ☐ Configurable allowed `Host` headers (reverse proxy)
+- WS4 MCP HTTP authentication — in progress
+  - ✅ Bearer auth backed by web users' API keys (SDK `token_verifier`;
+    keys re-read per request; sessions bound to the user; audit records it)
+  - ✅ Refuse non-loopback `--host` without auth, and auth without any key
+  - ✅ Configurable allowed `Host`/`Origin` headers (`mcp.allowed_hosts`,
+    `mcp.allowed_origins`) on top of the loopback names
+  - ✅ Review follow-ups from #15: confirm tokens bound to the
+    authenticated user; accurate error for an output dir that is a file
 - WS5 Wrap-up
   - ☐ Security section in `docs/MCP_SERVER.md`; deploy

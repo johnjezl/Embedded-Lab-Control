@@ -6,10 +6,12 @@
 - **Sub-task**: Phase 1 — safety (decisions: D012)
 - **Status**: Phase 0 merged (PR #12) and deployed to tarrasque on
   2026-10-07 (`embedded-lab-control` 0.2.0.dev0, MCP on 127.0.0.1:8080).
-  Phase 1 WS1 (quick hardening, PR #13) and WS2 (host path allowlist,
-  PR #14) merged to main 2026-10-08, not yet deployed (WS2 needs
-  `mcp.allowed_*_paths` in both configs first). WS3 in progress on
-  `phase1/ws3-confirm`; WS4–WS5 pending (see `docs/IMPLEMENTATION.md`).
+  Phase 1 WS1 (quick hardening, PR #13), WS2 (host path allowlist,
+  PR #14) and WS3 (classification + destructive confirmation, PR #15)
+  merged to main 2026-10-08, not yet deployed (WS2 needs
+  `mcp.allowed_*_paths` in both configs first). WS4 (MCP HTTP auth) in
+  progress on `phase1/ws4-mcp-auth`; WS5 pending (see
+  `docs/IMPLEMENTATION.md`).
 
 ## Last Session
 

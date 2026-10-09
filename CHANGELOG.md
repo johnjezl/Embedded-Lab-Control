@@ -7,6 +7,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Security
+- **MCP over HTTP now authenticates with the web users' API keys (breaking
+  for HTTP clients when `auth.enabled` is true).** With auth enabled, every
+  request to `labctl mcp --http` needs `Authorization: Bearer <api_key>`
+  for a user in `auth.users` (401 otherwise); keys are re-read per request,
+  so revoking one needs no restart. Sessions are bound to the user that
+  opened them, destructive-tool confirm tokens to the user they were issued
+  to, and audit entries record the user. The server refuses to start on a
+  non-loopback `--host` without auth, or with auth enabled but no API key
+  configured. New `mcp.allowed_hosts` / `mcp.allowed_origins` accept extra
+  `Host` / `Origin` headers (e.g. a reverse proxy's public name) on top of
+  the loopback names. See `docs/MCP_SERVER.md` (D012).
+- API key lookups (web and MCP) no longer raise on a non-ASCII key in a
+  request header, and a non-string `api_key` in the config never matches.
 - **Destructive MCP tools now require a two-step confirmation (breaking for
   MCP clients).** The 23 tools annotated destructive (power off/cycle,
   flashing, SD updates, `serial_send`, deletions, actuator/binding verbs,
@@ -54,6 +67,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   follow-up read doesn't misjudge the mux position.
 
 ### Fixed
+- An MCP `boot_test` `output_dir` that is an existing file is reported as
+  "not a directory" instead of a possible race.
 - A config section header with nothing under it (e.g. `mcp:` followed only
   by commented-out entries) no longer crashes every labctl command; it
   counts as an empty section. A section that isn't a mapping is ignored

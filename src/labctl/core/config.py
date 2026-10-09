@@ -4,6 +4,7 @@ Configuration management for lab controller.
 Loads configuration from YAML files with environment variable overrides.
 """
 
+import hmac
 import logging
 import os
 from dataclasses import dataclass, field
@@ -224,6 +225,28 @@ class AuthConfig:
     secret_key: str = ""
     session_lifetime_minutes: int = 480
 
+    def user_for_api_key(self, api_key: str) -> Optional[UserConfig]:
+        """The user whose API key this is, or None.
+
+        Shared by the web REST API (``X-API-Key``) and the MCP HTTP server
+        (``Authorization: Bearer``). Compares as UTF-8 bytes in constant
+        time: ``hmac.compare_digest`` raises TypeError on non-ASCII str, and
+        a header value is attacker-controlled. An empty key never matches.
+        """
+        if not api_key:
+            return None
+        presented = api_key.encode("utf-8", "surrogateescape")
+        match = None
+        for user in self.users:
+            # A YAML scalar like `api_key: 12345` loads as int; never a match.
+            if not isinstance(user.api_key, str) or not user.api_key:
+                continue
+            if hmac.compare_digest(
+                user.api_key.encode("utf-8", "surrogateescape"), presented
+            ):
+                match = match or user
+        return match
+
 
 @dataclass
 class ClaimsConfig:
@@ -316,6 +339,11 @@ class McpConfig:
     single-use ``confirm_token``; only a second call with that token and the
     same arguments acts (D012). ``confirm_exempt`` lists tool names that
     skip this (e.g. ``serial_send`` for heavy interactive console use).
+
+    ``allowed_hosts`` / ``allowed_origins`` add accepted ``Host`` / ``Origin``
+    header values for the HTTP transport (DNS-rebinding protection), e.g. the
+    public name a reverse proxy forwards. ``name:*`` matches any port. HTTP
+    authentication itself follows ``auth.enabled`` and the users' API keys.
     """
 
     allow_admin_actuator_ops: bool = False
@@ -323,6 +351,8 @@ class McpConfig:
     allowed_write_paths: list[str] = field(default_factory=list)
     confirm_destructive: bool = True
     confirm_exempt: list[str] = field(default_factory=list)
+    allowed_hosts: list[str] = field(default_factory=list)
+    allowed_origins: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -452,6 +482,8 @@ class Config:
             allowed_write_paths=_path_list(mcp_data, "allowed_write_paths"),
             confirm_destructive=_safety_flag(mcp_data, "confirm_destructive"),
             confirm_exempt=_name_list(mcp_data, "confirm_exempt"),
+            allowed_hosts=_name_list(mcp_data, "allowed_hosts"),
+            allowed_origins=_name_list(mcp_data, "allowed_origins"),
         )
 
         database = DatabaseConfig(
@@ -547,6 +579,8 @@ class Config:
                 "allowed_write_paths": list(self.mcp.allowed_write_paths),
                 "confirm_destructive": self.mcp.confirm_destructive,
                 "confirm_exempt": list(self.mcp.confirm_exempt),
+                "allowed_hosts": list(self.mcp.allowed_hosts),
+                "allowed_origins": list(self.mcp.allowed_origins),
             },
             "database": {
                 "timeout_seconds": self.database.timeout_seconds,
