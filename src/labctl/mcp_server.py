@@ -3422,8 +3422,10 @@ class _ApiKeyVerifier:
     """SDK token verifier: a bearer token is valid if it is a user's API key.
 
     Re-reads the config on every request, so removing or rotating a key in
-    the config file takes effect without a restart; a missing or broken
-    config has no users and so fails closed.
+    the config file takes effect without a restart. run_server pins the
+    file loaded at startup (_pin_config_file), so a missing or broken file
+    loads defaults (no users) and fails closed instead of falling back to
+    another config.
     """
 
     async def verify_token(self, token: str):
@@ -3561,6 +3563,19 @@ def _transport_security(host: str, mcp_cfg):
     )
 
 
+def _pin_config_file(config) -> None:
+    """Make every later load_config() in this process read only the file
+    ``config`` came from, as `labctl -c FILE mcp` does.
+
+    The HTTP server re-reads the config per request (API keys, allowlists).
+    Without pinning, a config in ~/.config/labctl that is briefly broken
+    (mid-edit) would fall back to /etc/labctl/config.yaml and its keys.
+    """
+    if config.source_path is not None:
+        os.environ["LABCTL_CONFIG"] = str(config.source_path)
+        os.environ["LABCTL_CONFIG_EXCLUSIVE"] = "1"
+
+
 def _enable_http_auth() -> None:
     """Make the HTTP app require bearer tokens checked by _ApiKeyVerifier.
 
@@ -3602,6 +3617,7 @@ def run_server(
     if transport == "http":
         config = _get_config()
         if _http_auth_required(host, config):
+            _pin_config_file(config)
             _enable_http_auth()
             logger.info("MCP HTTP: API key authentication required")
         else:
