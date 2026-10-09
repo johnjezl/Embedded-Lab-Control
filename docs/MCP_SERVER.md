@@ -92,10 +92,13 @@ that user's `api_key`.
 - Each user is a separate claimant: one user's claim blocks another's
   mutating calls, and the default agent name is the username. Claims and
   audit entries record `<server session>:<username>`.
-- The server **refuses to start** without auth when it would be reachable
-  beyond loopback: on a non-loopback `--host`, or when `mcp.allowed_hosts`
-  / `allowed_origins` accept a non-loopback name (a reverse proxy). It also
-  refuses `auth.enabled: true` when no user has an `api_key`.
+- The server **refuses to start** without auth on a non-loopback `--host`,
+  or when `mcp.allowed_hosts` / `allowed_origins` accept a non-loopback
+  name (a reverse proxy). It can't detect a proxy that forwards
+  `Host: 127.0.0.1` (nginx's default `proxy_pass` behaviour), so **always
+  enable auth before putting a proxy in front**. It also refuses
+  `auth.enabled: true` when no user has both an `api_key` and a username
+  (quote numeric usernames in YAML).
 - Without auth (the default), it listens on loopback only, all clients
   share one claimant identity, and anyone who can connect locally can call
   every tool; the startup log says so.

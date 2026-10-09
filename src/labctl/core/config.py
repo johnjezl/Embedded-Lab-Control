@@ -225,22 +225,36 @@ class AuthConfig:
     secret_key: str = ""
     session_lifetime_minutes: int = 480
 
+    def key_users(self) -> list[UserConfig]:
+        """Users that can authenticate with an API key.
+
+        Both the key and the username must be non-empty strings: a YAML
+        scalar like ``12345`` loads as int, and a blank username would make
+        the user indistinguishable from an unauthenticated caller.
+        """
+        return [
+            u
+            for u in self.users
+            if isinstance(u.api_key, str)
+            and u.api_key
+            and isinstance(u.username, str)
+            and u.username
+        ]
+
     def user_for_api_key(self, api_key: str) -> Optional[UserConfig]:
         """The user whose API key this is, or None.
 
         Shared by the web REST API (``X-API-Key``) and the MCP HTTP server
         (``Authorization: Bearer``). Compares as UTF-8 bytes in constant
         time: ``hmac.compare_digest`` raises TypeError on non-ASCII str, and
-        a header value is attacker-controlled. An empty key never matches.
+        a header value is attacker-controlled. An empty key never matches,
+        nor does a user without a usable name (see ``key_users``).
         """
         if not api_key:
             return None
         presented = api_key.encode("utf-8", "surrogateescape")
         match = None
-        for user in self.users:
-            # A YAML scalar like `api_key: 12345` loads as int; never a match.
-            if not isinstance(user.api_key, str) or not user.api_key:
-                continue
+        for user in self.key_users():
             if hmac.compare_digest(
                 user.api_key.encode("utf-8", "surrogateescape"), presented
             ):

@@ -53,6 +53,14 @@ class TestUserForApiKey:
         auth = _config(users=[UserConfig(username="num", api_key=12345)]).auth
         assert auth.user_for_api_key("12345") is None
 
+    @pytest.mark.parametrize("username", [1001, "", None])
+    def test_user_without_usable_name_never_matches(self, username):
+        """A YAML `username: 1001` loads as int (the SDK rejects it as a
+        client_id); a blank one would look unauthenticated."""
+        auth = _config(users=[UserConfig(username=username, api_key=ALICE_KEY)]).auth
+        assert auth.user_for_api_key(ALICE_KEY) is None
+        assert auth.key_users() == []
+
     def test_web_lookup_delegates(self):
         from labctl.web.auth import get_user_by_api_key
 
@@ -158,6 +166,14 @@ class TestHttpAuthPolicy:
         from labctl.mcp_server import _http_auth_required
 
         assert _http_auth_required("127.0.0.1", _config(allowed_hosts=["lab"])) is True
+
+    def test_only_unusable_usernames_refused(self, caplog):
+        from labctl.mcp_server import McpStartupError, _http_auth_required
+
+        config = _config(users=[UserConfig(username=1001, api_key=ALICE_KEY)])
+        with pytest.raises(McpStartupError, match="api_key and a username"):
+            _http_auth_required("127.0.0.1", config)
+        assert "quote numeric usernames" in caplog.text
 
     def test_short_key_warns(self, caplog):
         from labctl.mcp_server import _http_auth_required

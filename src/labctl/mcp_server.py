@@ -3472,12 +3472,19 @@ def _http_auth_required(host: str, config) -> bool:
     auth.enabled with no usable API key (nobody could connect).
     """
     if config.auth.enabled:
-        keyed = [
-            u for u in config.auth.users if isinstance(u.api_key, str) and u.api_key
-        ]
+        keyed = config.auth.key_users()
+        unusable = [u for u in config.auth.users if u.api_key and u not in keyed]
+        if unusable:
+            logger.warning(
+                "%d auth.users entr%s with an api_key but no usable (string) "
+                "username ignored; quote numeric usernames",
+                len(unusable),
+                "y" if len(unusable) == 1 else "ies",
+            )
         if not keyed:
             raise McpStartupError(
-                "auth.enabled is true but no user in auth.users has an api_key, "
+                "auth.enabled is true but no user in auth.users has an api_key "
+                "and a username, "
                 "so no MCP client could authenticate. Add one "
                 "(generate with: labctl user generate-key)."
             )
@@ -3594,7 +3601,9 @@ def run_server(
         else:
             logger.warning(
                 "MCP HTTP on %s without authentication (auth.enabled is false); "
-                "any local user can call tools",
+                "any local user can call tools. Do not put a reverse proxy in "
+                "front without enabling auth: one that forwards Host as "
+                "127.0.0.1 can't be detected and would expose every tool",
                 host,
             )
         security = _transport_security(host, config.mcp)
