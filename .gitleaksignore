@@ -10,6 +10,9 @@ ffd0533ebcea3b2e5ac138c6da042e76996caa20:README.md:curl-auth-header:263
 8d10c4b0a7e7f6d0e7c21a91653f0e7511407983:tests/integration/test_auth.py:generic-api-key:13
 
 # Test fixture constants ALICE_KEY / BOB_KEY ("alice-key-0123456789abcdef",
-# "bob-key-0123456789abcdefgh") in the MCP HTTP auth tests (PR #16)
+# "bob-key-0123456789abcdefgh") in the MCP HTTP auth tests (PR #16): the
+# commit on main, and the original on the still-existing PR branch.
 316a055bea8be53a4245d627c760706902bed415:tests/unit/test_mcp_http_auth.py:generic-api-key:16
 316a055bea8be53a4245d627c760706902bed415:tests/unit/test_mcp_http_auth.py:generic-api-key:17
+41cb88aeb0ca193019363542bd6c680a06ef8b70:tests/unit/test_mcp_http_auth.py:generic-api-key:16
+41cb88aeb0ca193019363542bd6c680a06ef8b70:tests/unit/test_mcp_http_auth.py:generic-api-key:17
