@@ -144,9 +144,12 @@ systemctl status labctl-mcp
 journalctl -u labctl-mcp -f
 ```
 
-The service runs on `127.0.0.1:8080` by default. Edit the service file to
-change the port or add `--host`. (Before 0.2.0 the port argument was
-ignored and the server silently bound `127.0.0.1:8000`.)
+The service runs on `127.0.0.1:8080` by default. To change the port or add
+`--host`, use a drop-in (`sudo systemctl edit labctl-mcp`) that clears and
+replaces `ExecStart=`; don't edit the unit file itself, since
+`scripts/update.sh` reinstalls it on every update (drop-ins are kept, and
+its MCP auth check reads the effective command line). (Before 0.2.0 the
+port argument was ignored and the server silently bound `127.0.0.1:8000`.)
 
 Remote clients connect via HTTP (through a tunnel, a proxy, or `--host`
 set to a reachable address), sending their API key when auth is enabled:
@@ -476,9 +479,12 @@ system-write / hardware / destructive) in
    add the `Authorization: Bearer <api_key>` header to their MCP client.
 3. Behind a reverse proxy: terminate TLS there, keep the server on
    loopback, and list the public name in `mcp.allowed_hosts`.
-4. Put images in `/var/lib/labctl/images` and point boot tests at
-   `/var/lib/labctl/output` (or list your own directories in
-   `mcp.allowed_*_paths`).
+4. List the directories MCP tools may use in `mcp.allowed_read_paths`
+   (images, files to copy) and `mcp.allowed_write_paths` (boot-test
+   output); nothing is allowed until you do. The install script creates
+   `/var/lib/labctl/images` and `/var/lib/labctl/output` for this, and
+   fresh installs' example config lists them; existing installs must add
+   them (`update.sh` prints the lines).
 5. Keep `mcp.confirm_destructive` on; exempt only tools you have to
    (e.g. `serial_send` for heavy console work).
 6. Turn on claims (`claims.enabled`, default) when several agents share

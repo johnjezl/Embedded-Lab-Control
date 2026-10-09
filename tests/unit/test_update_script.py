@@ -15,7 +15,7 @@ def _snippet(marker: str) -> str:
     """The heredoc body that follows the line containing ``marker``."""
     text = UPDATE_SH.read_text()
     match = re.search(
-        re.escape(marker) + r"[^\n]*<<'PY'\n(.*?)\nPY\n", text, flags=re.S
+        re.escape(marker) + r"[^\n]*<<'PY'[^\n]*\n(.*?)\nPY\n", text, flags=re.S
     )
     assert match, f"no PY heredoc after {marker!r} in update.sh"
     return match.group(1)
