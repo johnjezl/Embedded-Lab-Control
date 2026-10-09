@@ -130,6 +130,49 @@ if [ -n "$MISSING_ALLOWLIST" ]; then
     echo "         allowed_write_paths: [/var/lib/labctl/output]"
 fi
 
+# 3c. MCP HTTP authentication (0.2.0+): with auth.enabled, HTTP clients must
+# send "Authorization: Bearer <api_key>"; a non-loopback --host without auth,
+# or auth with no usable API key, makes labctl-mcp refuse to start. Run the
+# server's own startup check against the config and bind address the unit
+# uses, so the outcome is known before the restart below.
+if systemctl is-enabled labctl-mcp &>/dev/null && [ -f "$SYSTEM_CONFIG_FILE" ]; then
+    MCP_UNIT=/etc/systemd/system/labctl-mcp.service
+    MCP_HOST=$(grep -oE -- '--host[= ]+[^ ]+' "$MCP_UNIT" 2>/dev/null | head -1 | sed -E 's/--host[= ]+//')
+    # stderr is kept: it carries labctl's warnings about ignored auth.users.
+    MCP_AUTH=$("$LABCTL_VENV/bin/python" - "$SYSTEM_CONFIG_FILE" "${MCP_HOST:-127.0.0.1}" <<'PY'
+import sys
+from pathlib import Path
+
+from labctl.core.config import load_config
+from labctl.mcp_server import McpStartupError, _http_auth_required
+
+try:
+    required = _http_auth_required(sys.argv[2], load_config(Path(sys.argv[1])))
+except McpStartupError as e:
+    print(f"refused: {e}")
+else:
+    print("required" if required else "none")
+PY
+    )
+    case "$MCP_AUTH" in
+        required)
+            echo "[!!] labctl-mcp now requires API keys (auth.enabled is true):"
+            echo "     MCP HTTP clients must send 'Authorization: Bearer <api_key>'"
+            echo "     (a user's api_key from auth.users). See docs/MCP_SERVER.md."
+            ;;
+        none)
+            echo "[ok] labctl-mcp: loopback only, no authentication (auth.enabled is false)"
+            ;;
+        refused:*)
+            echo "[!!] labctl-mcp will refuse to start with this config:"
+            echo "     ${MCP_AUTH#refused: }"
+            ;;
+        *)
+            echo "[!!] Could not check labctl-mcp authentication settings"
+            ;;
+    esac
+fi
+
 # 4. Verify install
 VERSION=$("$LABCTL_VENV/bin/labctl" --version 2>&1 || true)
 echo "[ok] $VERSION"

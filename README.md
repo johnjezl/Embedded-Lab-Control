@@ -422,7 +422,7 @@ This allows tools like Claude Desktop and Claude Code to manage lab resources di
 Install the MCP dependency:
 
 ```bash
-pip install labctl[mcp]
+pip install 'embedded-lab-control[mcp]'
 ```
 
 **Resources** (read-only data): `lab://sbcs`, `lab://sbcs/{name}`, `lab://power/{name}`,
@@ -436,6 +436,13 @@ pip install labctl[mcp]
 **Prompts**: `debug-sbc` (guided SBC debugging), `lab-report` (comprehensive status)
 
 See `docs/MCP_SERVER.md` for full tool parameters and usage.
+
+**Safety:** destructive tools (power off, flashing, `serial_send`, deletions,
+…) act only when called a second time with a confirmation token; host files
+are reachable only under directories you allowlist in `mcp.allowed_*_paths`
+(none by default); the HTTP transport binds loopback and requires the web
+users' API keys (`Authorization: Bearer`) when `auth.enabled` is set. See
+[Security Considerations](docs/MCP_SERVER.md#security-considerations).
 
 ### Claude Desktop / Claude Code Configuration
 
@@ -484,6 +491,9 @@ flake8 src/ tests/
 - [Implementation Plan](docs/IMPLEMENTATION.md) - Development roadmap and status
 - [Hardware Map](docs/HARDWARE_MAP.md) - USB device identification
 - [Decision Log](docs/DECISIONS.md) - Architecture decisions
+- [MCP Server](docs/MCP_SERVER.md) - AI integration, security model
+- [Operations](docs/OPERATIONS.md) - What every command and tool changes
+- [Security Policy](SECURITY.md) - Reporting vulnerabilities
 
 ## License
 

@@ -427,18 +427,67 @@ The assistant calls:
 
 ## Security Considerations
 
-- The MCP server has full access to lab resources — it can power cycle boards,
-  modify the database, and run health checks.
-- In stdio mode, access is limited to the local user running the client.
-- In HTTP mode, clients authenticate with a web user's API key as a bearer
-  token when `auth.enabled` is true; without auth the server only listens
-  on loopback (see [Authentication](#authentication)). Use TLS (tunnel or
-  proxy) for anything beyond the local host.
-- The server uses the same configuration and database as the CLI, so all
-  operations are audited in the audit_log table.
-- Every tool and resource is classified (read / db-write / shared-resource /
-  system-write / hardware / destructive) in
-  [`docs/OPERATIONS.md`](OPERATIONS.md), alongside the CLI commands.
+The MCP server can do anything the lab can: power boards on and off, flash
+and rewrite SD cards, type into serial consoles, drive actuators and edit
+the inventory. An AI agent connected to it should be treated like a
+colleague with a shell on the lab host, and the controls below exist to
+keep its mistakes (and anyone who reaches the endpoint) contained. Design
+decisions: D011, D012 in [`DECISIONS.md`](DECISIONS.md).
+
+| Layer | What it does | Default | Configure |
+|---|---|---|---|
+| Transport | stdio: only the local user running the client. HTTP: loopback unless authenticated | stdio / `127.0.0.1` | `--http`, `--host` |
+| [Authentication](#authentication) | HTTP requests need a web user's API key as a bearer token; sessions, claims and confirm tokens are per user | off (`auth.enabled: false`) | `auth.enabled`, `auth.users[].api_key` |
+| [Host header checks](#host-header-checks) | Rejects unexpected `Host`/`Origin` (DNS rebinding) | loopback names | `mcp.allowed_hosts`, `mcp.allowed_origins` |
+| [Destructive confirmation](#confirmation-for-destructive-tools) | 23 destructive tools act only on a second call with a single-use token | on | `mcp.confirm_destructive`, `mcp.confirm_exempt` |
+| [Host file allowlist](#host-file-access-allowlist) | Tools may only read/write host files under listed directories, opened without following symlinks | deny all | `mcp.allowed_read_paths`, `mcp.allowed_write_paths` |
+| Privileged actuator tools | `actuator_add/remove/set` (raw actuator access, bypassing bindings) | off | `mcp.allow_admin_actuator_ops` |
+| Claims | An agent's claim on a board blocks other agents' mutating calls on it | on | `claims.*` |
+| Serialization | One tool call (and hardware-reading resource) at a time | always | — |
+| Audit | Every change is recorded with the actor (`<session>[:<user>]`) | always | `labctl activity` / web `/activity` page |
+| systemd unit | `ProtectSystem=strict`, `ProtectHome=yes`, writes only to `/var/lib/labctl` | as shipped | `config/systemd/labctl-mcp.service` |
+
+Every tool and resource is classified (read / db-write / shared-resource /
+system-write / hardware / destructive) in
+[`docs/OPERATIONS.md`](OPERATIONS.md), alongside the CLI commands.
+
+**Known limits** (by design, for now):
+
+- No read-only tier: any client that can connect can call every tool
+  (#7; [`OPERATIONS.md`](OPERATIONS.md) documents the classes only).
+- Without auth, all HTTP clients share one identity, so claims and confirm
+  tokens don't tell them apart; anyone with local access to the port can
+  call every tool.
+- The server speaks plain HTTP. Beyond the local host, use an SSH tunnel or
+  a TLS-terminating reverse proxy, and enable auth **before** adding a
+  proxy: a proxy that forwards `Host: 127.0.0.1` can't be detected.
+- The CLI is not restricted by any of the `mcp.*` settings; it runs with
+  the invoking user's permissions and asks for confirmation on a terminal
+  (`--yes` to skip).
+- API keys are stored in plain text in the config file; keep it readable
+  only by root and the `labctl` group (`update.sh` repairs permissions).
+
+### Deployment checklist
+
+1. Leave `--host` at `127.0.0.1` unless clients must connect from other
+   machines; prefer an SSH tunnel to opening the port.
+2. For any shared or remote use, set `auth.enabled: true`, give each person
+   or agent their own user and `api_key` (`labctl user generate-key`), and
+   add the `Authorization: Bearer <api_key>` header to their MCP client.
+3. Behind a reverse proxy: terminate TLS there, keep the server on
+   loopback, and list the public name in `mcp.allowed_hosts`.
+4. Put images in `/var/lib/labctl/images` and point boot tests at
+   `/var/lib/labctl/output` (or list your own directories in
+   `mcp.allowed_*_paths`).
+5. Keep `mcp.confirm_destructive` on; exempt only tools you have to
+   (e.g. `serial_send` for heavy console work).
+6. Turn on claims (`claims.enabled`, default) when several agents share
+   boards, and ask agents to claim before working.
+7. Review the audit trail (`labctl activity`, or the web `/activity` page) after
+   unattended runs.
+
+`scripts/update.sh` checks items 2 and 4 against the installed config and
+reports what the restarted `labctl-mcp` will require or refuse.
 
 ### Confirmation for destructive tools
 

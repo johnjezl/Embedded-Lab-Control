@@ -812,7 +812,8 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
     `mcp.confirm_exempt`)
   - ✅ CLI `--dry-run` for flash/update/power-cycle; `--yes` on all 19
     destructive commands that lacked it, asking only on a terminal
-- WS4 MCP HTTP authentication — in progress
+- WS4 MCP HTTP authentication — merged (PR #16, 6 review rounds; gitleaks
+  fixture false positives fixed in PR #17)
   - ✅ Bearer auth backed by web users' API keys (SDK `token_verifier`;
     keys re-read per request; sessions bound to the user; audit records it)
   - ✅ Refuse non-loopback `--host` (or non-loopback allowed Host/Origin
@@ -822,5 +823,10 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
     `mcp.allowed_origins`) on top of the loopback names
   - ✅ Review follow-ups from #15: confirm tokens bound to the
     authenticated user; accurate error for an output dir that is a file
-- WS5 Wrap-up
-  - ☐ Security section in `docs/MCP_SERVER.md`; deploy
+- WS5 Wrap-up — in progress
+  - ✅ Security overview in `docs/MCP_SERVER.md` (controls table, known
+    limits, deployment checklist); README safety note and doc links
+  - ✅ `SECURITY.md` (private vulnerability reporting)
+  - ✅ `scripts/update.sh` reports what `labctl-mcp` will require or refuse
+    (runs the server's own startup auth check on the deployed config)
+  - ☐ Deploy Phase 1 to tarrasque (allowlist config, client heads-up)
