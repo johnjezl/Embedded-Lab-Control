@@ -124,6 +124,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   from removing dead code flagged by flake8 (unused imports/variables).
 
 ### Added
+- `SECURITY.md`: how to report vulnerabilities privately, and what's in
+  scope. `docs/MCP_SERVER.md` opens its security section with an overview
+  of every control (defaults, settings), known limits and a deployment
+  checklist; the README links them.
+- `scripts/update.sh` runs the MCP server's startup auth check against the
+  deployed config and `labctl-mcp` unit, and reports before restarting
+  whether HTTP clients will need API keys or the server will refuse to
+  start (and why).
 - Destructive CLI commands (19: `power off`/`cycle`, `sdwire flash`/`update`/
   `host`/`unassign`, `serial send`, `actuator set`, binding verbs, recovery,
   `force-release`, `boot-test`, record removals) take `--yes/-y` and ask for
