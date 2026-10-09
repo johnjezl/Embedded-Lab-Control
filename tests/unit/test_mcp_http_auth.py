@@ -13,6 +13,17 @@ import pytest
 
 from labctl.core.config import AuthConfig, Config, UserConfig
 
+
+@pytest.fixture(autouse=True)
+def _restore_config_env(monkeypatch):
+    """`labctl -c FILE mcp` and _pin_config_file write LABCTL_CONFIG(_EXCLUSIVE)
+    straight into os.environ; register both so monkeypatch restores them,
+    or later tests' load_config() would be pinned to a deleted temp file."""
+    for name in ("LABCTL_CONFIG", "LABCTL_CONFIG_EXCLUSIVE"):
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
+
+
 ALICE_KEY = "alice-key-0123456789abcdef"
 BOB_KEY = "bob-key-0123456789abcdefgh"
 
@@ -312,11 +323,6 @@ class TestConfigPinning:
         system_cfg.write_text(auth.format(u="bob", k=BOB_KEY))
         monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
         monkeypatch.setattr(config_mod, "SYSTEM_CONFIG_FILE", system_cfg)
-        # Registered so monkeypatch restores whatever pinning sets.
-        monkeypatch.setenv("LABCTL_CONFIG", "")
-        monkeypatch.setenv("LABCTL_CONFIG_EXCLUSIVE", "")
-        monkeypatch.delenv("LABCTL_CONFIG")
-        monkeypatch.delenv("LABCTL_CONFIG_EXCLUSIVE")
         return user_cfg
 
     def test_source_path_recorded(self, two_configs):
