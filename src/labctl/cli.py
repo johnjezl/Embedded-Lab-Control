@@ -5107,9 +5107,8 @@ def _mcp_check(http_port: int | None, host: str) -> None:
     from labctl.mcp_server import (
         McpStartupError,
         _get_config,
-        _startup_warnings_visible,
-        _warn_unknown_confirm_exemptions,
         check_http_startup,
+        check_stdio_startup,
     )
 
     config = _get_config()
@@ -5127,13 +5126,12 @@ def _mcp_check(http_port: int | None, host: str) -> None:
         )
     if http_port:
         try:
-            required, _, _ = check_http_startup(host, config)
+            required, _ = check_http_startup(host, config)
         except McpStartupError as e:
             raise click.ClickException(f"refused: {e}") from e
     else:
         required = None
-        with _startup_warnings_visible():
-            _warn_unknown_confirm_exemptions(config.mcp)
+        check_stdio_startup(config)
     source = config.source_path or "none found, using built-in defaults"
     if required is None:
         click.echo("auth: n/a (stdio transport: no HTTP checks apply)")

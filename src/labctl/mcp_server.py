@@ -3618,25 +3618,42 @@ def _warn_config_load_errors(config) -> None:
         logger.warning("Config file not loaded, ignored: %s", error)
 
 
-def check_http_startup(host: str, config=None):
-    """Run the HTTP transport's startup checks without serving anything.
+def check_stdio_startup(config) -> None:
+    """The stdio transport's startup checks (warnings only).
+
+    run_server(transport="stdio") runs this before serving, and
+    `labctl mcp --check` runs it alone.
+    """
+    with _startup_warnings_visible():
+        _warn_config_load_errors(config)
+        _warn_unknown_confirm_exemptions(config.mcp)
+
+
+def check_http_startup(host: str, config):
+    """The HTTP transport's startup checks, without serving anything.
 
     run_server(transport="http") runs exactly this before serving, and
     `labctl mcp --http PORT --check` runs it alone. Returns
-    ``(auth_required, config, transport_security)``; raises
-    McpStartupError when the server would refuse to start. Logs the
-    startup warnings (unloadable config files, short keys, ignored users,
-    unchecked Host headers, unknown confirm exemptions) whatever the
+    ``(auth_required, transport_security)``; raises McpStartupError when
+    the server would refuse to start. Logs the startup warnings
+    (unloadable config files, running without auth, short keys, ignored
+    users, unchecked Host headers, unknown confirm exemptions) whatever the
     configured log_level.
     """
-    if config is None:
-        config = _get_config()
     with _startup_warnings_visible():
         _warn_config_load_errors(config)
         required = _http_auth_required(host, config)
+        if not required:
+            logger.warning(
+                "MCP HTTP on %s without authentication (auth.enabled is false); "
+                "any local user can call tools. Do not put a reverse proxy in "
+                "front without enabling auth: one that forwards Host as "
+                "127.0.0.1 can't be detected and would expose every tool",
+                host,
+            )
         security = _transport_security(host, config.mcp)
         _warn_unknown_confirm_exemptions(config.mcp)
-    return required, config, security
+    return required, security
 
 
 def run_server(
@@ -3659,8 +3676,9 @@ def run_server(
         raise ValueError(f"Unknown transport: {transport}")
 
     security = None
+    config = _get_config()
     if transport == "http":
-        required, config, security = check_http_startup(host)
+        required, security = check_http_startup(host, config)
         # On stdout (not the protocol channel over HTTP), whatever log_level
         # says: the service journal shows the auth mode of every start.
         # scripts/update.sh greps these exact strings; keep them in sync.
@@ -3675,19 +3693,8 @@ def run_server(
         if required:
             _pin_config_file(config)
             _enable_http_auth()
-        else:
-            logger.warning(
-                "MCP HTTP on %s without authentication (auth.enabled is false); "
-                "any local user can call tools. Do not put a reverse proxy in "
-                "front without enabling auth: one that forwards Host as "
-                "127.0.0.1 can't be detected and would expose every tool",
-                host,
-            )
     else:
-        config = _get_config()
-        with _startup_warnings_visible():
-            _warn_config_load_errors(config)
-            _warn_unknown_confirm_exemptions(config.mcp)
+        check_stdio_startup(config)
 
     atexit.register(_release_session_claims)
     _start_expiry_thread(interval=30)

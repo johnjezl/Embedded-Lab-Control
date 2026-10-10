@@ -366,13 +366,14 @@ class TestRunServerRefuses:
         saved = root.level
         root.setLevel(logging.ERROR)
         try:
-            with patch.object(mcp_server, "_get_config", return_value=config):
-                mcp_server.check_http_startup("127.0.0.1")
+            mcp_server.check_http_startup("127.0.0.1", config)
             assert root.level == logging.ERROR  # restored
         finally:
             root.setLevel(saved)
         assert "serial_sen" in caplog.text
         assert "Config file not loaded, ignored: /etc/labctl/x.yaml: bad" in caplog.text
+        # The no-auth warning too (it used to bypass the forced level).
+        assert "without authentication (auth.enabled is false)" in caplog.text
 
     def test_check_warns_unknown_confirm_exemption(self, caplog):
         """--check runs the same startup warnings as the server."""
@@ -380,8 +381,7 @@ class TestRunServerRefuses:
 
         config = _config(enabled=False)
         config.mcp.confirm_exempt = ["serial_sen"]
-        with patch.object(mcp_server, "_get_config", return_value=config):
-            required, _, _ = mcp_server.check_http_startup("127.0.0.1")
+        required, _ = mcp_server.check_http_startup("127.0.0.1", config)
         assert required is False
         assert "unknown tool name(s), ignored: serial_sen" in caplog.text
 
@@ -390,7 +390,9 @@ class TestRunServerRefuses:
         `--check` does, so the two can't drift."""
         from labctl import mcp_server
 
+        config = _config()
         with (
+            patch.object(mcp_server, "_get_config", return_value=config),
             patch.object(
                 mcp_server,
                 "check_http_startup",
@@ -400,8 +402,22 @@ class TestRunServerRefuses:
         ):
             with pytest.raises(mcp_server.McpStartupError):
                 mcp_server.run_server(transport="http", host="127.0.0.1")
-        check.assert_called_once_with("127.0.0.1")
+        check.assert_called_once_with("127.0.0.1", config)
         run.assert_not_called()
+
+    def test_run_server_uses_check_stdio_startup(self):
+        from labctl import mcp_server
+
+        config = _config()
+        with (
+            patch.object(mcp_server, "_get_config", return_value=config),
+            patch.object(mcp_server, "check_stdio_startup") as check,
+            patch.object(mcp_server, "_start_expiry_thread"),
+            patch("atexit.register"),
+            patch.object(mcp_server.mcp, "run"),
+        ):
+            mcp_server.run_server(transport="stdio")
+        check.assert_called_once_with(config)
 
     def test_passes_security_and_enables_auth(self, http_auth_restore, capsys):
         from labctl import mcp_server
@@ -418,6 +434,30 @@ class TestRunServerRefuses:
         kwargs = run.call_args.kwargs
         assert kwargs["transport_security"].enable_dns_rebinding_protection
         assert isinstance(mcp_server.mcp._token_verifier, mcp_server._ApiKeyVerifier)
+
+
+class TestConfigLoadErrors:
+    def test_inaccessible_config_recorded(self, tmp_path):
+        """A config the user can't even stat (750 directory) is a load
+        error, not "no config": --check must not report built-in defaults
+        as if nothing were there."""
+        import os
+
+        from labctl.core.config import load_config
+
+        if os.geteuid() == 0:
+            pytest.skip("root can stat anything")
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        (locked / "config.yaml").write_text("auth:\n  enabled: true\n")
+        locked.chmod(0o000)
+        try:
+            config = load_config(locked / "config.yaml")
+        finally:
+            locked.chmod(0o755)
+        assert config.source_path is None
+        assert len(config.load_errors) == 1
+        assert "Permission denied" in config.load_errors[0]
 
 
 class TestConfigPinning:
