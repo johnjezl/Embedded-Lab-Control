@@ -505,9 +505,12 @@ system-write / hardware / destructive) in
    unattended runs.
 
 `scripts/update.sh` reports missing allowlist settings (item 4) before
-restarting, and after the restart shows `labctl-mcp`'s startup lines from
-its journal: the auth mode (item 2: `MCP HTTP: API keys required` /
-`no authentication`), any startup warnings, or why it refused to start.
+restarting. After the restart it shows `labctl-mcp`'s journal lines from
+that restart: the auth mode (item 2: `MCP HTTP: API keys required` /
+`no authentication`, with a reminder about the `Authorization` header
+whenever keys are required) and startup warnings, which the server logs
+whatever `log_level` says. For any service that failed to start, it shows
+that service's log since the restart.
 To check a config change without restarting, run
 `labctl -c FILE mcp --http PORT --check`.
 

@@ -86,7 +86,12 @@ def run_restart(tmp_path):
         )
         systemctl.append("esac")
         (stubs / "systemctl").write_text("\n".join(systemctl) + "\n")
-        journal = ["#!/bin/bash", f'echo "$*" >> {calls}', 'case "$2" in']
+        journal = [
+            "#!/bin/bash",
+            f'echo "$*" >> {calls}',
+            'if [[ "$*" == *--show-cursor* ]]; then echo "-- cursor: s=c1"; exit 0; fi',
+            'case "$2" in',
+        ]
         for name, text in logs.items():
             journal.append(f"  {name}) cat <<'EOF'\n{text}\nEOF\n  ;;")
         journal.append("esac")
@@ -121,9 +126,12 @@ class TestRestartReport:
         )
         assert result.returncode == 0, result.stderr
         assert "     MCP HTTP: API keys required" in result.stdout
-        assert "must send 'Authorization: Bearer <api_key>'" in result.stdout
-        # Only this restart's lines, not an earlier run's.
-        assert all("--since" in line for line in calls.splitlines())
+        assert "MCP HTTP clients must send" in result.stdout
+        assert "'Authorization: Bearer <api_key>'" in result.stdout
+        # Only this restart's lines, not an earlier run's: after a cursor.
+        unit_calls = [c for c in calls.splitlines() if c.startswith("-u ")]
+        assert unit_calls
+        assert all("--after-cursor s=c1" in c for c in unit_calls)
 
     def test_no_auth_heads_up_without_keys(self, run_restart):
         result, _ = run_restart(
@@ -142,3 +150,19 @@ class TestRestartReport:
         assert "[!!] labctl-mcp FAILED; log since restart:" in result.stdout
         assert "     Error: Refusing to serve MCP over HTTP" in result.stdout
         assert "Some services failed to start: labctl-mcp" in result.stdout
+
+    def test_auth_line_found_beyond_displayed_tail(self, run_restart):
+        """Request logs after startup must not hide the heads-up."""
+        noise = "\n".join(f'INFO: 127.0.0.1 - "POST /mcp" 401 #{i}' for i in range(40))
+        result, _ = run_restart(
+            ALL_UP, {"labctl-mcp": f"MCP HTTP: API keys required\n{noise}"}
+        )
+        assert result.returncode == 0, result.stderr
+        assert "     MCP HTTP: API keys required" not in result.stdout  # tail only
+        assert "must send" in result.stdout
+
+    def test_missing_auth_line_flagged(self, run_restart):
+        """A slow or silent start isn't reported as a clean one."""
+        result, _ = run_restart(ALL_UP, {"labctl-mcp": "Started labctl-mcp."})
+        assert result.returncode == 0, result.stderr
+        assert "hasn't logged its auth mode yet" in result.stdout

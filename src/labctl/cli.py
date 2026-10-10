@@ -5098,32 +5098,21 @@ def mcp_cmd(ctx: click.Context, http_port: int | None, host: str, check: bool) -
 def _mcp_check(http_port: int | None, host: str) -> None:
     """`labctl mcp --check`: report what the server would require or refuse.
 
-    Output lines start with a stable ``auth: <state>`` prefix
-    (scripts/update.sh matches on it). Exit 1 when the server would refuse
-    to start, or when a config file it would read can't be loaded.
+    Prints ``auth: required|none|n/a`` and the config file loaded, plus the
+    server's startup warnings. Exit 1 when a config file it would read
+    can't be parsed (reported first: it explains any refusal), or when the
+    server would refuse to start. Uses the server's own config resolution
+    (the environment `mcp_cmd` just exported), not the CLI's earlier load.
     """
     from labctl.mcp_server import (
         McpStartupError,
         _get_config,
+        _startup_warnings_visible,
         _warn_unknown_confirm_exemptions,
         check_http_startup,
     )
 
-    # The point is to see startup warnings: don't let a quieter log_level
-    # (e.g. ERROR) in the config hide them.
-    root = logging.getLogger()
-    if root.getEffectiveLevel() > logging.WARNING:
-        root.setLevel(logging.WARNING)
-
-    if http_port:
-        try:
-            required, config, _ = check_http_startup(host)
-        except McpStartupError as e:
-            raise click.ClickException(f"refused: {e}") from e
-    else:
-        required = None
-        config = _get_config()
-        _warn_unknown_confirm_exemptions(config.mcp)
+    config = _get_config()
     if config.load_errors:
         # The server would start, but not with the configuration intended.
         raise click.ClickException(
@@ -5136,6 +5125,15 @@ def _mcp_check(http_port: int | None, host: str) -> None:
                 "auth users, no host file access, default database)"
             )
         )
+    if http_port:
+        try:
+            required, _, _ = check_http_startup(host, config)
+        except McpStartupError as e:
+            raise click.ClickException(f"refused: {e}") from e
+    else:
+        required = None
+        with _startup_warnings_visible():
+            _warn_unknown_confirm_exemptions(config.mcp)
     source = config.source_path or "none found, using built-in defaults"
     if required is None:
         click.echo("auth: n/a (stdio transport: no HTTP checks apply)")
