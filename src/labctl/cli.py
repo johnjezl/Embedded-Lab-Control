@@ -5099,7 +5099,8 @@ def _mcp_check(http_port: int | None, host: str) -> None:
     """`labctl mcp --check`: report what the server would require or refuse.
 
     Output lines start with a stable ``auth: <state>`` prefix
-    (scripts/update.sh matches on it).
+    (scripts/update.sh matches on it). Exit 1 when the server would refuse
+    to start, or when a config file it would read can't be loaded.
     """
     from labctl.mcp_server import McpStartupError, check_http_startup
 
@@ -5107,17 +5108,22 @@ def _mcp_check(http_port: int | None, host: str) -> None:
         click.echo("auth: n/a (stdio transport: no HTTP checks apply)")
         return
     try:
-        required, config = check_http_startup(host)
+        required, config, _ = check_http_startup(host)
     except McpStartupError as e:
         raise click.ClickException(f"refused: {e}") from e
-    if config.source_path:
-        source = str(config.source_path)
-    elif os.environ.get("LABCTL_CONFIG"):
-        # Exists (click checked -c) but couldn't be read or parsed as this
-        # user: the server would run on defaults.
-        source = f"{os.environ['LABCTL_CONFIG']} could not be loaded; using defaults"
-    else:
-        source = "none found, using defaults"
+    if config.load_errors:
+        # The server would start, but not with the configuration intended.
+        raise click.ClickException(
+            "config not loaded: "
+            + "; ".join(config.load_errors)
+            + (
+                f" (using {config.source_path} instead)"
+                if config.source_path
+                else " (the server would run on built-in defaults: no "
+                "auth users, no host file access, default database)"
+            )
+        )
+    source = config.source_path or "none found, using built-in defaults"
     if required:
         click.echo(
             f"auth: required (HTTP on {host}:{http_port}; clients must send "

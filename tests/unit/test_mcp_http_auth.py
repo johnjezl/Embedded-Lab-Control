@@ -301,7 +301,7 @@ class TestRunServerRefuses:
             ),
             ("", ["--http", "8080", "--host", "0.0.0.0"], "refused: Refusing", 1),
             ("", [], "auth: n/a", 0),
-            ("auth: [unclosed\n", ["--http", "8080"], "could not be loaded", 0),
+            ("auth: [unclosed\n", ["--http", "8080"], "config not loaded:", 1),
         ],
     )
     def test_cli_check(self, tmp_path, body, args, expected, code):
@@ -316,6 +316,35 @@ class TestRunServerRefuses:
             result = CliRunner().invoke(main, ["-c", str(cfg), "mcp", *args, "--check"])
         assert result.exit_code == code, result.output
         assert expected in result.output
+        run.assert_not_called()
+
+    def test_check_warns_unknown_confirm_exemption(self, caplog):
+        """--check runs the same startup warnings as the server."""
+        from labctl import mcp_server
+
+        config = _config(enabled=False)
+        config.mcp.confirm_exempt = ["serial_sen"]
+        with patch.object(mcp_server, "_get_config", return_value=config):
+            required, _, _ = mcp_server.check_http_startup("127.0.0.1")
+        assert required is False
+        assert "unknown tool name(s), ignored: serial_sen" in caplog.text
+
+    def test_run_server_uses_check_http_startup(self, http_auth_restore):
+        """One copy of the startup checks: run_server calls the same function
+        `--check` does, so the two can't drift."""
+        from labctl import mcp_server
+
+        with (
+            patch.object(
+                mcp_server,
+                "check_http_startup",
+                side_effect=mcp_server.McpStartupError("nope"),
+            ) as check,
+            patch.object(mcp_server.mcp, "run") as run,
+        ):
+            with pytest.raises(mcp_server.McpStartupError):
+                mcp_server.run_server(transport="http", host="127.0.0.1")
+        check.assert_called_once_with("127.0.0.1")
         run.assert_not_called()
 
     def test_passes_security_and_enables_auth(self, http_auth_restore):

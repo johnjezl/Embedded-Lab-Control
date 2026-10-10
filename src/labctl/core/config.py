@@ -389,6 +389,8 @@ class Config:
     log_level: str = "WARNING"
     # The file this config was loaded from (None: defaults); not serialized.
     source_path: Optional[Path] = field(default=None, compare=False, repr=False)
+    # "<path>: <error>" for each config file found but not loadable.
+    load_errors: list[str] = field(default_factory=list, compare=False, repr=False)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Config":
@@ -655,6 +657,7 @@ def load_config(
     # Try to load from file
     config_data = {}
     loaded_from = None
+    load_errors = []
     for path in paths_to_try:
         if _path_exists(path):
             try:
@@ -664,11 +667,13 @@ def load_config(
                 break
             except Exception as e:
                 logger.warning("Failed to load config from %s: %s", path, e)
+                load_errors.append(f"{path}: {e}")
                 continue
 
     # Create config from loaded data (or defaults)
     config = Config.from_dict(config_data)
     config.source_path = loaded_from
+    config.load_errors = load_errors
 
     # Apply environment variable overrides
     config = _apply_env_overrides(config)

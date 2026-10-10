@@ -3597,16 +3597,18 @@ def _enable_http_auth() -> None:
 def check_http_startup(host: str):
     """Run the HTTP transport's startup checks without serving anything.
 
-    Same checks, same config resolution as ``run_server(transport="http")``
-    (`labctl mcp --http PORT --check`; scripts/update.sh runs the service's
-    own command line with it). Returns ``(auth_required, config)``; raises
-    McpStartupError when the server would refuse to start. Logs the same
-    warnings (short keys, ignored users, unchecked Host headers).
+    run_server(transport="http") runs exactly this before serving, and
+    `labctl mcp --http PORT --check` runs it alone (scripts/update.sh runs
+    the service's own command line with it). Returns ``(auth_required,
+    config, transport_security)``; raises McpStartupError when the server
+    would refuse to start. Logs the startup warnings (short keys, ignored
+    users, unchecked Host headers, unknown confirm exemptions).
     """
     config = _get_config()
     required = _http_auth_required(host, config)
-    _transport_security(host, config.mcp)
-    return required, config
+    security = _transport_security(host, config.mcp)
+    _warn_unknown_confirm_exemptions()
+    return required, config, security
 
 
 def run_server(
@@ -3630,8 +3632,8 @@ def run_server(
 
     security = None
     if transport == "http":
-        config = _get_config()
-        if _http_auth_required(host, config):
+        required, config, security = check_http_startup(host)
+        if required:
             _pin_config_file(config)
             _enable_http_auth()
             logger.info("MCP HTTP: API key authentication required")
@@ -3643,11 +3645,11 @@ def run_server(
                 "127.0.0.1 can't be detected and would expose every tool",
                 host,
             )
-        security = _transport_security(host, config.mcp)
+    else:
+        _warn_unknown_confirm_exemptions()
 
     atexit.register(_release_session_claims)
     _start_expiry_thread(interval=30)
-    _warn_unknown_confirm_exemptions()
 
     if transport == "stdio":
         mcp.run(transport="stdio")
