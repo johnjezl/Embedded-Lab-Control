@@ -58,211 +58,87 @@ class TestAllowlistCheck:
 
 
 # ---------------------------------------------------------------------------
-# Step 3c: run the unit's own command line with --check
+# Steps 5-6: restart, then report each service from its own journal
 # ---------------------------------------------------------------------------
 
 
-def _step_3c() -> str:
+def _steps_5_6() -> str:
     text = UPDATE_SH.read_text()
-    start = text.index("# 3c. MCP HTTP authentication")
-    end = text.index("# 4. Verify install")
-    return text[start:end]
-
-
-EXEC_RECORD = (
-    "{{ path={argv0} ; argv[]={argv} ; ignore_errors=no ; "
-    "start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }}"
-)
+    return text[text.index("# 5. Restart services") :]
 
 
 @pytest.fixture
-def run_step(tmp_path):
-    """Run step 3c with stub `systemctl` (unit properties given per test)
-    and `runuser` (runs the command as the current user)."""
-    if LABCTL is None:
-        pytest.skip("labctl console script not installed next to the interpreter")
+def run_restart(tmp_path):
+    """Run steps 5-6 with stub systemctl/journalctl/sleep. ``active`` maps
+    service -> running?; ``logs`` maps service -> journal text."""
     stubs = tmp_path / "stubs"
     stubs.mkdir()
-    (stubs / "runuser").write_text(
-        '#!/bin/bash\n# runuser -u USER -- CMD...\nshift 3\nexec "$@"\n'
-    )
-    (stubs / "runuser").chmod(0o755)
+    calls = tmp_path / "journalctl.calls"
 
-    def run(
-        argv: str,
-        environment: str = "",
-        env_files: str = "",
-        workdir=None,
-        exe=None,
-        caller_env=None,
-    ):
-        props = {
-            "ExecStart": EXEC_RECORD.format(argv0=exe or argv.split()[0], argv=argv),
-            "User": os.environ.get("USER", "root"),
-            "WorkingDirectory": str(workdir or tmp_path),
-            "Environment": environment,
-            "EnvironmentFiles": env_files,
-        }
-        lines = ["#!/bin/bash", 'case "$1" in is-enabled) exit 0 ;; esac']
-        lines.append('case "$3" in')
-        for key, value in props.items():
-            lines.append(f"  {key}) cat <<'EOF'\n{value}\nEOF\n  ;;")
-        lines.append("esac")
-        (stubs / "systemctl").write_text("\n".join(lines) + "\n")
-        (stubs / "systemctl").chmod(0o755)
-        script = "set -e\n" + _step_3c()
+    def run(active: dict, logs: dict):
+        systemctl = ["#!/bin/bash", 'case "$1" in']
+        systemctl.append("  is-enabled) exit 0 ;;")
+        systemctl.append("  restart) exit 0 ;;")
+        running = " ".join(name for name, up in active.items() if up)
+        systemctl.append(
+            f'  is-active) for s in {running}; do [ "$3" = "$s" ] && exit 0; done;'
+            " exit 3 ;;"
+        )
+        systemctl.append("esac")
+        (stubs / "systemctl").write_text("\n".join(systemctl) + "\n")
+        journal = ["#!/bin/bash", f'echo "$*" >> {calls}', 'case "$2" in']
+        for name, text in logs.items():
+            journal.append(f"  {name}) cat <<'EOF'\n{text}\nEOF\n  ;;")
+        journal.append("esac")
+        (stubs / "journalctl").write_text("\n".join(journal) + "\n")
+        (stubs / "sleep").write_text("#!/bin/sh\n")
+        for stub in stubs.iterdir():
+            stub.chmod(0o755)
         env = {**os.environ, "PATH": f"{stubs}:{os.environ['PATH']}"}
-        env.pop("LABCTL_CONFIG", None)
-        env.pop("LABCTL_CONFIG_EXCLUSIVE", None)
-        env["MCP_CHECK_TIMEOUT"] = "10"
-        env.update(caller_env or {})
         result = subprocess.run(
-            ["bash", "-c", script],
+            ["bash", "-c", "set -e\n" + _steps_5_6()],
             capture_output=True,
             text=True,
             env=env,
-            timeout=120,
+            timeout=60,
         )
-        assert result.returncode == 0, result.stderr
-        return result.stdout
+        return result, calls.read_text() if calls.exists() else ""
 
     return run
 
 
-AUTH = (
-    "auth:\n  enabled: true\n  users:\n"
-    "    - username: a\n      api_key: kkkkkkkkkkkkkkkkkkkkkkkk\n"
-)
+ALL_UP = {"labctl-web": True, "labctl-monitor": True, "labctl-mcp": True}
 
 
-class TestMcpUnitArgv:
-    def test_extracts_argv(self):
-        fn = re.search(r"mcp_unit_argv\(\) \{.*?\n\}", UPDATE_SH.read_text(), re.S)
-        argv = "/opt/labctl/venv/bin/labctl -c /etc/labctl/config.yaml mcp --http 8080"
-        record = EXEC_RECORD.format(argv0=argv.split()[0], argv=argv)
-        out = subprocess.run(
-            ["bash", "-c", fn.group(0) + "\nmcp_unit_argv"],
-            input=record,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        assert out == argv
-
-    def test_at_prefix_uses_path_as_executable(self):
-        """`ExecStart=@/path argv0 ...`: argv[0] is only a display name."""
-        fn = re.search(r"mcp_unit_argv\(\) \{.*?\n\}", UPDATE_SH.read_text(), re.S)
-        record = EXEC_RECORD.format(
-            argv0="/opt/labctl/venv/bin/labctl", argv="labctl-mcp mcp --http 8080"
+class TestRestartReport:
+    def test_mcp_auth_mode_shown_from_this_restart(self, run_restart):
+        result, calls = run_restart(
+            ALL_UP,
+            {
+                "labctl-mcp": "Starting MCP server (HTTP on 127.0.0.1:8080)...\n"
+                "MCP HTTP: API keys required"
+            },
         )
-        out = subprocess.run(
-            ["bash", "-c", fn.group(0) + "\nmcp_unit_argv"],
-            input=record,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        assert out == "/opt/labctl/venv/bin/labctl mcp --http 8080"
+        assert result.returncode == 0, result.stderr
+        assert "     MCP HTTP: API keys required" in result.stdout
+        assert "must send 'Authorization: Bearer <api_key>'" in result.stdout
+        # Only this restart's lines, not an earlier run's.
+        assert all("--since" in line for line in calls.splitlines())
 
-
-class TestMcpStartupCheck:
-    def test_no_auth_loopback(self, run_step, write_config):
-        cfg = write_config("")
-        out = run_step(f"{LABCTL} -c {cfg} mcp --http 8080")
-        assert "[ok] labctl-mcp startup check:" in out
-        assert "auth: none" in out
-        assert f"config: {cfg}" in out
-
-    def test_auth_required(self, run_step, write_config):
-        out = run_step(f"{LABCTL} -c {write_config(AUTH)} mcp --http 8080")
-        assert "[!!] labctl-mcp requires API keys" in out
-        assert "auth: required" in out
-
-    def test_refused_non_loopback(self, run_step, write_config):
-        out = run_step(f"{LABCTL} -c {write_config('')} mcp --http 8080 --host 0.0.0.0")
-        assert "[!!] labctl-mcp startup check failed" in out
-        assert "without authentication" in out
-
-    def test_missing_config_file_refused(self, run_step, tmp_path):
-        """labctl -c rejects a missing file: the service would fail too."""
-        out = run_step(f"{LABCTL} -c {tmp_path / 'nope.yaml'} mcp --http 8080")
-        assert "[!!] labctl-mcp startup check failed" in out
-        assert "does not exist" in out
-
-    def test_relative_config_resolved_in_workdir(self, run_step, write_config):
-        """`-c mcp.yaml` is relative to the unit's WorkingDirectory."""
-        cfg = write_config(AUTH, name="mcp.yaml")
-        out = run_step(f"{LABCTL} -c mcp.yaml mcp --http 8080", workdir=cfg.parent)
-        assert "auth: required" in out
-
-    def test_config_from_unit_environment(self, run_step, write_config):
-        cfg = write_config(AUTH, name="env.yaml")
-        out = run_step(
-            f"{LABCTL} mcp --http 8080",
-            environment=f"LABCTL_CONFIG={cfg} LABCTL_CONFIG_EXCLUSIVE=1",
+    def test_no_auth_heads_up_without_keys(self, run_restart):
+        result, _ = run_restart(
+            ALL_UP, {"labctl-mcp": "MCP HTTP: no authentication (loopback only)"}
         )
-        assert "auth: required" in out
-        assert f"config: {cfg}" in out
+        assert result.returncode == 0, result.stderr
+        assert "MCP HTTP: no authentication" in result.stdout
+        assert "Authorization: Bearer" not in result.stdout
 
-    def test_stdio_unit(self, run_step, write_config):
-        out = run_step(f"{LABCTL} -c {write_config('')} mcp")
-        assert "auth: n/a" in out
-
-    def test_variable_substitution_not_guessed(self, run_step):
-        out = run_step(f"{LABCTL} mcp --http 8080 --host ${{MCP_BIND}}")
-        assert "Could not check" in out
-
-    def test_environment_file_noted(self, run_step, write_config):
-        out = run_step(
-            f"{LABCTL} -c {write_config('')} mcp --http 8080",
-            env_files="/etc/default/labctl-mcp (ignore_errors=no)",
+    def test_failed_service_shows_its_log_and_fails(self, run_restart):
+        result, _ = run_restart(
+            {**ALL_UP, "labctl-mcp": False},
+            {"labctl-mcp": "Error: Refusing to serve MCP over HTTP on 0.0.0.0"},
         )
-        assert "EnvironmentFile= was not applied" in out
-
-    def test_broken_config_is_not_ok(self, run_step, tmp_path):
-        """A config that exists but doesn't parse would start the server on
-        built-in defaults: flagged, not "[ok]"."""
-        cfg = tmp_path / "broken.yaml"
-        cfg.write_text("auth: [unclosed\n")
-        out = run_step(f"{LABCTL} -c {cfg} mcp --http 8080")
-        assert "[!!] labctl-mcp startup check failed" in out
-        assert "config not loaded" in out
-
-    def test_warnings_are_not_ok(self, run_step, write_config):
-        cfg = write_config("mcp:\n  confirm_exempt: [serial_sen]\n")
-        out = run_step(f"{LABCTL} -c {cfg} mcp --http 8080")
-        assert "[!!] labctl-mcp startup check passed with warnings" in out
-        assert "serial_sen" in out
-
-    def test_caller_environment_does_not_leak(self, run_step, tmp_path):
-        """systemd starts the service with a clean environment; so does the
-        check, whatever the admin's shell exports. (Unit without -c, so the
-        config comes from the environment's search path.)"""
-        xdg = tmp_path / "xdg"
-        (xdg / "labctl").mkdir(parents=True)
-        unit_cfg = xdg / "labctl" / "config.yaml"
-        unit_cfg.write_text(f"database_path: {tmp_path / 'x.db'}\n")
-        dev = tmp_path / "dev.yaml"
-        dev.write_text(f"database_path: {tmp_path / 'x.db'}\n{AUTH}")
-        out = run_step(
-            f"{LABCTL} mcp --http 8080",
-            environment=f"XDG_CONFIG_HOME={xdg}",
-            caller_env={"LABCTL_CONFIG": str(dev), "LABCTL_CONFIG_EXCLUSIVE": "1"},
-        )
-        assert "auth: none" in out
-        assert f"config: {unit_cfg}" in out
-
-    def test_missing_ok_workdir_prefix(self, run_step, write_config):
-        """`WorkingDirectory=-PATH` shows as "!PATH"."""
-        cfg = write_config(AUTH, name="mcp.yaml")
-        out = run_step(
-            f"{LABCTL} -c mcp.yaml mcp --http 8080", workdir=f"!{cfg.parent}"
-        )
-        assert "auth: required" in out
-
-    def test_command_without_check_support(self, run_step, tmp_path):
-        """A drop-in command that ignores --check and keeps running is
-        reported as uncheckable, not as a refusal, and doesn't hang."""
-        server = tmp_path / "serve"
-        server.write_text("#!/bin/sh\nexec sleep 600\n")
-        server.chmod(0o755)
-        out = run_step(f"{server} --http 8080")
-        assert "doesn't support --check" in out
+        assert result.returncode == 1
+        assert "[!!] labctl-mcp FAILED; log since restart:" in result.stdout
+        assert "     Error: Refusing to serve MCP over HTTP" in result.stdout
+        assert "Some services failed to start: labctl-mcp" in result.stdout

@@ -101,11 +101,13 @@ that user's `api_key`.
   (quote numeric usernames in YAML).
 - Without auth (the default), it listens on loopback only, all clients
   share one claimant identity, and anyone who can connect locally can call
-  every tool; the startup log says so.
+  every tool. Every HTTP start prints its mode (`MCP HTTP: API keys
+  required` / `MCP HTTP: no authentication (loopback only)`).
 - `labctl mcp --http PORT [--host ADDR] --check` runs these startup checks
   (the same code the server runs before serving) and exits: it prints
-  `auth: required` / `auth: none` and the config file it loaded, plus any
-  startup warnings. It exits with status 1 if the server would refuse to
+  `auth: required` / `auth: none` (or `n/a` without `--http`) and the
+  config file it loaded, plus any startup warnings, whatever `log_level`
+  says. It exits with status 1 if the server would refuse to
   start, or if a config file it would read can't be parsed (the server
   would silently fall back to another file or to built-in defaults).
 
@@ -153,8 +155,7 @@ journalctl -u labctl-mcp -f
 The service runs on `127.0.0.1:8080` by default. To change the port or add
 `--host`, use a drop-in (`sudo systemctl edit labctl-mcp`) that clears and
 replaces `ExecStart=`; don't edit the unit file itself, since
-`scripts/update.sh` reinstalls it on every update (drop-ins are kept, and
-its MCP pre-check uses the effective command line). (Before 0.2.0 the
+`scripts/update.sh` reinstalls it on every update (drop-ins are kept). (Before 0.2.0 the
 port argument was ignored and the server silently bound `127.0.0.1:8000`.)
 
 Remote clients connect via HTTP (through a tunnel, a proxy, or `--host`
@@ -503,14 +504,12 @@ system-write / hardware / destructive) in
    export`, or the web `/activity` page) after
    unattended runs.
 
-`scripts/update.sh` checks items 2 and 4 against the installed config: it
-reports missing allowlist settings, and before restarting runs the
-`labctl-mcp` unit's own command line with `--check` (as the unit's user, in
-its working directory, with a clean environment plus its `Environment=`).
-That pre-check is best effort: it doesn't reproduce the unit's sandboxing
-(`ProtectHome=`, `PrivateTmp=`) or `EnvironmentFile=`, and doesn't bind the
-port. After the restart, the script reports each service's real state and
-prints the last log lines of any that failed.
+`scripts/update.sh` reports missing allowlist settings (item 4) before
+restarting, and after the restart shows `labctl-mcp`'s startup lines from
+its journal: the auth mode (item 2: `MCP HTTP: API keys required` /
+`no authentication`), any startup warnings, or why it refused to start.
+To check a config change without restarting, run
+`labctl -c FILE mcp --http PORT --check`.
 
 ### Confirmation for destructive tools
 

@@ -302,6 +302,7 @@ class TestRunServerRefuses:
             ("", ["--http", "8080", "--host", "0.0.0.0"], "refused: Refusing", 1),
             ("", [], "auth: n/a", 0),
             ("auth: [unclosed\n", ["--http", "8080"], "config not loaded:", 1),
+            ("auth: [unclosed\n", [], "config not loaded:", 1),
         ],
     )
     def test_cli_check(self, tmp_path, body, args, expected, code):
@@ -317,6 +318,32 @@ class TestRunServerRefuses:
         assert result.exit_code == code, result.output
         assert expected in result.output
         run.assert_not_called()
+
+    def test_cli_check_warnings_survive_quiet_log_level(self, tmp_path, caplog):
+        """--check exists to show startup warnings: a config log_level of
+        ERROR must not hide them."""
+        import logging
+
+        from click.testing import CliRunner
+
+        from labctl.cli import main
+
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text(
+            f"database_path: {tmp_path / 'x.db'}\nlog_level: ERROR\n"
+            "mcp:\n  confirm_exempt: [serial_sen]\n"
+        )
+        root = logging.getLogger()
+        saved = root.level
+        root.setLevel(logging.ERROR)
+        try:
+            result = CliRunner().invoke(
+                main, ["-c", str(cfg), "mcp", "--http", "8080", "--check"]
+            )
+        finally:
+            root.setLevel(saved)
+        assert result.exit_code == 0, result.output
+        assert "unknown tool name(s), ignored: serial_sen" in caplog.text
 
     def test_check_warns_unknown_confirm_exemption(self, caplog):
         """--check runs the same startup warnings as the server."""
@@ -347,7 +374,7 @@ class TestRunServerRefuses:
         check.assert_called_once_with("127.0.0.1")
         run.assert_not_called()
 
-    def test_passes_security_and_enables_auth(self, http_auth_restore):
+    def test_passes_security_and_enables_auth(self, http_auth_restore, capsys):
         from labctl import mcp_server
 
         with (
@@ -357,6 +384,8 @@ class TestRunServerRefuses:
             patch.object(mcp_server.mcp, "run") as run,
         ):
             mcp_server.run_server(transport="http", host="127.0.0.1", http_port=9)
+        # The service journal shows the auth mode, whatever log_level says.
+        assert "MCP HTTP: API keys required" in capsys.readouterr().out
         kwargs = run.call_args.kwargs
         assert kwargs["transport_security"].enable_dns_rebinding_protection
         assert isinstance(mcp_server.mcp._token_verifier, mcp_server._ApiKeyVerifier)

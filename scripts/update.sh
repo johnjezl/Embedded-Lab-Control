@@ -136,75 +136,6 @@ if [ -n "$MISSING_ALLOWLIST" ]; then
     echo "         allowed_write_paths: [/var/lib/labctl/output]"
 fi
 
-# 3c. MCP HTTP authentication (0.2.0+): with auth.enabled, HTTP clients must
-# send "Authorization: Bearer <api_key>"; a non-loopback --host without auth,
-# or auth with no usable API key, makes labctl-mcp refuse to start. Best
-# effort before the restart: run the unit's own command line plus `--check`
-# (startup checks only, no serving) as the unit's user, in its working
-# directory, with a clean environment plus its Environment=. It does not
-# reproduce the unit's sandboxing (ProtectHome=, PrivateTmp=), its
-# EnvironmentFile=, or binding the port; step 6 reports the real outcome.
-
-# Print "<executable> <args...>" from a `systemctl show -p ExecStart --value`
-# record. path= is the executable even for `ExecStart=@path argv0 ...`.
-mcp_unit_argv() {
-    local rec path argv
-    rec=$(cat)
-    path=$(sed -nE 's/.*\{ path=([^ ;]+) ;.*/\1/p' <<<"$rec" | head -1)
-    argv=$(sed -nE 's/.*argv\[\]=([^;]*[^; ]) ;.*/\1/p' <<<"$rec" | head -1)
-    if [ -n "$path" ] && [ -n "$argv" ]; then
-        read -r -a argv <<<"$argv"
-        echo "$path ${argv[*]:1}"
-    fi
-}
-
-if systemctl is-enabled labctl-mcp &>/dev/null; then
-    MCP_ARGV=$(systemctl show -p ExecStart --value labctl-mcp 2>/dev/null | mcp_unit_argv || true)
-    MCP_USER=$(systemctl show -p User --value labctl-mcp 2>/dev/null || true)
-    MCP_DIR=$(systemctl show -p WorkingDirectory --value labctl-mcp 2>/dev/null || true)
-    MCP_ENV=$(systemctl show -p Environment --value labctl-mcp 2>/dev/null || true)
-    MCP_ENV_FILES=$(systemctl show -p EnvironmentFiles --value labctl-mcp 2>/dev/null || true)
-    MCP_USER=${MCP_USER:-root}
-    MCP_HOME=$(getent passwd "$MCP_USER" | cut -d: -f6 || true)
-    MCP_DIR=${MCP_DIR#!}                       # "-PATH" (missing is ok) shows as "!PATH"
-    if [ "$MCP_DIR" = "~" ]; then MCP_DIR=$MCP_HOME; fi
-    if [ ! -d "${MCP_DIR:-/}" ]; then MCP_DIR=/; fi
-    if [ -z "$MCP_ARGV" ] || [[ "$MCP_ARGV$MCP_ENV" == *[\$\"\\]* ]]; then
-        # $VAR substitution or quoting that word splitting can't reproduce.
-        echo "[!!] Could not check labctl-mcp authentication settings"
-        echo "     (unit command line: ${MCP_ARGV:-unknown}); run it with --check"
-    else
-        read -r -a MCP_CMD <<<"$MCP_ARGV"
-        read -r -a MCP_ENV_ARGS <<<"$MCP_ENV"
-        # `|| MCP_RC=$?`: under set -e a failed check must be reported, not
-        # abort the update before the services restart. No stdin, and a
-        # timeout, in case a drop-in's command ignores --check and serves.
-        MCP_RC=0
-        MCP_OUT=$(cd "$MCP_DIR" && timeout "${MCP_CHECK_TIMEOUT:-60}" runuser -u "$MCP_USER" -- \
-            env -i PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
-            HOME="${MCP_HOME:-/}" USER="$MCP_USER" LOGNAME="$MCP_USER" \
-            "${MCP_ENV_ARGS[@]}" "${MCP_CMD[@]}" --check </dev/null 2>&1) || MCP_RC=$?
-        if [ "$MCP_RC" -eq 124 ] || grep -q 'No such option: --check' <<<"$MCP_OUT"; then
-            echo "[!!] Could not check labctl-mcp: its command line doesn't support --check"
-            echo "     (${MCP_ARGV})"
-            MCP_OUT=""
-        elif [ "$MCP_RC" -ne 0 ]; then
-            echo "[!!] labctl-mcp startup check failed:"
-        elif grep -q '^auth: required' <<<"$MCP_OUT"; then
-            echo "[!!] labctl-mcp requires API keys (auth.enabled is true): MCP HTTP"
-            echo "     clients must send 'Authorization: Bearer <api_key>'."
-        elif grep -q '\[WARNING\]' <<<"$MCP_OUT"; then
-            echo "[!!] labctl-mcp startup check passed with warnings:"
-        else
-            echo "[ok] labctl-mcp startup check:"
-        fi
-        if [ -n "$MCP_OUT" ]; then sed 's/^/     /' <<<"$MCP_OUT"; fi
-        if [ -n "$MCP_ENV_FILES" ]; then
-            echo "     (note: the unit's EnvironmentFile= was not applied to this check)"
-        fi
-    fi
-fi
-
 # 4. Verify install
 VERSION=$("$LABCTL_VENV/bin/labctl" --version 2>&1 || true)
 echo "[ok] $VERSION"
@@ -219,17 +150,29 @@ done
 
 if [ -n "$SERVICES" ]; then
     echo "[+] Restarting services:$SERVICES"
+    # Journal lines from this restart only (not an earlier run's).
+    RESTART_SINCE=$(date '+%Y-%m-%d %H:%M:%S')
     systemctl restart $SERVICES
-    sleep 2
+    sleep 3
 
     # 6. Verify services
     FAILED=""
     for svc in $SERVICES; do
+        SVC_LOG=$(journalctl -u "$svc" --since "$RESTART_SINCE" --no-pager -o cat 2>/dev/null | tail -n 15 || true)
         if systemctl is-active --quiet "$svc"; then
             echo "[ok] $svc running"
+            # labctl-mcp prints its auth mode and startup warnings (0.2.0+:
+            # API keys when auth.enabled; refuses unsafe HTTP settings).
+            if [ "$svc" = labctl-mcp ] && [ -n "$SVC_LOG" ]; then
+                sed 's/^/     /' <<<"$SVC_LOG"
+                if grep -q 'MCP HTTP: API keys required' <<<"$SVC_LOG"; then
+                    echo "[!!] MCP HTTP clients must send 'Authorization: Bearer <api_key>'"
+                    echo "     (a user's api_key from auth.users). See docs/MCP_SERVER.md."
+                fi
+            fi
         else
-            echo "[!!] $svc FAILED; last log lines:"
-            journalctl -u "$svc" -n 10 --no-pager -o cat 2>/dev/null | sed 's/^/     /' || true
+            echo "[!!] $svc FAILED; log since restart:"
+            if [ -n "$SVC_LOG" ]; then sed 's/^/     /' <<<"$SVC_LOG"; fi
             FAILED="$FAILED $svc"
         fi
     done

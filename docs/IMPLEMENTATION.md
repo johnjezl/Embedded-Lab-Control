@@ -827,6 +827,7 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
   - ✅ Security overview in `docs/MCP_SERVER.md` (controls table, known
     limits, deployment checklist); README safety note and doc links
   - ✅ `SECURITY.md` (private vulnerability reporting)
-  - ✅ `labctl mcp --check`; `scripts/update.sh` runs the unit's command
-    line with it to report what `labctl-mcp` will require or refuse
+  - ✅ `labctl mcp --check` (startup checks without serving);
+    `scripts/update.sh` shows each restarted service's journal since the
+    restart (MCP auth mode, warnings, refusal reasons)
   - ☐ Deploy Phase 1 to tarrasque (allowlist config, client heads-up)
