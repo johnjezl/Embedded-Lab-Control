@@ -102,6 +102,10 @@ that user's `api_key`.
 - Without auth (the default), it listens on loopback only, all clients
   share one claimant identity, and anyone who can connect locally can call
   every tool; the startup log says so.
+- `labctl mcp --http PORT [--host ADDR] --check` runs these startup checks
+  and exits without serving: it prints `auth: required` / `auth: none`
+  and the config file it loaded, or the reason it would refuse (exit
+  status 1).
 
 #### Host header checks
 
@@ -490,14 +494,18 @@ system-write / hardware / destructive) in
    them (`update.sh` prints the lines).
 5. Keep `mcp.confirm_destructive` on; exempt only tools you have to
    (e.g. `serial_send` for heavy console work).
-6. Turn on claims (`claims.enabled`, default) when several agents share
-   boards, and ask agents to claim before working.
+6. When several agents share boards, keep claims on (`claims.enabled`, the
+   default) and ask agents to claim before working. Over HTTP, claims only
+   tell agents apart when auth is enabled (each user is a claimant).
 7. Review the audit trail (`labctl activity tail` / `labctl activity
    export`, or the web `/activity` page) after
    unattended runs.
 
-`scripts/update.sh` checks items 2 and 4 against the installed config and
-reports what the restarted `labctl-mcp` will require or refuse.
+`scripts/update.sh` checks items 2 and 4 against the installed config: it
+reports missing allowlist settings, and runs the `labctl-mcp` unit's own
+command line with `--check` (as the unit's user, in its working directory
+and `Environment=`) to report what the restarted server will require or
+refuse.
 
 ### Confirmation for destructive tools
 

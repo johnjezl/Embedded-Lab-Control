@@ -5046,8 +5046,15 @@ def sessions_cmd(ctx: click.Context, sbc_name: str | None) -> None:
     help="Bind address for --http. Non-loopback addresses require auth.enabled "
     "with user API keys (clients send 'Authorization: Bearer <api_key>').",
 )
+@click.option(
+    "--check",
+    is_flag=True,
+    help="Run the startup checks for these options and exit without serving: "
+    "reports whether HTTP clients need API keys, or why the server would "
+    "refuse to start (exit status 1).",
+)
 @click.pass_context
-def mcp_cmd(ctx: click.Context, http_port: int | None, host: str) -> None:
+def mcp_cmd(ctx: click.Context, http_port: int | None, host: str, check: bool) -> None:
     """Start the MCP (Model Context Protocol) server.
 
     By default uses stdio transport for local AI tool integration
@@ -5073,6 +5080,10 @@ def mcp_cmd(ctx: click.Context, http_port: int | None, host: str) -> None:
             "Install it with: pip install 'embedded-lab-control[mcp]'"
         ) from e
 
+    if check:
+        _mcp_check(http_port, host)
+        return
+
     if http_port:
         click.echo(f"Starting MCP server (HTTP on {host}:{http_port})...")
         try:
@@ -5082,6 +5093,42 @@ def mcp_cmd(ctx: click.Context, http_port: int | None, host: str) -> None:
     else:
         # stdio mode — no output to stdout (it's the JSON-RPC channel)
         run_server(transport="stdio")
+
+
+def _mcp_check(http_port: int | None, host: str) -> None:
+    """`labctl mcp --check`: report what the server would require or refuse.
+
+    Output lines start with a stable ``auth: <state>`` prefix
+    (scripts/update.sh matches on it).
+    """
+    from labctl.mcp_server import McpStartupError, check_http_startup
+
+    if not http_port:
+        click.echo("auth: n/a (stdio transport: no HTTP checks apply)")
+        return
+    try:
+        required, config = check_http_startup(host)
+    except McpStartupError as e:
+        raise click.ClickException(f"refused: {e}") from e
+    if config.source_path:
+        source = str(config.source_path)
+    elif os.environ.get("LABCTL_CONFIG"):
+        # Exists (click checked -c) but couldn't be read or parsed as this
+        # user: the server would run on defaults.
+        source = f"{os.environ['LABCTL_CONFIG']} could not be loaded; using defaults"
+    else:
+        source = "none found, using defaults"
+    if required:
+        click.echo(
+            f"auth: required (HTTP on {host}:{http_port}; clients must send "
+            "'Authorization: Bearer <api_key>')"
+        )
+    else:
+        click.echo(
+            f"auth: none (HTTP on {host}:{http_port}, loopback only; "
+            "auth.enabled is false)"
+        )
+    click.echo(f"config: {source}")
 
 
 # --- Web Server ---

@@ -288,6 +288,36 @@ class TestRunServerRefuses:
         assert "without authentication" in result.output
         run.assert_not_called()
 
+    @pytest.mark.parametrize(
+        "body,args,expected,code",
+        [
+            ("", ["--http", "8080"], "auth: none", 0),
+            (
+                "auth:\n  enabled: true\n  users:\n"
+                f"    - username: a\n      api_key: {ALICE_KEY}\n",
+                ["--http", "8080", "--host", "0.0.0.0"],
+                "auth: required",
+                0,
+            ),
+            ("", ["--http", "8080", "--host", "0.0.0.0"], "refused: Refusing", 1),
+            ("", [], "auth: n/a", 0),
+            ("auth: [unclosed\n", ["--http", "8080"], "could not be loaded", 0),
+        ],
+    )
+    def test_cli_check(self, tmp_path, body, args, expected, code):
+        """`labctl mcp --check` reports the startup outcome, never serves."""
+        from click.testing import CliRunner
+
+        from labctl.cli import main
+
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text(f"database_path: {tmp_path / 'x.db'}\n{body}")
+        with patch("labctl.mcp_server.mcp.run") as run:
+            result = CliRunner().invoke(main, ["-c", str(cfg), "mcp", *args, "--check"])
+        assert result.exit_code == code, result.output
+        assert expected in result.output
+        run.assert_not_called()
+
     def test_passes_security_and_enables_auth(self, http_auth_restore):
         from labctl import mcp_server
 

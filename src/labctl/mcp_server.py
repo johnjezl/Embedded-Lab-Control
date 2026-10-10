@@ -3594,6 +3594,21 @@ def _enable_http_auth() -> None:
     mcp._token_verifier = _ApiKeyVerifier()
 
 
+def check_http_startup(host: str):
+    """Run the HTTP transport's startup checks without serving anything.
+
+    Same checks, same config resolution as ``run_server(transport="http")``
+    (`labctl mcp --http PORT --check`; scripts/update.sh runs the service's
+    own command line with it). Returns ``(auth_required, config)``; raises
+    McpStartupError when the server would refuse to start. Logs the same
+    warnings (short keys, ignored users, unchecked Host headers).
+    """
+    config = _get_config()
+    required = _http_auth_required(host, config)
+    _transport_security(host, config.mcp)
+    return required, config
+
+
 def run_server(
     transport: str = "stdio", http_port: int = 8080, host: str = "127.0.0.1"
 ):
