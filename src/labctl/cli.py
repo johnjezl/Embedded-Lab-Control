@@ -5113,16 +5113,22 @@ def _mcp_check(http_port: int | None, host: str) -> None:
 
     config = _get_config()
     if config.load_errors:
-        # The server would start, but not with the configuration intended.
+        # A server started like this would not get the configuration
+        # intended. Says "as <user>": the service may run as someone else
+        # (labctl) who can read what this user can't.
+        import getpass
+
         raise click.ClickException(
-            "config not loaded: "
+            f"config not loaded (as user {getpass.getuser()}): "
             + "; ".join(config.load_errors)
             + (
-                f" (using {config.source_path} instead)"
+                f". It would use {config.source_path} instead"
                 if config.source_path
-                else " (the server would run on built-in defaults: no "
-                "auth users, no host file access, default database)"
+                else ". It would run on built-in defaults: no auth users, no "
+                "host file access, default database"
             )
+            + ". To check what the service sees, run this as its user "
+            "(e.g. sudo -u labctl)."
         )
     if http_port:
         try:

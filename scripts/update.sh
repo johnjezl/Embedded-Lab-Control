@@ -163,17 +163,14 @@ if [ -n "$SERVICES" ]; then
     }
     systemctl restart $SERVICES
     sleep 3
-    # labctl-mcp prints its auth mode once its startup checks have run
-    # (importing the SDK can take a few seconds); wait for that line, or
-    # for the service to stop, for up to 30 s. The line comes before the
-    # port is bound, so give a bind failure (port in use) time to show too.
+    # labctl-mcp logs its auth mode after its startup checks, then uvicorn
+    # logs "Uvicorn running on" once the port is bound, or a bind error
+    # (port in use). Wait for either, or for the service to stop, up to 30 s.
+    MCP_BIND_ERROR='error while attempting to bind'
     if [[ " $SERVICES " == *" labctl-mcp "* ]]; then
         for _ in $(seq 1 27); do
-            if ! systemctl is-active --quiet labctl-mcp; then
-                break
-            fi
-            if svc_log labctl-mcp | grep -q '^MCP HTTP: '; then
-                sleep 3
+            if ! systemctl is-active --quiet labctl-mcp ||
+                svc_log labctl-mcp | grep -qE "Uvicorn running on|$MCP_BIND_ERROR"; then
                 break
             fi
             sleep 1
@@ -183,7 +180,13 @@ if [ -n "$SERVICES" ]; then
     # 6. Verify services
     FAILED=""
     for svc in $SERVICES; do
-        if systemctl is-active --quiet "$svc"; then
+        SVC_ACTIVE=yes
+        systemctl is-active --quiet "$svc" || SVC_ACTIVE=no
+        # A bind failure is fatal even while the process is still exiting.
+        if [ "$svc" = labctl-mcp ] && svc_log labctl-mcp | grep -q "$MCP_BIND_ERROR"; then
+            SVC_ACTIVE=no
+        fi
+        if [ "$SVC_ACTIVE" = yes ]; then
             echo "[ok] $svc running"
             if [ "$svc" = labctl-mcp ]; then
                 # Auth mode (0.2.0+: API keys when auth.enabled) and startup
@@ -195,6 +198,10 @@ if [ -n "$SERVICES" ]; then
                     echo "     'Authorization: Bearer <api_key>' (a user's api_key from auth.users)."
                 elif ! grep -q '^MCP HTTP: ' <<<"$MCP_LOG"; then
                     echo "[!!] labctl-mcp hasn't logged its auth mode yet; check it with:"
+                    echo "     journalctl -u labctl-mcp -n 30"
+                fi
+                if ! grep -q 'Uvicorn running on' <<<"$MCP_LOG"; then
+                    echo "[!!] labctl-mcp hasn't confirmed it is listening yet; check it with:"
                     echo "     journalctl -u labctl-mcp -n 30"
                 fi
             fi
