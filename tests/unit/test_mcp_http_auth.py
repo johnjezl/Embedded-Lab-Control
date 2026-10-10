@@ -301,13 +301,13 @@ class TestRunServerRefuses:
             ),
             ("", ["--http", "8080", "--host", "0.0.0.0"], "refused: Refusing", 1),
             ("", [], "auth: n/a", 0),
-            ("auth: [unclosed\n", ["--http", "8080"], "config not loaded:", 1),
-            ("auth: [unclosed\n", [], "config not loaded:", 1),
+            ("auth: [unclosed\n", ["--http", "8080"], "config not loaded (as user", 1),
+            ("auth: [unclosed\n", [], "config not loaded (as user", 1),
             # A parse error explains the refusal it causes: reported first.
             (
                 "auth: [unclosed\n",
                 ["--http", "8080", "--host", "0.0.0.0"],
-                "config not loaded:",
+                "config not loaded (as user",
                 1,
             ),
         ],
@@ -458,6 +458,29 @@ class TestConfigLoadErrors:
         assert config.source_path is None
         assert len(config.load_errors) == 1
         assert "Permission denied" in config.load_errors[0]
+
+
+class TestExclusiveConfigMissing:
+    def test_missing_exclusive_config_recorded(self, tmp_path, monkeypatch):
+        """LABCTL_CONFIG + EXCLUSIVE naming a missing file means defaults:
+        a load error, not "no config"."""
+        from labctl.core.config import load_config
+
+        monkeypatch.setenv("LABCTL_CONFIG", str(tmp_path / "typo.yml"))
+        monkeypatch.setenv("LABCTL_CONFIG_EXCLUSIVE", "1")
+        config = load_config()
+        assert config.source_path is None
+        assert config.load_errors == [
+            f"{tmp_path / 'typo.yml'}: No such file or directory"
+        ]
+
+    def test_missing_search_path_entries_not_errors(self, tmp_path, monkeypatch):
+        """Absent files in the normal search order are not errors."""
+        from labctl.core import config as config_mod
+
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+        monkeypatch.setattr(config_mod, "SYSTEM_CONFIG_FILE", tmp_path / "none.yaml")
+        assert config_mod.load_config().load_errors == []
 
 
 class TestConfigPinning:

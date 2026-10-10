@@ -512,8 +512,9 @@ that restart: the auth mode (item 2: `MCP HTTP: API keys required` /
 whenever keys are required) and startup warnings, which the server logs
 whatever `log_level` says. For any service that failed to start, it shows
 that service's log since the restart.
-To check a config change without restarting, run
-`labctl -c FILE mcp --http PORT --check`.
+To check a config change without restarting, run the check as the
+service's user, which may read files you can't:
+`sudo -u labctl /opt/labctl/venv/bin/labctl -c /etc/labctl/config.yaml mcp --http 8080 --check`.
 
 ### Confirmation for destructive tools
 

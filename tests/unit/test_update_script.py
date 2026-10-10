@@ -113,6 +113,7 @@ def run_restart(tmp_path):
 
 
 ALL_UP = {"labctl-web": True, "labctl-monitor": True, "labctl-mcp": True}
+LISTENING = "INFO:     Uvicorn running on http://127.0.0.1:8080 (Press CTRL+C to quit)"
 
 
 class TestRestartReport:
@@ -121,7 +122,8 @@ class TestRestartReport:
             ALL_UP,
             {
                 "labctl-mcp": "Starting MCP server (HTTP on 127.0.0.1:8080)...\n"
-                "MCP HTTP: API keys required"
+                "MCP HTTP: API keys required\n"
+                f"{LISTENING}"
             },
         )
         assert result.returncode == 0, result.stderr
@@ -135,11 +137,13 @@ class TestRestartReport:
 
     def test_no_auth_heads_up_without_keys(self, run_restart):
         result, _ = run_restart(
-            ALL_UP, {"labctl-mcp": "MCP HTTP: no authentication (loopback only)"}
+            ALL_UP,
+            {"labctl-mcp": f"MCP HTTP: no authentication (loopback only)\n{LISTENING}"},
         )
         assert result.returncode == 0, result.stderr
         assert "MCP HTTP: no authentication" in result.stdout
         assert "Authorization: Bearer" not in result.stdout
+        assert "hasn't confirmed it is listening" not in result.stdout
 
     def test_failed_service_shows_its_log_and_fails(self, run_restart):
         result, _ = run_restart(
@@ -155,7 +159,8 @@ class TestRestartReport:
         """Request logs after startup must not hide the heads-up."""
         noise = "\n".join(f'INFO: 127.0.0.1 - "POST /mcp" 401 #{i}' for i in range(40))
         result, _ = run_restart(
-            ALL_UP, {"labctl-mcp": f"MCP HTTP: API keys required\n{noise}"}
+            ALL_UP,
+            {"labctl-mcp": f"MCP HTTP: API keys required\n{LISTENING}\n{noise}"},
         )
         assert result.returncode == 0, result.stderr
         assert "     MCP HTTP: API keys required" not in result.stdout  # tail only
@@ -166,3 +171,25 @@ class TestRestartReport:
         result, _ = run_restart(ALL_UP, {"labctl-mcp": "Started labctl-mcp."})
         assert result.returncode == 0, result.stderr
         assert "hasn't logged its auth mode yet" in result.stdout
+
+    def test_bind_failure_is_failed_while_still_exiting(self, run_restart):
+        """The auth line precedes the bind: a port-in-use error is FAILED
+        even if systemd still shows the exiting process as active."""
+        result, _ = run_restart(
+            ALL_UP,
+            {
+                "labctl-mcp": "MCP HTTP: no authentication (loopback only)\n"
+                "ERROR:    [Errno 98] error while attempting to bind on address "
+                "('127.0.0.1', 8080): address already in use"
+            },
+        )
+        assert result.returncode == 1
+        assert "[!!] labctl-mcp FAILED" in result.stdout
+        assert "address already in use" in result.stdout
+
+    def test_not_yet_listening_flagged(self, run_restart):
+        result, _ = run_restart(
+            ALL_UP, {"labctl-mcp": "MCP HTTP: no authentication (loopback only)"}
+        )
+        assert result.returncode == 0, result.stderr
+        assert "hasn't confirmed it is listening yet" in result.stdout
