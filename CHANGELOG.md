@@ -137,12 +137,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   (`auth: required` / `none`), the config file loaded, and startup
   warnings; exit 1 if the server would refuse to start or a config file
   can't be parsed.
-- `scripts/update.sh`, before restarting, runs the `labctl-mcp` unit's own
-  command line with `--check` (as the unit's user, in its working
-  directory, clean environment plus its `Environment=`) and reports
-  whether HTTP clients will need API keys or the check failed (best
-  effort: not inside the unit's sandbox). After the restart it prints the
-  last log lines of any service that failed to start.
+- `scripts/update.sh`, after restarting, shows `labctl-mcp`'s startup lines
+  from this restart (auth mode, warnings) and flags when HTTP clients now
+  need API keys; for any service that failed to start it prints that
+  service's log since the restart.
 - Destructive CLI commands (19: `power off`/`cycle`, `sdwire flash`/`update`/
   `host`/`unassign`, `serial send`, `actuator set`, binding verbs, recovery,
   `force-release`, `boot-test`, record removals) take `--yes/-y` and ask for

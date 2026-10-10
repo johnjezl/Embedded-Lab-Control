@@ -3375,13 +3375,16 @@ def _start_expiry_thread(interval: int = 30):
     return t
 
 
-def _warn_unknown_confirm_exemptions() -> None:
+def _warn_unknown_confirm_exemptions(mcp_cfg=None) -> None:
     """Log mcp.confirm_exempt names that aren't tools (likely typos).
 
     An unknown name fails safe (the intended tool keeps asking for
-    confirmation), but silently; say so once at startup.
+    confirmation), but silently; say so once at startup. Pass the startup
+    config's ``mcp`` section so the warning describes the same file.
     """
-    unknown = sorted(set(_get_config().mcp.confirm_exempt) - set(TOOL_ANNOTATIONS))
+    if mcp_cfg is None:
+        mcp_cfg = _get_config().mcp
+    unknown = sorted(set(mcp_cfg.confirm_exempt) - set(TOOL_ANNOTATIONS))
     if unknown:
         logger.warning(
             "mcp.confirm_exempt lists unknown tool name(s), ignored: %s",
@@ -3607,7 +3610,7 @@ def check_http_startup(host: str):
     config = _get_config()
     required = _http_auth_required(host, config)
     security = _transport_security(host, config.mcp)
-    _warn_unknown_confirm_exemptions()
+    _warn_unknown_confirm_exemptions(config.mcp)
     return required, config, security
 
 
@@ -3633,10 +3636,19 @@ def run_server(
     security = None
     if transport == "http":
         required, config, security = check_http_startup(host)
+        # On stdout (not the protocol channel over HTTP), whatever log_level
+        # says: the service journal shows the auth mode of every start.
+        print(
+            (
+                "MCP HTTP: API keys required"
+                if required
+                else "MCP HTTP: no authentication (loopback only)"
+            ),
+            flush=True,
+        )
         if required:
             _pin_config_file(config)
             _enable_http_auth()
-            logger.info("MCP HTTP: API key authentication required")
         else:
             logger.warning(
                 "MCP HTTP on %s without authentication (auth.enabled is false); "
