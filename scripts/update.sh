@@ -61,16 +61,25 @@ echo "[ok] systemd unit files refreshed"
 # 3. Repair shared config permissions and seed if missing
 echo "[+] Checking shared config..."
 mkdir -p "$SYSTEM_CONFIG_DIR"
+# The service copy lives under /var/lib/labctl, which the labctl user can
+# write: root only touches it through labctl.core.admin_files (no symlinks,
+# no hard links, descriptor-based chown/chmod, O_EXCL copies).
+ADMIN_FILES=("$LABCTL_VENV/bin/python" -m labctl.core.admin_files)
+if ! SERVICE_CONFIG_STATE=$("${ADMIN_FILES[@]}" state "$SERVICE_CONFIG_FILE"); then
+    echo "[!!] $SERVICE_CONFIG_STATE"
+    echo "     Not touching $SERVICE_CONFIG_FILE; replace it with a regular file."
+    exit 1
+fi
 if [ ! -f "$SYSTEM_CONFIG_FILE" ]; then
-    if [ -f "$SERVICE_CONFIG_FILE" ]; then
-        cp "$SERVICE_CONFIG_FILE" "$SYSTEM_CONFIG_FILE"
+    if [ "$SERVICE_CONFIG_STATE" = regular ]; then
+        "${ADMIN_FILES[@]}" copy "$SERVICE_CONFIG_FILE" "$SYSTEM_CONFIG_FILE" 640
         echo "[ok] Installed missing $SYSTEM_CONFIG_FILE from service config"
     else
         echo "[!!] Missing both $SYSTEM_CONFIG_FILE and $SERVICE_CONFIG_FILE"
         echo "Run scripts/install-services.sh for first-time setup."
         exit 1
     fi
-elif [ -f "$SERVICE_CONFIG_FILE" ] && ! cmp -s "$SYSTEM_CONFIG_FILE" "$SERVICE_CONFIG_FILE"; then
+elif [ "$SERVICE_CONFIG_STATE" = regular ] && ! cmp -s "$SYSTEM_CONFIG_FILE" "$SERVICE_CONFIG_FILE"; then
     echo "[!!] Shared config drift detected:"
     echo "     $SYSTEM_CONFIG_FILE differs from $SERVICE_CONFIG_FILE"
     echo "Refusing to restart services onto a stale /etc config."
@@ -82,9 +91,8 @@ chmod 750 "$SYSTEM_CONFIG_DIR"
 chmod 640 "$SYSTEM_CONFIG_FILE"
 # The service copy carries the same secrets (API keys, Kasa credentials)
 # and sits under world-traversable /var/lib/labctl.
-if [ -f "$SERVICE_CONFIG_FILE" ]; then
-    chown labctl:labctl "$SERVICE_CONFIG_FILE"
-    chmod 640 "$SERVICE_CONFIG_FILE"
+if [ "$SERVICE_CONFIG_STATE" = regular ]; then
+    "${ADMIN_FILES[@]}" secure "$SERVICE_CONFIG_FILE" labctl labctl 640
 fi
 echo "[ok] Shared config permissions repaired"
 
@@ -95,10 +103,8 @@ echo "[ok] Shared config permissions repaired"
 for spec in /var/lib/labctl/images:2775 /var/lib/labctl/output:3775; do
     dir="${spec%%:*}"
     mode="${spec##*:}"
-    if [ ! -d "$dir" ]; then
-        mkdir -p "$dir"
-        chown labctl:labctl "$dir"
-        chmod "$mode" "$dir"
+    if [ ! -e "$dir" ] && [ ! -L "$dir" ]; then
+        "${ADMIN_FILES[@]}" secure-dir "$dir" labctl labctl "$mode"
         echo "[ok] Created $dir (mode $mode)"
     fi
 done
@@ -163,17 +169,28 @@ if [ -n "$SERVICES" ]; then
     }
     systemctl restart $SERVICES
     sleep 3
-    # labctl-mcp is only up once its main process has a listening TCP
+    # labctl-mcp is only up once one of its processes has a listening TCP
     # socket (startup checks, SDK import, then the bind; a port in use makes
-    # it exit). Wait for that, or for the service to stop, up to 30 s.
+    # it exit). Any process of the unit counts, not just MainPID: a wrapper
+    # ExecStart (sh -c ...) leaves the server as a child. Returns 0 when
+    # listening, 1 when not, 2 when it can't tell (no `ss`).
     mcp_listening() {
-        local pid
-        pid=$(systemctl show -p MainPID --value labctl-mcp 2>/dev/null || true)
-        [ -n "$pid" ] && [ "$pid" != 0 ] && ss -ltnpH 2>/dev/null | grep -q "pid=$pid,"
+        local cg pids pattern
+        command -v "${SS_CMD:-ss}" >/dev/null 2>&1 || return 2
+        cg=$(systemctl show -p ControlGroup --value labctl-mcp 2>/dev/null || true)
+        pids=$( { cat "${CGROUP_ROOT:-/sys/fs/cgroup}$cg/cgroup.procs" 2>/dev/null || true
+                  systemctl show -p MainPID --value labctl-mcp 2>/dev/null || true; } |
+                grep -E '^[1-9][0-9]*$' | sort -u | paste -sd'|' -)
+        [ -n "$pids" ] || return 1
+        pattern="pid=($pids),"
+        "${SS_CMD:-ss}" -ltnpH 2>/dev/null | grep -qE "$pattern"
     }
+    MCP_LISTEN=1
     if [[ " $SERVICES " == *" labctl-mcp "* ]]; then
         for _ in $(seq 1 27); do
-            if ! systemctl is-active --quiet labctl-mcp || mcp_listening; then
+            MCP_LISTEN=0
+            mcp_listening || MCP_LISTEN=$?
+            if [ "$MCP_LISTEN" -ne 1 ] || ! systemctl is-active --quiet labctl-mcp; then
                 break
             fi
             sleep 1
@@ -186,8 +203,14 @@ if [ -n "$SERVICES" ]; then
         SVC_ACTIVE=yes
         systemctl is-active --quiet "$svc" || SVC_ACTIVE=no
         # Running but not listening (e.g. still exiting after a failed bind).
-        if [ "$svc" = labctl-mcp ] && [ "$SVC_ACTIVE" = yes ] && ! mcp_listening; then
-            SVC_ACTIVE=no
+        if [ "$svc" = labctl-mcp ] && [ "$SVC_ACTIVE" = yes ]; then
+            MCP_LISTEN=0
+            mcp_listening || MCP_LISTEN=$?
+            if [ "$MCP_LISTEN" -eq 1 ]; then
+                SVC_ACTIVE=no
+            elif [ "$MCP_LISTEN" -eq 2 ]; then
+                echo "[!!] Can't confirm labctl-mcp is listening: 'ss' (iproute2) not found"
+            fi
         fi
         if [ "$SVC_ACTIVE" = yes ]; then
             echo "[ok] $svc running"
