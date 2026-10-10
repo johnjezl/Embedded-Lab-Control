@@ -659,7 +659,17 @@ def load_config(
     loaded_from = None
     load_errors = []
     for path in paths_to_try:
-        if _path_exists(path):
+        try:
+            os.stat(path)
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        except OSError as e:
+            # e.g. EACCES on a 750 /etc/labctl: a config may well be there.
+            # (os.stat, not Path.exists(), which hides this on some Pythons.)
+            logger.warning("Failed to access config path %s: %s", path, e)
+            load_errors.append(f"{path}: {e}")
+            continue
+        else:
             try:
                 with open(path) as f:
                     config_data = yaml.safe_load(f) or {}

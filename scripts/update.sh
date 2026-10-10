@@ -165,10 +165,15 @@ if [ -n "$SERVICES" ]; then
     sleep 3
     # labctl-mcp prints its auth mode once its startup checks have run
     # (importing the SDK can take a few seconds); wait for that line, or
-    # for the service to stop, for up to 30 s.
+    # for the service to stop, for up to 30 s. The line comes before the
+    # port is bound, so give a bind failure (port in use) time to show too.
     if [[ " $SERVICES " == *" labctl-mcp "* ]]; then
         for _ in $(seq 1 27); do
-            if svc_log labctl-mcp | grep -q '^MCP HTTP: ' || ! systemctl is-active --quiet labctl-mcp; then
+            if ! systemctl is-active --quiet labctl-mcp; then
+                break
+            fi
+            if svc_log labctl-mcp | grep -q '^MCP HTTP: '; then
+                sleep 3
                 break
             fi
             sleep 1

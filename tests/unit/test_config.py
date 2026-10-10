@@ -612,20 +612,25 @@ class TestConfigLoadLogging:
             Path("/etc/labctl/config.yaml"),
         )
 
-        original_exists = Path.exists
+        original_stat = config_module.os.stat
 
-        def fake_exists(path: Path) -> bool:
-            if path == Path("/etc/labctl/config.yaml"):
+        def fake_stat(path, *args, **kwargs):
+            if Path(path) == Path("/etc/labctl/config.yaml"):
                 raise denied
-            return original_exists(path)
+            return original_stat(path, *args, **kwargs)
 
-        monkeypatch.setattr(Path, "exists", fake_exists)
+        monkeypatch.setattr(config_module.os, "stat", fake_stat)
 
         with caplog.at_level(logging.WARNING, logger="labctl.core.config"):
             config = load_config()
 
         assert isinstance(config, Config)
         assert any("Failed to access config path" in r.message for r in caplog.records)
+        # Recorded, so `labctl mcp --check` doesn't mistake it for "no config".
+        assert config.load_errors == [
+            "/etc/labctl/config.yaml: [Errno 13] Permission denied: "
+            "'/etc/labctl/config.yaml'"
+        ]
 
 
 class TestDatabaseConfig:
