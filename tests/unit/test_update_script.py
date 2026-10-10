@@ -77,11 +77,21 @@ def run_restart(tmp_path):
     stubs.mkdir()
     calls = tmp_path / "journalctl.calls"
 
-    def run(active: dict, logs: dict, listening: bool = True):
+    def run(
+        active: dict,
+        logs: dict,
+        listening: bool = True,
+        listener_pid: int = 4242,
+        cgroup_pids=(4242,),
+        ss_present: bool = True,
+    ):
         systemctl = ["#!/bin/bash", 'case "$1" in']
         systemctl.append("  is-enabled) exit 0 ;;")
         systemctl.append("  restart) exit 0 ;;")
-        systemctl.append("  show) echo 4242 ;;")  # -p MainPID --value
+        systemctl.append(
+            '  show) case "$3" in MainPID) echo 4242 ;;'
+            " ControlGroup) echo /system.slice/labctl-mcp.service ;; esac ;;"
+        )
         running = " ".join(name for name, up in active.items() if up)
         systemctl.append(
             f'  is-active) for s in {running}; do [ "$3" = "$s" ] && exit 0; done;'
@@ -100,15 +110,24 @@ def run_restart(tmp_path):
         journal.append("esac")
         (stubs / "journalctl").write_text("\n".join(journal) + "\n")
         ss_line = (
-            "LISTEN 0 2048 127.0.0.1:8080 0.0.0.0:* " 'users:(("labctl",pid=4242,fd=6))'
+            "LISTEN 0 2048 127.0.0.1:8080 0.0.0.0:* "
+            f'users:(("labctl",pid={listener_pid},fd=6))'
             if listening
             else 'LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=42420,fd=3))'
         )
+        cgroup = tmp_path / "cgroup" / "system.slice" / "labctl-mcp.service"
+        cgroup.mkdir(parents=True, exist_ok=True)
+        (cgroup / "cgroup.procs").write_text("".join(f"{p}\n" for p in cgroup_pids))
         (stubs / "ss").write_text(f"#!/bin/sh\necho '{ss_line}'\n")
         (stubs / "sleep").write_text("#!/bin/sh\n")
         for stub in stubs.iterdir():
             stub.chmod(0o755)
-        env = {**os.environ, "PATH": f"{stubs}:{os.environ['PATH']}"}
+        env = {
+            **os.environ,
+            "PATH": f"{stubs}:{os.environ['PATH']}",
+            "CGROUP_ROOT": str(tmp_path / "cgroup"),
+            "SS_CMD": "ss" if ss_present else "no-such-ss-command",
+        }
         result = subprocess.run(
             ["bash", "-c", "set -e\n" + _steps_5_6()],
             capture_output=True,
@@ -197,3 +216,32 @@ class TestRestartReport:
             ALL_UP, {"labctl-mcp": "MCP HTTP: API keys required"}, listening=False
         )
         assert "[!!] labctl-mcp FAILED" in result.stdout
+
+    def test_wrapper_child_listening_counts(self, run_restart):
+        """`ExecStart=sh -c '...'`: MainPID is the shell, the server is a
+        child in the unit's cgroup; its socket counts."""
+        result, _ = run_restart(
+            ALL_UP,
+            {"labctl-mcp": "MCP HTTP: API keys required"},
+            listener_pid=4243,
+            cgroup_pids=(4242, 4243),
+        )
+        assert result.returncode == 0, result.stdout
+        assert "[ok] labctl-mcp running" in result.stdout
+
+    def test_process_outside_unit_does_not_count(self, run_restart):
+        result, _ = run_restart(
+            ALL_UP,
+            {"labctl-mcp": "MCP HTTP: API keys required"},
+            listener_pid=5555,
+            cgroup_pids=(4242, 4243),
+        )
+        assert "[!!] labctl-mcp FAILED" in result.stdout
+
+    def test_without_ss_not_reported_failed(self, run_restart):
+        result, _ = run_restart(
+            ALL_UP, {"labctl-mcp": "MCP HTTP: API keys required"}, ss_present=False
+        )
+        assert result.returncode == 0, result.stdout
+        assert "[ok] labctl-mcp running" in result.stdout
+        assert "'ss' (iproute2) not found" in result.stdout
