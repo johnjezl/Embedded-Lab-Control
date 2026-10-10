@@ -135,8 +135,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `labctl mcp --http PORT --check` runs the HTTP startup checks (the same
   code the server runs) without serving: whether clients need API keys
   (`auth: required` / `none`), the config file loaded, and startup
-  warnings; exit 1 if the server would refuse to start or a config file
-  can't be parsed.
+  warnings; exit 1 if the server would refuse to start or a config file it
+  would read is unparseable, unreadable, or (when it's the only file
+  allowed) missing.
 - `scripts/update.sh`, after restarting, shows `labctl-mcp`'s journal from
   this restart (auth mode, startup warnings) and, whenever auth is
   enabled, reminds that HTTP clients must send their API key; for any

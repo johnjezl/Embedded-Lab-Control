@@ -375,6 +375,33 @@ class TestRunServerRefuses:
         # The no-auth warning too (it used to bypass the forced level).
         assert "without authentication (auth.enabled is false)" in caplog.text
 
+    @pytest.mark.parametrize(
+        "error,hint",
+        [
+            ("/etc/labctl/config.yaml: [Errno 13] Permission denied", True),
+            ("/etc/labctl/config.yaml: while parsing a flow sequence", False),
+        ],
+    )
+    def test_cli_check_user_hint_only_for_permission_errors(
+        self, tmp_path, error, hint
+    ):
+        """'Run this as the service user' only helps when access is the
+        problem, not for a broken file."""
+        from click.testing import CliRunner
+
+        from labctl.cli import main
+
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text(f"database_path: {tmp_path / 'x.db'}\n")
+        broken = _config()
+        broken.load_errors = [error]
+        with patch("labctl.mcp_server._get_config", return_value=broken):
+            result = CliRunner().invoke(
+                main, ["-c", str(cfg), "mcp", "--http", "8080", "--check"]
+            )
+        assert result.exit_code == 1
+        assert ("sudo -u labctl" in result.output) is hint
+
     def test_check_warns_unknown_confirm_exemption(self, caplog):
         """--check runs the same startup warnings as the server."""
         from labctl import mcp_server

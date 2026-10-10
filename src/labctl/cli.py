@@ -5118,6 +5118,7 @@ def _mcp_check(http_port: int | None, host: str) -> None:
         # (labctl) who can read what this user can't.
         import getpass
 
+        denied = any("Permission denied" in e for e in config.load_errors)
         raise click.ClickException(
             f"config not loaded (as user {getpass.getuser()}): "
             + "; ".join(config.load_errors)
@@ -5127,8 +5128,12 @@ def _mcp_check(http_port: int | None, host: str) -> None:
                 else ". It would run on built-in defaults: no auth users, no "
                 "host file access, default database"
             )
-            + ". To check what the service sees, run this as its user "
-            "(e.g. sudo -u labctl)."
+            + (
+                ". To check what the service sees, run this as its user "
+                "(e.g. sudo -u labctl)."
+                if denied
+                else "."
+            )
         )
     if http_port:
         try:

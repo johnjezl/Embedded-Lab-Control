@@ -163,14 +163,17 @@ if [ -n "$SERVICES" ]; then
     }
     systemctl restart $SERVICES
     sleep 3
-    # labctl-mcp logs its auth mode after its startup checks, then uvicorn
-    # logs "Uvicorn running on" once the port is bound, or a bind error
-    # (port in use). Wait for either, or for the service to stop, up to 30 s.
-    MCP_BIND_ERROR='error while attempting to bind'
+    # labctl-mcp is only up once its main process has a listening TCP
+    # socket (startup checks, SDK import, then the bind; a port in use makes
+    # it exit). Wait for that, or for the service to stop, up to 30 s.
+    mcp_listening() {
+        local pid
+        pid=$(systemctl show -p MainPID --value labctl-mcp 2>/dev/null || true)
+        [ -n "$pid" ] && [ "$pid" != 0 ] && ss -ltnpH 2>/dev/null | grep -q "pid=$pid,"
+    }
     if [[ " $SERVICES " == *" labctl-mcp "* ]]; then
         for _ in $(seq 1 27); do
-            if ! systemctl is-active --quiet labctl-mcp ||
-                svc_log labctl-mcp | grep -qE "Uvicorn running on|$MCP_BIND_ERROR"; then
+            if ! systemctl is-active --quiet labctl-mcp || mcp_listening; then
                 break
             fi
             sleep 1
@@ -182,8 +185,8 @@ if [ -n "$SERVICES" ]; then
     for svc in $SERVICES; do
         SVC_ACTIVE=yes
         systemctl is-active --quiet "$svc" || SVC_ACTIVE=no
-        # A bind failure is fatal even while the process is still exiting.
-        if [ "$svc" = labctl-mcp ] && svc_log labctl-mcp | grep -q "$MCP_BIND_ERROR"; then
+        # Running but not listening (e.g. still exiting after a failed bind).
+        if [ "$svc" = labctl-mcp ] && [ "$SVC_ACTIVE" = yes ] && ! mcp_listening; then
             SVC_ACTIVE=no
         fi
         if [ "$SVC_ACTIVE" = yes ]; then
@@ -200,13 +203,9 @@ if [ -n "$SERVICES" ]; then
                     echo "[!!] labctl-mcp hasn't logged its auth mode yet; check it with:"
                     echo "     journalctl -u labctl-mcp -n 30"
                 fi
-                if ! grep -q 'Uvicorn running on' <<<"$MCP_LOG"; then
-                    echo "[!!] labctl-mcp hasn't confirmed it is listening yet; check it with:"
-                    echo "     journalctl -u labctl-mcp -n 30"
-                fi
             fi
         else
-            echo "[!!] $svc FAILED; log since restart:"
+            echo "[!!] $svc FAILED (not running, or labctl-mcp not listening); log since restart:"
             svc_log "$svc" | tail -n 15 | sed 's/^/     /'
             FAILED="$FAILED $svc"
         fi
