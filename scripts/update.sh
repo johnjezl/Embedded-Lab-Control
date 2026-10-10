@@ -150,29 +150,52 @@ done
 
 if [ -n "$SERVICES" ]; then
     echo "[+] Restarting services:$SERVICES"
-    # Journal lines from this restart only (not an earlier run's).
+    # Report journal lines from this restart only: everything after a
+    # cursor taken now (whole-second --since is the fallback).
+    JOURNAL_CURSOR=$(journalctl -n 0 --show-cursor --no-pager 2>/dev/null | sed -n 's/^-- cursor: //p' || true)
     RESTART_SINCE=$(date '+%Y-%m-%d %H:%M:%S')
+    svc_log() {
+        if [ -n "$JOURNAL_CURSOR" ]; then
+            journalctl -u "$1" --after-cursor "$JOURNAL_CURSOR" --no-pager -o cat 2>/dev/null || true
+        else
+            journalctl -u "$1" --since "$RESTART_SINCE" --no-pager -o cat 2>/dev/null || true
+        fi
+    }
     systemctl restart $SERVICES
     sleep 3
+    # labctl-mcp prints its auth mode once its startup checks have run
+    # (importing the SDK can take a few seconds); wait for that line, or
+    # for the service to stop, for up to 30 s.
+    if [[ " $SERVICES " == *" labctl-mcp "* ]]; then
+        for _ in $(seq 1 27); do
+            if svc_log labctl-mcp | grep -q '^MCP HTTP: ' || ! systemctl is-active --quiet labctl-mcp; then
+                break
+            fi
+            sleep 1
+        done
+    fi
 
     # 6. Verify services
     FAILED=""
     for svc in $SERVICES; do
-        SVC_LOG=$(journalctl -u "$svc" --since "$RESTART_SINCE" --no-pager -o cat 2>/dev/null | tail -n 15 || true)
         if systemctl is-active --quiet "$svc"; then
             echo "[ok] $svc running"
-            # labctl-mcp prints its auth mode and startup warnings (0.2.0+:
-            # API keys when auth.enabled; refuses unsafe HTTP settings).
-            if [ "$svc" = labctl-mcp ] && [ -n "$SVC_LOG" ]; then
-                sed 's/^/     /' <<<"$SVC_LOG"
-                if grep -q 'MCP HTTP: API keys required' <<<"$SVC_LOG"; then
-                    echo "[!!] MCP HTTP clients must send 'Authorization: Bearer <api_key>'"
-                    echo "     (a user's api_key from auth.users). See docs/MCP_SERVER.md."
+            if [ "$svc" = labctl-mcp ]; then
+                # Auth mode (0.2.0+: API keys when auth.enabled) and startup
+                # warnings. Search the whole log, show only its tail.
+                MCP_LOG=$(svc_log labctl-mcp)
+                if [ -n "$MCP_LOG" ]; then tail -n 15 <<<"$MCP_LOG" | sed 's/^/     /'; fi
+                if grep -q '^MCP HTTP: API keys required' <<<"$MCP_LOG"; then
+                    echo "[!!] auth.enabled is on: MCP HTTP clients must send"
+                    echo "     'Authorization: Bearer <api_key>' (a user's api_key from auth.users)."
+                elif ! grep -q '^MCP HTTP: ' <<<"$MCP_LOG"; then
+                    echo "[!!] labctl-mcp hasn't logged its auth mode yet; check it with:"
+                    echo "     journalctl -u labctl-mcp -n 30"
                 fi
             fi
         else
             echo "[!!] $svc FAILED; log since restart:"
-            if [ -n "$SVC_LOG" ]; then sed 's/^/     /' <<<"$SVC_LOG"; fi
+            svc_log "$svc" | tail -n 15 | sed 's/^/     /'
             FAILED="$FAILED $svc"
         fi
     done

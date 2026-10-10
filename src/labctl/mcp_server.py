@@ -20,6 +20,7 @@ import os
 import sys
 import threading
 import time as _time_mod
+from contextlib import contextmanager
 from functools import wraps
 from typing import Optional
 
@@ -3597,20 +3598,44 @@ def _enable_http_auth() -> None:
     mcp._token_verifier = _ApiKeyVerifier()
 
 
-def check_http_startup(host: str):
+@contextmanager
+def _startup_warnings_visible():
+    """Let startup warnings through even if the config's log_level is
+    quieter (e.g. ERROR): they're the misconfigurations an operator needs
+    to see in the journal or in `labctl mcp --check`."""
+    root = logging.getLogger()
+    saved = root.level
+    if root.getEffectiveLevel() > logging.WARNING:
+        root.setLevel(logging.WARNING)
+    try:
+        yield
+    finally:
+        root.setLevel(saved)
+
+
+def _warn_config_load_errors(config) -> None:
+    for error in config.load_errors:
+        logger.warning("Config file not loaded, ignored: %s", error)
+
+
+def check_http_startup(host: str, config=None):
     """Run the HTTP transport's startup checks without serving anything.
 
     run_server(transport="http") runs exactly this before serving, and
-    `labctl mcp --http PORT --check` runs it alone (scripts/update.sh runs
-    the service's own command line with it). Returns ``(auth_required,
-    config, transport_security)``; raises McpStartupError when the server
-    would refuse to start. Logs the startup warnings (short keys, ignored
-    users, unchecked Host headers, unknown confirm exemptions).
+    `labctl mcp --http PORT --check` runs it alone. Returns
+    ``(auth_required, config, transport_security)``; raises
+    McpStartupError when the server would refuse to start. Logs the
+    startup warnings (unloadable config files, short keys, ignored users,
+    unchecked Host headers, unknown confirm exemptions) whatever the
+    configured log_level.
     """
-    config = _get_config()
-    required = _http_auth_required(host, config)
-    security = _transport_security(host, config.mcp)
-    _warn_unknown_confirm_exemptions(config.mcp)
+    if config is None:
+        config = _get_config()
+    with _startup_warnings_visible():
+        _warn_config_load_errors(config)
+        required = _http_auth_required(host, config)
+        security = _transport_security(host, config.mcp)
+        _warn_unknown_confirm_exemptions(config.mcp)
     return required, config, security
 
 
@@ -3638,6 +3663,7 @@ def run_server(
         required, config, security = check_http_startup(host)
         # On stdout (not the protocol channel over HTTP), whatever log_level
         # says: the service journal shows the auth mode of every start.
+        # scripts/update.sh greps these exact strings; keep them in sync.
         print(
             (
                 "MCP HTTP: API keys required"
@@ -3658,7 +3684,10 @@ def run_server(
                 host,
             )
     else:
-        _warn_unknown_confirm_exemptions()
+        config = _get_config()
+        with _startup_warnings_visible():
+            _warn_config_load_errors(config)
+            _warn_unknown_confirm_exemptions(config.mcp)
 
     atexit.register(_release_session_claims)
     _start_expiry_thread(interval=30)

@@ -303,6 +303,13 @@ class TestRunServerRefuses:
             ("", [], "auth: n/a", 0),
             ("auth: [unclosed\n", ["--http", "8080"], "config not loaded:", 1),
             ("auth: [unclosed\n", [], "config not loaded:", 1),
+            # A parse error explains the refusal it causes: reported first.
+            (
+                "auth: [unclosed\n",
+                ["--http", "8080", "--host", "0.0.0.0"],
+                "config not loaded:",
+                1,
+            ),
         ],
     )
     def test_cli_check(self, tmp_path, body, args, expected, code):
@@ -344,6 +351,28 @@ class TestRunServerRefuses:
             root.setLevel(saved)
         assert result.exit_code == 0, result.output
         assert "unknown tool name(s), ignored: serial_sen" in caplog.text
+
+    def test_server_startup_warnings_survive_quiet_log_level(self, caplog):
+        """The service journal gets startup warnings even with log_level:
+        ERROR (only --check lowered the level before)."""
+        import logging
+
+        from labctl import mcp_server
+
+        config = _config(enabled=False)
+        config.mcp.confirm_exempt = ["serial_sen"]
+        config.load_errors = ["/etc/labctl/x.yaml: bad"]
+        root = logging.getLogger()
+        saved = root.level
+        root.setLevel(logging.ERROR)
+        try:
+            with patch.object(mcp_server, "_get_config", return_value=config):
+                mcp_server.check_http_startup("127.0.0.1")
+            assert root.level == logging.ERROR  # restored
+        finally:
+            root.setLevel(saved)
+        assert "serial_sen" in caplog.text
+        assert "Config file not loaded, ignored: /etc/labctl/x.yaml: bad" in caplog.text
 
     def test_check_warns_unknown_confirm_exemption(self, caplog):
         """--check runs the same startup warnings as the server."""
