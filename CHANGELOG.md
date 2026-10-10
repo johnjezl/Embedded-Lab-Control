@@ -132,10 +132,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   scope. `docs/MCP_SERVER.md` opens its security section with an overview
   of every control (defaults, settings), known limits and a deployment
   checklist; the README links them.
-- `scripts/update.sh` runs the MCP server's startup auth check against the
-  deployed config and `labctl-mcp` unit, and reports before restarting
-  whether HTTP clients will need API keys or the server will refuse to
-  start (and why).
+- `labctl mcp --http PORT --check` runs the HTTP startup checks without
+  serving: whether clients need API keys (`auth: required` / `none`), the
+  config file loaded, or why the server would refuse to start (exit 1).
+- `scripts/update.sh` runs the `labctl-mcp` unit's own command line with
+  `--check`, as the unit's user, in its working directory and
+  environment, and reports before restarting whether HTTP clients will
+  need API keys or the server will refuse to start (and why).
 - Destructive CLI commands (19: `power off`/`cycle`, `sdwire flash`/`update`/
   `host`/`unassign`, `serial send`, `actuator set`, binding verbs, recovery,
   `force-release`, `boot-test`, record removals) take `--yes/-y` and ask for

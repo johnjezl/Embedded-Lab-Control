@@ -1,7 +1,10 @@
-"""The Python snippets embedded in scripts/update.sh must keep working
-against the labctl API they import (they run on production deploys)."""
+"""scripts/update.sh pieces that run on production deploys: its embedded
+Python must keep matching labctl's API, and its MCP startup check must
+report what the restarted service will actually do."""
 
+import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -9,6 +12,7 @@ from pathlib import Path
 import pytest
 
 UPDATE_SH = Path(__file__).resolve().parents[2] / "scripts" / "update.sh"
+LABCTL = shutil.which("labctl", path=str(Path(sys.executable).parent))
 
 
 def _snippet(marker: str) -> str:
@@ -33,41 +37,12 @@ def _run(snippet: str, *args: str) -> subprocess.CompletedProcess:
 
 @pytest.fixture
 def write_config(tmp_path):
-    def write(body: str) -> Path:
-        path = tmp_path / "config.yaml"
+    def write(body: str, name: str = "config.yaml") -> Path:
+        path = tmp_path / name
         path.write_text(f"database_path: {tmp_path / 'x.db'}\n{body}")
         return path
 
     return write
-
-
-class TestMcpAuthCheck:
-    """Step 3c: report what labctl-mcp will require or refuse."""
-
-    SNIPPET_MARKER = 'MCP_AUTH=$("$LABCTL_VENV/bin/python"'
-
-    def check(self, config: Path, host: str = "127.0.0.1") -> str:
-        result = _run(_snippet(self.SNIPPET_MARKER), str(config), host)
-        assert result.returncode == 0, result.stderr
-        return result.stdout.strip()
-
-    def test_no_auth_on_loopback(self, write_config):
-        assert self.check(write_config("")) == "none"
-
-    def test_auth_required(self, write_config):
-        config = write_config(
-            "auth:\n  enabled: true\n  users:\n"
-            "    - username: a\n      api_key: kkkkkkkkkkkkkkkkkkkkkkkk\n"
-        )
-        assert self.check(config) == "required"
-
-    def test_auth_without_keys_refused(self, write_config):
-        config = write_config("auth:\n  enabled: true\n  users:\n    - username: a\n")
-        assert self.check(config).startswith("refused: auth.enabled is true")
-
-    def test_non_loopback_without_auth_refused(self, write_config):
-        out = self.check(write_config(""), host="0.0.0.0")
-        assert out.startswith("refused: Refusing to serve MCP over HTTP on 0.0.0.0")
 
 
 class TestAllowlistCheck:
@@ -80,3 +55,141 @@ class TestAllowlistCheck:
         snippet = _snippet(self.SNIPPET_MARKER)
         assert _run(snippet, str(config), "allowed_read_paths").returncode == 0
         assert _run(snippet, str(config), "allowed_write_paths").returncode == 1
+
+
+# ---------------------------------------------------------------------------
+# Step 3c: run the unit's own command line with --check
+# ---------------------------------------------------------------------------
+
+
+def _step_3c() -> str:
+    text = UPDATE_SH.read_text()
+    start = text.index("# 3c. MCP HTTP authentication")
+    end = text.index("# 4. Verify install")
+    return text[start:end]
+
+
+EXEC_RECORD = (
+    "{{ path={argv0} ; argv[]={argv} ; ignore_errors=no ; "
+    "start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }}"
+)
+
+
+@pytest.fixture
+def run_step(tmp_path):
+    """Run step 3c with stub `systemctl` (unit properties given per test)
+    and `runuser` (runs the command as the current user)."""
+    if LABCTL is None:
+        pytest.skip("labctl console script not installed next to the interpreter")
+    stubs = tmp_path / "stubs"
+    stubs.mkdir()
+    (stubs / "runuser").write_text(
+        '#!/bin/bash\n# runuser -u USER -- CMD...\nshift 3\nexec "$@"\n'
+    )
+    (stubs / "runuser").chmod(0o755)
+
+    def run(argv: str, environment: str = "", env_files: str = "", workdir=None):
+        props = {
+            "ExecStart": EXEC_RECORD.format(argv0=argv.split()[0], argv=argv),
+            "User": os.environ.get("USER", "root"),
+            "WorkingDirectory": str(workdir or tmp_path),
+            "Environment": environment,
+            "EnvironmentFiles": env_files,
+        }
+        lines = ["#!/bin/bash", 'case "$1" in is-enabled) exit 0 ;; esac']
+        lines.append('case "$3" in')
+        for key, value in props.items():
+            lines.append(f"  {key}) cat <<'EOF'\n{value}\nEOF\n  ;;")
+        lines.append("esac")
+        (stubs / "systemctl").write_text("\n".join(lines) + "\n")
+        (stubs / "systemctl").chmod(0o755)
+        script = "set -e\n" + _step_3c()
+        env = {**os.environ, "PATH": f"{stubs}:{os.environ['PATH']}"}
+        env.pop("LABCTL_CONFIG", None)
+        env.pop("LABCTL_CONFIG_EXCLUSIVE", None)
+        result = subprocess.run(
+            ["bash", "-c", script],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=120,
+        )
+        assert result.returncode == 0, result.stderr
+        return result.stdout
+
+    return run
+
+
+AUTH = (
+    "auth:\n  enabled: true\n  users:\n"
+    "    - username: a\n      api_key: kkkkkkkkkkkkkkkkkkkkkkkk\n"
+)
+
+
+class TestMcpUnitArgv:
+    def test_extracts_argv(self):
+        fn = re.search(r"mcp_unit_argv\(\) \{.*?\n\}", UPDATE_SH.read_text(), re.S)
+        argv = "/opt/labctl/venv/bin/labctl -c /etc/labctl/config.yaml mcp --http 8080"
+        record = EXEC_RECORD.format(argv0=argv.split()[0], argv=argv)
+        out = subprocess.run(
+            ["bash", "-c", fn.group(0) + "\nmcp_unit_argv"],
+            input=record,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert out == argv
+
+
+class TestMcpStartupCheck:
+    def test_no_auth_loopback(self, run_step, write_config):
+        cfg = write_config("")
+        out = run_step(f"{LABCTL} -c {cfg} mcp --http 8080")
+        assert "[ok] labctl-mcp startup check:" in out
+        assert "auth: none" in out
+        assert f"config: {cfg}" in out
+
+    def test_auth_required(self, run_step, write_config):
+        out = run_step(f"{LABCTL} -c {write_config(AUTH)} mcp --http 8080")
+        assert "[!!] labctl-mcp requires API keys" in out
+        assert "auth: required" in out
+
+    def test_refused_non_loopback(self, run_step, write_config):
+        out = run_step(f"{LABCTL} -c {write_config('')} mcp --http 8080 --host 0.0.0.0")
+        assert "[!!] labctl-mcp will refuse to start" in out
+        assert "without authentication" in out
+
+    def test_missing_config_file_refused(self, run_step, tmp_path):
+        """labctl -c rejects a missing file: the service would fail too."""
+        out = run_step(f"{LABCTL} -c {tmp_path / 'nope.yaml'} mcp --http 8080")
+        assert "[!!] labctl-mcp will refuse to start" in out
+        assert "does not exist" in out
+
+    def test_relative_config_resolved_in_workdir(self, run_step, write_config):
+        """`-c mcp.yaml` is relative to the unit's WorkingDirectory."""
+        cfg = write_config(AUTH, name="mcp.yaml")
+        out = run_step(f"{LABCTL} -c mcp.yaml mcp --http 8080", workdir=cfg.parent)
+        assert "auth: required" in out
+
+    def test_config_from_unit_environment(self, run_step, write_config):
+        cfg = write_config(AUTH, name="env.yaml")
+        out = run_step(
+            f"{LABCTL} mcp --http 8080",
+            environment=f"LABCTL_CONFIG={cfg} LABCTL_CONFIG_EXCLUSIVE=1",
+        )
+        assert "auth: required" in out
+        assert f"config: {cfg}" in out
+
+    def test_stdio_unit(self, run_step, write_config):
+        out = run_step(f"{LABCTL} -c {write_config('')} mcp")
+        assert "auth: n/a" in out
+
+    def test_variable_substitution_not_guessed(self, run_step):
+        out = run_step(f"{LABCTL} mcp --http 8080 --host ${{MCP_BIND}}")
+        assert "Could not check" in out
+
+    def test_environment_file_noted(self, run_step, write_config):
+        out = run_step(
+            f"{LABCTL} -c {write_config('')} mcp --http 8080",
+            env_files="/etc/default/labctl-mcp (ignore_errors=no)",
+        )
+        assert "EnvironmentFile= was not applied" in out
