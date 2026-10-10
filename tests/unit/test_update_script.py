@@ -69,16 +69,19 @@ def _steps_5_6() -> str:
 
 @pytest.fixture
 def run_restart(tmp_path):
-    """Run steps 5-6 with stub systemctl/journalctl/sleep. ``active`` maps
-    service -> running?; ``logs`` maps service -> journal text."""
+    """Run steps 5-6 with stub systemctl/journalctl/ss/sleep. ``active``
+    maps service -> running?; ``logs`` maps service -> journal text;
+    ``listening`` says whether labctl-mcp's main process (pid 4242) has a
+    listening socket."""
     stubs = tmp_path / "stubs"
     stubs.mkdir()
     calls = tmp_path / "journalctl.calls"
 
-    def run(active: dict, logs: dict):
+    def run(active: dict, logs: dict, listening: bool = True):
         systemctl = ["#!/bin/bash", 'case "$1" in']
         systemctl.append("  is-enabled) exit 0 ;;")
         systemctl.append("  restart) exit 0 ;;")
+        systemctl.append("  show) echo 4242 ;;")  # -p MainPID --value
         running = " ".join(name for name, up in active.items() if up)
         systemctl.append(
             f'  is-active) for s in {running}; do [ "$3" = "$s" ] && exit 0; done;'
@@ -96,6 +99,12 @@ def run_restart(tmp_path):
             journal.append(f"  {name}) cat <<'EOF'\n{text}\nEOF\n  ;;")
         journal.append("esac")
         (stubs / "journalctl").write_text("\n".join(journal) + "\n")
+        ss_line = (
+            "LISTEN 0 2048 127.0.0.1:8080 0.0.0.0:* " 'users:(("labctl",pid=4242,fd=6))'
+            if listening
+            else 'LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=42420,fd=3))'
+        )
+        (stubs / "ss").write_text(f"#!/bin/sh\necho '{ss_line}'\n")
         (stubs / "sleep").write_text("#!/bin/sh\n")
         for stub in stubs.iterdir():
             stub.chmod(0o755)
@@ -113,7 +122,6 @@ def run_restart(tmp_path):
 
 
 ALL_UP = {"labctl-web": True, "labctl-monitor": True, "labctl-mcp": True}
-LISTENING = "INFO:     Uvicorn running on http://127.0.0.1:8080 (Press CTRL+C to quit)"
 
 
 class TestRestartReport:
@@ -122,11 +130,11 @@ class TestRestartReport:
             ALL_UP,
             {
                 "labctl-mcp": "Starting MCP server (HTTP on 127.0.0.1:8080)...\n"
-                "MCP HTTP: API keys required\n"
-                f"{LISTENING}"
+                "MCP HTTP: API keys required"
             },
         )
         assert result.returncode == 0, result.stderr
+        assert "[ok] labctl-mcp running" in result.stdout
         assert "     MCP HTTP: API keys required" in result.stdout
         assert "MCP HTTP clients must send" in result.stdout
         assert "'Authorization: Bearer <api_key>'" in result.stdout
@@ -137,21 +145,20 @@ class TestRestartReport:
 
     def test_no_auth_heads_up_without_keys(self, run_restart):
         result, _ = run_restart(
-            ALL_UP,
-            {"labctl-mcp": f"MCP HTTP: no authentication (loopback only)\n{LISTENING}"},
+            ALL_UP, {"labctl-mcp": "MCP HTTP: no authentication (loopback only)"}
         )
         assert result.returncode == 0, result.stderr
         assert "MCP HTTP: no authentication" in result.stdout
         assert "Authorization: Bearer" not in result.stdout
-        assert "hasn't confirmed it is listening" not in result.stdout
 
     def test_failed_service_shows_its_log_and_fails(self, run_restart):
         result, _ = run_restart(
             {**ALL_UP, "labctl-mcp": False},
             {"labctl-mcp": "Error: Refusing to serve MCP over HTTP on 0.0.0.0"},
+            listening=False,
         )
         assert result.returncode == 1
-        assert "[!!] labctl-mcp FAILED; log since restart:" in result.stdout
+        assert "[!!] labctl-mcp FAILED" in result.stdout
         assert "     Error: Refusing to serve MCP over HTTP" in result.stdout
         assert "Some services failed to start: labctl-mcp" in result.stdout
 
@@ -159,8 +166,7 @@ class TestRestartReport:
         """Request logs after startup must not hide the heads-up."""
         noise = "\n".join(f'INFO: 127.0.0.1 - "POST /mcp" 401 #{i}' for i in range(40))
         result, _ = run_restart(
-            ALL_UP,
-            {"labctl-mcp": f"MCP HTTP: API keys required\n{LISTENING}\n{noise}"},
+            ALL_UP, {"labctl-mcp": f"MCP HTTP: API keys required\n{noise}"}
         )
         assert result.returncode == 0, result.stderr
         assert "     MCP HTTP: API keys required" not in result.stdout  # tail only
@@ -172,24 +178,22 @@ class TestRestartReport:
         assert result.returncode == 0, result.stderr
         assert "hasn't logged its auth mode yet" in result.stdout
 
-    def test_bind_failure_is_failed_while_still_exiting(self, run_restart):
-        """The auth line precedes the bind: a port-in-use error is FAILED
-        even if systemd still shows the exiting process as active."""
+    def test_active_but_not_listening_is_failed(self, run_restart):
+        """Checked on the socket, not on log wording: a server whose bind
+        failed (still exiting, so systemd says active) or that never binds
+        is FAILED, whatever its log says."""
         result, _ = run_restart(
             ALL_UP,
-            {
-                "labctl-mcp": "MCP HTTP: no authentication (loopback only)\n"
-                "ERROR:    [Errno 98] error while attempting to bind on address "
-                "('127.0.0.1', 8080): address already in use"
-            },
+            {"labctl-mcp": "MCP HTTP: no authentication (loopback only)"},
+            listening=False,
         )
         assert result.returncode == 1
         assert "[!!] labctl-mcp FAILED" in result.stdout
-        assert "address already in use" in result.stdout
+        assert "Some services failed to start: labctl-mcp" in result.stdout
 
-    def test_not_yet_listening_flagged(self, run_restart):
+    def test_other_process_listening_does_not_count(self, run_restart):
+        """Only labctl-mcp's own main process counts (pid 4242 vs 42420)."""
         result, _ = run_restart(
-            ALL_UP, {"labctl-mcp": "MCP HTTP: no authentication (loopback only)"}
+            ALL_UP, {"labctl-mcp": "MCP HTTP: API keys required"}, listening=False
         )
-        assert result.returncode == 0, result.stderr
-        assert "hasn't confirmed it is listening yet" in result.stdout
+        assert "[!!] labctl-mcp FAILED" in result.stdout
