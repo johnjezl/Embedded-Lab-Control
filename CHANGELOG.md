@@ -7,6 +7,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Security
+- `install-services.sh` and `update.sh` make the service copy of the config
+  (`/var/lib/labctl/.config/labctl/config.yaml`, which holds the same API
+  keys and credentials as `/etc/labctl/config.yaml`) mode `640`; it was
+  created world-readable under a world-traversable directory.
+- The install and update scripts (run as root) no longer follow symlinks
+  or hard links planted under `/var/lib/labctl`, which the `labctl` service
+  user can write: config seeding, `chown`/`chmod` of the service config and
+  the `images`/`output` directories go through `labctl.core.admin_files`
+  (no symlink on any path component, single-link regular files only,
+  descriptor-based ownership changes, `O_EXCL` creation). Previously a
+  compromised service could have root hand it `/etc/labctl/config.yaml`, or
+  copy an arbitrary root-only file into a config its group can read.
 - **MCP over HTTP now authenticates with the web users' API keys (breaking
   for HTTP clients when `auth.enabled` is true).** With auth enabled, every
   request to `labctl mcp --http` needs `Authorization: Bearer <api_key>`
@@ -124,6 +136,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   from removing dead code flagged by flake8 (unused imports/variables).
 
 ### Added
+- `SECURITY.md`: how to report vulnerabilities privately, and what's in
+  scope. `docs/MCP_SERVER.md` opens its security section with an overview
+  of every control (defaults, settings), known limits and a deployment
+  checklist; the README links them.
+- `labctl mcp --http PORT --check` runs the HTTP startup checks (the same
+  code the server runs) without serving: whether clients need API keys
+  (`auth: required` / `none`), the config file loaded, and startup
+  warnings; exit 1 if the server would refuse to start or a config file it
+  would read is unparseable, unreadable, or (when it's the only file
+  allowed) missing.
+- `scripts/update.sh`, after restarting, shows `labctl-mcp`'s journal from
+  this restart (auth mode, startup warnings) and, whenever auth is
+  enabled, reminds that HTTP clients must send their API key; for any
+  service that failed to start it prints that service's log since the
+  restart. The MCP server prints its auth mode on every HTTP start and
+  logs startup warnings (unparseable config files, short keys, unknown
+  confirm exemptions, unchecked Host headers) whatever `log_level` says.
 - Destructive CLI commands (19: `power off`/`cycle`, `sdwire flash`/`update`/
   `host`/`unassign`, `serial send`, `actuator set`, binding verbs, recovery,
   `force-release`, `boot-test`, record removals) take `--yes/-y` and ask for

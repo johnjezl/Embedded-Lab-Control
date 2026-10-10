@@ -288,7 +288,165 @@ class TestRunServerRefuses:
         assert "without authentication" in result.output
         run.assert_not_called()
 
-    def test_passes_security_and_enables_auth(self, http_auth_restore):
+    @pytest.mark.parametrize(
+        "body,args,expected,code",
+        [
+            ("", ["--http", "8080"], "auth: none", 0),
+            (
+                "auth:\n  enabled: true\n  users:\n"
+                f"    - username: a\n      api_key: {ALICE_KEY}\n",
+                ["--http", "8080", "--host", "0.0.0.0"],
+                "auth: required",
+                0,
+            ),
+            ("", ["--http", "8080", "--host", "0.0.0.0"], "refused: Refusing", 1),
+            ("", [], "auth: n/a", 0),
+            ("auth: [unclosed\n", ["--http", "8080"], "config not loaded (as user", 1),
+            ("auth: [unclosed\n", [], "config not loaded (as user", 1),
+            # A parse error explains the refusal it causes: reported first.
+            (
+                "auth: [unclosed\n",
+                ["--http", "8080", "--host", "0.0.0.0"],
+                "config not loaded (as user",
+                1,
+            ),
+        ],
+    )
+    def test_cli_check(self, tmp_path, body, args, expected, code):
+        """`labctl mcp --check` reports the startup outcome, never serves."""
+        from click.testing import CliRunner
+
+        from labctl.cli import main
+
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text(f"database_path: {tmp_path / 'x.db'}\n{body}")
+        with patch("labctl.mcp_server.mcp.run") as run:
+            result = CliRunner().invoke(main, ["-c", str(cfg), "mcp", *args, "--check"])
+        assert result.exit_code == code, result.output
+        assert expected in result.output
+        run.assert_not_called()
+
+    def test_cli_check_warnings_survive_quiet_log_level(self, tmp_path, caplog):
+        """--check exists to show startup warnings: a config log_level of
+        ERROR must not hide them."""
+        import logging
+
+        from click.testing import CliRunner
+
+        from labctl.cli import main
+
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text(
+            f"database_path: {tmp_path / 'x.db'}\nlog_level: ERROR\n"
+            "mcp:\n  confirm_exempt: [serial_sen]\n"
+        )
+        root = logging.getLogger()
+        saved = root.level
+        root.setLevel(logging.ERROR)
+        try:
+            result = CliRunner().invoke(
+                main, ["-c", str(cfg), "mcp", "--http", "8080", "--check"]
+            )
+        finally:
+            root.setLevel(saved)
+        assert result.exit_code == 0, result.output
+        assert "unknown tool name(s), ignored: serial_sen" in caplog.text
+
+    def test_server_startup_warnings_survive_quiet_log_level(self, caplog):
+        """The service journal gets startup warnings even with log_level:
+        ERROR (only --check lowered the level before)."""
+        import logging
+
+        from labctl import mcp_server
+
+        config = _config(enabled=False)
+        config.mcp.confirm_exempt = ["serial_sen"]
+        config.load_errors = ["/etc/labctl/x.yaml: bad"]
+        root = logging.getLogger()
+        saved = root.level
+        root.setLevel(logging.ERROR)
+        try:
+            mcp_server.check_http_startup("127.0.0.1", config)
+            assert root.level == logging.ERROR  # restored
+        finally:
+            root.setLevel(saved)
+        assert "serial_sen" in caplog.text
+        assert "Config file not loaded, ignored: /etc/labctl/x.yaml: bad" in caplog.text
+        # The no-auth warning too (it used to bypass the forced level).
+        assert "without authentication (auth.enabled is false)" in caplog.text
+
+    @pytest.mark.parametrize(
+        "error,hint",
+        [
+            ("/etc/labctl/config.yaml: [Errno 13] Permission denied", True),
+            ("/etc/labctl/config.yaml: while parsing a flow sequence", False),
+        ],
+    )
+    def test_cli_check_user_hint_only_for_permission_errors(
+        self, tmp_path, error, hint
+    ):
+        """'Run this as the service user' only helps when access is the
+        problem, not for a broken file."""
+        from click.testing import CliRunner
+
+        from labctl.cli import main
+
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text(f"database_path: {tmp_path / 'x.db'}\n")
+        broken = _config()
+        broken.load_errors = [error]
+        with patch("labctl.mcp_server._get_config", return_value=broken):
+            result = CliRunner().invoke(
+                main, ["-c", str(cfg), "mcp", "--http", "8080", "--check"]
+            )
+        assert result.exit_code == 1
+        assert ("sudo -u labctl" in result.output) is hint
+
+    def test_check_warns_unknown_confirm_exemption(self, caplog):
+        """--check runs the same startup warnings as the server."""
+        from labctl import mcp_server
+
+        config = _config(enabled=False)
+        config.mcp.confirm_exempt = ["serial_sen"]
+        required, _ = mcp_server.check_http_startup("127.0.0.1", config)
+        assert required is False
+        assert "unknown tool name(s), ignored: serial_sen" in caplog.text
+
+    def test_run_server_uses_check_http_startup(self, http_auth_restore):
+        """One copy of the startup checks: run_server calls the same function
+        `--check` does, so the two can't drift."""
+        from labctl import mcp_server
+
+        config = _config()
+        with (
+            patch.object(mcp_server, "_get_config", return_value=config),
+            patch.object(
+                mcp_server,
+                "check_http_startup",
+                side_effect=mcp_server.McpStartupError("nope"),
+            ) as check,
+            patch.object(mcp_server.mcp, "run") as run,
+        ):
+            with pytest.raises(mcp_server.McpStartupError):
+                mcp_server.run_server(transport="http", host="127.0.0.1")
+        check.assert_called_once_with("127.0.0.1", config)
+        run.assert_not_called()
+
+    def test_run_server_uses_check_stdio_startup(self):
+        from labctl import mcp_server
+
+        config = _config()
+        with (
+            patch.object(mcp_server, "_get_config", return_value=config),
+            patch.object(mcp_server, "check_stdio_startup") as check,
+            patch.object(mcp_server, "_start_expiry_thread"),
+            patch("atexit.register"),
+            patch.object(mcp_server.mcp, "run"),
+        ):
+            mcp_server.run_server(transport="stdio")
+        check.assert_called_once_with(config)
+
+    def test_passes_security_and_enables_auth(self, http_auth_restore, capsys):
         from labctl import mcp_server
 
         with (
@@ -298,9 +456,58 @@ class TestRunServerRefuses:
             patch.object(mcp_server.mcp, "run") as run,
         ):
             mcp_server.run_server(transport="http", host="127.0.0.1", http_port=9)
+        # The service journal shows the auth mode, whatever log_level says.
+        assert "MCP HTTP: API keys required" in capsys.readouterr().out
         kwargs = run.call_args.kwargs
         assert kwargs["transport_security"].enable_dns_rebinding_protection
         assert isinstance(mcp_server.mcp._token_verifier, mcp_server._ApiKeyVerifier)
+
+
+class TestConfigLoadErrors:
+    def test_inaccessible_config_recorded(self, tmp_path):
+        """A config the user can't even stat (750 directory) is a load
+        error, not "no config": --check must not report built-in defaults
+        as if nothing were there."""
+        import os
+
+        from labctl.core.config import load_config
+
+        if os.geteuid() == 0:
+            pytest.skip("root can stat anything")
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        (locked / "config.yaml").write_text("auth:\n  enabled: true\n")
+        locked.chmod(0o000)
+        try:
+            config = load_config(locked / "config.yaml")
+        finally:
+            locked.chmod(0o755)
+        assert config.source_path is None
+        assert len(config.load_errors) == 1
+        assert "Permission denied" in config.load_errors[0]
+
+
+class TestExclusiveConfigMissing:
+    def test_missing_exclusive_config_recorded(self, tmp_path, monkeypatch):
+        """LABCTL_CONFIG + EXCLUSIVE naming a missing file means defaults:
+        a load error, not "no config"."""
+        from labctl.core.config import load_config
+
+        monkeypatch.setenv("LABCTL_CONFIG", str(tmp_path / "typo.yml"))
+        monkeypatch.setenv("LABCTL_CONFIG_EXCLUSIVE", "1")
+        config = load_config()
+        assert config.source_path is None
+        assert config.load_errors == [
+            f"{tmp_path / 'typo.yml'}: No such file or directory"
+        ]
+
+    def test_missing_search_path_entries_not_errors(self, tmp_path, monkeypatch):
+        """Absent files in the normal search order are not errors."""
+        from labctl.core import config as config_mod
+
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+        monkeypatch.setattr(config_mod, "SYSTEM_CONFIG_FILE", tmp_path / "none.yaml")
+        assert config_mod.load_config().load_errors == []
 
 
 class TestConfigPinning:

@@ -20,6 +20,7 @@ import os
 import sys
 import threading
 import time as _time_mod
+from contextlib import contextmanager
 from functools import wraps
 from typing import Optional
 
@@ -3375,13 +3376,16 @@ def _start_expiry_thread(interval: int = 30):
     return t
 
 
-def _warn_unknown_confirm_exemptions() -> None:
+def _warn_unknown_confirm_exemptions(mcp_cfg=None) -> None:
     """Log mcp.confirm_exempt names that aren't tools (likely typos).
 
     An unknown name fails safe (the intended tool keeps asking for
-    confirmation), but silently; say so once at startup.
+    confirmation), but silently; say so once at startup. Pass the startup
+    config's ``mcp`` section so the warning describes the same file.
     """
-    unknown = sorted(set(_get_config().mcp.confirm_exempt) - set(TOOL_ANNOTATIONS))
+    if mcp_cfg is None:
+        mcp_cfg = _get_config().mcp
+    unknown = sorted(set(mcp_cfg.confirm_exempt) - set(TOOL_ANNOTATIONS))
     if unknown:
         logger.warning(
             "mcp.confirm_exempt lists unknown tool name(s), ignored: %s",
@@ -3594,6 +3598,64 @@ def _enable_http_auth() -> None:
     mcp._token_verifier = _ApiKeyVerifier()
 
 
+@contextmanager
+def _startup_warnings_visible():
+    """Let startup warnings through even if the config's log_level is
+    quieter (e.g. ERROR): they're the misconfigurations an operator needs
+    to see in the journal or in `labctl mcp --check`."""
+    root = logging.getLogger()
+    saved = root.level
+    if root.getEffectiveLevel() > logging.WARNING:
+        root.setLevel(logging.WARNING)
+    try:
+        yield
+    finally:
+        root.setLevel(saved)
+
+
+def _warn_config_load_errors(config) -> None:
+    for error in config.load_errors:
+        logger.warning("Config file not loaded, ignored: %s", error)
+
+
+def check_stdio_startup(config) -> None:
+    """The stdio transport's startup checks (warnings only).
+
+    run_server(transport="stdio") runs this before serving, and
+    `labctl mcp --check` runs it alone.
+    """
+    with _startup_warnings_visible():
+        _warn_config_load_errors(config)
+        _warn_unknown_confirm_exemptions(config.mcp)
+
+
+def check_http_startup(host: str, config):
+    """The HTTP transport's startup checks, without serving anything.
+
+    run_server(transport="http") runs exactly this before serving, and
+    `labctl mcp --http PORT --check` runs it alone. Returns
+    ``(auth_required, transport_security)``; raises McpStartupError when
+    the server would refuse to start. Logs the startup warnings
+    (unloadable config files, running without auth, short keys, ignored
+    users, unchecked Host headers, unknown confirm exemptions) whatever the
+    configured log_level.
+    """
+    with _startup_warnings_visible():
+        _warn_config_load_errors(config)
+        required = _http_auth_required(host, config)
+        if not required:
+            logger.warning(
+                "MCP HTTP on %s without authentication (auth.enabled is false); "
+                "any local user can call tools. Do not put a reverse proxy in "
+                "front without enabling auth: one that forwards Host as "
+                "127.0.0.1 can't be detected and would expose every tool",
+                host,
+            )
+        security = _transport_security(host, config.mcp)
+        _warn_unknown_confirm_exemptions(config.mcp)
+    return required, security
+
+
 def run_server(
     transport: str = "stdio", http_port: int = 8080, host: str = "127.0.0.1"
 ):
@@ -3614,25 +3676,28 @@ def run_server(
         raise ValueError(f"Unknown transport: {transport}")
 
     security = None
+    config = _get_config()
     if transport == "http":
-        config = _get_config()
-        if _http_auth_required(host, config):
+        required, security = check_http_startup(host, config)
+        # On stdout (not the protocol channel over HTTP), whatever log_level
+        # says: the service journal shows the auth mode of every start.
+        # scripts/update.sh greps these exact strings; keep them in sync.
+        print(
+            (
+                "MCP HTTP: API keys required"
+                if required
+                else "MCP HTTP: no authentication (loopback only)"
+            ),
+            flush=True,
+        )
+        if required:
             _pin_config_file(config)
             _enable_http_auth()
-            logger.info("MCP HTTP: API key authentication required")
-        else:
-            logger.warning(
-                "MCP HTTP on %s without authentication (auth.enabled is false); "
-                "any local user can call tools. Do not put a reverse proxy in "
-                "front without enabling auth: one that forwards Host as "
-                "127.0.0.1 can't be detected and would expose every tool",
-                host,
-            )
-        security = _transport_security(host, config.mcp)
+    else:
+        check_stdio_startup(config)
 
     atexit.register(_release_session_claims)
     _start_expiry_thread(interval=30)
-    _warn_unknown_confirm_exemptions()
 
     if transport == "stdio":
         mcp.run(transport="stdio")

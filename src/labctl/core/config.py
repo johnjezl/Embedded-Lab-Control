@@ -389,6 +389,8 @@ class Config:
     log_level: str = "WARNING"
     # The file this config was loaded from (None: defaults); not serialized.
     source_path: Optional[Path] = field(default=None, compare=False, repr=False)
+    # "<path>: <error>" for each config file found but not loadable.
+    load_errors: list[str] = field(default_factory=list, compare=False, repr=False)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Config":
@@ -644,19 +646,36 @@ def load_config(
     # Determine config file path
     if config_path:
         paths_to_try = [config_path]
+        only_file = True
     else:
         env_path = os.environ.get("LABCTL_CONFIG")
         paths_to_try = []
         if env_path:
             paths_to_try.append(_expand_path(env_path))
-        if not (env_path and os.environ.get("LABCTL_CONFIG_EXCLUSIVE") == "1"):
+        only_file = bool(env_path) and os.environ.get("LABCTL_CONFIG_EXCLUSIVE") == "1"
+        if not only_file:
             paths_to_try.extend([_default_config_file(), SYSTEM_CONFIG_FILE])
 
     # Try to load from file
     config_data = {}
     loaded_from = None
+    load_errors = []
     for path in paths_to_try:
-        if _path_exists(path):
+        try:
+            os.stat(path)
+        except (FileNotFoundError, NotADirectoryError) as e:
+            # The one file named explicitly being absent means defaults,
+            # not "no config": record it (e.g. for `labctl mcp --check`).
+            if only_file:
+                load_errors.append(f"{path}: {e.strerror}")
+            continue
+        except OSError as e:
+            # e.g. EACCES on a 750 /etc/labctl: a config may well be there.
+            # (os.stat, not Path.exists(), which hides this on some Pythons.)
+            logger.warning("Failed to access config path %s: %s", path, e)
+            load_errors.append(f"{path}: {e}")
+            continue
+        else:
             try:
                 with open(path) as f:
                     config_data = yaml.safe_load(f) or {}
@@ -664,11 +683,13 @@ def load_config(
                 break
             except Exception as e:
                 logger.warning("Failed to load config from %s: %s", path, e)
+                load_errors.append(f"{path}: {e}")
                 continue
 
     # Create config from loaded data (or defaults)
     config = Config.from_dict(config_data)
     config.source_path = loaded_from
+    config.load_errors = load_errors
 
     # Apply environment variable overrides
     config = _apply_env_overrides(config)

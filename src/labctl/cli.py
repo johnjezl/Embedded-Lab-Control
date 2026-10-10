@@ -5046,8 +5046,15 @@ def sessions_cmd(ctx: click.Context, sbc_name: str | None) -> None:
     help="Bind address for --http. Non-loopback addresses require auth.enabled "
     "with user API keys (clients send 'Authorization: Bearer <api_key>').",
 )
+@click.option(
+    "--check",
+    is_flag=True,
+    help="Run the startup checks for these options and exit without serving: "
+    "reports whether HTTP clients need API keys, or why the server would "
+    "refuse to start (exit status 1).",
+)
 @click.pass_context
-def mcp_cmd(ctx: click.Context, http_port: int | None, host: str) -> None:
+def mcp_cmd(ctx: click.Context, http_port: int | None, host: str, check: bool) -> None:
     """Start the MCP (Model Context Protocol) server.
 
     By default uses stdio transport for local AI tool integration
@@ -5073,6 +5080,10 @@ def mcp_cmd(ctx: click.Context, http_port: int | None, host: str) -> None:
             "Install it with: pip install 'embedded-lab-control[mcp]'"
         ) from e
 
+    if check:
+        _mcp_check(http_port, host)
+        return
+
     if http_port:
         click.echo(f"Starting MCP server (HTTP on {host}:{http_port})...")
         try:
@@ -5082,6 +5093,70 @@ def mcp_cmd(ctx: click.Context, http_port: int | None, host: str) -> None:
     else:
         # stdio mode — no output to stdout (it's the JSON-RPC channel)
         run_server(transport="stdio")
+
+
+def _mcp_check(http_port: int | None, host: str) -> None:
+    """`labctl mcp --check`: report what the server would require or refuse.
+
+    Prints ``auth: required|none|n/a`` and the config file loaded, plus the
+    server's startup warnings. Exit 1 when a config file it would read
+    can't be parsed (reported first: it explains any refusal), or when the
+    server would refuse to start. Uses the server's own config resolution
+    (the environment `mcp_cmd` just exported), not the CLI's earlier load.
+    """
+    from labctl.mcp_server import (
+        McpStartupError,
+        _get_config,
+        check_http_startup,
+        check_stdio_startup,
+    )
+
+    config = _get_config()
+    if config.load_errors:
+        # A server started like this would not get the configuration
+        # intended. Says "as <user>": the service may run as someone else
+        # (labctl) who can read what this user can't.
+        import getpass
+
+        denied = any("Permission denied" in e for e in config.load_errors)
+        raise click.ClickException(
+            f"config not loaded (as user {getpass.getuser()}): "
+            + "; ".join(config.load_errors)
+            + (
+                f". It would use {config.source_path} instead"
+                if config.source_path
+                else ". It would run on built-in defaults: no auth users, no "
+                "host file access, default database"
+            )
+            + (
+                ". To check what the service sees, run this as its user "
+                "(e.g. sudo -u labctl)."
+                if denied
+                else "."
+            )
+        )
+    if http_port:
+        try:
+            required, _ = check_http_startup(host, config)
+        except McpStartupError as e:
+            raise click.ClickException(f"refused: {e}") from e
+    else:
+        required = None
+        check_stdio_startup(config)
+    source = config.source_path or "none found, using built-in defaults"
+    if required is None:
+        click.echo("auth: n/a (stdio transport: no HTTP checks apply)")
+    elif required:
+        click.echo(
+            f"auth: required (HTTP on {host}:{http_port}; clients must send "
+            "'Authorization: Bearer <api_key>')"
+        )
+    else:
+        click.echo(
+            f"auth: none (HTTP on {host}:{http_port}, loopback only; "
+            "auth.enabled is false)"
+        )
+    click.echo(f"config: {source}")
 
 
 # --- Web Server ---

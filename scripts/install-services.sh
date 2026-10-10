@@ -81,18 +81,30 @@ echo "[+] Setting up config in $LABCTL_CONFIG..."
 mkdir -p "$LABCTL_CONFIG"
 mkdir -p "$SYSTEM_CONFIG_DIR"
 
-if [ -f "$LABCTL_CONFIG/config.yaml" ]; then
+# $LABCTL_HOME is writable by the labctl user (the services' identity), so
+# on a reinstall root only touches files there through
+# labctl.core.admin_files: no symlinks or hard links followed, descriptor-
+# based chown/chmod, O_EXCL creation.
+ADMIN_FILES=("$LABCTL_VENV/bin/python" -m labctl.core.admin_files)
+if ! SERVICE_CONFIG_STATE=$("${ADMIN_FILES[@]}" state "$LABCTL_CONFIG/config.yaml"); then
+    echo "[!!] $SERVICE_CONFIG_STATE"
+    echo "     Replace $LABCTL_CONFIG/config.yaml with a regular file and rerun."
+    exit 1
+fi
+if [ "$SERVICE_CONFIG_STATE" = regular ]; then
     echo "[ok] config.yaml already exists, skipping"
 else
-    cp "$PROJECT_DIR/config/labctl.yaml.example" "$LABCTL_CONFIG/config.yaml"
-    sed -i "s|^database_path: ~/.config/labctl/labctl.db|database_path: $LABCTL_CONFIG/labctl.db|" "$LABCTL_CONFIG/config.yaml"
+    "${ADMIN_FILES[@]}" copy "$PROJECT_DIR/config/labctl.yaml.example" \
+        "$LABCTL_CONFIG/config.yaml" 640 \
+        "database_path: ~/.config/labctl/labctl.db" \
+        "database_path: $LABCTL_CONFIG/labctl.db"
     echo "[ok] Copied example config to $LABCTL_CONFIG/config.yaml"
 fi
 
 if [ -f "$SYSTEM_CONFIG_FILE" ]; then
     echo "[ok] $SYSTEM_CONFIG_FILE already exists, skipping"
 else
-    cp "$LABCTL_CONFIG/config.yaml" "$SYSTEM_CONFIG_FILE"
+    "${ADMIN_FILES[@]}" copy "$LABCTL_CONFIG/config.yaml" "$SYSTEM_CONFIG_FILE" 640
     echo "[ok] Installed system config at $SYSTEM_CONFIG_FILE"
 fi
 
@@ -106,12 +118,17 @@ echo "[ok] Secured shared config: $SYSTEM_CONFIG_FILE (root:labctl, 640)"
 # can drop images in and the files stay readable by the service. output/
 # is also sticky (3775): group members can't remove or rename the
 # service's run files to plant a symlink in their place.
-mkdir -p "$LABCTL_HOME/images" "$LABCTL_HOME/output"
-chmod 2775 "$LABCTL_HOME/images"
-chmod 3775 "$LABCTL_HOME/output"
+"${ADMIN_FILES[@]}" secure-dir "$LABCTL_HOME/images" labctl labctl 2775
+"${ADMIN_FILES[@]}" secure-dir "$LABCTL_HOME/output" labctl labctl 3775
 echo "[ok] MCP image/output directories: $LABCTL_HOME/{images,output}"
 
+# -R without -L doesn't follow symlinks.
 chown -R labctl:labctl "$LABCTL_HOME"
+# The service copy of the config holds the same secrets (API keys, Kasa
+# credentials) as /etc/labctl/config.yaml, and $LABCTL_HOME is world-
+# traversable (2775): keep it unreadable to other users.
+"${ADMIN_FILES[@]}" secure "$LABCTL_CONFIG/config.yaml" labctl labctl 640
+echo "[ok] Secured service config: $LABCTL_CONFIG/config.yaml (labctl:labctl, 640)"
 
 # 4. Set up udev rules file (group-writable so labctl users don't need sudo)
 echo "[+] Setting up udev rules file..."
