@@ -99,7 +99,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Fixed
 - A command given a config file by name (`-c FILE` or `LABCTL_CONFIG`)
   fails if it doesn't load (YAML error or invalid value) instead of
-  running on built-in defaults. `labctl mcp` handles this itself: over
+  running on built-in defaults (commands that don't read the config,
+  e.g. `user generate-key` / `hash-password` / `add`, `completion` and
+  `--help`, still run). `labctl mcp` handles this itself: over
   HTTP it refuses to start, over stdio it starts with a warning.
   `labctl web` refuses to start if any config file it reads doesn't load
   (e.g. `/etc/labctl/config.yaml` unreadable to a user outside the

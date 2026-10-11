@@ -621,10 +621,16 @@ class TestCliFailsClosedOnBrokenConfig:
 
     @pytest.mark.parametrize(
         "args",
-        [["user", "generate-key"], ["user", "hash-password", "--help"], ["--help"]],
+        [
+            ["user", "generate-key"],
+            ["user", "hash-password", "--help"],
+            ["--help"],
+            ["list", "--help"],
+        ],
     )
     def test_config_free_commands_still_work(self, tmp_path, monkeypatch, args):
-        """The commands that help fix a broken config (and --help) run."""
+        """Commands that don't read the config (incl. the ones that help fix
+        it) run; the check is where the config is used, not on argv."""
         from click.testing import CliRunner
 
         from labctl.cli import main
@@ -632,9 +638,34 @@ class TestCliFailsClosedOnBrokenConfig:
         cfg = tmp_path / "c.yaml"
         cfg.write_text("auth: [unclosed\n")
         monkeypatch.setenv("LABCTL_CONFIG", str(cfg))
-        monkeypatch.setattr("sys.argv", ["labctl", *args])
         result = CliRunner().invoke(main, args)
         assert result.exit_code == 0, result.output
+
+    def test_option_value_like_help_flag_does_not_bypass(self, tmp_path):
+        """`-h` is network set's --hostname: it must not exempt the command."""
+        from click.testing import CliRunner
+
+        from labctl.cli import main
+
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("database:\n  timeout_seconds: 10s\n")
+        result = CliRunner().invoke(
+            main,
+            [
+                "-c",
+                str(cfg),
+                "network",
+                "set",
+                "b1",
+                "ethernet",
+                "10.0.0.5",
+                "-h",
+                "b1",
+            ],
+        )
+        assert result.exit_code == 1, result.output
+        assert "config not loaded" in result.output
+        assert not (tmp_path / "labctl.db").exists()
 
     def test_create_app_fails_closed(self):
         """WSGI servers and other create_app() callers, not just `labctl web`."""
