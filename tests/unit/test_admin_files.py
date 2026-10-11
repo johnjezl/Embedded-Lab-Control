@@ -60,6 +60,14 @@ class TestState:
         with pytest.raises(admin_files.UnsafeFileError, match="hard link"):
             admin_files.state(str(managed / "config.yaml"))
 
+    def test_symlinked_parent_with_missing_target_refused(self, managed, tmp_path):
+        """Not "missing": the parent itself is a planted symlink."""
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        (managed / ".config").symlink_to(empty)
+        with pytest.raises(admin_files.UnsafeFileError, match="symlink"):
+            admin_files.state(str(managed / ".config" / "config.yaml"))
+
     def test_fifo_refused(self, managed):
         os.mkfifo(managed / "config.yaml")
         with pytest.raises(admin_files.UnsafeFileError):
@@ -119,9 +127,27 @@ class TestCopy:
         src = tmp_path / "example.yaml"
         src.write_text("new\n")
         (managed / "config.yaml").symlink_to(victim)
-        with pytest.raises(FileExistsError):
+        with pytest.raises(admin_files.UnsafeFileError, match="already exists"):
             admin_files.copy(str(src), str(managed / "config.yaml"), 0o640)
         assert victim.read_text() == "secret\n"
+
+    def test_symlinked_destination_parent_refused(self, managed, tmp_path):
+        src = tmp_path / "example.yaml"
+        src.write_text("new\n")
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (managed / ".config").symlink_to(elsewhere)
+        with pytest.raises(admin_files.UnsafeFileError, match="symlink"):
+            admin_files.copy(str(src), str(managed / ".config" / "c.yaml"), 0o640)
+        assert not (elsewhere / "c.yaml").exists()
+
+    def test_byte_for_byte(self, managed, tmp_path):
+        """CRLF and non-UTF-8 bytes survive, so a later cmp matches."""
+        src = tmp_path / "example.yaml"
+        src.write_bytes(b"a: 1\r\n# caf\xe9\r\n")
+        dst = managed / "config.yaml"
+        admin_files.copy(str(src), str(dst), 0o640)
+        assert dst.read_bytes() == src.read_bytes()
 
 
 class TestCli:

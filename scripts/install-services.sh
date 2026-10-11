@@ -77,6 +77,11 @@ else
 fi
 
 # 3. Set up config directory
+# Resolve an admin symlink for the home (e.g. -> /data/labctl) once: its
+# directory entry lives in root-owned /var/lib, so labctl can't redirect
+# it; paths inside it go through labctl.core.admin_files below.
+LABCTL_HOME=$(realpath -e "$LABCTL_HOME")
+LABCTL_CONFIG="$LABCTL_HOME/.config/labctl"
 echo "[+] Setting up config in $LABCTL_CONFIG..."
 mkdir -p "$LABCTL_CONFIG"
 mkdir -p "$SYSTEM_CONFIG_DIR"

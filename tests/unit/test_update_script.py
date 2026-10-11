@@ -84,13 +84,15 @@ def run_restart(tmp_path):
         listener_pid: int = 4242,
         cgroup_pids=(4242,),
         ss_present: bool = True,
+        cgroup_path: str = "/system.slice/labctl-mcp.service",
+        root_cgroup_pids=(),
     ):
         systemctl = ["#!/bin/bash", 'case "$1" in']
         systemctl.append("  is-enabled) exit 0 ;;")
         systemctl.append("  restart) exit 0 ;;")
         systemctl.append(
             '  show) case "$3" in MainPID) echo 4242 ;;'
-            " ControlGroup) echo /system.slice/labctl-mcp.service ;; esac ;;"
+            f" ControlGroup) echo {cgroup_path} ;; esac ;;"
         )
         running = " ".join(name for name, up in active.items() if up)
         systemctl.append(
@@ -118,6 +120,9 @@ def run_restart(tmp_path):
         cgroup = tmp_path / "cgroup" / "system.slice" / "labctl-mcp.service"
         cgroup.mkdir(parents=True, exist_ok=True)
         (cgroup / "cgroup.procs").write_text("".join(f"{p}\n" for p in cgroup_pids))
+        (tmp_path / "cgroup" / "cgroup.procs").write_text(
+            "".join(f"{p}\n" for p in root_cgroup_pids)
+        )
         (stubs / "ss").write_text(f"#!/bin/sh\necho '{ss_line}'\n")
         (stubs / "sleep").write_text("#!/bin/sh\n")
         for stub in stubs.iterdir():
@@ -245,3 +250,15 @@ class TestRestartReport:
         assert result.returncode == 0, result.stdout
         assert "[ok] labctl-mcp running" in result.stdout
         assert "'ss' (iproute2) not found" in result.stdout
+
+    def test_no_cgroup_does_not_match_root_cgroup(self, run_restart):
+        """Unit stopped/torn down (empty ControlGroup): the root cgroup's
+        processes (here one listening) must not count as labctl-mcp's."""
+        result, _ = run_restart(
+            ALL_UP,
+            {"labctl-mcp": "MCP HTTP: API keys required"},
+            listener_pid=777,
+            cgroup_path="",
+            root_cgroup_pids=(777,),
+        )
+        assert "[!!] labctl-mcp FAILED" in result.stdout
