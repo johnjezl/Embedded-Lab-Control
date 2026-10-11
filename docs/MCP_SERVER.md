@@ -99,6 +99,9 @@ that user's `api_key`.
   enable auth before putting a proxy in front**. It also refuses
   `auth.enabled: true` when no user has both an `api_key` and a username
   (quote numeric usernames in YAML).
+- It also refuses to start over HTTP if a config file it should read
+  can't be loaded (e.g. a YAML typo): running on another file or on
+  built-in defaults could silently drop the authentication you enabled.
 - Without auth (the default), it listens on loopback only, all clients
   share one claimant identity, and anyone who can connect locally can call
   every tool. Every HTTP start prints its mode (`MCP HTTP: API keys
@@ -110,9 +113,10 @@ that user's `api_key`.
   says. It exits with status 1 if the server would refuse to
   start, or if a config file it would read is unusable: unparseable,
   unreadable, or, when it is the only file allowed (`-c FILE`, or
-  `LABCTL_CONFIG` with `LABCTL_CONFIG_EXCLUSIVE=1`), missing. The server
-  would start anyway, on the next file in the search order or on built-in
-  defaults, logging a warning.
+  `LABCTL_CONFIG` with `LABCTL_CONFIG_EXCLUSIVE=1`), missing. Over HTTP
+  the server then refuses to start (falling back could drop the intended
+  authentication); over stdio it starts on the next file in the search
+  order or on built-in defaults, logging a warning.
 
 #### Host header checks
 
@@ -458,7 +462,7 @@ decisions: D011, D012 in [`DECISIONS.md`](DECISIONS.md).
 | Claims | An agent's claim on a board blocks other agents' mutating calls on it | on | `claims.*` |
 | Serialization | One tool call (and hardware-reading resource) at a time | always | — |
 | Audit | Every change is recorded with the actor (`<session>[:<user>]`) | always | `labctl activity tail` / `export`, web `/activity` page |
-| systemd unit | `ProtectSystem=strict`, `ProtectHome=yes`: files writable only under `/var/lib/labctl`. Devices are outside this: SD cards are written through the SDWire `sudo` rules (`dd`, `mount`, `partprobe`; D008b), serial ports through group permissions | as shipped | `config/systemd/labctl-mcp.service` |
+| systemd unit | `ProtectSystem=strict`, `ProtectHome=yes`: on disk, only `/var/lib/labctl` is writable (plus a private `/tmp` and `/dev`, e.g. `/dev/shm`). Devices are outside this: SD cards are written through the SDWire `sudo` rules (`dd`, `mount`, `partprobe`; D008b), serial ports through group permissions | as shipped | `config/systemd/labctl-mcp.service` |
 
 Every tool and resource is classified (read / db-write / shared-resource /
 system-write / hardware / destructive) in

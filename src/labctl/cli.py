@@ -5060,6 +5060,11 @@ def mcp_cmd(ctx: click.Context, http_port: int | None, host: str, check: bool) -
     By default uses stdio transport for local AI tool integration
     (Claude Desktop, Claude Code, etc.). Use --http for remote access.
     """
+    if (
+        not http_port
+        and ctx.get_parameter_source("host") is not click.core.ParameterSource.DEFAULT
+    ):
+        raise click.UsageError("--host only applies with --http PORT")
     # The MCP server (and code it calls, e.g. Kasa credential lookup) loads
     # config itself on every call, with no path, so `labctl -c FILE mcp`
     # used to ignore FILE. Export it, exclusively: like an explicit path,
@@ -5118,15 +5123,19 @@ def _mcp_check(http_port: int | None, host: str) -> None:
         # (labctl) who can read what this user can't.
         import getpass
 
-        denied = any("Permission denied" in e for e in config.load_errors)
+        denied = config.load_denied
         raise click.ClickException(
             f"config not loaded (as user {getpass.getuser()}): "
             + "; ".join(config.load_errors)
             + (
-                f". It would use {config.source_path} instead"
-                if config.source_path
-                else ". It would run on built-in defaults: no auth users, no "
-                "host file access, default database"
+                ". The HTTP server would refuse to start"
+                if http_port
+                else (
+                    f". It would use {config.source_path} instead"
+                    if config.source_path
+                    else ". It would run on built-in defaults: no auth users, "
+                    "no host file access, default database"
+                )
             )
             + (
                 ". To check what the service sees, run this as its user "
