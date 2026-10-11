@@ -107,6 +107,21 @@ class TestSecureDir:
         assert stat.S_IMODE(target.stat().st_mode) == 0o755
 
 
+class TestSecureDirParents:
+    def test_missing_parent_not_created(self, managed):
+        """Only the leaf is created: a missing labctl home must not be
+        rebuilt as a root-owned 0700 chain."""
+        home = managed / "home"
+        with pytest.raises(FileNotFoundError):
+            admin_files.secure_dir(str(home / "images"), USER, GROUP, 0o2775)
+        assert not home.exists()
+
+    def test_file_in_path_named_as_such(self, managed):
+        (managed / ".config").write_text("stray")
+        with pytest.raises(admin_files.UnsafeFileError, match="non-directory"):
+            admin_files.state(str(managed / ".config" / "labctl" / "config.yaml"))
+
+
 class TestCopy:
     def test_copies_with_mode_and_line_replacement(self, managed, tmp_path):
         src = tmp_path / "example.yaml"
@@ -165,6 +180,12 @@ class TestCli:
     def test_bad_usage(self):
         assert admin_files.main(["nope"]) == 64
         assert admin_files.main([]) == 64
+
+    def test_error_names_the_requested_path(self, managed, capsys):
+        missing = managed / "nohome" / "images"
+        rc = admin_files.main(["secure-dir", str(missing), USER, GROUP, "2775"])
+        assert rc == 2
+        assert str(missing) in capsys.readouterr().err
 
     def test_errors_are_one_line_not_tracebacks(self, managed, capsys):
         """The scripts show the reason they capture: every failure has one."""

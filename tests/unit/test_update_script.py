@@ -87,6 +87,7 @@ def run_restart(tmp_path):
         cgroup_path: str = "/system.slice/labctl-mcp.service",
         root_cgroup_pids=(),
         cgroup_v1: bool = False,
+        extra_env=None,
     ):
         systemctl = ["#!/bin/bash", 'case "$1" in']
         systemctl.append("  is-enabled) exit 0 ;;")
@@ -135,6 +136,7 @@ def run_restart(tmp_path):
             "PATH": f"{stubs}:{os.environ['PATH']}",
             "CGROUP_ROOT": str(tmp_path / "cgroup"),
             "SS_CMD": "ss" if ss_present else "no-such-ss-command",
+            **(extra_env or {}),
         }
         result = subprocess.run(
             ["bash", "-c", "set -e\n" + _steps_5_6()],
@@ -284,3 +286,15 @@ class TestRestartReport:
         )
         assert "running but not listening after 60s" in result.stdout
         assert "MCP_START_TIMEOUT=120" in result.stdout
+
+    @pytest.mark.parametrize("value,shown", [("2m", "60s"), ("2", "4s")])
+    def test_start_timeout_validated(self, run_restart, value, shown):
+        """A non-integer falls back to 60 s; too small is raised to the
+        minimum the wait actually takes, so the message is true."""
+        result, _ = run_restart(
+            ALL_UP,
+            {"labctl-mcp": "MCP HTTP: API keys required"},
+            listening=False,
+            extra_env={"MCP_START_TIMEOUT": value},
+        )
+        assert f"not listening after {shown}" in result.stdout
