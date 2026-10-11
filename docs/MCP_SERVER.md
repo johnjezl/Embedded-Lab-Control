@@ -458,7 +458,7 @@ decisions: D011, D012 in [`DECISIONS.md`](DECISIONS.md).
 | Claims | An agent's claim on a board blocks other agents' mutating calls on it | on | `claims.*` |
 | Serialization | One tool call (and hardware-reading resource) at a time | always | — |
 | Audit | Every change is recorded with the actor (`<session>[:<user>]`) | always | `labctl activity tail` / `export`, web `/activity` page |
-| systemd unit | `ProtectSystem=strict`, `ProtectHome=yes`, writes only to `/var/lib/labctl` | as shipped | `config/systemd/labctl-mcp.service` |
+| systemd unit | `ProtectSystem=strict`, `ProtectHome=yes`: files writable only under `/var/lib/labctl`. Devices are outside this: SD cards are written through the SDWire `sudo` rules (`dd`, `mount`, `partprobe`; D008b), serial ports through group permissions | as shipped | `config/systemd/labctl-mcp.service` |
 
 Every tool and resource is classified (read / db-write / shared-resource /
 system-write / hardware / destructive) in

@@ -464,6 +464,27 @@ class TestRunServerRefuses:
 
 
 class TestConfigLoadErrors:
+    def test_inaccessible_explicit_config_warns(self, tmp_path, caplog):
+        """`-c FILE` the user can't reach: a warning, not a silent run on
+        defaults (search-path entries only log at debug)."""
+        import logging
+        import os
+
+        from labctl.core.config import load_config
+
+        if os.geteuid() == 0:
+            pytest.skip("root can stat anything")
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        locked.chmod(0o000)
+        try:
+            with caplog.at_level(logging.DEBUG, logger="labctl.core.config"):
+                load_config(locked / "config.yaml")
+        finally:
+            locked.chmod(0o755)
+        records = [r for r in caplog.records if "Failed to access" in r.message]
+        assert records and records[0].levelno == logging.WARNING
+
     def test_inaccessible_config_recorded(self, tmp_path):
         """A config the user can't even stat (750 directory) is a load
         error, not "no config": --check must not report built-in defaults

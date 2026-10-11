@@ -668,9 +668,16 @@ def load_config(
             if e.errno not in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP):
                 # e.g. EACCES on a 750 /etc/labctl: a config may well be
                 # there. (os.stat, not Path.exists(), which hides this.)
-                # Debug only: users outside the labctl group hit this on
-                # every command; startup and --check report load_errors.
-                logger.debug("Failed to access config path %s: %s", path, e)
+                # A file named explicitly (-c, exclusive LABCTL_CONFIG)
+                # warns; search-path entries log at debug only, since users
+                # outside the labctl group hit /etc/labctl on every command
+                # (MCP startup and --check report load_errors either way).
+                logger.log(
+                    logging.WARNING if only_file else logging.DEBUG,
+                    "Failed to access config path %s: %s",
+                    path,
+                    e,
+                )
                 load_errors.append(f"{path}: {e}")
                 continue
             # The one file named explicitly being absent means defaults,
