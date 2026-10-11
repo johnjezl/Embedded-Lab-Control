@@ -4,6 +4,7 @@ Configuration management for lab controller.
 Loads configuration from YAML files with environment variable overrides.
 """
 
+import errno
 import hmac
 import logging
 import os
@@ -663,17 +664,17 @@ def load_config(
     for path in paths_to_try:
         try:
             os.stat(path)
-        except (FileNotFoundError, NotADirectoryError) as e:
+        except OSError as e:
+            if e.errno not in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP):
+                # e.g. EACCES on a 750 /etc/labctl: a config may well be
+                # there. (os.stat, not Path.exists(), which hides this.)
+                logger.warning("Failed to access config path %s: %s", path, e)
+                load_errors.append(f"{path}: {e}")
+                continue
             # The one file named explicitly being absent means defaults,
             # not "no config": record it (e.g. for `labctl mcp --check`).
             if only_file:
                 load_errors.append(f"{path}: {e.strerror}")
-            continue
-        except OSError as e:
-            # e.g. EACCES on a 750 /etc/labctl: a config may well be there.
-            # (os.stat, not Path.exists(), which hides this on some Pythons.)
-            logger.warning("Failed to access config path %s: %s", path, e)
-            load_errors.append(f"{path}: {e}")
             continue
         else:
             try:

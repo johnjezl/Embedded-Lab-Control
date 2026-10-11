@@ -487,6 +487,25 @@ class TestConfigLoadErrors:
         assert "Permission denied" in config.load_errors[0]
 
 
+class TestConfigSymlinkLoop:
+    def test_looping_search_path_entry_skipped(self, tmp_path, monkeypatch):
+        """A dotfile manager's looping symlink is skipped as before (like
+        Path.exists()), not a load error that fails --check."""
+        from labctl.core import config as config_mod
+
+        xdg = tmp_path / "xdg"
+        (xdg / "labctl").mkdir(parents=True)
+        loop = xdg / "labctl" / "config.yaml"
+        loop.symlink_to(loop)
+        system = tmp_path / "system.yaml"
+        system.write_text("log_level: INFO\n")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+        monkeypatch.setattr(config_mod, "SYSTEM_CONFIG_FILE", system)
+        config = config_mod.load_config()
+        assert config.load_errors == []
+        assert config.source_path == system
+
+
 class TestExclusiveConfigMissing:
     def test_missing_exclusive_config_recorded(self, tmp_path, monkeypatch):
         """LABCTL_CONFIG + EXCLUSIVE naming a missing file means defaults:

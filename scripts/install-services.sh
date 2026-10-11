@@ -133,8 +133,16 @@ echo "[ok] Secured shared config: $SYSTEM_CONFIG_FILE (root:labctl, 640)"
 # can drop images in and the files stay readable by the service. output/
 # is also sticky (3775): group members can't remove or rename the
 # service's run files to plant a symlink in their place.
-"${ADMIN_FILES[@]}" secure-dir "$LABCTL_HOME/images" labctl labctl 2775
-"${ADMIN_FILES[@]}" secure-dir "$LABCTL_HOME/output" labctl labctl 3775
+for spec in images:2775 output:3775; do
+    dir="$LABCTL_HOME/${spec%%:*}"
+    if [ -L "$dir" ]; then
+        # An admin's relocation (e.g. images on a bigger disk): leave it
+        # alone; root never chmods through a symlink here.
+        echo "[ok] $dir is a symlink; leaving it (and its permissions) as is"
+    else
+        "${ADMIN_FILES[@]}" secure-dir "$dir" labctl labctl "${spec##*:}"
+    fi
+done
 echo "[ok] MCP image/output directories: $LABCTL_HOME/{images,output}"
 
 # -R without -L doesn't follow symlinks.
