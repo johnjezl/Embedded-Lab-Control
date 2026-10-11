@@ -11,7 +11,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 LABCTL_VENV="/opt/labctl/venv"
 SYSTEMD_CONFIG_DIR="$PROJECT_DIR/config/systemd"
 SYSTEM_CONFIG_DIR="/etc/labctl"
@@ -66,6 +66,8 @@ echo "[ok] systemd unit files refreshed"
 # 3. Repair shared config permissions and seed if missing
 echo "[+] Checking shared config..."
 mkdir -p "$SYSTEM_CONFIG_DIR"
+SYSTEM_CONFIG_DIR=$(realpath -e "$SYSTEM_CONFIG_DIR")  # an admin symlink is fine
+SYSTEM_CONFIG_FILE="$SYSTEM_CONFIG_DIR/config.yaml"
 # The service copy lives under /var/lib/labctl, which the labctl user can
 # write: root only touches it through labctl.core.admin_files (no symlinks,
 # no hard links, descriptor-based chown/chmod, O_EXCL copies).
@@ -184,16 +186,23 @@ if [ -n "$SERVICES" ]; then
         command -v "${SS_CMD:-ss}" >/dev/null 2>&1 || return 2
         cg=$(systemctl show -p ControlGroup --value labctl-mcp 2>/dev/null || true)
         # No cgroup (unit stopped): don't fall back to the root cgroup's PIDs.
-        pids=$( { if [ -n "$cg" ]; then cat "${CGROUP_ROOT:-/sys/fs/cgroup}$cg/cgroup.procs" 2>/dev/null; fi || true
+        # Unified (v2) hierarchy first, then the v1 "systemd" one.
+        pids=$( { if [ -n "$cg" ]; then
+                      cat "${CGROUP_ROOT:-/sys/fs/cgroup}$cg/cgroup.procs" 2>/dev/null ||
+                          cat "${CGROUP_ROOT:-/sys/fs/cgroup}/systemd$cg/cgroup.procs" 2>/dev/null
+                  fi || true
                   systemctl show -p MainPID --value labctl-mcp 2>/dev/null || true; } |
                 grep -E '^[1-9][0-9]*$' | sort -u | paste -sd'|' -)
         [ -n "$pids" ] || return 1
         pattern="pid=($pids),"
         "${SS_CMD:-ss}" -ltnpH 2>/dev/null | grep -qE "$pattern"
     }
+    # Slow hosts (cold cache after the reinstall, SBC-class CPUs) can take a
+    # while to import the SDK and bind: MCP_START_TIMEOUT (seconds) to wait.
+    MCP_START_TIMEOUT=${MCP_START_TIMEOUT:-60}
     MCP_LISTEN=1
     if [[ " $SERVICES " == *" labctl-mcp "* ]]; then
-        for _ in $(seq 1 27); do
+        for _ in $(seq 4 "$MCP_START_TIMEOUT"); do
             MCP_LISTEN=0
             mcp_listening || MCP_LISTEN=$?
             if [ "$MCP_LISTEN" -ne 1 ] || ! systemctl is-active --quiet labctl-mcp; then
@@ -234,7 +243,13 @@ if [ -n "$SERVICES" ]; then
                 fi
             fi
         else
-            echo "[!!] $svc FAILED (not running, or labctl-mcp not listening); log since restart:"
+            if [ "$svc" = labctl-mcp ] && systemctl is-active --quiet "$svc"; then
+                echo "[!!] $svc FAILED: running but not listening after ${MCP_START_TIMEOUT}s"
+                echo "     (still starting on a slow host? rerun with MCP_START_TIMEOUT=120);"
+                echo "     log since restart:"
+            else
+                echo "[!!] $svc FAILED; log since restart:"
+            fi
             svc_log "$svc" | tail -n 15 | sed 's/^/     /'
             FAILED="$FAILED $svc"
         fi

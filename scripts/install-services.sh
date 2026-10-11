@@ -12,7 +12,9 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Physical path: admin_files refuses symlinks on the paths it opens, and a
+# checkout reached through a symlink (~/lab -> /data/src/...) is fine.
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 CONFIG_DIR="$PROJECT_DIR/config/systemd"
 LABCTL_HOME="/var/lib/labctl"
 LABCTL_CONFIG="$LABCTL_HOME/.config/labctl"
@@ -80,11 +82,14 @@ fi
 # Resolve an admin symlink for the home (e.g. -> /data/labctl) once: its
 # directory entry lives in root-owned /var/lib, so labctl can't redirect
 # it; paths inside it go through labctl.core.admin_files below.
+mkdir -p "$LABCTL_HOME"  # its parent, /var/lib, is root's
 LABCTL_HOME=$(realpath -e "$LABCTL_HOME")
 LABCTL_CONFIG="$LABCTL_HOME/.config/labctl"
 echo "[+] Setting up config in $LABCTL_CONFIG..."
 mkdir -p "$LABCTL_CONFIG"
 mkdir -p "$SYSTEM_CONFIG_DIR"
+SYSTEM_CONFIG_DIR=$(realpath -e "$SYSTEM_CONFIG_DIR")  # an admin symlink is fine
+SYSTEM_CONFIG_FILE="$SYSTEM_CONFIG_DIR/config.yaml"
 
 # $LABCTL_HOME is writable by the labctl user (the services' identity), so
 # on a reinstall root only touches files there through

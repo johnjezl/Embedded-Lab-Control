@@ -86,6 +86,7 @@ def run_restart(tmp_path):
         ss_present: bool = True,
         cgroup_path: str = "/system.slice/labctl-mcp.service",
         root_cgroup_pids=(),
+        cgroup_v1: bool = False,
     ):
         systemctl = ["#!/bin/bash", 'case "$1" in']
         systemctl.append("  is-enabled) exit 0 ;;")
@@ -117,7 +118,9 @@ def run_restart(tmp_path):
             if listening
             else 'LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=42420,fd=3))'
         )
-        cgroup = tmp_path / "cgroup" / "system.slice" / "labctl-mcp.service"
+        cgroup = (
+            tmp_path / "cgroup" / ("systemd" if cgroup_v1 else "") / "system.slice"
+        ) / "labctl-mcp.service"
         cgroup.mkdir(parents=True, exist_ok=True)
         (cgroup / "cgroup.procs").write_text("".join(f"{p}\n" for p in cgroup_pids))
         (tmp_path / "cgroup" / "cgroup.procs").write_text(
@@ -262,3 +265,22 @@ class TestRestartReport:
             root_cgroup_pids=(777,),
         )
         assert "[!!] labctl-mcp FAILED" in result.stdout
+
+    def test_cgroup_v1_wrapper_child_counts(self, run_restart):
+        """v1/hybrid hosts keep the unit's PIDs under the "systemd" tree."""
+        result, _ = run_restart(
+            ALL_UP,
+            {"labctl-mcp": "MCP HTTP: API keys required"},
+            listener_pid=4243,
+            cgroup_pids=(4242, 4243),
+            cgroup_v1=True,
+        )
+        assert result.returncode == 0, result.stdout
+        assert "[ok] labctl-mcp running" in result.stdout
+
+    def test_not_listening_message_names_timeout(self, run_restart):
+        result, _ = run_restart(
+            ALL_UP, {"labctl-mcp": "MCP HTTP: API keys required"}, listening=False
+        )
+        assert "running but not listening after 60s" in result.stdout
+        assert "MCP_START_TIMEOUT=120" in result.stdout
