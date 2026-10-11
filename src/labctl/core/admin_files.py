@@ -50,7 +50,9 @@ def _nofollow(path: str, opener, *args, **kwargs) -> int:
         return opener(*args, **kwargs)
     except OSError as e:
         if e.errno in (errno.ELOOP, errno.ENOTDIR):
-            raise UnsafeFileError(e.errno, f"{path}: symlink on the path") from e
+            raise UnsafeFileError(
+                e.errno, f"{path}: a symlink or non-directory on the path"
+            ) from e
         if e.errno == errno.EINVAL:
             raise UnsafeFileError(e.errno, f"{path} is not a regular file") from e
         if e.errno == errno.EEXIST:
@@ -105,9 +107,28 @@ def secure(path: str, user: str, group: str, mode: int) -> None:
 
 
 def secure_dir(path: str, user: str, group: str, mode: int) -> None:
-    """Create (if needed) and chown/chmod a directory, no symlinks."""
+    """Create (if needed) and chown/chmod a directory, no symlinks.
+
+    Only the last component is created: a missing parent is an error, not
+    a reason to build a root-owned chain (e.g. the labctl home itself).
+    """
     uid, gid = _ids(user, group)
-    fd = _nofollow(path, open_dir_nofollow, path, create=True, mode=0o700)
+    parent = _nofollow(path, open_dir_nofollow, os.path.dirname(path))
+    name = os.path.basename(path)
+    try:
+        try:
+            os.mkdir(name, 0o700, dir_fd=parent)
+        except FileExistsError:
+            pass  # existing (or concurrently created): the open re-checks it
+        fd = _nofollow(
+            path,
+            os.open,
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=parent,
+        )
+    finally:
+        os.close(parent)
     try:
         os.fchown(fd, uid, gid)
         os.fchmod(fd, mode)
@@ -175,7 +196,9 @@ def main(argv: list[str]) -> int:
     except UnsafeFileError as e:
         reason = f"refusing: {e.strerror}"
     except OSError as e:
-        reason = f"error: {e.filename or ''}: {e.strerror or e}"
+        # The paths asked about, not e.filename (often one path component).
+        paths = " -> ".join(args[:2] if cmd == "copy" else args[:1])
+        reason = f"error: {paths}: {e.strerror or e}"
     except KeyError as e:  # unknown user or group
         reason = f"error: unknown user or group {e}"
     except ValueError as e:  # bad mode

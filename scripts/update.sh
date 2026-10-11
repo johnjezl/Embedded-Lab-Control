@@ -21,6 +21,11 @@ SYSTEM_CONFIG_FILE="$SYSTEM_CONFIG_DIR/config.yaml"
 # can't redirect it. Paths *inside* it are labctl-writable and are only
 # touched through labctl.core.admin_files.
 LABCTL_HOME=$(realpath -e /var/lib/labctl 2>/dev/null || echo /var/lib/labctl)
+if [ ! -d "$LABCTL_HOME" ]; then
+    echo "Error: labctl home $LABCTL_HOME is missing."
+    echo "Run scripts/install-services.sh to recreate it."
+    exit 1
+fi
 SERVICE_CONFIG_FILE="$LABCTL_HOME/.config/labctl/config.yaml"
 
 # Check root
@@ -200,6 +205,12 @@ if [ -n "$SERVICES" ]; then
     # Slow hosts (cold cache after the reinstall, SBC-class CPUs) can take a
     # while to import the SDK and bind: MCP_START_TIMEOUT (seconds) to wait.
     MCP_START_TIMEOUT=${MCP_START_TIMEOUT:-60}
+    case "$MCP_START_TIMEOUT" in
+        ''|*[!0-9]*)
+            echo "[!!] MCP_START_TIMEOUT must be whole seconds; using 60"
+            MCP_START_TIMEOUT=60 ;;
+    esac
+    if [ "$MCP_START_TIMEOUT" -lt 4 ]; then MCP_START_TIMEOUT=4; fi
     MCP_LISTEN=1
     if [[ " $SERVICES " == *" labctl-mcp "* ]]; then
         for _ in $(seq 4 "$MCP_START_TIMEOUT"); do
