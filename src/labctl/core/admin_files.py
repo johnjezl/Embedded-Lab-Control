@@ -153,23 +153,30 @@ def copy(src: str, dst: str, mode: int, replace: dict[str, str] | None = None) -
         swap = {k.encode(): v.encode() for k, v in replace.items()}
         data = b"\n".join(swap.get(line, line) for line in data.split(b"\n"))
     parent = _nofollow(dst, open_dir_nofollow, os.path.dirname(dst))
+    name = os.path.basename(dst)
     try:
         out = _nofollow(
             dst,
             os.open,
-            os.path.basename(dst),
+            name,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
             mode,
             dir_fd=parent,
         )
+        try:
+            os.fchmod(out, mode)  # not narrowed by the umask
+            with os.fdopen(out, "wb", closefd=False) as f:
+                f.write(data)
+            os.fsync(out)
+        except BaseException:
+            # Never leave a truncated config that a rerun would take as
+            # complete ("already exists, skipping").
+            os.unlink(name, dir_fd=parent)
+            raise
+        finally:
+            os.close(out)
     finally:
         os.close(parent)
-    try:
-        os.fchmod(out, mode)  # not narrowed by the umask
-        with os.fdopen(out, "wb", closefd=False) as f:
-            f.write(data)
-    finally:
-        os.close(out)
 
 
 def main(argv: list[str]) -> int:
