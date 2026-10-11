@@ -122,9 +122,9 @@ that user's `api_key`.
   config file it loaded, plus any startup warnings, whatever `log_level`
   says. It exits with status 1 if the server would refuse to
   start, or if a config file it would read is unusable: unparseable,
-  unreadable, or, when it is the only file allowed (`LABCTL_CONFIG` with
-  `LABCTL_CONFIG_EXCLUSIVE=1`), missing. (A `-c FILE` that is missing or
-  unreadable is rejected by the CLI itself, exit status 2.) Over HTTP
+  unreadable, or, when named by `LABCTL_CONFIG` (exclusive or not),
+  missing. (A `-c FILE` that is missing or unreadable is rejected by the
+  CLI itself, exit status 2.) Over HTTP
   the server then refuses to start (falling back could drop the intended
   authentication); over stdio it starts on the next file in the search
   order or on built-in defaults, logging a warning.

@@ -654,15 +654,47 @@ class TestConfigPinning:
         cfg.write_text("auth: [unclosed\n")
         verifier = mcp_server._ApiKeyVerifier()
         with caplog.at_level(logging.DEBUG):
-            for _ in range(5):
-                verifier._report_config_state(mcp_server._fresh_config())
+            for seq in range(1, 6):
+                verifier._report_config_state(mcp_server._fresh_config(), seq)
         config_msgs = [r for r in caplog.records if r.name == "labctl.core.config"]
         assert config_msgs == []
         refusals = [r for r in caplog.records if "refusing every key" in r.message]
         assert len(refusals) == 1
         cfg.write_text(AUTH_YAML)
-        verifier._report_config_state(mcp_server._fresh_config())
+        verifier._report_config_state(mcp_server._fresh_config(), 6)
         assert "loads again" in caplog.text
+
+    def test_stale_overlapping_read_not_reported(self, tmp_path, caplog):
+        """A slow read of a half-saved file finishing after a newer good
+        read must not leave "refusing every key" as the last word."""
+        from labctl import mcp_server
+
+        verifier = mcp_server._ApiKeyVerifier()
+        broken = _config()
+        broken.load_errors = ["/x.yaml: while parsing"]
+        verifier._report_config_state(broken, 1)  # file breaks
+        verifier._report_config_state(_config(), 3)  # newer read: fixed
+        caplog.clear()
+        verifier._report_config_state(broken, 2)  # older read finishes late
+        assert "refusing every key" not in caplog.text
+        assert verifier._config_ok is True
+
+    def test_state_change_survives_quiet_log_level(self, caplog):
+        import logging
+
+        from labctl import mcp_server
+
+        verifier = mcp_server._ApiKeyVerifier()
+        broken = _config()
+        broken.load_errors = ["/x.yaml: while parsing"]
+        root = logging.getLogger()
+        saved = root.level
+        root.setLevel(logging.ERROR)
+        try:
+            verifier._report_config_state(broken, 1)
+        finally:
+            root.setLevel(saved)
+        assert "refusing every key" in caplog.text
 
     def test_missing_named_config_is_an_error_even_if_not_exclusive(
         self, tmp_path, monkeypatch

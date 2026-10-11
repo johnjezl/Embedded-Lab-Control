@@ -113,15 +113,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   file. The default `/var/lib/labctl/output` is now also sticky (`3775`).
   A run file that can't be written no longer fails the whole boot test;
   the summary (also the MCP result) lists every file that wasn't saved.
-- `labctl -c FILE mcp` now makes the MCP server use FILE. The server loads
-  its config itself on every call and ignored `-c`, so it read
+- `labctl -c FILE mcp` now makes the MCP server use FILE. The server loaded
+  its config itself and ignored `-c`, so it read
   `~/.config/labctl/config.yaml` first (for the systemd unit: the service
   user's config, not the `/etc/labctl/config.yaml` the unit names). This
   matters now that the MCP host-file allowlist lives in config. FILE is
-  exclusive, as with any explicit path: if it later goes missing or fails
-  to parse, the server uses defaults (deny-all), never another config. The
-  same exclusive mode is available as `LABCTL_CONFIG_EXCLUSIVE=1` alongside
-  `LABCTL_CONFIG`; plain `LABCTL_CONFIG` still falls back as documented.
+  exclusive, as with any explicit path: never another config. The same
+  exclusive mode is available as `LABCTL_CONFIG_EXCLUSIVE=1` alongside
+  `LABCTL_CONFIG`. (How a running server treats later changes to FILE:
+  see Security, MCP over HTTP.)
 - MCP claim sweeper (issue #3): a crashed `mcp-stdio` session whose PID was
   reused by another process is now recognised as gone (the process start
   time is compared with the session's epoch), so its claim is released as
@@ -162,8 +162,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   code the server runs) without serving: whether clients need API keys
   (`auth: required` / `none`), the config file loaded, and startup
   warnings; exit 1 if the server would refuse to start or a config file it
-  would read is unparseable, unreadable, or (when it's the only file
-  allowed by `LABCTL_CONFIG_EXCLUSIVE`) missing.
+  would read is unparseable, unreadable, or (when named by `-c` or
+  `LABCTL_CONFIG`) missing.
 - `scripts/update.sh`, after restarting, shows `labctl-mcp`'s journal from
   this restart (auth mode, startup warnings) and, whenever auth is
   enabled, reminds that HTTP clients must send their API key; for any
