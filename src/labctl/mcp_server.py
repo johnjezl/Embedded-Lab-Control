@@ -166,36 +166,22 @@ def _get_manager():
     )
 
 
-_last_good_config = None
-
-
 def _fresh_config():
-    """load_config() as is: built-in defaults while the file is broken."""
+    """A load that never substitutes the last good config: built-in
+    defaults (no users) while the pinned file is broken. For API keys,
+    which must fail closed."""
     from labctl.core.config import load_config
 
-    return load_config()
+    return load_config(fresh=True)
 
 
 def _get_config():
-    """The config for this call; while the (pinned) file fails to load
-    (e.g. saved mid-edit), the last config that loaded cleanly.
+    """The config for this call. Once the server has pinned its startup
+    config (run_server), a file broken mid-run yields the last good one
+    here and in every other load_config() caller (labctl.core.config)."""
+    from labctl.core.config import load_config
 
-    Falling back to built-in defaults instead would switch tool calls and
-    the claim sweep to the default database and allowlists. API keys are
-    checked against a fresh load (_ApiKeyVerifier), so they fail closed.
-    """
-    global _last_good_config
-    config = _fresh_config()
-    if not config.load_errors:
-        _last_good_config = config
-        return config
-    if _last_good_config is not None:
-        logger.warning(
-            "Config not loaded (%s); keeping the last good one",
-            "; ".join(config.load_errors),
-        )
-        return _last_good_config
-    return config
+    return load_config()
 
 
 def _resolve_host_path(path: str, access: str) -> tuple[str | None, str | None]:
@@ -3597,23 +3583,19 @@ def _transport_security(host: str, mcp_cfg):
 
 def _pin_config_file(config) -> None:
     """Make every later load_config() in this process read only the file
-    ``config`` came from, as `labctl -c FILE mcp` does.
+    ``config`` came from (or none, if it started on built-in defaults).
 
     The server re-reads the config per request and per tool call (API
-    keys, allowlists, confirmation, actuator gate). Without pinning, a
-    config in ~/.config/labctl that is briefly broken (mid-edit) would fall
-    back to /etc/labctl/config.yaml and its settings: the same fallback
-    startup refuses over HTTP. Applies to both transports. A server that
-    started on built-in defaults stays on them: a config file created
-    later must not change its allowlists or gates mid-run.
+    keys, allowlists, confirmation, actuator gate, database, Kasa, health).
+    Without pinning, a config in ~/.config/labctl that is briefly broken
+    (mid-edit) would fall back to /etc/labctl/config.yaml and its settings
+    (the fallback startup refuses over HTTP), and a file created later
+    would change a server that started on defaults. While the pinned file
+    is broken, callers get its last good contents (labctl.core.config).
     """
-    if config.source_path is not None:
-        os.environ["LABCTL_CONFIG"] = str(config.source_path)
-        os.environ["LABCTL_CONFIG_EXCLUSIVE"] = "1"
-    else:
-        from labctl.core.config import pin_defaults
+    from labctl.core.config import pin_config
 
-        pin_defaults()
+    pin_config(config.source_path, config)
 
 
 def _enable_http_auth() -> None:
