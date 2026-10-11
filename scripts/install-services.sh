@@ -64,7 +64,9 @@ echo "[+] Installing labctl into venv..."
 if "$LABCTL_VENV/bin/pip" show labctl &>/dev/null; then
     "$LABCTL_VENV/bin/pip" uninstall -y labctl
 fi
-"$LABCTL_VENV/bin/pip" install "$PROJECT_DIR[web]"
+# Same extras as scripts/update.sh: labctl-mcp needs [mcp], Kasa plugs
+# [kasa], SD muxes [sdwire] (Python 3.12+ only; skipped otherwise).
+"$LABCTL_VENV/bin/pip" install "$PROJECT_DIR[web,mcp,kasa,sdwire]"
 
 # Verify install
 if [ ! -x "$LABCTL_VENV/bin/labctl" ]; then

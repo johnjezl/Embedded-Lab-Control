@@ -15,9 +15,19 @@ def _restore_labctl_config_env(monkeypatch):
     them with monkeypatch so every test starts and ends with the caller's
     values; otherwise one test's run_server() would pin every later
     load_config() (to a deleted temp file, or to built-in defaults)."""
-    for name in ("LABCTL_CONFIG", "LABCTL_CONFIG_EXCLUSIVE", "LABCTL_CONFIG_NONE"):
+    for name in ("LABCTL_CONFIG", "LABCTL_CONFIG_EXCLUSIVE"):
         monkeypatch.setenv(name, "")
         monkeypatch.delenv(name)
+    # In-process pins too (labctl.core.config.pin_defaults, the MCP
+    # server's last-good config cache).
+    from labctl.core import config as config_mod
+
+    monkeypatch.setattr(config_mod, "_defaults_pinned", False)
+    try:
+        from labctl import mcp_server
+    except ImportError:  # mcp extra not installed
+        return
+    monkeypatch.setattr(mcp_server, "_last_good_config", None)
 
 
 @pytest.fixture

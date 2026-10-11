@@ -2,6 +2,7 @@
 unauthenticated non-loopback binds, and Host/Origin header checks."""
 
 import json
+import os
 import socket
 import threading
 import time
@@ -19,7 +20,7 @@ def _restore_config_env(monkeypatch):
     """`labctl -c FILE mcp` and _pin_config_file write LABCTL_CONFIG(_*)
     straight into os.environ; register them so monkeypatch restores them,
     or later tests' load_config() would be pinned to a deleted temp file."""
-    for name in ("LABCTL_CONFIG", "LABCTL_CONFIG_EXCLUSIVE", "LABCTL_CONFIG_NONE"):
+    for name in ("LABCTL_CONFIG", "LABCTL_CONFIG_EXCLUSIVE"):
         monkeypatch.setenv(name, "")
         monkeypatch.delenv(name)
 
@@ -586,6 +587,32 @@ class TestExclusiveConfigMissing:
 class TestConfigPinning:
     """Per-request reloads must not fall back to another config file."""
 
+    def test_explicit_config_beats_defaults_pin(self, tmp_path, monkeypatch):
+        """The defaults pin is process-local and never overrides an
+        explicit LABCTL_CONFIG (e.g. a child `labctl -c FILE`)."""
+        from labctl.core import config as config_mod
+
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("auth:\n  enabled: true\n")
+        config_mod.pin_defaults()
+        monkeypatch.setenv("LABCTL_CONFIG", str(cfg))
+        monkeypatch.setenv("LABCTL_CONFIG_EXCLUSIVE", "1")
+        assert config_mod.load_config().auth.enabled is True
+        assert "LABCTL_CONFIG_NONE" not in os.environ
+
+    def test_broken_pinned_file_keeps_last_good_config(self, tmp_path):
+        """Mid-edit breakage: tool calls keep the last good config (its
+        database_path), not built-in defaults; key checks fail closed."""
+        from labctl import mcp_server
+
+        good = _config()
+        good.database_path = tmp_path / "shared.db"
+        broken = _config(users=[])
+        broken.load_errors = ["/x.yaml: while parsing"]
+        with patch.object(mcp_server, "_fresh_config", side_effect=[good, broken]):
+            assert mcp_server._get_config() is good
+            assert mcp_server._get_config() is good
+
     def test_started_on_defaults_stays_on_defaults(self, tmp_path, monkeypatch):
         """No config at startup: a file created later is not picked up."""
         from labctl import mcp_server
@@ -725,7 +752,7 @@ def live_server(http_auth_restore, whoami_tool):
     from labctl import mcp_server
 
     config = _config(allowed_hosts=["lab.example.com"])
-    with patch.object(mcp_server, "_get_config", return_value=config):
+    with patch.object(mcp_server, "_fresh_config", return_value=config):
         mcp_server._enable_http_auth()
         app = mcp_server.mcp.streamable_http_app(
             transport_security=mcp_server._transport_security("127.0.0.1", config.mcp)
@@ -828,7 +855,7 @@ class TestLiveHttpAuth:
 
         session = _open_session(live_server, ALICE_KEY)
         revoked = _config(users=[UserConfig(username="bob", api_key=BOB_KEY)])
-        with patch.object(mcp_server, "_get_config", return_value=revoked):
+        with patch.object(mcp_server, "_fresh_config", return_value=revoked):
             assert _post(live_server, CALL_WHOAMI, ALICE_KEY, session)[0] == 401
 
     def test_unknown_host_header_rejected(self, live_server):

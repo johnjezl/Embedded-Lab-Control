@@ -43,7 +43,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   enables; this includes `/etc/labctl/config.yaml` being unreadable to a
   user outside the `labctl` group, who must then pass `-c`). Once
   started, both transports keep reading only the config file they
-  started with. Users
+  started with (or none); if it breaks mid-run, tool calls keep its last
+  good contents and API keys are refused until it loads again. Users
   without a string username can't authenticate by API key. New `mcp.allowed_hosts` / `mcp.allowed_origins` accept extra
   `Host` / `Origin` headers (e.g. a reverse proxy's public name) on top of
   the loopback names. See `docs/MCP_SERVER.md` (D012).

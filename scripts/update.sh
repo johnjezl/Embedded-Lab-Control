@@ -80,6 +80,18 @@ if [ -f "$SYSTEM_CONFIG_FILE" ] && [ -f "$SERVICE_CONFIG_FILE" ] &&
     echo "Sync the files intentionally, then rerun scripts/update.sh."
     exit 1
 fi
+# And a config that doesn't parse: the services would fall back to
+# defaults (labctl-mcp over HTTP refuses to start). Parsed with the
+# installed venv's PyYAML, before anything changes.
+for cfg in "$SYSTEM_CONFIG_FILE" "$SERVICE_CONFIG_FILE"; do
+    [ -f "$cfg" ] || continue
+    if ! YAML_ERR=$("$LABCTL_VENV/bin/python" -I -c \
+        'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$cfg" 2>&1); then
+        echo "Error: $cfg doesn't parse; fix it, then rerun:"
+        tail -n 4 <<<"$YAML_ERR" | sed 's/^/     /'
+        exit 1
+    fi
+done
 
 # 1. Reinstall package
 # 0.2.0 renamed the distribution labctl -> embedded-lab-control. Both own the
