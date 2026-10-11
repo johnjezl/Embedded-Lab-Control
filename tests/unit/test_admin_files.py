@@ -160,6 +160,22 @@ class TestCopy:
             admin_files.copy(str(src), str(managed / ".config" / "c.yaml"), 0o640)
         assert not (elsewhere / "c.yaml").exists()
 
+    def test_failed_write_leaves_no_partial_file(self, managed, tmp_path, monkeypatch):
+        """ENOSPC mid-copy: no truncated config for a rerun to skip over."""
+        import errno as errno_mod
+
+        src = tmp_path / "example.yaml"
+        src.write_text("a: 1\n")
+        dst = managed / "config.yaml"
+
+        def full(fd):
+            raise OSError(errno_mod.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(admin_files.os, "fsync", full)
+        with pytest.raises(OSError):
+            admin_files.copy(str(src), str(dst), 0o640)
+        assert not dst.exists()
+
     def test_byte_for_byte(self, managed, tmp_path):
         """CRLF and non-UTF-8 bytes survive, so a later cmp matches."""
         src = tmp_path / "example.yaml"
