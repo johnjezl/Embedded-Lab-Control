@@ -398,6 +398,18 @@ def main(
     ctx.obj["quiet"] = quiet
     ctx.obj["config_path"] = config_path
     ctx.obj["config"] = load_config(config_path)
+    # Fail closed on a named config that doesn't load (YAML error, invalid
+    # value): running on built-in defaults would mean another database
+    # and, for `web`, no login. `mcp` reports this itself (--check, and its
+    # HTTP startup refusal).
+    if (
+        config_path
+        and ctx.obj["config"].load_errors
+        and ctx.invoked_subcommand != "mcp"
+    ):
+        raise click.ClickException(
+            "config not loaded: " + "; ".join(ctx.obj["config"].load_errors)
+        )
 
     # Initialize logging
     config = ctx.obj["config"]
@@ -5204,6 +5216,15 @@ def web_cmd(
     from labctl.web import create_app
 
     config: Config = ctx.obj["config"]
+    if config.load_errors:
+        # Not just -c (checked in main): a broken file in the search order
+        # would otherwise serve on another file's or built-in settings,
+        # e.g. with auth.enabled off.
+        raise click.ClickException(
+            "Refusing to start the web server: config not loaded ("
+            + "; ".join(config.load_errors)
+            + ")"
+        )
     app = create_app(config)
 
     # Resolve SSL: CLI flags take precedence, then config file

@@ -3463,7 +3463,10 @@ class _ApiKeyVerifier:
         self._config_ok = ok
         with _startup_warnings_visible():
             if ok:
-                logger.warning("API keys: config file loads again; keys accepted")
+                logger.warning(
+                    "API keys: config file loads again (%d user(s) with a key)",
+                    len(config.auth.key_users()),
+                )
             else:
                 logger.warning(
                     "API keys: config not loaded (%s); refusing every key until "

@@ -97,6 +97,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   follow-up read doesn't misjudge the mux position.
 
 ### Fixed
+- A command given `-c FILE` fails if FILE doesn't load (YAML error or
+  invalid value) instead of running on built-in defaults, and `labctl web`
+  refuses to start if any config file it reads doesn't load: it would
+  otherwise serve without the login the intended config enables.
 - A config value that is valid YAML but not a valid setting (e.g.
   `timeout_seconds: 10s`, or a list at the top level) is a load error
   (warning; the next file in the search order, or built-in defaults)
