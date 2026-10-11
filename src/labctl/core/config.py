@@ -611,22 +611,34 @@ class Config:
         }
 
 
-# Set by pin_defaults(); process-local on purpose (not inherited by child
+# Set by pin_config(); process-local on purpose (not inherited by child
 # processes, unlike an environment variable).
-_defaults_pinned = False
+_UNPINNED = object()
+_pinned_path: Any = _UNPINNED  # _UNPINNED, None (built-in defaults) or a Path
+_last_good: Optional["Config"] = None
 
 
-def pin_defaults() -> None:
-    """Make later load_config() calls in this process (without a path or
-    LABCTL_CONFIG) skip all config files: for a long-running server that
-    started without one, so a file created later can't change it mid-run."""
-    global _defaults_pinned
-    _defaults_pinned = True
+def pin_config(path: Optional[Path], startup: Optional["Config"] = None) -> None:
+    """Make later load_config() calls in this process (without a path
+    argument) read only ``path``, or no file at all if it is None.
+
+    For a long-running server: it keeps reading what it started with,
+    whatever the environment or the search path say later. While the
+    pinned file fails to load (e.g. saved mid-edit), load_config() returns
+    the last config that loaded cleanly (``startup`` to begin with), so
+    every caller (database, allowlists, Kasa, health) stays on it;
+    load_config(fresh=True) skips that, for checks that must fail closed.
+    """
+    global _pinned_path, _last_good
+    _pinned_path = path
+    _last_good = startup if startup is not None and not startup.load_errors else None
 
 
 def load_config(
     config_path: Optional[Path] = None,
     create_if_missing: bool = False,
+    *,
+    fresh: bool = False,
 ) -> Config:
     """
     Load configuration from YAML file.
@@ -663,11 +675,10 @@ def load_config(
     if config_path:
         paths_to_try = [config_path]
         only_file = True
-    elif _defaults_pinned and not os.environ.get("LABCTL_CONFIG"):
-        # pin_defaults(): this process started on built-in defaults and
-        # stays on them (an explicit path or LABCTL_CONFIG still wins).
-        paths_to_try = []
-        only_file = False
+    elif _pinned_path is not _UNPINNED:
+        # pin_config(): a server keeps reading what it started with.
+        paths_to_try = [] if _pinned_path is None else [_pinned_path]
+        only_file = _pinned_path is not None
     else:
         env_path = os.environ.get("LABCTL_CONFIG")
         paths_to_try = []
@@ -720,8 +731,16 @@ def load_config(
                 load_denied |= isinstance(e, PermissionError)
                 continue
 
-    # Create config from loaded data (or defaults)
-    config = Config.from_dict(config_data)
+    # Create config from loaded data (or defaults). Valid YAML can still
+    # hold invalid values (`timeout_seconds: 10s`, a list at the top):
+    # a load error like a parse error, not a crash.
+    try:
+        config = Config.from_dict(config_data)
+    except Exception as e:
+        logger.warning("Invalid config in %s: %s", loaded_from, e)
+        load_errors.append(f"{loaded_from}: invalid value: {e}")
+        config = Config.from_dict({})
+        loaded_from = None
     config.source_path = loaded_from
     config.load_errors = load_errors
     config.load_denied = load_denied
@@ -733,6 +752,16 @@ def load_config(
     if create_if_missing and not any(_path_exists(p) for p in paths_to_try):
         save_config(config, _default_config_file())
 
+    if config_path is None and _pinned_path is not _UNPINNED:
+        global _last_good
+        if not config.load_errors:
+            _last_good = config
+        elif not fresh and _last_good is not None:
+            logger.warning(
+                "Config not loaded (%s); keeping the last good one",
+                "; ".join(config.load_errors),
+            )
+            return _last_good
     return config
 
 

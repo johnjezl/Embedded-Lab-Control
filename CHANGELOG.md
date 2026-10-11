@@ -97,6 +97,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   follow-up read doesn't misjudge the mux position.
 
 ### Fixed
+- A config value that is valid YAML but not a valid setting (e.g.
+  `timeout_seconds: 10s`, or a list at the top level) is a load error
+  (warning, built-in defaults) instead of a crash.
 - An MCP `boot_test` `output_dir` that is an existing file is reported as
   "not a directory" instead of a possible race.
 - A config section header with nothing under it (e.g. `mcp:` followed only
@@ -164,7 +167,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   this restart (auth mode, startup warnings) and, whenever auth is
   enabled, reminds that HTTP clients must send their API key; for any
   service that failed to start it prints that service's log since the
-  restart. The MCP server prints its auth mode on every HTTP start and
+  restart. Before installing anything it refuses a config that doesn't
+  load (YAML error or an invalid value). The MCP server prints its auth
+  mode on every HTTP start and
   logs startup warnings (short keys, unknown confirm exemptions, unchecked
   Host headers; over stdio also config files it couldn't load) whatever
   `log_level` says; over HTTP an unloadable config makes it refuse to

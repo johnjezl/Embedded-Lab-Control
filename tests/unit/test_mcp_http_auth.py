@@ -27,6 +27,10 @@ def _restore_config_env(monkeypatch):
 
 ALICE_KEY = "alice-key-0123456789abcdef"
 BOB_KEY = "bob-key-0123456789abcdefgh"
+AUTH_YAML = (
+    "auth:\n  enabled: true\n  users:\n"
+    f"    - username: alice\n      api_key: {ALICE_KEY}\n"
+)
 
 
 def _config(enabled=True, users=None, allowed_hosts=None, allowed_origins=None):
@@ -587,31 +591,41 @@ class TestExclusiveConfigMissing:
 class TestConfigPinning:
     """Per-request reloads must not fall back to another config file."""
 
-    def test_explicit_config_beats_defaults_pin(self, tmp_path, monkeypatch):
-        """The defaults pin is process-local and never overrides an
-        explicit LABCTL_CONFIG (e.g. a child `labctl -c FILE`)."""
+    def test_pin_beats_environment_not_explicit_path(self, tmp_path, monkeypatch):
+        """Pinned to defaults: a LABCTL_CONFIG set later doesn't apply, but
+        an explicit load_config(path) still reads that path."""
         from labctl.core import config as config_mod
 
         cfg = tmp_path / "c.yaml"
         cfg.write_text("auth:\n  enabled: true\n")
-        config_mod.pin_defaults()
+        config_mod.pin_config(None)
         monkeypatch.setenv("LABCTL_CONFIG", str(cfg))
         monkeypatch.setenv("LABCTL_CONFIG_EXCLUSIVE", "1")
-        assert config_mod.load_config().auth.enabled is True
-        assert "LABCTL_CONFIG_NONE" not in os.environ
+        assert config_mod.load_config().auth.enabled is False
+        assert config_mod.load_config(cfg).auth.enabled is True
 
-    def test_broken_pinned_file_keeps_last_good_config(self, tmp_path):
-        """Mid-edit breakage: tool calls keep the last good config (its
-        database_path), not built-in defaults; key checks fail closed."""
-        from labctl import mcp_server
+    @pytest.mark.parametrize(
+        "broken",
+        ["mcp: [unclosed\n", "database:\n  timeout_seconds: 10s\n"],
+        ids=["yaml-error", "invalid-value"],
+    )
+    def test_broken_pinned_file_keeps_last_good(self, tmp_path, broken):
+        """Mid-edit breakage (or a value that doesn't load): every caller,
+        the database included, keeps the last good config; a fresh load
+        (API keys) gets defaults, i.e. fails closed."""
+        from labctl.core import config as config_mod
 
-        good = _config()
-        good.database_path = tmp_path / "shared.db"
-        broken = _config(users=[])
-        broken.load_errors = ["/x.yaml: while parsing"]
-        with patch.object(mcp_server, "_fresh_config", side_effect=[good, broken]):
-            assert mcp_server._get_config() is good
-            assert mcp_server._get_config() is good
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text(f"database_path: {tmp_path / 'shared.db'}\n{AUTH_YAML}")
+        startup = config_mod.load_config(cfg)
+        config_mod.pin_config(cfg, startup)
+        cfg.write_text(broken)
+        kept = config_mod.load_config()
+        assert kept.database_path == tmp_path / "shared.db"
+        assert kept.auth.user_for_api_key(ALICE_KEY) is not None
+        fresh = config_mod.load_config(fresh=True)
+        assert fresh.load_errors
+        assert fresh.auth.user_for_api_key(ALICE_KEY) is None
 
     def test_started_on_defaults_stays_on_defaults(self, tmp_path, monkeypatch):
         """No config at startup: a file created later is not picked up."""
@@ -642,9 +656,8 @@ class TestConfigPinning:
     def test_pinned_without_auth_too(self, tmp_path, transport, kwargs):
         """No-auth HTTP and stdio re-read the config per tool call as well:
         a mid-run breakage must not switch them to /etc's settings."""
-        import os
-
         from labctl import mcp_server
+        from labctl.core import config as config_mod
 
         config = _config(enabled=False)
         config.source_path = tmp_path / "mine.yaml"
@@ -655,8 +668,9 @@ class TestConfigPinning:
             patch.object(mcp_server.mcp, "run"),
         ):
             mcp_server.run_server(transport=transport, **kwargs)
-        assert os.environ["LABCTL_CONFIG"] == str(tmp_path / "mine.yaml")
-        assert os.environ["LABCTL_CONFIG_EXCLUSIVE"] == "1"
+        assert config_mod._pinned_path == tmp_path / "mine.yaml"
+        # Process-local: nothing for child processes to inherit.
+        assert "LABCTL_CONFIG" not in os.environ
 
     @pytest.fixture
     def two_configs(self, tmp_path, monkeypatch):
@@ -690,18 +704,18 @@ class TestConfigPinning:
         assert load_config().auth.user_for_api_key(BOB_KEY) is not None
 
     def test_pinned_broken_config_fails_closed(self, two_configs):
+        """The API-key check's fresh load: neither bob's /etc key nor, while
+        the file is broken, alice's last-good one."""
         from labctl.core.config import load_config
-        from labctl.mcp_server import _pin_config_file
+        from labctl.mcp_server import _fresh_config, _pin_config_file
 
         _pin_config_file(load_config())
         two_configs.write_text("auth: [unclosed\n")
-        config = load_config()
+        config = _fresh_config()
         assert config.auth.user_for_api_key(BOB_KEY) is None
         assert config.auth.user_for_api_key(ALICE_KEY) is None
 
     def test_run_server_pins_when_auth_required(self, two_configs, http_auth_restore):
-        import os
-
         from labctl import mcp_server
 
         with (
@@ -710,8 +724,9 @@ class TestConfigPinning:
             patch.object(mcp_server.mcp, "run"),
         ):
             mcp_server.run_server(transport="http", host="127.0.0.1", http_port=9)
-        assert os.environ["LABCTL_CONFIG"] == str(two_configs)
-        assert os.environ["LABCTL_CONFIG_EXCLUSIVE"] == "1"
+        from labctl.core import config as config_mod
+
+        assert config_mod._pinned_path == two_configs
 
 
 # ---------------------------------------------------------------------------
