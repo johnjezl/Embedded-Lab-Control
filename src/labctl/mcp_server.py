@@ -3442,21 +3442,34 @@ class _ApiKeyVerifier:
     """
 
     _config_ok = True
+    _reads_started = 0
+    _last_reported = 0
 
-    def _report_config_state(self, config) -> None:
+    def _report_config_state(self, config, seq: int) -> None:
         """Log when the keys' config file stops (or starts) loading: once
-        per change, not per request (requests can be unauthenticated)."""
+        per change, not per request (requests can be unauthenticated).
+
+        ``seq`` orders the re-reads (they overlap in worker threads): only
+        a read newer than the last one reported counts, so a slow read of a
+        half-saved file can't log "refusing" after a newer one succeeded.
+        Logged whatever log_level says, since it happens only once.
+        """
+        if seq <= self._last_reported:
+            return
+        self._last_reported = seq
         ok = not config.load_errors
         if ok == self._config_ok:
             return
         self._config_ok = ok
-        if ok:
-            logger.warning("API keys: config file loads again; keys accepted")
-        else:
-            logger.warning(
-                "API keys: config not loaded (%s); refusing every key until fixed",
-                "; ".join(config.load_errors),
-            )
+        with _startup_warnings_visible():
+            if ok:
+                logger.warning("API keys: config file loads again; keys accepted")
+            else:
+                logger.warning(
+                    "API keys: config not loaded (%s); refusing every key until "
+                    "fixed",
+                    "; ".join(config.load_errors),
+                )
 
     async def verify_token(self, token: str):
         import anyio
@@ -3464,8 +3477,10 @@ class _ApiKeyVerifier:
 
         # A fresh load, not _get_config(): while the file is broken there
         # are no users, so every key is refused (fail closed).
+        self._reads_started += 1
+        seq = self._reads_started
         config = await anyio.to_thread.run_sync(_fresh_config)
-        self._report_config_state(config)
+        self._report_config_state(config, seq)
         user = config.auth.user_for_api_key(token)
         if user is None:
             return None

@@ -5066,10 +5066,10 @@ def mcp_cmd(ctx: click.Context, http_port: int | None, host: str, check: bool) -
     ):
         raise click.UsageError("--host only applies with --http PORT")
     # The MCP server (and code it calls, e.g. Kasa credential lookup) loads
-    # config itself on every call, with no path, so `labctl -c FILE mcp`
-    # used to ignore FILE. Export it, exclusively: like an explicit path,
-    # a missing or broken FILE then means defaults (deny-all host access),
-    # never a fallback to ~/.config/labctl or /etc/labctl.
+    # config itself, with no path, so `labctl -c FILE mcp` used to ignore
+    # FILE. Export it, exclusively: like an explicit path, never a fallback
+    # to ~/.config/labctl or /etc/labctl. (The server then snapshots it at
+    # startup; over HTTP it refuses to start if FILE doesn't load.)
     if ctx.obj.get("config_path"):
         os.environ["LABCTL_CONFIG"] = str(ctx.obj["config_path"])
         os.environ["LABCTL_CONFIG_EXCLUSIVE"] = "1"
