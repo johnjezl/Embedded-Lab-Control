@@ -3367,11 +3367,14 @@ class TestMcpCliCommand:
         assert seen["read"] == ["/from/explicit/config"]
 
         # Review #8 of #14: if the -c file breaks mid-session, the server
-        # must fall back to defaults (deny-all), not the user config.
-        from labctl.mcp_server import _get_config
+        # must never fall back to the user config. Tool calls keep the last
+        # good -c config (#18 review #24: not defaults, which would switch
+        # the database too); a fresh load sees defaults (deny-all).
+        from labctl.mcp_server import _fresh_config, _get_config
 
         explicit.write_text("mcp: [unclosed\n")
-        assert _get_config().mcp.allowed_read_paths == []
+        assert _get_config().mcp.allowed_read_paths == ["/from/explicit/config"]
+        assert _fresh_config().mcp.allowed_read_paths == []
 
     def test_http_with_host(self):
         from click.testing import CliRunner

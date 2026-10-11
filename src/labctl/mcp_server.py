@@ -166,10 +166,36 @@ def _get_manager():
     )
 
 
-def _get_config():
+_last_good_config = None
+
+
+def _fresh_config():
+    """load_config() as is: built-in defaults while the file is broken."""
     from labctl.core.config import load_config
 
     return load_config()
+
+
+def _get_config():
+    """The config for this call; while the (pinned) file fails to load
+    (e.g. saved mid-edit), the last config that loaded cleanly.
+
+    Falling back to built-in defaults instead would switch tool calls and
+    the claim sweep to the default database and allowlists. API keys are
+    checked against a fresh load (_ApiKeyVerifier), so they fail closed.
+    """
+    global _last_good_config
+    config = _fresh_config()
+    if not config.load_errors:
+        _last_good_config = config
+        return config
+    if _last_good_config is not None:
+        logger.warning(
+            "Config not loaded (%s); keeping the last good one",
+            "; ".join(config.load_errors),
+        )
+        return _last_good_config
+    return config
 
 
 def _resolve_host_path(path: str, access: str) -> tuple[str | None, str | None]:
@@ -3436,7 +3462,9 @@ class _ApiKeyVerifier:
         import anyio
         from mcp.server.auth.provider import AccessToken
 
-        config = await anyio.to_thread.run_sync(_get_config)
+        # A fresh load, not _get_config(): while the file is broken there
+        # are no users, so every key is refused (fail closed).
+        config = await anyio.to_thread.run_sync(_fresh_config)
         user = config.auth.user_for_api_key(token)
         if user is None:
             return None
@@ -3583,7 +3611,9 @@ def _pin_config_file(config) -> None:
         os.environ["LABCTL_CONFIG"] = str(config.source_path)
         os.environ["LABCTL_CONFIG_EXCLUSIVE"] = "1"
     else:
-        os.environ["LABCTL_CONFIG_NONE"] = "1"
+        from labctl.core.config import pin_defaults
+
+        pin_defaults()
 
 
 def _enable_http_auth() -> None:

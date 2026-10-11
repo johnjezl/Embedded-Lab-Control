@@ -105,7 +105,10 @@ that user's `api_key`.
   That includes `/etc/labctl/config.yaml` being unreadable to you (it is
   `640 root:labctl`): run as a member of the `labctl` group, or pass
   `-c` with a config you can read. Once started, the server keeps reading
-  only the file it started with (as with `-c`), on both transports.
+  only the file it started with (as with `-c`), or none if it started on
+  built-in defaults, on both transports. If that file breaks while it
+  runs (e.g. saved mid-edit), tool calls keep its last good contents and
+  API keys are refused until it loads again.
 - Without auth (the default), it listens on loopback only, all clients
   share one claimant identity, and anyone who can connect locally can call
   every tool. Every HTTP start prints its mode (`MCP HTTP: API keys
