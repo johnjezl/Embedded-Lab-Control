@@ -588,6 +588,44 @@ class TestConfigSymlinkLoop:
         assert config.source_path == system
 
 
+class TestCliFailsClosedOnBrokenConfig:
+    """A config that doesn't load used to crash (invalid values) or fall
+    back to defaults (YAML errors): never serve on defaults instead."""
+
+    @pytest.mark.parametrize(
+        "body", ["auth: [unclosed\n", "database:\n  timeout_seconds: 10s\n"]
+    )
+    def test_named_config_broken_fails_command(self, tmp_path, body):
+        from click.testing import CliRunner
+
+        from labctl.cli import main
+
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text(f"auth:\n  enabled: true\n{body}")
+        result = CliRunner().invoke(main, ["-c", str(cfg), "list"])
+        assert result.exit_code == 1
+        assert "config not loaded" in result.output
+
+    def test_web_refuses_on_search_path_config_error(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+
+        from labctl.cli import main
+        from labctl.core import config as config_mod
+
+        xdg = tmp_path / "xdg"
+        (xdg / "labctl").mkdir(parents=True)
+        (xdg / "labctl" / "config.yaml").write_text(
+            "auth:\n  enabled: true\ndatabase:\n  timeout_seconds: 10s\n"
+        )
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+        monkeypatch.setattr(config_mod, "SYSTEM_CONFIG_FILE", tmp_path / "none.yaml")
+        with patch("labctl.web.create_app") as create_app:
+            result = CliRunner().invoke(main, ["web", "--port", "5999"])
+        assert result.exit_code == 1
+        assert "Refusing to start the web server" in result.output
+        create_app.assert_not_called()
+
+
 class TestExclusiveConfigMissing:
     def test_missing_exclusive_config_recorded(self, tmp_path, monkeypatch, caplog):
         """LABCTL_CONFIG + EXCLUSIVE naming a missing file means defaults:
