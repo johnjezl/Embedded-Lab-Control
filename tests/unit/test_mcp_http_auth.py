@@ -522,6 +522,30 @@ class TestConfigLoadErrors:
         records = [r for r in caplog.records if "Failed to access" in r.message]
         assert records and records[0].levelno == logging.WARNING
 
+    def test_inaccessible_named_config_warns_even_if_not_exclusive(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        import logging
+        import os
+
+        from labctl.core import config as config_mod
+
+        if os.geteuid() == 0:
+            pytest.skip("root can stat anything")
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        locked.chmod(0o000)
+        monkeypatch.setenv("LABCTL_CONFIG", str(locked / "config.yaml"))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+        monkeypatch.setattr(config_mod, "SYSTEM_CONFIG_FILE", tmp_path / "none.yaml")
+        try:
+            with caplog.at_level(logging.DEBUG, logger="labctl.core.config"):
+                config_mod.load_config()
+        finally:
+            locked.chmod(0o755)
+        records = [r for r in caplog.records if "Failed to access" in r.message]
+        assert records and records[0].levelno == logging.WARNING
+
     def test_inaccessible_config_recorded(self, tmp_path):
         """A config the user can't even stat (750 directory) is a load
         error, not "no config": --check must not report built-in defaults

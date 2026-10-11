@@ -737,7 +737,7 @@ def _load_config(
                 # outside the labctl group hit /etc/labctl on every command
                 # (MCP startup and --check report load_errors either way).
                 logger.log(
-                    logging.WARNING if only_file else logging.DEBUG,
+                    logging.WARNING if path == named_path else logging.DEBUG,
                     "Failed to access config path %s: %s",
                     path,
                     e,
