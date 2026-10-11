@@ -10,7 +10,9 @@ service could have root hand it ``/etc/labctl/config.yaml``, or copy
 
 Everything here works on descriptors opened without following symlinks on
 any path component (:mod:`labctl.core.safe_open`), requires a regular file
-with a single link, and creates files with ``O_EXCL``. Command line::
+with a single link, and creates files with ``O_EXCL``. Callers pass paths
+whose trusted prefix (the labctl home, which an admin may have symlinked
+elsewhere) is already resolved. Command line::
 
     python -m labctl.core.admin_files state PATH
         prints "missing" or "regular"; exit 2 (with the reason) otherwise
@@ -41,16 +43,24 @@ def _check_single_link(fd: int, path: str) -> None:
         raise UnsafeFileError(errno.EPERM, f"{path} has more than one hard link")
 
 
-def open_regular(path: str, flags: int = os.O_RDONLY) -> int:
-    """Open a regular, singly linked file with no symlink on its path."""
+def _nofollow(path: str, opener, *args, **kwargs) -> int:
+    """Call a safe_open opener, turning "not followed" errors into
+    UnsafeFileError so every refusal reads the same."""
     try:
-        fd = open_file_nofollow(path, flags)
+        return opener(*args, **kwargs)
     except OSError as e:
         if e.errno in (errno.ELOOP, errno.ENOTDIR):
             raise UnsafeFileError(e.errno, f"{path}: symlink on the path") from e
         if e.errno == errno.EINVAL:
             raise UnsafeFileError(e.errno, f"{path} is not a regular file") from e
+        if e.errno == errno.EEXIST:
+            raise UnsafeFileError(e.errno, f"{path} already exists") from e
         raise
+
+
+def open_regular(path: str, flags: int = os.O_RDONLY) -> int:
+    """Open a regular, singly linked file with no symlink on its path."""
+    fd = _nofollow(path, open_file_nofollow, path, flags)
     try:
         _check_single_link(fd, path)
     except BaseException:
@@ -60,11 +70,18 @@ def open_regular(path: str, flags: int = os.O_RDONLY) -> int:
 
 
 def state(path: str) -> str:
-    """'missing' or 'regular'; raises UnsafeFileError for anything else."""
+    """'missing' or 'regular'; raises UnsafeFileError for anything else.
+
+    The parent directory is reached without following symlinks too, so a
+    symlinked parent is refused rather than reported as "missing".
+    """
+    parent = _nofollow(path, open_dir_nofollow, os.path.dirname(path))
     try:
-        os.lstat(path)
+        os.stat(os.path.basename(path), dir_fd=parent, follow_symlinks=False)
     except FileNotFoundError:
         return "missing"
+    finally:
+        os.close(parent)
     os.close(open_regular(path))
     return "regular"
 
@@ -87,12 +104,7 @@ def secure(path: str, user: str, group: str, mode: int) -> None:
 def secure_dir(path: str, user: str, group: str, mode: int) -> None:
     """Create (if needed) and chown/chmod a directory, no symlinks."""
     uid, gid = _ids(user, group)
-    try:
-        fd = open_dir_nofollow(path, create=True, mode=0o700)
-    except OSError as e:
-        if e.errno in (errno.ELOOP, errno.ENOTDIR):
-            raise UnsafeFileError(e.errno, f"{path}: symlink on the path") from e
-        raise
+    fd = _nofollow(path, open_dir_nofollow, path, create=True, mode=0o700)
     try:
         os.fchown(fd, uid, gid)
         os.fchmod(fd, mode)
@@ -103,20 +115,24 @@ def secure_dir(path: str, user: str, group: str, mode: int) -> None:
 def copy(src: str, dst: str, mode: int, replace: dict[str, str] | None = None) -> None:
     """Copy a regular file to a new file (``O_EXCL``), neither via symlinks.
 
-    Lines of ``src`` equal to a key of ``replace`` become its value.
+    Byte for byte (line endings and encoding kept, so a later ``cmp`` of
+    the two matches), except that lines equal to a key of ``replace``
+    become its value.
     """
     fd = open_regular(src)
     try:
-        with os.fdopen(fd, "r", closefd=False) as f:
-            text = f.read()
+        with os.fdopen(fd, "rb", closefd=False) as f:
+            data = f.read()
     finally:
         os.close(fd)
     if replace:
-        lines = text.split("\n")
-        text = "\n".join(replace.get(line, line) for line in lines)
-    parent = open_dir_nofollow(os.path.dirname(dst))
+        swap = {k.encode(): v.encode() for k, v in replace.items()}
+        data = b"\n".join(swap.get(line, line) for line in data.split(b"\n"))
+    parent = _nofollow(dst, open_dir_nofollow, os.path.dirname(dst))
     try:
-        out = os.open(
+        out = _nofollow(
+            dst,
+            os.open,
             os.path.basename(dst),
             os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
             mode,
@@ -126,8 +142,8 @@ def copy(src: str, dst: str, mode: int, replace: dict[str, str] | None = None) -
         os.close(parent)
     try:
         os.fchmod(out, mode)  # not narrowed by the umask
-        with os.fdopen(out, "w", closefd=False) as f:
-            f.write(text)
+        with os.fdopen(out, "wb", closefd=False) as f:
+            f.write(data)
     finally:
         os.close(out)
 

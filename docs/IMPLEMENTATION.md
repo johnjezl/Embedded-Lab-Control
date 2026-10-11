@@ -830,4 +830,8 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
   - ✅ `labctl mcp --check` (startup checks without serving);
     `scripts/update.sh` shows `labctl-mcp`'s journal since the restart
     (auth mode, warnings) and the log of any service that failed
+  - ✅ Install/update scripts: service config and `images`/`output` handled
+    via `labctl.core.admin_files` (no symlink/hard-link following as root)
+  - ⏸️ Remaining by-path root operations under `/var/lib/labctl`
+    (`chown -R`, `mkdir -p`, drift `cmp`, allowlist read): #19
   - ☐ Deploy Phase 1 to tarrasque (allowlist config, client heads-up)

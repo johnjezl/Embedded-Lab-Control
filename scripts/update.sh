@@ -16,7 +16,12 @@ LABCTL_VENV="/opt/labctl/venv"
 SYSTEMD_CONFIG_DIR="$PROJECT_DIR/config/systemd"
 SYSTEM_CONFIG_DIR="/etc/labctl"
 SYSTEM_CONFIG_FILE="$SYSTEM_CONFIG_DIR/config.yaml"
-SERVICE_CONFIG_FILE="/var/lib/labctl/.config/labctl/config.yaml"
+# The labctl home, with any admin symlink (e.g. -> /data/labctl) resolved
+# once: its own directory entry lives in root-owned /var/lib, so labctl
+# can't redirect it. Paths *inside* it are labctl-writable and are only
+# touched through labctl.core.admin_files.
+LABCTL_HOME=$(realpath -e /var/lib/labctl 2>/dev/null || echo /var/lib/labctl)
+SERVICE_CONFIG_FILE="$LABCTL_HOME/.config/labctl/config.yaml"
 
 # Check root
 if [ "$EUID" -ne 0 ]; then
@@ -100,7 +105,7 @@ echo "[ok] Shared config permissions repaired"
 # the default directories if missing (never touching existing ones), and
 # point at the config keys if they aren't set. Config files are not edited.
 # output/ is also sticky (3775), as in install-services.sh.
-for spec in /var/lib/labctl/images:2775 /var/lib/labctl/output:3775; do
+for spec in "$LABCTL_HOME/images:2775" "$LABCTL_HOME/output:3775"; do
     dir="${spec%%:*}"
     mode="${spec##*:}"
     if [ ! -e "$dir" ] && [ ! -L "$dir" ]; then
@@ -178,7 +183,8 @@ if [ -n "$SERVICES" ]; then
         local cg pids pattern
         command -v "${SS_CMD:-ss}" >/dev/null 2>&1 || return 2
         cg=$(systemctl show -p ControlGroup --value labctl-mcp 2>/dev/null || true)
-        pids=$( { cat "${CGROUP_ROOT:-/sys/fs/cgroup}$cg/cgroup.procs" 2>/dev/null || true
+        # No cgroup (unit stopped): don't fall back to the root cgroup's PIDs.
+        pids=$( { if [ -n "$cg" ]; then cat "${CGROUP_ROOT:-/sys/fs/cgroup}$cg/cgroup.procs" 2>/dev/null; fi || true
                   systemctl show -p MainPID --value labctl-mcp 2>/dev/null || true; } |
                 grep -E '^[1-9][0-9]*$' | sort -u | paste -sd'|' -)
         [ -n "$pids" ] || return 1

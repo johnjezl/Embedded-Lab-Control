@@ -12,13 +12,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   keys and credentials as `/etc/labctl/config.yaml`) mode `640`; it was
   created world-readable under a world-traversable directory.
 - The install and update scripts (run as root) no longer follow symlinks
-  or hard links planted under `/var/lib/labctl`, which the `labctl` service
-  user can write: config seeding, `chown`/`chmod` of the service config and
-  the `images`/`output` directories go through `labctl.core.admin_files`
-  (no symlink on any path component, single-link regular files only,
-  descriptor-based ownership changes, `O_EXCL` creation). Previously a
-  compromised service could have root hand it `/etc/labctl/config.yaml`, or
-  copy an arbitrary root-only file into a config its group can read.
+  or hard links planted under `/var/lib/labctl` (writable by the `labctl`
+  service user) when they seed `/etc/labctl/config.yaml` from the service
+  config, create the service config, change its owner and mode, or create
+  and re-permission the `images`/`output` directories. These go through
+  `labctl.core.admin_files`: no symlink on any path component below the
+  (resolved) labctl home, single-link regular files only, descriptor-based
+  ownership changes, `O_EXCL` creation, byte-for-byte copies. Previously a
+  compromised service could have root hand it `/etc/labctl/config.yaml`,
+  or copy an arbitrary root-only file into a config its group can read.
+  Remaining by-path root operations there (`chown -R`, `mkdir -p`, the
+  drift `cmp` and the allowlist config read) are tracked in #19.
 - **MCP over HTTP now authenticates with the web users' API keys (breaking
   for HTTP clients when `auth.enabled` is true).** With auth enabled, every
   request to `labctl mcp --http` needs `Authorization: Bearer <api_key>`
