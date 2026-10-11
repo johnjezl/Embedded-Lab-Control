@@ -3575,11 +3575,15 @@ def _pin_config_file(config) -> None:
     keys, allowlists, confirmation, actuator gate). Without pinning, a
     config in ~/.config/labctl that is briefly broken (mid-edit) would fall
     back to /etc/labctl/config.yaml and its settings: the same fallback
-    startup refuses over HTTP. Applies to both transports.
+    startup refuses over HTTP. Applies to both transports. A server that
+    started on built-in defaults stays on them: a config file created
+    later must not change its allowlists or gates mid-run.
     """
     if config.source_path is not None:
         os.environ["LABCTL_CONFIG"] = str(config.source_path)
         os.environ["LABCTL_CONFIG_EXCLUSIVE"] = "1"
+    else:
+        os.environ["LABCTL_CONFIG_NONE"] = "1"
 
 
 def _enable_http_auth() -> None:

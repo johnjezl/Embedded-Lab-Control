@@ -16,10 +16,10 @@ from labctl.core.config import AuthConfig, Config, UserConfig
 
 @pytest.fixture(autouse=True)
 def _restore_config_env(monkeypatch):
-    """`labctl -c FILE mcp` and _pin_config_file write LABCTL_CONFIG(_EXCLUSIVE)
-    straight into os.environ; register both so monkeypatch restores them,
+    """`labctl -c FILE mcp` and _pin_config_file write LABCTL_CONFIG(_*)
+    straight into os.environ; register them so monkeypatch restores them,
     or later tests' load_config() would be pinned to a deleted temp file."""
-    for name in ("LABCTL_CONFIG", "LABCTL_CONFIG_EXCLUSIVE"):
+    for name in ("LABCTL_CONFIG", "LABCTL_CONFIG_EXCLUSIVE", "LABCTL_CONFIG_NONE"):
         monkeypatch.setenv(name, "")
         monkeypatch.delenv(name)
 
@@ -585,6 +585,28 @@ class TestExclusiveConfigMissing:
 
 class TestConfigPinning:
     """Per-request reloads must not fall back to another config file."""
+
+    def test_started_on_defaults_stays_on_defaults(self, tmp_path, monkeypatch):
+        """No config at startup: a file created later is not picked up."""
+        from labctl import mcp_server
+        from labctl.core import config as config_mod
+
+        xdg = tmp_path / "xdg"
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+        monkeypatch.setattr(config_mod, "SYSTEM_CONFIG_FILE", tmp_path / "none.yaml")
+        with (
+            patch.object(mcp_server, "_start_expiry_thread"),
+            patch("atexit.register"),
+            patch.object(mcp_server.mcp, "run"),
+        ):
+            mcp_server.run_server(transport="stdio")
+        (xdg / "labctl").mkdir(parents=True)
+        (xdg / "labctl" / "config.yaml").write_text(
+            "mcp:\n  allow_admin_actuator_ops: true\n"
+        )
+        config = mcp_server._get_config()
+        assert config.source_path is None
+        assert config.mcp.allow_admin_actuator_ops is False
 
     @pytest.mark.parametrize(
         "transport,kwargs",
