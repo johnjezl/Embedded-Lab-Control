@@ -3595,7 +3595,9 @@ def _pin_config_file(config) -> None:
     """
     from labctl.core.config import pin_config
 
-    pin_config(config.source_path, config)
+    # The file it meant to read even if that failed (stdio starts anyway):
+    # once fixed, it loads; pinning "no file" would keep defaults forever.
+    pin_config(config.intended_path, config)
 
 
 def _enable_http_auth() -> None:
