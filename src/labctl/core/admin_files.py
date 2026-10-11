@@ -75,7 +75,10 @@ def state(path: str) -> str:
     The parent directory is reached without following symlinks too, so a
     symlinked parent is refused rather than reported as "missing".
     """
-    parent = _nofollow(path, open_dir_nofollow, os.path.dirname(path))
+    try:
+        parent = _nofollow(path, open_dir_nofollow, os.path.dirname(path))
+    except FileNotFoundError:
+        return "missing"  # a missing parent directory: nothing there
     try:
         os.stat(os.path.basename(path), dir_fd=parent, follow_symlinks=False)
     except FileNotFoundError:
@@ -149,6 +152,12 @@ def copy(src: str, dst: str, mode: int, replace: dict[str, str] | None = None) -
 
 
 def main(argv: list[str]) -> int:
+    """Exit 0 on success, 2 with a one-line reason for any refusal or
+    error (on stdout for `state`, which the scripts capture; stderr
+    otherwise), 64 for bad usage."""
+    if not argv:
+        print(__doc__, file=sys.stderr)
+        return 64
     cmd, *args = argv
     try:
         if cmd == "state" and len(args) == 1:
@@ -164,11 +173,17 @@ def main(argv: list[str]) -> int:
             print(__doc__, file=sys.stderr)
             return 64
     except UnsafeFileError as e:
-        print(
-            f"refusing: {e.strerror}", file=sys.stdout if cmd == "state" else sys.stderr
-        )
-        return 2
-    return 0
+        reason = f"refusing: {e.strerror}"
+    except OSError as e:
+        reason = f"error: {e.filename or ''}: {e.strerror or e}"
+    except KeyError as e:  # unknown user or group
+        reason = f"error: unknown user or group {e}"
+    except ValueError as e:  # bad mode
+        reason = f"error: {e}"
+    else:
+        return 0
+    print(reason, file=sys.stdout if cmd == "state" else sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":

@@ -68,6 +68,10 @@ class TestState:
         with pytest.raises(admin_files.UnsafeFileError, match="symlink"):
             admin_files.state(str(managed / ".config" / "config.yaml"))
 
+    def test_missing_parent_is_missing(self, managed):
+        """No .config/labctl at all (an admin removed the unused copy)."""
+        assert admin_files.state(str(managed / "gone" / "config.yaml")) == "missing"
+
     def test_fifo_refused(self, managed):
         os.mkfifo(managed / "config.yaml")
         with pytest.raises(admin_files.UnsafeFileError):
@@ -160,3 +164,17 @@ class TestCli:
 
     def test_bad_usage(self):
         assert admin_files.main(["nope"]) == 64
+        assert admin_files.main([]) == 64
+
+    def test_errors_are_one_line_not_tracebacks(self, managed, capsys):
+        """The scripts show the reason they capture: every failure has one."""
+        (managed / "f").write_text("x")
+        assert (
+            admin_files.main(
+                ["secure", str(managed / "f"), "no-such-user-x", GROUP, "640"]
+            )
+            == 2
+        )
+        assert "unknown user or group" in capsys.readouterr().err
+        assert admin_files.main(["secure", str(managed / "f"), USER, GROUP, "rw"]) == 2
+        assert capsys.readouterr().err.startswith("error:")
