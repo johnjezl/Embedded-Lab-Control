@@ -41,10 +41,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   config file it should read can't be loaded (a fallback to another file
   or to defaults could drop the authentication the intended config
   enables; this includes `/etc/labctl/config.yaml` being unreadable to a
-  user outside the `labctl` group, who must then pass `-c`). Once
-  started, both transports keep reading only the config file they
-  started with (or none); if it breaks mid-run, tool calls keep its last
-  good contents and API keys are refused until it loads again. Users
+  user outside the `labctl` group, who must then pass `-c`). A running
+  MCP server (either transport) now keeps the configuration it started
+  with until restarted; only API keys are re-read, from the same file, per
+  request (a broken file refuses every key). Users
   without a string username can't authenticate by API key. New `mcp.allowed_hosts` / `mcp.allowed_origins` accept extra
   `Host` / `Origin` headers (e.g. a reverse proxy's public name) on top of
   the loopback names. See `docs/MCP_SERVER.md` (D012).
@@ -99,7 +99,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Fixed
 - A config value that is valid YAML but not a valid setting (e.g.
   `timeout_seconds: 10s`, or a list at the top level) is a load error
-  (warning, built-in defaults) instead of a crash.
+  (warning; the next file in the search order, or built-in defaults)
+  instead of a crash.
 - An MCP `boot_test` `output_dir` that is an existing file is reported as
   "not a directory" instead of a possible race.
 - A config section header with nothing under it (e.g. `mcp:` followed only

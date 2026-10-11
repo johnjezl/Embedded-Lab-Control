@@ -10,20 +10,17 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _restore_labctl_config_env(monkeypatch):
-    """`labctl -c FILE mcp` and the MCP server's config pinning write
-    LABCTL_CONFIG / _EXCLUSIVE / _NONE straight into os.environ. Register
-    them with monkeypatch so every test starts and ends with the caller's
-    values; otherwise one test's run_server() would pin every later
-    load_config() (to a deleted temp file, or to built-in defaults)."""
+    """`labctl -c FILE mcp` writes LABCTL_CONFIG / _EXCLUSIVE straight into
+    os.environ, and the MCP server's run_server() snapshots its config in
+    labctl.core.config. Reset both around every test; otherwise one test
+    would decide every later load_config() (a deleted temp file, or a
+    stale snapshot)."""
     for name in ("LABCTL_CONFIG", "LABCTL_CONFIG_EXCLUSIVE"):
         monkeypatch.setenv(name, "")
         monkeypatch.delenv(name)
-    # The in-process pin too (labctl.core.config.pin_config, set by the
-    # MCP server's run_server).
     from labctl.core import config as config_mod
 
-    monkeypatch.setattr(config_mod, "_pinned_path", config_mod._UNPINNED)
-    monkeypatch.setattr(config_mod, "_last_good", None)
+    monkeypatch.setattr(config_mod, "_snapshot", None)
 
 
 @pytest.fixture

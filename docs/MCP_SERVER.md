@@ -84,8 +84,10 @@ HTTP authentication uses the same users and API keys as the web REST API
 gets `401`. Generate a key with `labctl user generate-key` and put it in
 that user's `api_key`.
 
-- Keys are re-read from the config on every request, so removing or
-  rotating a key takes effect without restarting the server.
+- Keys are re-read from the server's config file on every request, so
+  removing or rotating a key takes effect without restarting the server;
+  while that file doesn't load (e.g. saved mid-edit), every key is
+  refused.
 - Each MCP session belongs to the user who opened it; another user's key
   can't drive it, and destructive-tool `confirm_token`s are only valid for
   (and only consumed by) the user they were issued to.
@@ -104,11 +106,12 @@ that user's `api_key`.
   built-in defaults could silently drop the authentication you enabled.
   That includes `/etc/labctl/config.yaml` being unreadable to you (it is
   `640 root:labctl`): run as a member of the `labctl` group, or pass
-  `-c` with a config you can read. Once started, the server keeps reading
-  only the file it started with (as with `-c`), or none if it started on
-  built-in defaults, on both transports. If that file breaks while it
-  runs (e.g. saved mid-edit), tool calls keep its last good contents and
-  API keys are refused until it loads again.
+  `-c` with a config you can read.
+- A running server (either transport) keeps the configuration it started
+  with: database, allowlists, confirmation, actuator gate, Kasa and health
+  settings. **Restart it to apply config changes** (`scripts/update.sh`
+  restarts the services). Only API keys are re-read, from that same file,
+  on every request.
 - Without auth (the default), it listens on loopback only, all clients
   share one claimant identity, and anyone who can connect locally can call
   every tool. Every HTTP start prints its mode (`MCP HTTP: API keys

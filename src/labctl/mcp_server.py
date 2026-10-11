@@ -167,18 +167,16 @@ def _get_manager():
 
 
 def _fresh_config():
-    """A load that never substitutes the last good config: built-in
-    defaults (no users) while the pinned file is broken. For API keys,
-    which must fail closed."""
+    """Re-read the startup config file (not the snapshot): for API keys,
+    so revocation is immediate and a broken file means no users."""
     from labctl.core.config import load_config
 
     return load_config(fresh=True)
 
 
 def _get_config():
-    """The config for this call. Once the server has pinned its startup
-    config (run_server), a file broken mid-run yields the last good one
-    here and in every other load_config() caller (labctl.core.config)."""
+    """The config for this call: once run_server has started, the startup
+    snapshot (labctl.core.config.snapshot_config)."""
     from labctl.core.config import load_config
 
     return load_config()
@@ -3437,11 +3435,10 @@ def _is_loopback(host: str) -> bool:
 class _ApiKeyVerifier:
     """SDK token verifier: a bearer token is valid if it is a user's API key.
 
-    Re-reads the config on every request, so removing or rotating a key in
-    the config file takes effect without a restart. run_server pins the
-    file loaded at startup (_pin_config_file), so a missing or broken file
-    loads defaults (no users) and fails closed instead of falling back to
-    another config.
+    Re-reads the startup config file on every request (_fresh_config, not
+    the startup snapshot), so removing or rotating a key takes effect
+    without a restart; a missing or broken file has no users and fails
+    closed, never falling back to another config.
     """
 
     async def verify_token(self, token: str):
@@ -3582,22 +3579,17 @@ def _transport_security(host: str, mcp_cfg):
 
 
 def _pin_config_file(config) -> None:
-    """Make every later load_config() in this process read only the file
-    ``config`` came from (or none, if it started on built-in defaults).
+    """Snapshot the startup config for the rest of the process's life.
 
-    The server re-reads the config per request and per tool call (API
-    keys, allowlists, confirmation, actuator gate, database, Kasa, health).
-    Without pinning, a config in ~/.config/labctl that is briefly broken
-    (mid-edit) would fall back to /etc/labctl/config.yaml and its settings
-    (the fallback startup refuses over HTTP), and a file created later
-    would change a server that started on defaults. While the pinned file
-    is broken, callers get its last good contents (labctl.core.config).
+    Every later load_config() (tools, database, allowlists, confirmation,
+    actuator gate, Kasa, health, the claim sweep) gets this config: edits
+    take effect on restart (scripts/update.sh restarts). Only API keys are
+    re-read, from this same file, per request (_fresh_config), so revoking
+    a key needs no restart and a broken file refuses every key.
     """
-    from labctl.core.config import pin_config
+    from labctl.core.config import snapshot_config
 
-    # The file it meant to read even if that failed (stdio starts anyway):
-    # once fixed, it loads; pinning "no file" would keep defaults forever.
-    pin_config(config.intended_path, config)
+    snapshot_config(config)
 
 
 def _enable_http_auth() -> None:
