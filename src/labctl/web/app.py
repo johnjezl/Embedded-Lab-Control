@@ -38,6 +38,15 @@ def create_app(config: Config | None = None) -> Flask:
     # Load configuration
     if config is None:
         config = load_config()
+    if config.load_errors:
+        # Fail closed: serving on another file's or built-in settings could
+        # mean no login (auth.enabled off). `labctl web` checks this too;
+        # this covers WSGI servers and other callers of create_app().
+        raise RuntimeError(
+            "Refusing to create the web app: config not loaded ("
+            + "; ".join(config.load_errors)
+            + ")"
+        )
 
     app.config["LABCTL_CONFIG"] = config
     app.jinja_env.globals["labctl_version"] = __version__

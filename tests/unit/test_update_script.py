@@ -327,3 +327,44 @@ class TestRootPythonIsolation:
         ]
         assert calls
         assert all('/bin/python" -I ' in line for line in calls), calls
+
+
+class TestPreInstallConfigCheck:
+    """Before installing, update.sh loads each config with the new
+    release's config.py (alone: no labctl.core package imports)."""
+
+    @staticmethod
+    def _script() -> str:
+        text = UPDATE_SH.read_text()
+        start = text.index('YAML_ERR=$("$LABCTL_VENV/bin/python" -I -c \'\n') + len(
+            'YAML_ERR=$("$LABCTL_VENV/bin/python" -I -c \'\n'
+        )
+        return text[start : text.index('\n\' "$cfg"', start)]
+
+    def run(self, cfg, loader=None):
+        loader = loader or (UPDATE_SH.parents[1] / "src/labctl/core/config.py")
+        return subprocess.run(
+            [sys.executable, "-I", "-c", self._script(), str(cfg), str(loader)],
+            capture_output=True,
+            text=True,
+            cwd="/",
+            timeout=60,
+        )
+
+    @pytest.mark.parametrize(
+        "body,rc",
+        [
+            ("log_level: INFO\nmcp:\n#  commented out\n", 0),
+            ("auth: [unclosed\n", 1),
+            ("database:\n  timeout_seconds: 10s\n", 1),
+        ],
+    )
+    def test_results(self, tmp_path, body, rc):
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text(body)
+        assert self.run(cfg).returncode == rc
+
+    def test_check_failure_is_not_a_config_error(self, tmp_path):
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("log_level: INFO\n")
+        assert self.run(cfg, loader=tmp_path / "missing.py").returncode == 3

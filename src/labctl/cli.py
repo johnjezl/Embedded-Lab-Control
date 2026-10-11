@@ -402,11 +402,23 @@ def main(
     # value): running on built-in defaults would mean another database
     # and, for `web`, no login. `mcp` reports this itself (--check, and its
     # HTTP startup refusal).
-    # Named means -c or LABCTL_CONFIG (exclusive or not).
+    # Named means -c or LABCTL_CONFIG (exclusive or not). Commands that
+    # don't use the config stay usable, notably the ones that help fix it
+    # (generate a key, hash a password), and --help.
+    sub_args = sys.argv[1:]
+    config_free = (
+        ctx.invoked_subcommand in ("mcp", "completion")
+        or "--help" in sub_args
+        or "-h" in sub_args
+        or (
+            ctx.invoked_subcommand == "user"
+            and any(a in ("generate-key", "hash-password") for a in sub_args)
+        )
+    )
     if (
         (config_path or os.environ.get("LABCTL_CONFIG"))
         and ctx.obj["config"].load_errors
-        and ctx.invoked_subcommand != "mcp"
+        and not config_free
     ):
         raise click.ClickException(
             "config not loaded: " + "; ".join(ctx.obj["config"].load_errors)
