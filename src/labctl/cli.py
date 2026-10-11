@@ -402,8 +402,9 @@ def main(
     # value): running on built-in defaults would mean another database
     # and, for `web`, no login. `mcp` reports this itself (--check, and its
     # HTTP startup refusal).
+    # Named means -c or LABCTL_CONFIG (exclusive or not).
     if (
-        config_path
+        (config_path or os.environ.get("LABCTL_CONFIG"))
         and ctx.obj["config"].load_errors
         and ctx.invoked_subcommand != "mcp"
     ):
@@ -5224,6 +5225,11 @@ def web_cmd(
             "Refusing to start the web server: config not loaded ("
             + "; ".join(config.load_errors)
             + ")"
+            + (
+                ". Pass -c with a config you can read, or join the labctl group."
+                if config.load_denied
+                else ""
+            )
         )
     app = create_app(config)
 

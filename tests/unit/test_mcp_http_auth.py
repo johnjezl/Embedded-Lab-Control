@@ -606,6 +606,19 @@ class TestCliFailsClosedOnBrokenConfig:
         assert result.exit_code == 1
         assert "config not loaded" in result.output
 
+    def test_labctl_config_env_broken_fails_command(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+
+        from labctl.cli import main
+
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("database:\n  timeout_seconds: 10s\n")
+        monkeypatch.setenv("LABCTL_CONFIG", str(cfg))
+        monkeypatch.setenv("LABCTL_CONFIG_EXCLUSIVE", "1")
+        result = CliRunner().invoke(main, ["list"])
+        assert result.exit_code == 1
+        assert "config not loaded" in result.output
+
     def test_web_refuses_on_search_path_config_error(self, tmp_path, monkeypatch):
         from click.testing import CliRunner
 
