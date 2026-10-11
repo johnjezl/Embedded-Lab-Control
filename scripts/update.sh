@@ -12,6 +12,11 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+# Run from "/": root runs Python below, and `python -m`/`python -` look in
+# the current directory first, so a `labctl/` package planted where the
+# admin happens to be (e.g. the group-writable images/ directory) would run
+# as root. Root Python calls also use -I (isolated: no cwd, no PYTHON* env).
+cd /
 LABCTL_VENV="/opt/labctl/venv"
 SYSTEMD_CONFIG_DIR="$PROJECT_DIR/config/systemd"
 SYSTEM_CONFIG_DIR="/etc/labctl"
@@ -76,7 +81,7 @@ SYSTEM_CONFIG_FILE="$SYSTEM_CONFIG_DIR/config.yaml"
 # The service copy lives under /var/lib/labctl, which the labctl user can
 # write: root only touches it through labctl.core.admin_files (no symlinks,
 # no hard links, descriptor-based chown/chmod, O_EXCL copies).
-ADMIN_FILES=("$LABCTL_VENV/bin/python" -m labctl.core.admin_files)
+ADMIN_FILES=("$LABCTL_VENV/bin/python" -I -m labctl.core.admin_files)
 if ! SERVICE_CONFIG_STATE=$("${ADMIN_FILES[@]}" state "$SERVICE_CONFIG_FILE"); then
     echo "[!!] $SERVICE_CONFIG_STATE"
     echo "     Not touching $SERVICE_CONFIG_FILE; replace it with a regular file."
@@ -129,7 +134,7 @@ MISSING_ALLOWLIST=""
 for cfg in "$SYSTEM_CONFIG_FILE" "$SERVICE_CONFIG_FILE"; do
     [ -f "$cfg" ] || continue
     for key in allowed_read_paths allowed_write_paths; do
-        if ! "$LABCTL_VENV/bin/python" - "$cfg" "$key" 2>/dev/null <<'PY'
+        if ! "$LABCTL_VENV/bin/python" -I - "$cfg" "$key" 2>/dev/null <<'PY'
 import sys
 from pathlib import Path
 

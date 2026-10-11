@@ -48,7 +48,7 @@ def write_config(tmp_path):
 class TestAllowlistCheck:
     """Step 3b: exit status says whether an allowlist key is set."""
 
-    SNIPPET_MARKER = 'if ! "$LABCTL_VENV/bin/python" - "$cfg" "$key"'
+    SNIPPET_MARKER = 'if ! "$LABCTL_VENV/bin/python" -I - "$cfg" "$key"'
 
     def test_set_and_missing(self, write_config):
         config = write_config("mcp:\n  allowed_read_paths: [/var/lib/labctl/images]\n")
@@ -298,3 +298,32 @@ class TestRestartReport:
             extra_env={"MCP_START_TIMEOUT": value},
         )
         assert f"not listening after {shown}" in result.stdout
+
+
+class TestRootPythonIsolation:
+    """Root-run Python in the install/update scripts must not import from
+    the admin's current directory (a group-writable images/ could hold a
+    planted `labctl/` package)."""
+
+    SCRIPTS = [UPDATE_SH, UPDATE_SH.parent / "install-services.sh"]
+
+    @pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
+    def test_runs_from_root_dir_before_any_python(self, script):
+        lines = script.read_text().splitlines()
+        cd_root = lines.index("cd /")
+        first_python = next(
+            i
+            for i, line in enumerate(lines)
+            if "bin/python" in line and "#" not in line
+        )
+        assert cd_root < first_python
+
+    @pytest.mark.parametrize("script", SCRIPTS, ids=lambda p: p.name)
+    def test_root_python_is_isolated(self, script):
+        calls = [
+            line
+            for line in script.read_text().splitlines()
+            if '"$LABCTL_VENV/bin/python"' in line and not line.lstrip().startswith("#")
+        ]
+        assert calls
+        assert all('/bin/python" -I ' in line for line in calls), calls
