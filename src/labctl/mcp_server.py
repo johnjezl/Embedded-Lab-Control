@@ -3441,6 +3441,23 @@ class _ApiKeyVerifier:
     closed, never falling back to another config.
     """
 
+    _config_ok = True
+
+    def _report_config_state(self, config) -> None:
+        """Log when the keys' config file stops (or starts) loading: once
+        per change, not per request (requests can be unauthenticated)."""
+        ok = not config.load_errors
+        if ok == self._config_ok:
+            return
+        self._config_ok = ok
+        if ok:
+            logger.warning("API keys: config file loads again; keys accepted")
+        else:
+            logger.warning(
+                "API keys: config not loaded (%s); refusing every key until fixed",
+                "; ".join(config.load_errors),
+            )
+
     async def verify_token(self, token: str):
         import anyio
         from mcp.server.auth.provider import AccessToken
@@ -3448,6 +3465,7 @@ class _ApiKeyVerifier:
         # A fresh load, not _get_config(): while the file is broken there
         # are no users, so every key is refused (fail closed).
         config = await anyio.to_thread.run_sync(_fresh_config)
+        self._report_config_state(config)
         user = config.auth.user_for_api_key(token)
         if user is None:
             return None
@@ -3578,20 +3596,6 @@ def _transport_security(host: str, mcp_cfg):
     )
 
 
-def _pin_config_file(config) -> None:
-    """Snapshot the startup config for the rest of the process's life.
-
-    Every later load_config() (tools, database, allowlists, confirmation,
-    actuator gate, Kasa, health, the claim sweep) gets this config: edits
-    take effect on restart (scripts/update.sh restarts). Only API keys are
-    re-read, from this same file, per request (_fresh_config), so revoking
-    a key needs no restart and a broken file refuses every key.
-    """
-    from labctl.core.config import snapshot_config
-
-    snapshot_config(config)
-
-
 def _enable_http_auth() -> None:
     """Make the HTTP app require bearer tokens checked by _ApiKeyVerifier.
 
@@ -3714,7 +3718,14 @@ def run_server(
             _enable_http_auth()
     else:
         check_stdio_startup(config)
-    _pin_config_file(config)
+    # From here on, every load_config() in this process (tools, database,
+    # allowlists, confirmation, actuator gate, Kasa, health, the claim
+    # sweep) gets this config: edits take effect on restart (update.sh
+    # restarts). Only API keys are re-read, from this same file, per
+    # request (_ApiKeyVerifier), so revoking a key needs no restart.
+    from labctl.core.config import snapshot_config
+
+    snapshot_config(config)
 
     atexit.register(_release_session_claims)
     _start_expiry_thread(interval=30)

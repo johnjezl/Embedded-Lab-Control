@@ -4,6 +4,7 @@ Configuration management for lab controller.
 Loads configuration from YAML files with environment variable overrides.
 """
 
+import contextvars
 import errno
 import hmac
 import logging
@@ -15,6 +16,18 @@ from typing import Any, Optional
 import yaml
 
 logger = logging.getLogger(__name__)
+
+# Set during load_config(fresh=True): its per-request re-reads (API keys)
+# must not log on every request; the caller reports state changes instead.
+_quiet = contextvars.ContextVar("labctl_config_quiet", default=False)
+
+
+class _QuietFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        return not _quiet.get()
+
+
+logger.addFilter(_QuietFilter())
 
 SYSTEM_CONFIG_FILE = Path("/etc/labctl/config.yaml")
 
@@ -639,6 +652,11 @@ def load_config(
     """
     Load configuration from YAML file.
 
+    Once a long-running server has called snapshot_config(), calls without
+    a ``config_path`` return that snapshot, whatever the environment or the
+    files say; ``fresh=True`` instead re-reads only the snapshot's own file
+    (or none), without logging (the caller reports problems). Otherwise:
+
     Search order:
     1. Explicit path if provided
     2. LABCTL_CONFIG environment variable
@@ -663,25 +681,41 @@ def load_config(
     Args:
         config_path: Optional explicit path to config file
         create_if_missing: Create default config if no config found
+        fresh: With a snapshot, re-read its file instead (see above)
 
     Returns:
         Loaded configuration
     """
+    token = _quiet.set(True) if fresh else None
+    try:
+        return _load_config(config_path, create_if_missing, fresh)
+    finally:
+        if token is not None:
+            _quiet.reset(token)
+
+
+def _load_config(
+    config_path: Optional[Path], create_if_missing: bool, fresh: bool
+) -> Config:
     # Determine config file path
+    named_path = None  # a file named explicitly: missing is an error
     if config_path:
         paths_to_try = [config_path]
         only_file = True
+        named_path = config_path
     elif _snapshot is not None:
         if not fresh:
             return _snapshot
         # Fresh: only the snapshot's own file (or none), never a fallback.
         paths_to_try = [] if _snapshot.source_path is None else [_snapshot.source_path]
         only_file = _snapshot.source_path is not None
+        named_path = _snapshot.source_path
     else:
         env_path = os.environ.get("LABCTL_CONFIG")
         paths_to_try = []
         if env_path:
-            paths_to_try.append(_expand_path(env_path))
+            named_path = _expand_path(env_path)
+            paths_to_try.append(named_path)
         only_file = bool(env_path) and os.environ.get("LABCTL_CONFIG_EXCLUSIVE") == "1"
         if not only_file:
             paths_to_try.extend([_default_config_file(), SYSTEM_CONFIG_FILE])
@@ -711,10 +745,11 @@ def load_config(
                 load_errors.append(f"{path}: {e}")
                 load_denied |= e.errno in (errno.EACCES, errno.EPERM)
                 continue
-            # The one file named explicitly being absent means defaults,
-            # not "no config": warn and record it (e.g. for --check).
-            if only_file:
-                logger.warning("Config file %s not found; using defaults", path)
+            # A file named explicitly (-c, LABCTL_CONFIG) being absent is
+            # an error even if the search goes on: warn and record it (the
+            # HTTP server refuses to start, --check fails).
+            if path == named_path:
+                logger.warning("Config file %s not found", path)
                 load_errors.append(f"{path}: {e.strerror}")
             continue
         else:
