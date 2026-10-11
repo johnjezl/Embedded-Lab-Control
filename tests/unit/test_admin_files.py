@@ -122,6 +122,13 @@ class TestSecureDirParents:
             admin_files.state(str(managed / ".config" / "labctl" / "config.yaml"))
 
 
+class TestPathValidation:
+    def test_unnormalized_path_named_as_such(self, managed):
+        (managed / "f").write_text("x")
+        with pytest.raises(admin_files.UnsafeFileError, match="normalized"):
+            admin_files.state(str(managed) + "/../managed/f")
+
+
 class TestCopy:
     def test_copies_with_mode_and_line_replacement(self, managed, tmp_path):
         src = tmp_path / "example.yaml"

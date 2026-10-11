@@ -46,6 +46,11 @@ def _check_single_link(fd: int, path: str) -> None:
 def _nofollow(path: str, opener, *args, **kwargs) -> int:
     """Call a safe_open opener, turning "not followed" errors into
     UnsafeFileError so every refusal reads the same."""
+    if not os.path.isabs(path) or os.path.normpath(path) != path:
+        # safe_open would also raise EINVAL: say what is actually wrong.
+        raise UnsafeFileError(
+            errno.EINVAL, f"{path}: path must be absolute and normalized"
+        )
     try:
         return opener(*args, **kwargs)
     except OSError as e:
@@ -74,20 +79,14 @@ def open_regular(path: str, flags: int = os.O_RDONLY) -> int:
 def state(path: str) -> str:
     """'missing' or 'regular'; raises UnsafeFileError for anything else.
 
-    The parent directory is reached without following symlinks too, so a
-    symlinked parent is refused rather than reported as "missing".
+    One walk with no symlink followed on any component: a symlinked parent
+    is refused (not "missing"); a missing file or parent is "missing".
     """
     try:
-        parent = _nofollow(path, open_dir_nofollow, os.path.dirname(path))
-    except FileNotFoundError:
-        return "missing"  # a missing parent directory: nothing there
-    try:
-        os.stat(os.path.basename(path), dir_fd=parent, follow_symlinks=False)
+        fd = open_regular(path)
     except FileNotFoundError:
         return "missing"
-    finally:
-        os.close(parent)
-    os.close(open_regular(path))
+    os.close(fd)
     return "regular"
 
 
@@ -170,8 +169,11 @@ def copy(src: str, dst: str, mode: int, replace: dict[str, str] | None = None) -
             os.fsync(out)
         except BaseException:
             # Never leave a truncated config that a rerun would take as
-            # complete ("already exists, skipping").
-            os.unlink(name, dir_fd=parent)
+            # complete ("already exists, skipping"); keep the real error.
+            try:
+                os.unlink(name, dir_fd=parent)
+            except OSError:
+                pass
             raise
         finally:
             os.close(out)
