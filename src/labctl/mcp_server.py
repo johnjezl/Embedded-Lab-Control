@@ -3571,9 +3571,11 @@ def _pin_config_file(config) -> None:
     """Make every later load_config() in this process read only the file
     ``config`` came from, as `labctl -c FILE mcp` does.
 
-    The HTTP server re-reads the config per request (API keys, allowlists).
-    Without pinning, a config in ~/.config/labctl that is briefly broken
-    (mid-edit) would fall back to /etc/labctl/config.yaml and its keys.
+    The server re-reads the config per request and per tool call (API
+    keys, allowlists, confirmation, actuator gate). Without pinning, a
+    config in ~/.config/labctl that is briefly broken (mid-edit) would fall
+    back to /etc/labctl/config.yaml and its settings: the same fallback
+    startup refuses over HTTP. Applies to both transports.
     """
     if config.source_path is not None:
         os.environ["LABCTL_CONFIG"] = str(config.source_path)
@@ -3699,10 +3701,10 @@ def run_server(
             flush=True,
         )
         if required:
-            _pin_config_file(config)
             _enable_http_auth()
     else:
         check_stdio_startup(config)
+    _pin_config_file(config)
 
     atexit.register(_release_session_claims)
     _start_expiry_thread(interval=30)

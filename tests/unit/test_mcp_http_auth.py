@@ -586,6 +586,29 @@ class TestExclusiveConfigMissing:
 class TestConfigPinning:
     """Per-request reloads must not fall back to another config file."""
 
+    @pytest.mark.parametrize(
+        "transport,kwargs",
+        [("http", {"host": "127.0.0.1", "http_port": 9}), ("stdio", {})],
+    )
+    def test_pinned_without_auth_too(self, tmp_path, transport, kwargs):
+        """No-auth HTTP and stdio re-read the config per tool call as well:
+        a mid-run breakage must not switch them to /etc's settings."""
+        import os
+
+        from labctl import mcp_server
+
+        config = _config(enabled=False)
+        config.source_path = tmp_path / "mine.yaml"
+        with (
+            patch.object(mcp_server, "_get_config", return_value=config),
+            patch.object(mcp_server, "_start_expiry_thread"),
+            patch("atexit.register"),
+            patch.object(mcp_server.mcp, "run"),
+        ):
+            mcp_server.run_server(transport=transport, **kwargs)
+        assert os.environ["LABCTL_CONFIG"] == str(tmp_path / "mine.yaml")
+        assert os.environ["LABCTL_CONFIG_EXCLUSIVE"] == "1"
+
     @pytest.fixture
     def two_configs(self, tmp_path, monkeypatch):
         """A user config (alice's key) and a stand-in system config (bob's)."""

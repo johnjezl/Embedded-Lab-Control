@@ -40,7 +40,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   adding one), with auth enabled but no API key configured, or when a
   config file it should read can't be loaded (a fallback to another file
   or to defaults could drop the authentication the intended config
-  enables). Users
+  enables; this includes `/etc/labctl/config.yaml` being unreadable to a
+  user outside the `labctl` group, who must then pass `-c`). Once
+  started, both transports keep reading only the config file they
+  started with. Users
   without a string username can't authenticate by API key. New `mcp.allowed_hosts` / `mcp.allowed_origins` accept extra
   `Host` / `Origin` headers (e.g. a reverse proxy's public name) on top of
   the loopback names. See `docs/MCP_SERVER.md` (D012).
@@ -155,14 +158,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   (`auth: required` / `none`), the config file loaded, and startup
   warnings; exit 1 if the server would refuse to start or a config file it
   would read is unparseable, unreadable, or (when it's the only file
-  allowed) missing.
+  allowed by `LABCTL_CONFIG_EXCLUSIVE`) missing.
 - `scripts/update.sh`, after restarting, shows `labctl-mcp`'s journal from
   this restart (auth mode, startup warnings) and, whenever auth is
   enabled, reminds that HTTP clients must send their API key; for any
   service that failed to start it prints that service's log since the
   restart. The MCP server prints its auth mode on every HTTP start and
-  logs startup warnings (unparseable config files, short keys, unknown
-  confirm exemptions, unchecked Host headers) whatever `log_level` says.
+  logs startup warnings (short keys, unknown confirm exemptions, unchecked
+  Host headers; over stdio also config files it couldn't load) whatever
+  `log_level` says; over HTTP an unloadable config makes it refuse to
+  start instead (see Security).
 - Destructive CLI commands (19: `power off`/`cycle`, `sdwire flash`/`update`/
   `host`/`unassign`, `serial send`, `actuator set`, binding verbs, recovery,
   `force-release`, `boot-test`, record removals) take `--yes/-y` and ask for
