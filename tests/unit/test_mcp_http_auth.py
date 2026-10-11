@@ -17,7 +17,7 @@ from labctl.core.config import AuthConfig, Config, UserConfig
 
 @pytest.fixture(autouse=True)
 def _restore_config_env(monkeypatch):
-    """`labctl -c FILE mcp` and _pin_config_file write LABCTL_CONFIG(_*)
+    """`labctl -c FILE mcp` writes LABCTL_CONFIG(_*)
     straight into os.environ; register them so monkeypatch restores them,
     or later tests' load_config() would be pinned to a deleted temp file."""
     for name in ("LABCTL_CONFIG", "LABCTL_CONFIG_EXCLUSIVE"):
@@ -573,7 +573,7 @@ class TestExclusiveConfigMissing:
         monkeypatch.setenv("LABCTL_CONFIG", str(tmp_path / "typo.yml"))
         monkeypatch.setenv("LABCTL_CONFIG_EXCLUSIVE", "1")
         config = load_config()
-        assert "typo.yml not found; using defaults" in caplog.text
+        assert "typo.yml not found" in caplog.text
         assert config.source_path is None
         assert config.load_errors == [
             f"{tmp_path / 'typo.yml'}: No such file or directory"
@@ -639,6 +639,45 @@ class TestConfigPinning:
         cfg.write_text("auth: [unclosed\n")  # broken: no users at all
         fresh = config_mod.load_config(fresh=True)
         assert fresh.load_errors and fresh.auth.key_users() == []
+
+    def test_fresh_reload_is_quiet_and_reported_once(self, tmp_path, caplog):
+        """Per-request key re-reads (reachable without auth) don't log; the
+        verifier reports the file breaking or recovering once per change."""
+        import logging
+
+        from labctl import mcp_server
+        from labctl.core import config as config_mod
+
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text(AUTH_YAML)
+        config_mod.snapshot_config(config_mod.load_config(cfg))
+        cfg.write_text("auth: [unclosed\n")
+        verifier = mcp_server._ApiKeyVerifier()
+        with caplog.at_level(logging.DEBUG):
+            for _ in range(5):
+                verifier._report_config_state(mcp_server._fresh_config())
+        config_msgs = [r for r in caplog.records if r.name == "labctl.core.config"]
+        assert config_msgs == []
+        refusals = [r for r in caplog.records if "refusing every key" in r.message]
+        assert len(refusals) == 1
+        cfg.write_text(AUTH_YAML)
+        verifier._report_config_state(mcp_server._fresh_config())
+        assert "loads again" in caplog.text
+
+    def test_missing_named_config_is_an_error_even_if_not_exclusive(
+        self, tmp_path, monkeypatch
+    ):
+        """LABCTL_CONFIG naming a missing file (a typo) still falls back,
+        but is recorded, so HTTP refuses to start and --check fails."""
+        from labctl.core import config as config_mod
+
+        monkeypatch.setenv("LABCTL_CONFIG", str(tmp_path / "lab.yml"))
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+        monkeypatch.setattr(config_mod, "SYSTEM_CONFIG_FILE", tmp_path / "none.yaml")
+        config = config_mod.load_config()
+        assert config.load_errors == [
+            f"{tmp_path / 'lab.yml'}: No such file or directory"
+        ]
 
     def test_invalid_value_falls_through_like_parse_error(self, tmp_path, monkeypatch):
         from labctl.core import config as config_mod
@@ -735,10 +774,10 @@ class TestConfigPinning:
     def test_pinned_broken_config_fails_closed(self, two_configs):
         """The API-key check's fresh load: neither bob's /etc key nor, while
         the file is broken, alice's last-good one."""
-        from labctl.core.config import load_config
-        from labctl.mcp_server import _fresh_config, _pin_config_file
+        from labctl.core.config import load_config, snapshot_config
+        from labctl.mcp_server import _fresh_config
 
-        _pin_config_file(load_config())
+        snapshot_config(load_config())
         two_configs.write_text("auth: [unclosed\n")
         config = _fresh_config()
         assert config.auth.user_for_api_key(BOB_KEY) is None
