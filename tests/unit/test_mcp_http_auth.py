@@ -627,6 +627,46 @@ class TestConfigPinning:
         assert fresh.load_errors
         assert fresh.auth.user_for_api_key(ALICE_KEY) is None
 
+    def test_invalid_value_falls_through_like_parse_error(self, tmp_path, monkeypatch):
+        from labctl.core import config as config_mod
+
+        xdg = tmp_path / "xdg"
+        (xdg / "labctl").mkdir(parents=True)
+        (xdg / "labctl" / "config.yaml").write_text(
+            "database:\n  timeout_seconds: 10s\n"
+        )
+        system = tmp_path / "system.yaml"
+        system.write_text(f"database_path: {tmp_path / 'etc.db'}\n")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+        monkeypatch.setattr(config_mod, "SYSTEM_CONFIG_FILE", system)
+        config = config_mod.load_config()
+        assert config.source_path == system
+        assert config.database_path == tmp_path / "etc.db"
+        assert "invalid value" in config.load_errors[0]
+
+    def test_stdio_started_on_broken_config_recovers(self, tmp_path, monkeypatch):
+        """Started while its config was broken (stdio starts anyway): once
+        the file is fixed, the server reads it, not defaults forever."""
+        from labctl import mcp_server
+        from labctl.core import config as config_mod
+
+        xdg = tmp_path / "xdg"
+        (xdg / "labctl").mkdir(parents=True)
+        user_cfg = xdg / "labctl" / "config.yaml"
+        user_cfg.write_text("mcp: [unclosed\n")
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+        monkeypatch.setattr(config_mod, "SYSTEM_CONFIG_FILE", tmp_path / "none.yaml")
+        with (
+            patch.object(mcp_server, "_start_expiry_thread"),
+            patch("atexit.register"),
+            patch.object(mcp_server.mcp, "run"),
+        ):
+            mcp_server.run_server(transport="stdio")
+        user_cfg.write_text(f"database_path: {tmp_path / 'mine.db'}\n")
+        config = mcp_server._get_config()
+        assert config.source_path == user_cfg
+        assert config.database_path == tmp_path / "mine.db"
+
     def test_started_on_defaults_stays_on_defaults(self, tmp_path, monkeypatch):
         """No config at startup: a file created later is not picked up."""
         from labctl import mcp_server
@@ -660,7 +700,7 @@ class TestConfigPinning:
         from labctl.core import config as config_mod
 
         config = _config(enabled=False)
-        config.source_path = tmp_path / "mine.yaml"
+        config.source_path = config.intended_path = tmp_path / "mine.yaml"
         with (
             patch.object(mcp_server, "_get_config", return_value=config),
             patch.object(mcp_server, "_start_expiry_thread"),

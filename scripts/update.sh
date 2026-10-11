@@ -82,15 +82,20 @@ if [ -f "$SYSTEM_CONFIG_FILE" ] && [ -f "$SERVICE_CONFIG_FILE" ] &&
 fi
 # And a config that doesn't load (YAML error, or a value labctl rejects,
 # e.g. `timeout_seconds: 10s`): the services would fall back to defaults
-# (labctl-mcp over HTTP refuses to start). Checked with the installed
-# venv's labctl, before anything changes.
+# (labctl-mcp over HTTP refuses to start). Checked with the to-be-installed
+# release's loader (imported from this checkout; the installed venv's
+# PyYAML), before anything changes.
 for cfg in "$SYSTEM_CONFIG_FILE" "$SERVICE_CONFIG_FILE"; do
     [ -f "$cfg" ] || continue
     if ! YAML_ERR=$("$LABCTL_VENV/bin/python" -I -c '
-import sys, yaml
-from labctl.core.config import Config
-Config.from_dict(yaml.safe_load(open(sys.argv[1])) or {})
-' "$cfg" 2>&1); then
+import logging, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[2])
+logging.disable(logging.WARNING)
+from labctl.core.config import load_config
+errors = load_config(Path(sys.argv[1])).load_errors
+sys.exit("\n".join(errors) if errors else 0)
+' "$cfg" "$PROJECT_DIR/src" 2>&1); then
         echo "Error: $cfg doesn't load; fix it, then rerun:"
         tail -n 4 <<<"$YAML_ERR" | sed 's/^/     /'
         exit 1

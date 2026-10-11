@@ -392,6 +392,9 @@ class Config:
     source_path: Optional[Path] = field(default=None, compare=False, repr=False)
     # "<path>: <error>" for each config file found but not loadable.
     load_errors: list[str] = field(default_factory=list, compare=False, repr=False)
+    # The file that was loaded or, if none could be, the first one that was
+    # there but unusable: what a long-running server should keep reading.
+    intended_path: Optional[Path] = field(default=None, compare=False, repr=False)
     # True if one of those was a permission error (EACCES/EPERM).
     load_denied: bool = field(default=False, compare=False, repr=False)
 
@@ -689,8 +692,9 @@ def load_config(
             paths_to_try.extend([_default_config_file(), SYSTEM_CONFIG_FILE])
 
     # Try to load from file
-    config_data = {}
+    config = None
     loaded_from = None
+    intended = None  # first file that exists but couldn't be used
     load_errors = []
     load_denied = False
     for path in paths_to_try:
@@ -712,36 +716,42 @@ def load_config(
                 )
                 load_errors.append(f"{path}: {e}")
                 load_denied |= e.errno in (errno.EACCES, errno.EPERM)
+                intended = intended or path
                 continue
             # The one file named explicitly being absent means defaults,
             # not "no config": warn and record it (e.g. for --check).
             if only_file:
                 logger.warning("Config file %s not found; using defaults", path)
                 load_errors.append(f"{path}: {e.strerror}")
+                intended = path
             continue
         else:
             try:
                 with open(path) as f:
-                    config_data = yaml.safe_load(f) or {}
-                loaded_from = path
-                break
+                    data = yaml.safe_load(f) or {}
             except Exception as e:
                 logger.warning("Failed to load config from %s: %s", path, e)
                 load_errors.append(f"{path}: {e}")
                 load_denied |= isinstance(e, PermissionError)
+                intended = intended or path
                 continue
+            # Valid YAML can still hold invalid values (`timeout_seconds:
+            # 10s`, a list at the top): treated like a parse error, i.e.
+            # on to the next file, not a crash.
+            try:
+                config = Config.from_dict(data)
+            except Exception as e:
+                logger.warning("Invalid config in %s: %s", path, e)
+                load_errors.append(f"{path}: invalid value: {e}")
+                intended = intended or path
+                continue
+            loaded_from = path
+            break
 
-    # Create config from loaded data (or defaults). Valid YAML can still
-    # hold invalid values (`timeout_seconds: 10s`, a list at the top):
-    # a load error like a parse error, not a crash.
-    try:
-        config = Config.from_dict(config_data)
-    except Exception as e:
-        logger.warning("Invalid config in %s: %s", loaded_from, e)
-        load_errors.append(f"{loaded_from}: invalid value: {e}")
+    if config is None:
         config = Config.from_dict({})
-        loaded_from = None
     config.source_path = loaded_from
+    config.intended_path = loaded_from or intended
     config.load_errors = load_errors
     config.load_denied = load_denied
 
