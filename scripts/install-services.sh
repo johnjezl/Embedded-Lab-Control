@@ -140,8 +140,9 @@ echo "[ok] MCP image/output directories: $LABCTL_HOME/{images,output}"
 # -R without -L doesn't follow symlinks.
 chown -R labctl:labctl "$LABCTL_HOME"
 # The service copy of the config holds the same secrets (API keys, Kasa
-# credentials) as /etc/labctl/config.yaml, and $LABCTL_HOME is world-
-# traversable (2775): keep it unreadable to other users.
+# credentials) as /etc/labctl/config.yaml, and $LABCTL_HOME may be
+# traversable by others (its mode comes from useradd's HOME_MODE, or an
+# admin): keep it unreadable to other users.
 "${ADMIN_FILES[@]}" secure "$LABCTL_CONFIG/config.yaml" labctl labctl 640
 echo "[ok] Secured service config: $LABCTL_CONFIG/config.yaml (labctl:labctl, 640)"
 

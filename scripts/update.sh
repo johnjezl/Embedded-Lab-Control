@@ -49,6 +49,18 @@ if [ ! -x "$LABCTL_VENV/bin/pip" ]; then
     exit 1
 fi
 
+# Refuse early, before installing anything, if the service copy of the
+# config is a symlink, not a regular file, or hard-linked: step 3 refuses
+# it anyway (race-free, via admin_files), and stopping there would leave
+# a new venv and units with the old services still running.
+if [ -L "$SERVICE_CONFIG_FILE" ] ||
+    { [ -e "$SERVICE_CONFIG_FILE" ] && { [ ! -f "$SERVICE_CONFIG_FILE" ] ||
+        [ "$(stat -c %h "$SERVICE_CONFIG_FILE")" != 1 ]; }; }; then
+    echo "Error: $SERVICE_CONFIG_FILE is a symlink, not a regular file,"
+    echo "or hard-linked; replace it with a regular file, then rerun."
+    exit 1
+fi
+
 # 1. Reinstall package
 # 0.2.0 renamed the distribution labctl -> embedded-lab-control. Both own the
 # same labctl/ package and `labctl` script, so remove the old one first:
@@ -107,7 +119,7 @@ chown root:labctl "$SYSTEM_CONFIG_DIR" "$SYSTEM_CONFIG_FILE"
 chmod 750 "$SYSTEM_CONFIG_DIR"
 chmod 640 "$SYSTEM_CONFIG_FILE"
 # The service copy carries the same secrets (API keys, Kasa credentials)
-# and sits under world-traversable /var/lib/labctl.
+# and sits under /var/lib/labctl, which may be traversable by others.
 if [ "$SERVICE_CONFIG_STATE" = regular ]; then
     "${ADMIN_FILES[@]}" secure "$SERVICE_CONFIG_FILE" labctl labctl 640
 fi
@@ -224,6 +236,12 @@ if [ -n "$SERVICES" ]; then
             if [ "$MCP_LISTEN" -ne 1 ] || ! systemctl is-active --quiet labctl-mcp; then
                 break
             fi
+            sleep 1
+        done
+        # journald stores stdout asynchronously: give the auth-mode line,
+        # printed before the bind, a moment to arrive.
+        for _ in 1 2 3 4 5; do
+            if svc_log labctl-mcp | grep -q '^MCP HTTP: '; then break; fi
             sleep 1
         done
     fi

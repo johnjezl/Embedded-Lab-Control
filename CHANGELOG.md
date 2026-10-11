@@ -10,7 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `install-services.sh` and `update.sh` make the service copy of the config
   (`/var/lib/labctl/.config/labctl/config.yaml`, which holds the same API
   keys and credentials as `/etc/labctl/config.yaml`) mode `640`; it was
-  created world-readable under a world-traversable directory.
+  created world-readable (`644`), so any local user could read the keys
+  wherever the labctl home is traversable by others (its mode comes from
+  `useradd`'s `HOME_MODE`, `0750` on current Ubuntu/Debian, or from an
+  admin: it is `2775` on the reference lab host).
 - The install and update scripts (run as root) no longer follow symlinks
   or hard links planted under `/var/lib/labctl` (writable by the `labctl`
   service user) when they seed `/etc/labctl/config.yaml` from the service
