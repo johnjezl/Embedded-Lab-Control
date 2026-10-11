@@ -589,43 +589,56 @@ class TestExclusiveConfigMissing:
 
 
 class TestConfigPinning:
-    """Per-request reloads must not fall back to another config file."""
+    """A running server keeps its startup config; only API keys are re-read
+    (from the startup file, failing closed)."""
 
-    def test_pin_beats_environment_not_explicit_path(self, tmp_path, monkeypatch):
-        """Pinned to defaults: a LABCTL_CONFIG set later doesn't apply, but
-        an explicit load_config(path) still reads that path."""
+    def test_snapshot_beats_environment_not_explicit_path(self, tmp_path, monkeypatch):
         from labctl.core import config as config_mod
 
         cfg = tmp_path / "c.yaml"
         cfg.write_text("auth:\n  enabled: true\n")
-        config_mod.pin_config(None)
+        config_mod.snapshot_config(config_mod.Config())
         monkeypatch.setenv("LABCTL_CONFIG", str(cfg))
         monkeypatch.setenv("LABCTL_CONFIG_EXCLUSIVE", "1")
         assert config_mod.load_config().auth.enabled is False
         assert config_mod.load_config(cfg).auth.enabled is True
 
     @pytest.mark.parametrize(
-        "broken",
-        ["mcp: [unclosed\n", "database:\n  timeout_seconds: 10s\n"],
-        ids=["yaml-error", "invalid-value"],
+        "change",
+        [
+            "",  # truncated by an in-place save
+            "mcp: [unclosed\n",
+            "database:\n  timeout_seconds: 10s\n",
+            "database_path: /elsewhere.db\nmcp:\n  allow_admin_actuator_ops: true\n",
+        ],
+        ids=["truncated", "yaml-error", "invalid-value", "valid-edit"],
     )
-    def test_broken_pinned_file_keeps_last_good(self, tmp_path, broken):
-        """Mid-edit breakage (or a value that doesn't load): every caller,
-        the database included, keeps the last good config; a fresh load
-        (API keys) gets defaults, i.e. fails closed."""
+    def test_running_server_keeps_startup_config(self, tmp_path, change):
+        """Whatever happens to the file, every load_config() caller (the
+        database included) keeps the startup config until a restart."""
         from labctl.core import config as config_mod
 
         cfg = tmp_path / "c.yaml"
         cfg.write_text(f"database_path: {tmp_path / 'shared.db'}\n{AUTH_YAML}")
-        startup = config_mod.load_config(cfg)
-        config_mod.pin_config(cfg, startup)
-        cfg.write_text(broken)
+        config_mod.snapshot_config(config_mod.load_config(cfg))
+        cfg.write_text(change)
         kept = config_mod.load_config()
         assert kept.database_path == tmp_path / "shared.db"
-        assert kept.auth.user_for_api_key(ALICE_KEY) is not None
+        assert kept.mcp.allow_admin_actuator_ops is False
+
+    def test_keys_reread_from_startup_file_and_fail_closed(self, tmp_path):
+        from labctl.core import config as config_mod
+
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text(AUTH_YAML)
+        config_mod.snapshot_config(config_mod.load_config(cfg))
+        cfg.write_text("auth:\n  enabled: true\n  users: []\n")  # key revoked
+        assert (
+            config_mod.load_config(fresh=True).auth.user_for_api_key(ALICE_KEY) is None
+        )
+        cfg.write_text("auth: [unclosed\n")  # broken: no users at all
         fresh = config_mod.load_config(fresh=True)
-        assert fresh.load_errors
-        assert fresh.auth.user_for_api_key(ALICE_KEY) is None
+        assert fresh.load_errors and fresh.auth.key_users() == []
 
     def test_invalid_value_falls_through_like_parse_error(self, tmp_path, monkeypatch):
         from labctl.core import config as config_mod
@@ -643,29 +656,6 @@ class TestConfigPinning:
         assert config.source_path == system
         assert config.database_path == tmp_path / "etc.db"
         assert "invalid value" in config.load_errors[0]
-
-    def test_stdio_started_on_broken_config_recovers(self, tmp_path, monkeypatch):
-        """Started while its config was broken (stdio starts anyway): once
-        the file is fixed, the server reads it, not defaults forever."""
-        from labctl import mcp_server
-        from labctl.core import config as config_mod
-
-        xdg = tmp_path / "xdg"
-        (xdg / "labctl").mkdir(parents=True)
-        user_cfg = xdg / "labctl" / "config.yaml"
-        user_cfg.write_text("mcp: [unclosed\n")
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
-        monkeypatch.setattr(config_mod, "SYSTEM_CONFIG_FILE", tmp_path / "none.yaml")
-        with (
-            patch.object(mcp_server, "_start_expiry_thread"),
-            patch("atexit.register"),
-            patch.object(mcp_server.mcp, "run"),
-        ):
-            mcp_server.run_server(transport="stdio")
-        user_cfg.write_text(f"database_path: {tmp_path / 'mine.db'}\n")
-        config = mcp_server._get_config()
-        assert config.source_path == user_cfg
-        assert config.database_path == tmp_path / "mine.db"
 
     def test_started_on_defaults_stays_on_defaults(self, tmp_path, monkeypatch):
         """No config at startup: a file created later is not picked up."""
@@ -694,13 +684,12 @@ class TestConfigPinning:
         [("http", {"host": "127.0.0.1", "http_port": 9}), ("stdio", {})],
     )
     def test_pinned_without_auth_too(self, tmp_path, transport, kwargs):
-        """No-auth HTTP and stdio re-read the config per tool call as well:
-        a mid-run breakage must not switch them to /etc's settings."""
+        """No-auth HTTP and stdio snapshot their config too."""
         from labctl import mcp_server
         from labctl.core import config as config_mod
 
         config = _config(enabled=False)
-        config.source_path = config.intended_path = tmp_path / "mine.yaml"
+        config.source_path = tmp_path / "mine.yaml"
         with (
             patch.object(mcp_server, "_get_config", return_value=config),
             patch.object(mcp_server, "_start_expiry_thread"),
@@ -708,7 +697,7 @@ class TestConfigPinning:
             patch.object(mcp_server.mcp, "run"),
         ):
             mcp_server.run_server(transport=transport, **kwargs)
-        assert config_mod._pinned_path == tmp_path / "mine.yaml"
+        assert config_mod._snapshot is config
         # Process-local: nothing for child processes to inherit.
         assert "LABCTL_CONFIG" not in os.environ
 
@@ -766,7 +755,7 @@ class TestConfigPinning:
             mcp_server.run_server(transport="http", host="127.0.0.1", http_port=9)
         from labctl.core import config as config_mod
 
-        assert config_mod._pinned_path == two_configs
+        assert config_mod._snapshot.source_path == two_configs
 
 
 # ---------------------------------------------------------------------------

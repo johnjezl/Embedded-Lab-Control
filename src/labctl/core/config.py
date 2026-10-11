@@ -392,9 +392,6 @@ class Config:
     source_path: Optional[Path] = field(default=None, compare=False, repr=False)
     # "<path>: <error>" for each config file found but not loadable.
     load_errors: list[str] = field(default_factory=list, compare=False, repr=False)
-    # The file that was loaded or, if none could be, the first one that was
-    # there but unusable: what a long-running server should keep reading.
-    intended_path: Optional[Path] = field(default=None, compare=False, repr=False)
     # True if one of those was a permission error (EACCES/EPERM).
     load_denied: bool = field(default=False, compare=False, repr=False)
 
@@ -614,27 +611,23 @@ class Config:
         }
 
 
-# Set by pin_config(); process-local on purpose (not inherited by child
-# processes, unlike an environment variable).
-_UNPINNED = object()
-_pinned_path: Any = _UNPINNED  # _UNPINNED, None (built-in defaults) or a Path
-_last_good: Optional["Config"] = None
+# Set by snapshot_config(); process-local on purpose (not inherited by
+# child processes, unlike an environment variable).
+_snapshot: Optional["Config"] = None
 
 
-def pin_config(path: Optional[Path], startup: Optional["Config"] = None) -> None:
+def snapshot_config(config: "Config") -> None:
     """Make later load_config() calls in this process (without a path
-    argument) read only ``path``, or no file at all if it is None.
+    argument) return ``config``: a long-running server keeps the config it
+    started with (database, allowlists, gates, Kasa, health) until it is
+    restarted, whatever happens to the files or the environment.
 
-    For a long-running server: it keeps reading what it started with,
-    whatever the environment or the search path say later. While the
-    pinned file fails to load (e.g. saved mid-edit), load_config() returns
-    the last config that loaded cleanly (``startup`` to begin with), so
-    every caller (database, allowlists, Kasa, health) stays on it;
-    load_config(fresh=True) skips that, for checks that must fail closed.
+    load_config(fresh=True) instead re-reads the file ``config`` came from
+    (or none, if it started on built-in defaults), for checks that must see
+    changes at once and fail closed, i.e. API keys.
     """
-    global _pinned_path, _last_good
-    _pinned_path = path
-    _last_good = startup if startup is not None and not startup.load_errors else None
+    global _snapshot
+    _snapshot = config
 
 
 def load_config(
@@ -678,10 +671,12 @@ def load_config(
     if config_path:
         paths_to_try = [config_path]
         only_file = True
-    elif _pinned_path is not _UNPINNED:
-        # pin_config(): a server keeps reading what it started with.
-        paths_to_try = [] if _pinned_path is None else [_pinned_path]
-        only_file = _pinned_path is not None
+    elif _snapshot is not None:
+        if not fresh:
+            return _snapshot
+        # Fresh: only the snapshot's own file (or none), never a fallback.
+        paths_to_try = [] if _snapshot.source_path is None else [_snapshot.source_path]
+        only_file = _snapshot.source_path is not None
     else:
         env_path = os.environ.get("LABCTL_CONFIG")
         paths_to_try = []
@@ -694,7 +689,6 @@ def load_config(
     # Try to load from file
     config = None
     loaded_from = None
-    intended = None  # first file that exists but couldn't be used
     load_errors = []
     load_denied = False
     for path in paths_to_try:
@@ -716,14 +710,12 @@ def load_config(
                 )
                 load_errors.append(f"{path}: {e}")
                 load_denied |= e.errno in (errno.EACCES, errno.EPERM)
-                intended = intended or path
                 continue
             # The one file named explicitly being absent means defaults,
             # not "no config": warn and record it (e.g. for --check).
             if only_file:
                 logger.warning("Config file %s not found; using defaults", path)
                 load_errors.append(f"{path}: {e.strerror}")
-                intended = path
             continue
         else:
             try:
@@ -733,7 +725,6 @@ def load_config(
                 logger.warning("Failed to load config from %s: %s", path, e)
                 load_errors.append(f"{path}: {e}")
                 load_denied |= isinstance(e, PermissionError)
-                intended = intended or path
                 continue
             # Valid YAML can still hold invalid values (`timeout_seconds:
             # 10s`, a list at the top): treated like a parse error, i.e.
@@ -743,7 +734,6 @@ def load_config(
             except Exception as e:
                 logger.warning("Invalid config in %s: %s", path, e)
                 load_errors.append(f"{path}: invalid value: {e}")
-                intended = intended or path
                 continue
             loaded_from = path
             break
@@ -751,7 +741,6 @@ def load_config(
     if config is None:
         config = Config.from_dict({})
     config.source_path = loaded_from
-    config.intended_path = loaded_from or intended
     config.load_errors = load_errors
     config.load_denied = load_denied
 
@@ -762,16 +751,6 @@ def load_config(
     if create_if_missing and not any(_path_exists(p) for p in paths_to_try):
         save_config(config, _default_config_file())
 
-    if config_path is None and _pinned_path is not _UNPINNED:
-        global _last_good
-        if not config.load_errors:
-            _last_good = config
-        elif not fresh and _last_good is not None:
-            logger.warning(
-                "Config not loaded (%s); keeping the last good one",
-                "; ".join(config.load_errors),
-            )
-            return _last_good
     return config
 
 
