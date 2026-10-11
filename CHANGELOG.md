@@ -37,7 +37,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   server refuses to start without auth on a non-loopback `--host` or with
   non-loopback names in `mcp.allowed_hosts` / `allowed_origins` (a proxy
   that forwards `Host: 127.0.0.1` can't be detected: enable auth before
-  adding one), or with auth enabled but no API key configured. Users
+  adding one), with auth enabled but no API key configured, or when a
+  config file it should read can't be loaded (a fallback to another file
+  or to defaults could drop the authentication the intended config
+  enables). Users
   without a string username can't authenticate by API key. New `mcp.allowed_hosts` / `mcp.allowed_origins` accept extra
   `Host` / `Origin` headers (e.g. a reverse proxy's public name) on top of
   the loopback names. See `docs/MCP_SERVER.md` (D012).

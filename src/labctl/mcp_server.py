@@ -3635,13 +3635,21 @@ def check_http_startup(host: str, config):
     run_server(transport="http") runs exactly this before serving, and
     `labctl mcp --http PORT --check` runs it alone. Returns
     ``(auth_required, transport_security)``; raises McpStartupError when
-    the server would refuse to start. Logs the startup warnings
-    (unloadable config files, running without auth, short keys, ignored
-    users, unchecked Host headers, unknown confirm exemptions) whatever the
-    configured log_level.
+    the server would refuse to start, including when a config file it
+    should read can't be loaded: falling back to another file or to
+    built-in defaults could mean serving without the authentication the
+    intended config enables. Logs the startup warnings (running without
+    auth, short keys, ignored users, unchecked Host headers, unknown
+    confirm exemptions) whatever the configured log_level.
     """
+    if config.load_errors:
+        raise McpStartupError(
+            "Refusing to serve MCP over HTTP: config not loaded ("
+            + "; ".join(config.load_errors)
+            + "). Serving on another file or on built-in defaults could "
+            "drop the authentication the intended config enables."
+        )
     with _startup_warnings_visible():
-        _warn_config_load_errors(config)
         required = _http_auth_required(host, config)
         if not required:
             logger.warning(

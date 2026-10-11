@@ -361,7 +361,6 @@ class TestRunServerRefuses:
 
         config = _config(enabled=False)
         config.mcp.confirm_exempt = ["serial_sen"]
-        config.load_errors = ["/etc/labctl/x.yaml: bad"]
         root = logging.getLogger()
         saved = root.level
         root.setLevel(logging.ERROR)
@@ -371,7 +370,6 @@ class TestRunServerRefuses:
         finally:
             root.setLevel(saved)
         assert "serial_sen" in caplog.text
-        assert "Config file not loaded, ignored: /etc/labctl/x.yaml: bad" in caplog.text
         # The no-auth warning too (it used to bypass the forced level).
         assert "without authentication (auth.enabled is false)" in caplog.text
 
@@ -395,12 +393,46 @@ class TestRunServerRefuses:
         cfg.write_text(f"database_path: {tmp_path / 'x.db'}\n")
         broken = _config()
         broken.load_errors = [error]
+        broken.load_denied = hint
         with patch("labctl.mcp_server._get_config", return_value=broken):
             result = CliRunner().invoke(
                 main, ["-c", str(cfg), "mcp", "--http", "8080", "--check"]
             )
         assert result.exit_code == 1
         assert ("sudo -u labctl" in result.output) is hint
+
+    def test_http_refuses_when_config_not_loaded(self):
+        """Fail closed: a broken or unreadable config would otherwise mean
+        serving on defaults, i.e. without the auth it enables."""
+        from labctl import mcp_server
+
+        config = _config()  # auth on: what the intended file said
+        config.load_errors = ["/etc/labctl/config.yaml: while parsing ..."]
+        with pytest.raises(mcp_server.McpStartupError, match="config not loaded"):
+            mcp_server.check_http_startup("127.0.0.1", config)
+
+    def test_stdio_starts_despite_load_errors(self, caplog):
+        from labctl import mcp_server
+
+        config = _config()
+        config.load_errors = ["/home/u/.config/labctl/config.yaml: bad"]
+        mcp_server.check_stdio_startup(config)
+        assert "Config file not loaded, ignored" in caplog.text
+
+    def test_host_requires_http(self, tmp_path):
+        """`--host` without `--http` used to be ignored (and --check said
+        "auth: n/a", exit 0)."""
+        from click.testing import CliRunner
+
+        from labctl.cli import main
+
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text(f"database_path: {tmp_path / 'x.db'}\n")
+        result = CliRunner().invoke(
+            main, ["-c", str(cfg), "mcp", "--host", "0.0.0.0", "--check"]
+        )
+        assert result.exit_code == 2
+        assert "--host only applies with --http" in result.output
 
     def test_check_warns_unknown_confirm_exemption(self, caplog):
         """--check runs the same startup warnings as the server."""
@@ -528,14 +560,15 @@ class TestConfigSymlinkLoop:
 
 
 class TestExclusiveConfigMissing:
-    def test_missing_exclusive_config_recorded(self, tmp_path, monkeypatch):
+    def test_missing_exclusive_config_recorded(self, tmp_path, monkeypatch, caplog):
         """LABCTL_CONFIG + EXCLUSIVE naming a missing file means defaults:
-        a load error, not "no config"."""
+        a load error and a warning, not a silent "no config"."""
         from labctl.core.config import load_config
 
         monkeypatch.setenv("LABCTL_CONFIG", str(tmp_path / "typo.yml"))
         monkeypatch.setenv("LABCTL_CONFIG_EXCLUSIVE", "1")
         config = load_config()
+        assert "typo.yml not found; using defaults" in caplog.text
         assert config.source_path is None
         assert config.load_errors == [
             f"{tmp_path / 'typo.yml'}: No such file or directory"

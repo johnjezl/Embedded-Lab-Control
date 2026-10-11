@@ -392,6 +392,8 @@ class Config:
     source_path: Optional[Path] = field(default=None, compare=False, repr=False)
     # "<path>: <error>" for each config file found but not loadable.
     load_errors: list[str] = field(default_factory=list, compare=False, repr=False)
+    # True if one of those was a permission error (EACCES/EPERM).
+    load_denied: bool = field(default=False, compare=False, repr=False)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Config":
@@ -661,6 +663,7 @@ def load_config(
     config_data = {}
     loaded_from = None
     load_errors = []
+    load_denied = False
     for path in paths_to_try:
         try:
             os.stat(path)
@@ -679,10 +682,12 @@ def load_config(
                     e,
                 )
                 load_errors.append(f"{path}: {e}")
+                load_denied |= e.errno in (errno.EACCES, errno.EPERM)
                 continue
             # The one file named explicitly being absent means defaults,
-            # not "no config": record it (e.g. for `labctl mcp --check`).
+            # not "no config": warn and record it (e.g. for --check).
             if only_file:
+                logger.warning("Config file %s not found; using defaults", path)
                 load_errors.append(f"{path}: {e.strerror}")
             continue
         else:
@@ -694,12 +699,14 @@ def load_config(
             except Exception as e:
                 logger.warning("Failed to load config from %s: %s", path, e)
                 load_errors.append(f"{path}: {e}")
+                load_denied |= isinstance(e, PermissionError)
                 continue
 
     # Create config from loaded data (or defaults)
     config = Config.from_dict(config_data)
     config.source_path = loaded_from
     config.load_errors = load_errors
+    config.load_denied = load_denied
 
     # Apply environment variable overrides
     config = _apply_env_overrides(config)
