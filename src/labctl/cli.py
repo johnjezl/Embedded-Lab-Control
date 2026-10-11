@@ -350,6 +350,25 @@ def _sdwire_host_switch_guard_cli(
     return None
 
 
+class _CliState(dict):
+    """ctx.obj for the CLI: refuses to hand a command a named config that
+    didn't load (main() sets ``config_error``), at the point of use."""
+
+    config_error: str | None = None
+
+    def _check(self, key):
+        if key == "config" and self.config_error:
+            raise click.ClickException(self.config_error)
+
+    def __getitem__(self, key):
+        self._check(key)
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        self._check(key)
+        return super().get(key, default)
+
+
 @click.group(cls=AliasedGroup)
 @click.version_option(version=__version__, prog_name="labctl")
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose output")
@@ -393,39 +412,22 @@ def main(
 
     audit.set_context(actor=f"cli:{getpass.getuser()}", source="cli")
 
-    ctx.ensure_object(dict)
+    ctx.obj = _CliState(ctx.obj or {})
     ctx.obj["verbose"] = verbose
     ctx.obj["quiet"] = quiet
     ctx.obj["config_path"] = config_path
-    ctx.obj["config"] = load_config(config_path)
-    # Fail closed on a named config that doesn't load (YAML error, invalid
-    # value): running on built-in defaults would mean another database
-    # and, for `web`, no login. `mcp` reports this itself (--check, and its
-    # HTTP startup refusal).
-    # Named means -c or LABCTL_CONFIG (exclusive or not). Commands that
-    # don't use the config stay usable, notably the ones that help fix it
-    # (generate a key, hash a password), and --help.
-    sub_args = sys.argv[1:]
-    config_free = (
-        ctx.invoked_subcommand in ("mcp", "completion")
-        or "--help" in sub_args
-        or "-h" in sub_args
-        or (
-            ctx.invoked_subcommand == "user"
-            and any(a in ("generate-key", "hash-password") for a in sub_args)
-        )
-    )
-    if (
-        (config_path or os.environ.get("LABCTL_CONFIG"))
-        and ctx.obj["config"].load_errors
-        and not config_free
-    ):
-        raise click.ClickException(
-            "config not loaded: " + "; ".join(ctx.obj["config"].load_errors)
-        )
+    config = load_config(config_path)
+    ctx.obj["config"] = config
+    # Fail closed on a named config (-c or LABCTL_CONFIG, exclusive or not)
+    # that doesn't load (YAML error, invalid value): running on built-in
+    # defaults would mean another database and, for `web`, no login. The
+    # refusal happens when a command reads ctx.obj["config"], so commands
+    # that don't use it (user generate-key / hash-password / add,
+    # completion, --help, and `mcp`, which reports this itself) still run.
+    if (config_path or os.environ.get("LABCTL_CONFIG")) and config.load_errors:
+        ctx.obj.config_error = "config not loaded: " + "; ".join(config.load_errors)
 
     # Initialize logging
-    config = ctx.obj["config"]
     log_level = config.log_level.upper()
     if verbose:
         log_level = "DEBUG"
