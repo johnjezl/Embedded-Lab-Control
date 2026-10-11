@@ -87,15 +87,30 @@ fi
 # PyYAML), before anything changes.
 for cfg in "$SYSTEM_CONFIG_FILE" "$SERVICE_CONFIG_FILE"; do
     [ -f "$cfg" ] || continue
-    if ! YAML_ERR=$("$LABCTL_VENV/bin/python" -I -c '
-import logging, sys
+    # Exit 3: the check itself couldn't run (warn, don't block updates).
+    YAML_RC=0
+    YAML_ERR=$("$LABCTL_VENV/bin/python" -I -c '
+import importlib.util, logging, sys
 from pathlib import Path
-sys.path.insert(0, sys.argv[2])
 logging.disable(logging.WARNING)
-from labctl.core.config import load_config
-errors = load_config(Path(sys.argv[1])).load_errors
-sys.exit("\n".join(errors) if errors else 0)
-' "$cfg" "$PROJECT_DIR/src" 2>&1); then
+try:
+    # config.py alone (stdlib + PyYAML), not the labctl.core package.
+    spec = importlib.util.spec_from_file_location("labctl_config_check", sys.argv[2])
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod  # dataclasses look the module up
+    spec.loader.exec_module(mod)
+    errors = mod.load_config(Path(sys.argv[1])).load_errors
+except Exception as e:
+    print(f"{type(e).__name__}: {e}")
+    sys.exit(3)
+if errors:
+    print("\n".join(errors))
+    sys.exit(1)
+' "$cfg" "$PROJECT_DIR/src/labctl/core/config.py" 2>&1) || YAML_RC=$?
+    if [ "$YAML_RC" -eq 3 ]; then
+        echo "[!!] Could not check $cfg with the new release's loader:"
+        tail -n 2 <<<"$YAML_ERR" | sed 's/^/     /'
+    elif [ "$YAML_RC" -ne 0 ]; then
         echo "Error: $cfg doesn't load; fix it, then rerun:"
         tail -n 4 <<<"$YAML_ERR" | sed 's/^/     /'
         exit 1

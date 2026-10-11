@@ -619,6 +619,32 @@ class TestCliFailsClosedOnBrokenConfig:
         assert result.exit_code == 1
         assert "config not loaded" in result.output
 
+    @pytest.mark.parametrize(
+        "args",
+        [["user", "generate-key"], ["user", "hash-password", "--help"], ["--help"]],
+    )
+    def test_config_free_commands_still_work(self, tmp_path, monkeypatch, args):
+        """The commands that help fix a broken config (and --help) run."""
+        from click.testing import CliRunner
+
+        from labctl.cli import main
+
+        cfg = tmp_path / "c.yaml"
+        cfg.write_text("auth: [unclosed\n")
+        monkeypatch.setenv("LABCTL_CONFIG", str(cfg))
+        monkeypatch.setattr("sys.argv", ["labctl", *args])
+        result = CliRunner().invoke(main, args)
+        assert result.exit_code == 0, result.output
+
+    def test_create_app_fails_closed(self):
+        """WSGI servers and other create_app() callers, not just `labctl web`."""
+        from labctl.web import create_app
+
+        broken = _config()
+        broken.load_errors = ["/etc/labctl/config.yaml: while parsing"]
+        with pytest.raises(RuntimeError, match="config not loaded"):
+            create_app(broken)
+
     def test_web_refuses_on_search_path_config_error(self, tmp_path, monkeypatch):
         from click.testing import CliRunner
 
