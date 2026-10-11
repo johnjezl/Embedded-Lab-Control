@@ -53,11 +53,18 @@ fi
 # config is a symlink, not a regular file, or hard-linked: step 3 refuses
 # it anyway (race-free, via admin_files), and stopping there would leave
 # a new venv and units with the old services still running.
-if [ -L "$SERVICE_CONFIG_FILE" ] ||
-    { [ -e "$SERVICE_CONFIG_FILE" ] && { [ ! -f "$SERVICE_CONFIG_FILE" ] ||
-        [ "$(stat -c %h "$SERVICE_CONFIG_FILE")" != 1 ]; }; }; then
-    echo "Error: $SERVICE_CONFIG_FILE is a symlink, not a regular file,"
-    echo "or hard-linked; replace it with a regular file, then rerun."
+# Every component below the labctl home counts, as in admin_files.
+for rel in .config .config/labctl .config/labctl/config.yaml; do
+    if [ -L "$LABCTL_HOME/$rel" ]; then
+        echo "Error: $LABCTL_HOME/$rel is a symlink; the service config path"
+        echo "must not contain one. Replace it with a real directory/file, then rerun."
+        exit 1
+    fi
+done
+if [ -e "$SERVICE_CONFIG_FILE" ] && { [ ! -f "$SERVICE_CONFIG_FILE" ] ||
+    [ "$(stat -c %h "$SERVICE_CONFIG_FILE")" != 1 ]; }; then
+    echo "Error: $SERVICE_CONFIG_FILE is not a regular file, or is hard-linked;"
+    echo "replace it with a regular file, then rerun."
     exit 1
 fi
 
@@ -239,8 +246,9 @@ if [ -n "$SERVICES" ]; then
             sleep 1
         done
         # journald stores stdout asynchronously: give the auth-mode line,
-        # printed before the bind, a moment to arrive.
+        # printed before the bind, a moment to arrive (if it's still up).
         for _ in 1 2 3 4 5; do
+            if ! systemctl is-active --quiet labctl-mcp; then break; fi
             if svc_log labctl-mcp | grep -q '^MCP HTTP: '; then break; fi
             sleep 1
         done
