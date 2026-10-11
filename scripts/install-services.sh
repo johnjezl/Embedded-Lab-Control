@@ -15,6 +15,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Physical path: admin_files refuses symlinks on the paths it opens, and a
 # checkout reached through a symlink (~/lab -> /data/src/...) is fine.
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+# Run from "/": root runs Python below, and `python -m`/`python -` look in
+# the current directory first, so a `labctl/` package planted where the
+# admin happens to be (e.g. the group-writable images/ directory) would run
+# as root. Root Python calls also use -I (isolated: no cwd, no PYTHON* env).
+cd /
 CONFIG_DIR="$PROJECT_DIR/config/systemd"
 LABCTL_HOME="/var/lib/labctl"
 LABCTL_CONFIG="$LABCTL_HOME/.config/labctl"
@@ -95,7 +100,7 @@ SYSTEM_CONFIG_FILE="$SYSTEM_CONFIG_DIR/config.yaml"
 # on a reinstall root only touches files there through
 # labctl.core.admin_files: no symlinks or hard links followed, descriptor-
 # based chown/chmod, O_EXCL creation.
-ADMIN_FILES=("$LABCTL_VENV/bin/python" -m labctl.core.admin_files)
+ADMIN_FILES=("$LABCTL_VENV/bin/python" -I -m labctl.core.admin_files)
 if ! SERVICE_CONFIG_STATE=$("${ADMIN_FILES[@]}" state "$LABCTL_CONFIG/config.yaml"); then
     echo "[!!] $SERVICE_CONFIG_STATE"
     echo "     Replace $LABCTL_CONFIG/config.yaml with a regular file and rerun."
