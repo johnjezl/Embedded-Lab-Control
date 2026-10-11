@@ -61,10 +61,23 @@ for rel in .config .config/labctl .config/labctl/config.yaml; do
         exit 1
     fi
 done
+for rel in .config .config/labctl; do
+    if [ -e "$LABCTL_HOME/$rel" ] && [ ! -d "$LABCTL_HOME/$rel" ]; then
+        echo "Error: $LABCTL_HOME/$rel is not a directory; fix it, then rerun."
+        exit 1
+    fi
+done
 if [ -e "$SERVICE_CONFIG_FILE" ] && { [ ! -f "$SERVICE_CONFIG_FILE" ] ||
     [ "$(stat -c %h "$SERVICE_CONFIG_FILE")" != 1 ]; }; then
     echo "Error: $SERVICE_CONFIG_FILE is not a regular file, or is hard-linked;"
     echo "replace it with a regular file, then rerun."
+    exit 1
+fi
+# Same for config drift (step 3 checks again; the by-path read is #19).
+if [ -f "$SYSTEM_CONFIG_FILE" ] && [ -f "$SERVICE_CONFIG_FILE" ] &&
+    ! cmp -s "$SYSTEM_CONFIG_FILE" "$SERVICE_CONFIG_FILE"; then
+    echo "Error: $SYSTEM_CONFIG_FILE differs from $SERVICE_CONFIG_FILE."
+    echo "Sync the files intentionally, then rerun scripts/update.sh."
     exit 1
 fi
 

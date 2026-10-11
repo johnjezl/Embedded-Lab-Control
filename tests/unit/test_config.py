@@ -621,11 +621,15 @@ class TestConfigLoadLogging:
 
         monkeypatch.setattr(config_module.os, "stat", fake_stat)
 
-        with caplog.at_level(logging.WARNING, logger="labctl.core.config"):
+        with caplog.at_level(logging.DEBUG, logger="labctl.core.config"):
             config = load_config()
 
         assert isinstance(config, Config)
-        assert any("Failed to access config path" in r.message for r in caplog.records)
+        # Debug, not a warning on every command for users outside the group.
+        records = [
+            r for r in caplog.records if "Failed to access config path" in r.message
+        ]
+        assert records and all(r.levelno == logging.DEBUG for r in records)
         # Recorded, so `labctl mcp --check` doesn't mistake it for "no config".
         assert config.load_errors == [
             "/etc/labctl/config.yaml: [Errno 13] Permission denied: "
