@@ -8,6 +8,18 @@ import types
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _restore_labctl_config_env(monkeypatch):
+    """`labctl -c FILE mcp` and the MCP server's config pinning write
+    LABCTL_CONFIG / _EXCLUSIVE / _NONE straight into os.environ. Register
+    them with monkeypatch so every test starts and ends with the caller's
+    values; otherwise one test's run_server() would pin every later
+    load_config() (to a deleted temp file, or to built-in defaults)."""
+    for name in ("LABCTL_CONFIG", "LABCTL_CONFIG_EXCLUSIVE", "LABCTL_CONFIG_NONE"):
+        monkeypatch.setenv(name, "")
+        monkeypatch.delenv(name)
+
+
 @pytest.fixture
 def sdwire_stub(monkeypatch):
     """Install a hardware-free stand-in for the optional ``sdwire`` package.

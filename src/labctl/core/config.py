@@ -628,7 +628,9 @@ def load_config(
     An explicit path is the only file tried: if it's missing or fails to
     load, defaults are used, never another config. LABCTL_CONFIG normally
     falls through to 3 and 4; with LABCTL_CONFIG_EXCLUSIVE=1 it behaves
-    like an explicit path. `labctl -c FILE mcp` sets both, so every
+    like an explicit path. LABCTL_CONFIG_NONE=1 skips files entirely
+    (built-in defaults; the MCP server pins this when it started without
+    one). `labctl -c FILE mcp` sets both, so every
     load_config() in the server process (including e.g. Kasa credential
     lookups) uses FILE and only FILE.
 
@@ -650,6 +652,9 @@ def load_config(
     if config_path:
         paths_to_try = [config_path]
         only_file = True
+    elif os.environ.get("LABCTL_CONFIG_NONE") == "1":
+        paths_to_try = []
+        only_file = False
     else:
         env_path = os.environ.get("LABCTL_CONFIG")
         paths_to_try = []
