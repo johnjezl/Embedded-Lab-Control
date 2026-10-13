@@ -201,17 +201,14 @@ python -m labctl.mcp_server
 
 ### Claude Code
 
-Add to your Claude Code MCP settings (`.claude/settings.json` or project settings):
+Over HTTP, with one labctl user and API key per agent so claims keep
+agents apart: see [Connecting Claude Code agents](CLAUDE_CODE_AGENTS.md)
+(manual `claude mcp add`, and a streamlined per-agent launcher).
 
-```json
-{
-  "mcpServers": {
-    "labctl": {
-      "command": "/opt/labctl/venv/bin/labctl",
-      "args": ["mcp"]
-    }
-  }
-}
+For a single local agent over stdio (no key; it runs as you):
+
+```bash
+claude mcp add labctl -- /opt/labctl/venv/bin/labctl mcp
 ```
 
 ### Claude Desktop
@@ -504,7 +501,8 @@ system-write / hardware / destructive) in
    machines; prefer an SSH tunnel to opening the port.
 2. For any shared or remote use, set `auth.enabled: true`, give each person
    or agent their own user and `api_key` (`labctl user generate-key`), and
-   add the `Authorization: Bearer <api_key>` header to their MCP client.
+   add the `Authorization: Bearer <api_key>` header to their MCP client
+   ([Connecting Claude Code agents](CLAUDE_CODE_AGENTS.md)).
 3. Behind a reverse proxy: terminate TLS there, keep the server on
    loopback, and list the public name in `mcp.allowed_hosts`.
 4. List the directories MCP tools may use in `mcp.allowed_read_paths`
