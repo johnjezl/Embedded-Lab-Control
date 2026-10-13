@@ -144,9 +144,14 @@ Register the server in Claude Code, from the agent's project directory:
 
 ```bash
 cd ~/projects/my-firmware
-claude mcp add --transport http --scope local labctl http://127.0.0.1:8080/mcp \
-  --header "Authorization: Bearer $(cat ~/.config/labctl/agents/fw-dev.key)"
+KEY=$(cat ~/.config/labctl/agents/fw-dev.key) && [ -n "$KEY" ] &&
+  claude mcp add --transport http --scope local labctl http://127.0.0.1:8080/mcp \
+    --header "Authorization: Bearer $KEY"
+unset KEY
 ```
+
+(The `[ -n "$KEY" ]` stops it from registering an empty key if the key
+file is missing or empty.)
 
 Check it:
 
@@ -313,7 +318,7 @@ reads keys only at startup.
   Method A, `claude mcp remove labctl -s local` in that directory.
 - **Rotate:** delete the key file, rerun Step 1 with the same name, put
   the new `api_key` in the config in place of the old one, and for
-  Method A re-add the server. Claims belong to the username, not the key,
+  Method A `claude mcp remove labctl -s local` and add it again. Claims belong to the username, not the key,
   so they survive; sessions still running with the old key get 401 until
   you restart them.
 
