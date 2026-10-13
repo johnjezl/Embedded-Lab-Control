@@ -14,8 +14,9 @@ agent is using.
   key alone**: the agent never sends, or needs to know, its username.
 - Each user is a separate **claimant**. When an agent claims a board
   (`claim_sbc`), mutating tools called by any *other* user on that board
-  (`power_*`, `serial_send`, `sdwire_*`, `flash_image`, `boot_test`,
-  `remove_sbc`) are refused with `"error": "sbc_claimed"`.
+  (power, `serial_send`, SDWire switching and updates, `flash_image`,
+  `boot_test`, actuator and recovery tools, `remove_sbc`) are refused
+  with `"error": "sbc_claimed"`.
 
 So the rule is **one labctl user and key per agent**. Two agents sharing a
 key are the same claimant, and their claims do not protect them from each
@@ -42,12 +43,16 @@ What keys do *not* do:
   running as the same Linux user can read each other's key files (and
   `~/.claude.json`). For isolation between people, use separate Linux
   accounts.
+- **Restarting `labctl-mcp` releases every claim.** Claims belong to the
+  server process; after a restart agents start unclaimed and must claim
+  again. Restart when no agent is mid-operation.
 
 ## Prerequisites
 
-- `labctl-mcp` is running over HTTP with `auth.enabled: true` (check:
-  `labctl -c /etc/labctl/config.yaml mcp --http 8080 --check` prints
-  `auth: required`).
+- `labctl-mcp` is running (`systemctl is-active labctl-mcp`) with
+  `auth.enabled: true` (`labctl -c /etc/labctl/config.yaml mcp --http 8080
+  --check` prints `auth: required`; it checks the config, not the running
+  service).
 - You can edit `/etc/labctl/config.yaml` (root), and you are in the
   `labctl` group (to run the check above).
 - Claude Code is installed on the machine the agent runs on. If that is
@@ -57,17 +62,19 @@ What keys do *not* do:
 ## Step 1: create the agent's labctl user
 
 Both methods below start here. Pick a name for the agent: any unique
-string you like, e.g. `fw-dev` or `ci-boottest`. It shows up in claims
-(`labctl claims list`) and the activity log.
+string you like, e.g. `fw-dev` or `ci-boottest`. It shows up in the
+activity log and, by default, in claims.
 
 ```bash
 NAME=fw-dev
+KEY=~/.config/labctl/agents/$NAME.key
 mkdir -p -m 700 ~/.config/labctl/agents
-(umask 077; labctl user generate-key > ~/.config/labctl/agents/$NAME.key)
-
-# Print the YAML entry to paste:
-printf -- '- username: %s\n  api_key: %s\n' "$NAME" "$(cat ~/.config/labctl/agents/$NAME.key)"
+# Generates the key and prints the YAML entry to paste (nothing on failure):
+(umask 077; labctl user generate-key > "$KEY") && [ -s "$KEY" ] &&
+    printf -- '- username: %s\n  api_key: %s\n' "$NAME" "$(cat "$KEY")"
 ```
+
+(If `labctl` isn't on your `PATH`, use `/opt/labctl/venv/bin/labctl`.)
 
 Add the printed entry under `auth.users`, indented like the existing
 users:
@@ -96,7 +103,7 @@ labctl -c /etc/labctl/config.yaml mcp --http 8080 --check
 
 **No restart is needed.** The server re-reads API keys from the config
 file on every request, so the new key works on the agent's next call.
-(Every other setting needs a restart.) While the file doesn't load,
+(Every other setting needs a restart, which releases all claims.) While the file doesn't load,
 e.g. after saving a YAML mistake, **every** key is refused, which is why
 `sudoedit` (it saves only when you quit) and the check above matter.
 
@@ -130,8 +137,8 @@ Notes:
 - `--scope local` (the default) stores the server, key included, in
   `~/.claude.json` for **this directory only**, for your Linux user.
   Every Claude Code session started in that directory uses the same key,
-  i.e. is the same agent. Git worktrees are separate directories, so each
-  can have its own key.
+  i.e. is the same agent. Git worktrees of a repository share its entry,
+  so they are one agent too; use Method B to run several.
 - `--scope user` makes it apply to every directory; then all your sessions
   are one agent.
 - Don't use `--scope project`: it writes the key into `.mcp.json`, which is
@@ -178,7 +185,7 @@ To make this a single word, add a shell function to `~/.bashrc`:
 # Start Claude Code as labctl agent NAME: labagent NAME [claude options...]
 labagent() {
     local name=$1 key=~/.config/labctl/agents/$1.key
-    if [ -z "$name" ] || [ ! -r "$key" ]; then
+    if [ -z "$name" ] || [ ! -s "$key" ]; then
         echo "usage: labagent NAME [claude options]; no key at $key" >&2
         return 1
     fi
@@ -198,10 +205,10 @@ Notes:
 - If `LABCTL_API_KEY` is unset, Claude Code sends the text
   `${LABCTL_API_KEY}` literally and the server refuses it (401); the
   function above refuses to start instead.
-- Don't also register a `labctl` server with `claude mcp add` (Method A)
-  in the same directory: two servers with one name are ambiguous. Add
-  `--strict-mcp-config` to ignore every MCP server except the ones in
-  `--mcp-config`, if you want to be sure.
+- If the directory also has a `labctl` server from `claude mcp add`
+  (Method A), the `--mcp-config` one is used. Avoid mixing the two
+  anyway, or add `--strict-mcp-config`, which ignores every MCP server
+  not in `--mcp-config` (other servers you use included).
 - The key is in the session's environment, so commands the agent runs can
   see it (`echo $LABCTL_API_KEY`). See the isolation note under
   [How it works](#how-it-works).
@@ -209,13 +216,14 @@ Notes:
 ## Agent instructions
 
 Identity only helps if agents claim boards. Put rules like these in the
-agent's `CLAUDE.md` (or pass them with `--append-system-prompt-file`):
+agent's `CLAUDE.md`:
 
 ```markdown
 ## Lab hardware (labctl)
 - Use the labctl MCP tools for all lab hardware. Never run the `labctl`
   CLI for power, serial, SDWire or flashing: it bypasses claims.
-- Before touching a board, `claim_sbc` it (with a short `reason`). If it
+- Before touching a board, `claim_sbc` it (with a short `reason`; leave
+  `agent_name` unset so the claim shows your labctl user). If it
   is claimed by someone else, wait or call `request_sbc_release`; never
   call `force_release_sbc` unless I ask.
 - `release_sbc` as soon as you are done; `renew_sbc_claim` for long runs.
@@ -228,12 +236,16 @@ agent's `CLAUDE.md` (or pass them with `--append-system-prompt-file`):
 Ask the agent to claim a spare board, then:
 
 ```bash
-labctl claims list       # test-board  held by fw-dev (...)
-labctl activity tail     # ... mcp-stdio:<process>:fw-dev  claim  test-board ...
+labctl -c /etc/labctl/config.yaml activity tail
+#   ... mcp-stdio:<process>:fw-dev  claim  test-board ...
+labctl -c /etc/labctl/config.yaml claims list
+#   test-board  held by fw-dev (...)
 ```
 
-The name comes from the key: if it shows another agent's name, the two
-share a key.
+The name after the last `:` in the activity log comes from the key: if it
+is another agent's name, the two share a key. `claims list` shows the
+claim's `agent_name`, which is the username unless the agent passed its
+own.
 
 ## Revoking or rotating a key
 
