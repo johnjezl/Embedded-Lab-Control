@@ -164,6 +164,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   from removing dead code flagged by flake8 (unused imports/variables).
 
 ### Added
+- `docs/CLAUDE_CODE_AGENTS.md`: connecting Claude Code agents to the HTTP
+  MCP server with one labctl user and API key each, so claims keep them
+  apart. Covers `claude mcp add` (manual) and a shared `--mcp-config` file
+  with the key taken from `LABCTL_API_KEY` at launch (streamlined), agent
+  instructions, identity checks and key revocation.
 - `SECURITY.md`: how to report vulnerabilities privately, and what's in
   scope. `docs/MCP_SERVER.md` opens its security section with an overview
   of every control (defaults, settings), known limits and a deployment

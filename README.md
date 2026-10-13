@@ -446,7 +446,11 @@ users' API keys (`Authorization: Bearer`) when `auth.enabled` is set. See
 
 ### Claude Desktop / Claude Code Configuration
 
-Add to your MCP client configuration:
+For several Claude Code agents sharing the lab (each with its own API key,
+so claims keep them apart), see
+[Connecting Claude Code agents](docs/CLAUDE_CODE_AGENTS.md).
+
+For a single local client over stdio, add to your MCP client configuration:
 
 ```json
 {
@@ -492,6 +496,7 @@ flake8 src/ tests/
 - [Hardware Map](docs/HARDWARE_MAP.md) - USB device identification
 - [Decision Log](docs/DECISIONS.md) - Architecture decisions
 - [MCP Server](docs/MCP_SERVER.md) - AI integration, security model
+- [Claude Code Agents](docs/CLAUDE_CODE_AGENTS.md) - One API key per agent, setup and launch
 - [Operations](docs/OPERATIONS.md) - What every command and tool changes
 - [Security Policy](SECURITY.md) - Reporting vulnerabilities
 
