@@ -120,6 +120,18 @@ auth:
 
 Agents don't need a `password_hash` (that is only for web UI logins).
 
+If the service's own copy of the config exists
+(`/var/lib/labctl/.config/labctl/config.yaml`), keep it identical:
+`scripts/update.sh` refuses to update while the two differ. Copy as the
+`labctl` user (which owns that file), not as root:
+
+```bash
+[ -f /var/lib/labctl/.config/labctl/config.yaml ] &&
+    sudo -u labctl cp /etc/labctl/config.yaml /var/lib/labctl/.config/labctl/config.yaml
+```
+
+Do the same after every change to `auth.users` below (revoke, rotate).
+
 Then check the file still loads (lab host):
 
 ```bash
@@ -221,7 +233,7 @@ To make this a single word, add a shell function to `~/.bashrc`:
 # Start Claude Code as labctl agent NAME: labagent NAME [claude options...]
 labagent() {
     local name=$1 key=~/.config/labctl/agents/$1.key
-    if [ -z "$name" ]; then
+    if [[ ! $name =~ ^[A-Za-z][A-Za-z0-9_-]*$ ]]; then
         echo "usage: labagent NAME [claude options]" >&2
         return 1
     elif [ ! -s "$key" ]; then
