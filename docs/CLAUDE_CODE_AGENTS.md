@@ -78,8 +78,9 @@ What keys do *not* do:
 
 ## Step 1: create the agent's labctl user
 
-Both methods below start here. Pick a name for the agent: any unique
-string you like, e.g. `fw-dev` or `ci-boottest`. It shows up in the
+Both methods below start here. Pick a unique name for the agent:
+letters, digits, `-` and `_`, starting with a letter, e.g. `fw-dev` or
+`ci-boottest`. It shows up in the
 activity log and, by default, in claims.
 
 **On the machine the agent will run on**, create its key file:
@@ -93,7 +94,7 @@ mkdir -p -m 700 ~/.config/labctl/agents
 (umask 077; set -C
  python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > "$KEY") &&
     [ -s "$KEY" ] &&
-    printf -- '- username: %s\n  api_key: %s\n' "$NAME" "$(cat "$KEY")"
+    printf -- '- username: "%s"\n  api_key: "%s"\n' "$NAME" "$(cat "$KEY")"
 ```
 
 The key is the same kind `labctl user generate-key` prints; `python3`
@@ -113,8 +114,8 @@ auth:
   users:
     - username: labctl          # existing user
       ...
-    - username: fw-dev          # new agent
-      api_key: <key>
+    - username: "fw-dev"        # new agent
+      api_key: "<key>"
 ```
 
 Agents don't need a `password_hash` (that is only for web UI logins).
