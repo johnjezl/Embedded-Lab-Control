@@ -211,6 +211,9 @@ For a single local agent over stdio (no key; it runs as you):
 claude mcp add labctl -- /opt/labctl/venv/bin/labctl -c /etc/labctl/config.yaml mcp
 ```
 
+Reading `/etc/labctl/config.yaml` requires membership in the `labctl`
+group; with a config of your own, pass that to `-c` instead.
+
 ### Claude Desktop
 
 Add to the Claude Desktop configuration file:
