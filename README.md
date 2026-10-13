@@ -457,7 +457,7 @@ For a single local client over stdio, add to your MCP client configuration:
   "mcpServers": {
     "labctl": {
       "command": "/opt/labctl/venv/bin/labctl",
-      "args": ["mcp"]
+      "args": ["-c", "/etc/labctl/config.yaml", "mcp"]
     }
   }
 }
