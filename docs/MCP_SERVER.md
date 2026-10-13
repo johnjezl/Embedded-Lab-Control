@@ -208,7 +208,7 @@ agents apart: see [Connecting Claude Code agents](CLAUDE_CODE_AGENTS.md)
 For a single local agent over stdio (no key; it runs as you):
 
 ```bash
-claude mcp add labctl -- /opt/labctl/venv/bin/labctl mcp
+claude mcp add labctl -- /opt/labctl/venv/bin/labctl -c /etc/labctl/config.yaml mcp
 ```
 
 ### Claude Desktop
