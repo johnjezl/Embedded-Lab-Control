@@ -14,9 +14,10 @@ agent is using.
   key alone**: the agent never sends, or needs to know, its username.
 - Each user is a separate **claimant**. When an agent claims a board
   (`claim_sbc`), mutating tools called by any *other* user on that board
-  (power, `serial_send`, SDWire switching and updates, `flash_image`,
-  `boot_test`, actuator and recovery tools, `remove_sbc`) are refused
-  with `"error": "sbc_claimed"`.
+  (power, `serial_send`, all SDWire tools including `sdwire_ls`/`cat`/
+  `info`, `flash_image`, `boot_test`, actuator and recovery tools,
+  `remove_sbc`) are refused with `"error": "sbc_claimed"`. This needs
+  `claims.enabled` (the default); with it `false`, nothing is enforced.
 
 So the rule is **one labctl user and key per agent**. Two agents sharing a
 key are the same claimant, and their claims do not protect them from each
@@ -36,9 +37,14 @@ What keys do *not* do:
 
 - **Unclaimed boards are open to everyone.** Agents must claim before they
   touch a board (see [Agent instructions](#agent-instructions)).
+- **Any agent can break another's claim** with `force_release_sbc`: the
+  server doesn't restrict it to an operator. Only the agent instructions
+  below stop it.
 - **The `labctl` CLI, web UI and REST API don't check claims** (except
   `remove`). An agent with a shell on the lab host can bypass claims by
-  running `labctl power cycle ...`; tell agents to use MCP tools only.
+  running `labctl power cycle ...`, and the same API key also works on the
+  web REST API (`X-API-Key` header) if `labctl-web` is running. Tell
+  agents to use MCP tools only.
 - **Keys separate cooperating agents; they don't isolate them.** Agents
   running as the same Linux user can read each other's key files (and
   `~/.claude.json`). For isolation between people, use separate Linux
@@ -69,12 +75,14 @@ activity log and, by default, in claims.
 NAME=fw-dev
 KEY=~/.config/labctl/agents/$NAME.key
 mkdir -p -m 700 ~/.config/labctl/agents
-# Generates the key and prints the YAML entry to paste (nothing on failure):
-(umask 077; labctl user generate-key > "$KEY") && [ -s "$KEY" ] &&
+# Generates the key and prints the YAML entry to paste (nothing on
+# failure). set -C: never overwrites an existing agent's key file.
+(umask 077; set -C; labctl user generate-key > "$KEY") && [ -s "$KEY" ] &&
     printf -- '- username: %s\n  api_key: %s\n' "$NAME" "$(cat "$KEY")"
 ```
 
-(If `labctl` isn't on your `PATH`, use `/opt/labctl/venv/bin/labctl`.)
+If `labctl` isn't on your `PATH`, use `/opt/labctl/venv/bin/labctl`. If
+the command fails, delete the (empty) key file before retrying.
 
 Add the printed entry under `auth.users`, indented like the existing
 users:
@@ -177,7 +185,8 @@ LABCTL_API_KEY=$(cat ~/.config/labctl/agents/fw-dev.key) \
 ```
 
 `-n` names the session (prompt box, `/resume` list, terminal title).
-Any other `claude` options can follow, e.g. `-p "..."` for a scripted run.
+Other `claude` options and a prompt go **before** `--mcp-config`: it takes
+several files, so a prompt after it is read as a config file name.
 
 To make this a single word, add a shell function to `~/.bashrc`:
 
@@ -190,14 +199,16 @@ labagent() {
         return 1
     fi
     shift
-    LABCTL_API_KEY=$(cat "$key") claude -n "$name" \
-        --mcp-config ~/.config/labctl/claude-mcp.json "$@"
+    # "$@" first: --mcp-config would take a trailing prompt as a file.
+    LABCTL_API_KEY=$(cat "$key") claude -n "$name" "$@" \
+        --mcp-config ~/.config/labctl/claude-mcp.json
 }
 ```
 
 ```bash
 labagent fw-dev                          # interactive
 labagent ci-boottest -p "Run a 10x boot test on pi-5-1"
+labagent fw-dev "Check the serial console on pi-5-1"   # with a first prompt
 ```
 
 Notes:
@@ -244,20 +255,28 @@ labctl -c /etc/labctl/config.yaml claims list
 
 The name after the last `:` in the activity log comes from the key: if it
 is another agent's name, the two share a key. `claims list` shows the
-claim's `agent_name`, which is the username unless the agent passed its
-own.
+claim's `agent_name`: the username, unless some session with that key
+passed `agent_name`, which then applies to all of that key's later claims
+until the server restarts.
 
 ## Revoking or rotating a key
+
+Have the agent release its claims first (`labctl -c
+/etc/labctl/config.yaml claims list`): once its key is gone it can't
+call `release_sbc`, and its boards stay blocked until the claims expire
+or are force-released. Sessions still running with the old key get 401
+from then on; restart them.
 
 - **Revoke:** delete the user's entry from `auth.users` (`sudoedit`). It
   takes effect on the next request, without a restart. Delete
   `~/.config/labctl/agents/NAME.key`, and for Method A,
   `claude mcp remove labctl -s local` in that directory.
-- **Rotate:** generate a new key into the key file, replace `api_key` in
-  the config, and for Method A re-add the server.
+- **Rotate:** delete the key file, rerun Step 1 with the same name, put
+  the new `api_key` in the config in place of the old one, and for
+  Method A re-add the server.
 
 ## Later
 
 Planned to reduce friction further (not implemented yet): a labctl
-command that creates the user and key file in one step, and claim checks
-in the CLI and web API.
+command that creates the user and key file in one step, claim checks
+in the CLI and web API, and restricting `force_release_sbc` to operators.
