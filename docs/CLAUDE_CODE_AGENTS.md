@@ -160,6 +160,9 @@ HTTP 401). Then start Claude Code in that directory as usual (`claude`);
 
 Notes:
 
+- The key is on the `claude mcp add` command line, so other local users
+  can see it in `ps` while the command runs. On a shared machine, use
+  Method B instead.
 - `--scope local` (the default) stores the server, key included, in
   `~/.claude.json` for **this directory only**, for your Linux user.
   Every Claude Code session started in that directory uses the same key,
@@ -284,6 +287,10 @@ labctl -c /etc/labctl/config.yaml activity tail
 labctl -c /etc/labctl/config.yaml claims list
 #   test-board  held by fw-dev (...)
 ```
+
+(These open the service's database: being in the `labctl` group is
+enough only if the database file and its directory are group-writable;
+otherwise prefix them with `sudo -u labctl`.)
 
 The name after the last `:` in the activity log comes from the key: if it
 is another agent's name, the two share a key. `claims list` shows the

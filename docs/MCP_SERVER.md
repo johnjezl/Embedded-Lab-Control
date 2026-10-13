@@ -224,7 +224,7 @@ Add to the Claude Desktop configuration file:
   "mcpServers": {
     "labctl": {
       "command": "/opt/labctl/venv/bin/labctl",
-      "args": ["mcp"]
+      "args": ["-c", "/etc/labctl/config.yaml", "mcp"]
     }
   }
 }
