@@ -41,10 +41,13 @@ What keys do *not* do:
 - **Changing a claimed board's configuration is not blocked.** Another
   agent can still `update_sbc` (even rename it), assign or remove its
   power plug, serial port or network address, `sdwire_assign`/`unassign`,
-  `bind`/`unbind` it, or change actuators.
+  `bind`/`unbind` it, or change actuators. `actuator_set` (when admin
+  actuator operations are enabled) drives a relay channel directly, with
+  no claim check, even if it is wired to a claimed board.
 - **Any agent can break another's claim** with `force_release_sbc`: the
   server doesn't restrict it to an operator. Only the agent instructions
-  below stop it.
+  below stop it. (People can also force-release from the web dashboard
+  or the CLI.)
 - **The `labctl` CLI, web UI and REST API don't check claims** (except
   `remove`). An agent with a shell on the lab host can bypass claims by
   running `labctl power cycle ...`, and the same API key also works on the
@@ -221,7 +224,9 @@ labagent ci-boottest -p "Run a 10x boot test on pi-5-1" \
 
 With `-p` (print mode) nobody can answer permission prompts, so allow the
 labctl tools up front: `--allowedTools mcp__labctl` allows all of them.
-Destructive tools still need their two-step confirmation.
+Destructive tools still need their two-step confirmation, unless the
+server turned it off (`mcp.confirm_destructive: false`) or exempted the
+tool (`mcp.confirm_exempt`).
 
 Notes:
 
@@ -253,7 +258,9 @@ agent's `CLAUDE.md`:
   call `force_release_sbc` unless I ask.
 - `release_sbc` as soon as you are done; `renew_sbc_claim` for long runs.
 - Destructive tools return `confirmation_required` first: check the plan,
-  then call again with the same arguments plus `confirm_token`.
+  then call again with the same arguments plus `confirm_token`. Never
+  call one "to see what happens": if confirmation is turned off, the
+  first call acts.
 ```
 
 ## Checking an agent's identity
