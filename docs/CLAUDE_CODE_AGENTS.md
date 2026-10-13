@@ -57,9 +57,12 @@ What keys do *not* do:
   running as the same Linux user can read each other's key files (and
   `~/.claude.json`). For isolation between people, use separate Linux
   accounts.
-- **Restarting `labctl-mcp` releases every claim.** Claims belong to the
-  server process; after a restart agents start unclaimed and must claim
-  again. Restart when no agent is mid-operation.
+- **Restarting `labctl-mcp` drops every claim.** Claims belong to the
+  server process. A clean stop releases them, and agents must claim
+  again. If the process is killed instead (crash, stop timeout), its
+  claims stay until they expire and block everyone, their former owners
+  included; `labctl claims list` shows them, and an operator can
+  force-release them. Restart when no agent is mid-operation.
 
 ## Prerequisites
 
@@ -121,7 +124,7 @@ labctl -c /etc/labctl/config.yaml mcp --http 8080 --check
 config file on every request, so the new key works on the agent's next
 call. (`labctl-web` reads keys only at startup: restart it if the key
 should also work on the REST API.)
-(Every other setting needs a restart, which releases all claims.) While the file doesn't load,
+(Every other setting needs a restart, which drops all claims.) While the file doesn't load,
 e.g. after saving a YAML mistake, **every** key is refused, which is why
 `sudoedit` (it saves only when you quit) and the check above matter.
 
@@ -277,8 +280,8 @@ labctl -c /etc/labctl/config.yaml claims list
 The name after the last `:` in the activity log comes from the key: if it
 is another agent's name, the two share a key. `claims list` shows the
 claim's `agent_name`: the username, unless some session with that key
-passed `agent_name`, which then applies to all of that key's later claims
-until the server restarts.
+passed `agent_name`, which then applies to all of that user's later
+claims until the server restarts.
 
 ## Revoking or rotating a key
 
