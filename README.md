@@ -450,7 +450,9 @@ For several Claude Code agents sharing the lab (each with its own API key,
 so claims keep them apart), see
 [Connecting Claude Code agents](docs/CLAUDE_CODE_AGENTS.md).
 
-For a single local client over stdio, add to your MCP client configuration:
+For a single local client over stdio, add to your MCP client configuration
+(reading `/etc/labctl/config.yaml` requires the `labctl` group; otherwise
+point `-c` at your own config):
 
 ```json
 {
