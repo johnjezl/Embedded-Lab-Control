@@ -13,11 +13,12 @@ agent is using.
   `/etc/labctl/config.yaml`. The server identifies the caller **from the
   key alone**: the agent never sends, or needs to know, its username.
 - Each user is a separate **claimant**. When an agent claims a board
-  (`claim_sbc`), mutating tools called by any *other* user on that board
-  (power, `serial_send`, all SDWire tools including `sdwire_ls`/`cat`/
-  `info`, `flash_image`, `boot_test`, actuator and recovery tools,
-  `remove_sbc`) are refused with `"error": "sbc_claimed"`. This needs
-  `claims.enabled` (the default); with it `false`, nothing is enforced.
+  (`claim_sbc`), tools that *operate* that board are refused for every
+  *other* user with `"error": "sbc_claimed"`: power, `serial_send`,
+  `sdwire_to_dut`/`to_host`/`update`/`ls`/`cat`/`info`, `flash_image`,
+  `boot_test`, `actuate`/`release`/`press`, `enter_recovery`/
+  `exit_recovery` and `remove_sbc`. This needs `claims.enabled` (the
+  default); with it `false`, nothing is enforced.
 
 So the rule is **one labctl user and key per agent**. Two agents sharing a
 key are the same claimant, and their claims do not protect them from each
@@ -37,6 +38,10 @@ What keys do *not* do:
 
 - **Unclaimed boards are open to everyone.** Agents must claim before they
   touch a board (see [Agent instructions](#agent-instructions)).
+- **Changing a claimed board's configuration is not blocked.** Another
+  agent can still `update_sbc` (even rename it), assign or remove its
+  power plug, serial port or network address, `sdwire_assign`/`unassign`,
+  `bind`/`unbind` it, or change actuators.
 - **Any agent can break another's claim** with `force_release_sbc`: the
   server doesn't restrict it to an operator. Only the agent instructions
   below stop it.
@@ -109,8 +114,10 @@ Then check the file still loads:
 labctl -c /etc/labctl/config.yaml mcp --http 8080 --check
 ```
 
-**No restart is needed.** The server re-reads API keys from the config
-file on every request, so the new key works on the agent's next call.
+**No restart is needed** for MCP. `labctl-mcp` re-reads API keys from the
+config file on every request, so the new key works on the agent's next
+call. (`labctl-web` reads keys only at startup: restart it if the key
+should also work on the REST API.)
 (Every other setting needs a restart, which releases all claims.) While the file doesn't load,
 e.g. after saving a YAML mistake, **every** key is refused, which is why
 `sudoedit` (it saves only when you quit) and the check above matter.
@@ -207,9 +214,14 @@ labagent() {
 
 ```bash
 labagent fw-dev                          # interactive
-labagent ci-boottest -p "Run a 10x boot test on pi-5-1"
 labagent fw-dev "Check the serial console on pi-5-1"   # with a first prompt
+labagent ci-boottest -p "Run a 10x boot test on pi-5-1" \
+    --allowedTools mcp__labctl                          # scripted
 ```
+
+With `-p` (print mode) nobody can answer permission prompts, so allow the
+labctl tools up front: `--allowedTools mcp__labctl` allows all of them.
+Destructive tools still need their two-step confirmation.
 
 Notes:
 
@@ -233,6 +245,8 @@ agent's `CLAUDE.md`:
 ## Lab hardware (labctl)
 - Use the labctl MCP tools for all lab hardware. Never run the `labctl`
   CLI for power, serial, SDWire or flashing: it bypasses claims.
+- Don't change the configuration (plugs, ports, SDWire, bindings) of a
+  board someone else has claimed.
 - Before touching a board, `claim_sbc` it (with a short `reason`; leave
   `agent_name` unset so the claim shows your labctl user). If it
   is claimed by someone else, wait or call `request_sbc_release`; never
@@ -261,22 +275,25 @@ until the server restarts.
 
 ## Revoking or rotating a key
 
-Have the agent release its claims first (`labctl -c
-/etc/labctl/config.yaml claims list`): once its key is gone it can't
-call `release_sbc`, and its boards stay blocked until the claims expire
-or are force-released. Sessions still running with the old key get 401
-from then on; restart them.
+Changes to `auth.users` take effect in `labctl-mcp` on the next request,
+without a restart; restart `labctl-web` too if it is running, since it
+reads keys only at startup.
 
-- **Revoke:** delete the user's entry from `auth.users` (`sudoedit`). It
-  takes effect on the next request, without a restart. Delete
-  `~/.config/labctl/agents/NAME.key`, and for Method A,
-  `claude mcp remove labctl -s local` in that directory.
+- **Revoke:** first have the agent release its claims (`labctl -c
+  /etc/labctl/config.yaml claims list`): without a key it can't call
+  `release_sbc`, and its boards stay blocked until the claims expire or
+  are force-released. Then delete the user's entry from `auth.users`
+  (`sudoedit`), delete `~/.config/labctl/agents/NAME.key`, and for
+  Method A, `claude mcp remove labctl -s local` in that directory.
 - **Rotate:** delete the key file, rerun Step 1 with the same name, put
   the new `api_key` in the config in place of the old one, and for
-  Method A re-add the server.
+  Method A re-add the server. Claims belong to the username, not the key,
+  so they survive; sessions still running with the old key get 401 until
+  you restart them.
 
 ## Later
 
 Planned to reduce friction further (not implemented yet): a labctl
 command that creates the user and key file in one step, claim checks
-in the CLI and web API, and restricting `force_release_sbc` to operators.
+in the CLI, the web API and the configuration-changing MCP tools, and
+restricting `force_release_sbc` to operators.
