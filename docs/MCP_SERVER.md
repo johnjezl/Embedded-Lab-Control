@@ -422,7 +422,8 @@ holds the claim, a structured JSON error is returned with
 `"error": "sbc_claimed"` and hints. The claimant's calls proceed and
 heartbeat the claim. A claim stops protecting the board when it expires;
 for `claims.grace_period_seconds` after that, only its holder can claim
-the board again. Claiming a board you already hold (e.g. from an
+the board again (but someone may claim a board that shares its hardware
+meanwhile, which then blocks the re-claim). Claiming a board you already hold (e.g. from an
 earlier session) returns `"status": "already_claimed"` and renews it for
 the requested duration (without re-checking boards it shares hardware
 with).
