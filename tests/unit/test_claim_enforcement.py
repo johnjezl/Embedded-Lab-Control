@@ -205,6 +205,42 @@ class TestOwnerColumn:
         assert ResourceManager(db).get_active_claim("pi-1").session_id == "s-alice"
 
 
+class TestMigrationBackfillsOwner:
+    def test_open_http_claims_get_their_owner(self, tmp_path):
+        path = tmp_path / "old.db"
+        m = ResourceManager(get_database(path))
+        m.create_sbc(name="pi-1")
+        m.create_sbc(name="pi-2")
+        for name, sid in (
+            ("pi-1", "mcp-stdio:123-456:fw-dev"),
+            ("pi-2", "mcp-stdio:123-456"),
+        ):
+            m.claim_sbc(
+                sbc_name=name,
+                agent_name="a",
+                session_id=sid,
+                session_kind="mcp-stdio",
+                duration_seconds=600,
+                reason="x",
+            )
+        conn = sqlite3.connect(path)
+        conn.execute("ALTER TABLE claims DROP COLUMN owner")
+        conn.execute("DELETE FROM schema_version WHERE version > 8")
+        conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (8)")
+        conn.commit()
+        conn.close()
+
+        db = get_database(path)
+        db._reset_initialized()
+        db.initialize()
+        m = ResourceManager(db)
+        assert m.get_active_claim("pi-1").owner == "fw-dev"
+        assert m.get_active_claim("pi-2").owner is None
+        assert ClaimActor("mcp-http:999-1:fw-dev", "fw-dev").holds(
+            m.get_active_claim("pi-1")
+        )
+
+
 class TestClaimActorHolds:
     def test_same_session(self, manager):
         claim = _claim(manager, owner=None)
@@ -467,7 +503,7 @@ class TestSharedHardware:
         from labctl.core.models import ChannelState, DriverName
 
         ids = []
-        for name, vid in (("ra", "1A86"), ("rb", "0x1a86")):
+        for name, vid in (("ra", "1A86"), ("rb", "0x01a86")):
             a = manager.create_actuator(
                 name,
                 DriverName.LCUS1_SERIAL,

@@ -644,6 +644,26 @@ class Database:
                 conn.execute("ALTER TABLE claims ADD COLUMN owner TEXT")
             except sqlite3.OperationalError:
                 pass  # column already exists
+            # Authenticated HTTP sessions already ended in ":<username>"
+            # ("mcp-stdio:<pid>-<epoch>:<user>" before v9): backfill the
+            # owner of open claims so their users still hold them after
+            # the upgrade restarts the server.
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(claims)")}
+            rows = (
+                conn.execute(
+                    "SELECT id, session_id FROM claims"
+                    " WHERE released_at IS NULL AND owner IS NULL"
+                    " AND session_id LIKE 'mcp-%:%:%'"
+                ).fetchall()
+                if {"session_id", "released_at"} <= cols
+                else []
+            )
+            for claim_id, session_id in rows:
+                user = session_id.split(":", 2)[2]
+                if user:
+                    conn.execute(
+                        "UPDATE claims SET owner = ? WHERE id = ?", (user, claim_id)
+                    )
 
         # OR IGNORE: tolerate a concurrent process that has already
         # bumped schema_version to the current value during a race.

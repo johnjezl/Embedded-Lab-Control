@@ -50,9 +50,12 @@ logger = logging.getLogger(__name__)
 
 
 def _norm_usb_id(value: str) -> str:
-    """``1A86``, ``0x1a86`` and ``1a86`` name the same USB VID/PID."""
-    value = value.strip().lower()
-    return value[2:] if value.startswith("0x") else value
+    """``1A86``, ``0x1a86`` and ``0x01a86`` name the same USB VID/PID."""
+    value = value.strip()
+    try:
+        return format(int(value, 16), "04x")
+    except ValueError:
+        return value.lower()
 
 
 class ResourceManager:
