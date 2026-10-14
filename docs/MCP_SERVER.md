@@ -407,7 +407,8 @@ tools that operate the other (the error names the claimed board), and
 Configuration tools only change the named board's records, so they check
 that board alone; assigning hardware another board already uses checks
 that board's claim. Boards match by plug type, address text and outlet,
-by SDWire, by serial device path or registered adapter, and by relay
+by SDWire, by serial device path (symlinks resolved) or registered
+adapter, and by relay
 device path (symlinks resolved) or USB serial number and channel. Two
 different addresses for one plug (a hostname and its IP) are not
 recognised as the same, nor are relay records known only by VID/PID.
@@ -424,8 +425,8 @@ a board (all of the above except `actuator_set`/`actuator_remove`) also
 refuse on a board nobody has claimed, with `"error": "claim_required"`:
 agents must `claim_sbc` first. Only the board named in the call needs the
 caller's claim; boards it shares hardware with just must not be claimed
-by someone else. A value that isn't `true`/`false` (e.g. `"yes"`) counts
-as `true`, with a warning. Read-only tools are never refused.
+by someone else. A value that isn't a boolean counts as `true` (with a
+warning) unless it plainly means off (`"false"`, `"no"`, `"off"`, `0`). Read-only tools are never refused.
 
 ### Tool Return Values
 

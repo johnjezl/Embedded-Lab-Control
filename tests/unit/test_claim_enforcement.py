@@ -79,10 +79,17 @@ class TestRequireClaimParsing:
         config = Config.from_dict({"claims": {"require_claim": None}})
         assert config.claims.require_claim is False
 
-    def test_non_bool_fails_safe_on_with_warning(self, caplog):
+    @pytest.mark.parametrize(
+        "value, expected",
+        [("true", True), ("yes", True), ("always", True), (1, True)]
+        + [("false", False), (" Off ", False), ("no", False), (0, False)],
+    )
+    def test_non_bool_warns_and_fails_safe_unless_plainly_off(
+        self, value, expected, caplog
+    ):
         with caplog.at_level(logging.WARNING, logger="labctl.core.config"):
-            config = Config.from_dict({"claims": {"require_claim": "true"}})
-        assert config.claims.require_claim is True
+            config = Config.from_dict({"claims": {"require_claim": value}})
+        assert config.claims.require_claim is expected
         assert "require_claim" in caplog.text
 
 
@@ -305,6 +312,51 @@ class TestSharedHardware:
                 serial_device_id=dev.id,
             )
         assert manager.sbcs_sharing_hardware_with("pi-2") == ["pi-1"]
+
+    def test_serial_paths_match_through_symlink(self, manager, tmp_path):
+        from labctl.core.models import PortType
+
+        real = tmp_path / "ttyUSB0"
+        real.touch()
+        link = tmp_path / "port-1"
+        link.symlink_to(real)
+        manager.assign_serial_port(
+            sbc_id=manager.get_sbc_by_name("pi-1").id,
+            port_type=PortType.CONSOLE,
+            device_path=str(link),
+        )
+        assert manager.sbcs_sharing_hardware(serial_device_path=str(real)) == ["pi-1"]
+
+    def test_deleted_sharer_does_not_stop_the_check(self, lab, monkeypatch):
+        from labctl.core.models import PlugType, UnknownSBCError
+
+        lab.create_sbc(name="pi-3")
+        lab.assign_power_plug(
+            sbc_id=lab.get_sbc_by_name("pi-3").id,
+            plug_type=PlugType.KASA,
+            address="10.0.0.5",
+            plug_index=2,
+        )
+        lab.claim_sbc(
+            sbc_name="pi-3",
+            agent_name="carol",
+            session_id="s-carol",
+            session_kind="mcp-http",
+            duration_seconds=600,
+            reason="x",
+            owner="carol",
+        )
+        real = lab.get_active_claim
+
+        def flaky(name):
+            if name == "pi-2":
+                raise UnknownSBCError(name)
+            return real(name)
+
+        monkeypatch.setattr(lab, "get_active_claim", flaky)
+        with pytest.raises(ClaimConflict) as exc:
+            lab.check_claim("pi-1", ClaimActor("s-bob", "bob"))
+        assert exc.value.claim.sbc_name == "pi-3"
 
     def test_actuator_records_match_through_symlink_and_serial(self, manager, tmp_path):
         from labctl.core.models import ChannelState, DriverName

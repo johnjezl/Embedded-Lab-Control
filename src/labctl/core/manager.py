@@ -886,6 +886,7 @@ class ResourceManager:
         plug: Optional[tuple[str, str, int]] = None,
         sdwire_device_id: Optional[int] = None,
         serial_device_path: Optional[str] = None,
+        serial_device_id: Optional[int] = None,
     ) -> list[str]:
         """Names of SBCs already wired to this plug outlet (type, address,
         index), SDWire device or serial device path. Nothing in the schema
@@ -908,16 +909,18 @@ class ResourceManager:
                 (sdwire_device_id,),
             )
             names.update(r["name"] for r in rows)
-        if serial_device_path is not None:
-            # "/dev/lab/<name>" and "<name>" name the same registered
-            # adapter (see _resolve_serial_device_id).
-            device_id = self._resolve_serial_device_id(serial_device_path)
+        if serial_device_path is not None or serial_device_id is not None:
+            wanted = self._serial_identity(serial_device_path, serial_device_id)
             rows = self.db.execute(
-                "SELECT s.name FROM serial_ports p JOIN sbcs s ON s.id = p.sbc_id"
-                " WHERE p.device_path = ? OR p.serial_device_id = ?",
-                (serial_device_path, device_id),
+                "SELECT s.name, p.device_path, p.serial_device_id"
+                " FROM serial_ports p JOIN sbcs s ON s.id = p.sbc_id"
             )
-            names.update(r["name"] for r in rows)
+            names.update(
+                r["name"]
+                for r in rows
+                if wanted
+                & self._serial_identity(r["device_path"], r["serial_device_id"])
+            )
         return sorted(names)
 
     def sbcs_sharing_hardware_with(self, sbc_name: str) -> list[str]:
@@ -945,15 +948,11 @@ class ResourceManager:
             )
         for port in sbc.serial_ports:
             names.update(
-                self.sbcs_sharing_hardware(serial_device_path=port.device_path)
-            )
-            if port.serial_device_id is not None:
-                rows = self.db.execute(
-                    "SELECT s.name FROM serial_ports p"
-                    " JOIN sbcs s ON s.id = p.sbc_id WHERE p.serial_device_id = ?",
-                    (port.serial_device_id,),
+                self.sbcs_sharing_hardware(
+                    serial_device_path=port.device_path,
+                    serial_device_id=port.serial_device_id,
                 )
-                names.update(r["name"] for r in rows)
+            )
         channel_ids = {b.actuator_channel_id for b in self.list_bindings(sbc_id=sbc.id)}
         if channel_ids:
             for b in self.list_bindings(
@@ -963,6 +962,22 @@ class ResourceManager:
         names.discard(sbc_name)
         names.discard(None)
         return sorted(names)
+
+    def _serial_identity(
+        self, device_path: Optional[str], serial_device_id: Optional[int]
+    ) -> set:
+        """Keys naming a serial adapter: its registered device (given, or
+        from a ``/dev/lab/<name>`` path) and its path with symlinks resolved
+        (``/dev/lab/port-1``, ``/dev/ttyUSB0`` and ``/dev/serial/by-id/...``
+        for one adapter all resolve to the same node)."""
+        keys: set = set()
+        if serial_device_id is None and device_path:
+            serial_device_id = self._resolve_serial_device_id(device_path)
+        if serial_device_id is not None:
+            keys.add(("device", serial_device_id))
+        if device_path:
+            keys.add(("path", os.path.realpath(device_path)))
+        return keys
 
     def channels_on_same_device(self, channel_ids: Iterable[int]) -> set[int]:
         """``channel_ids`` plus the same-index channels of any other
@@ -1858,7 +1873,10 @@ class ResourceManager:
         claim = self._check_one_claim(sbc_name, actor, override, require_claim)
         if include_shared:
             for other in self.sbcs_sharing_hardware_with(sbc_name):
-                self._check_one_claim(other, actor, override, False)
+                try:
+                    self._check_one_claim(other, actor, override, False)
+                except UnknownSBCError:
+                    continue  # deleted meanwhile: nothing left to protect
         return claim
 
     def _check_one_claim(
