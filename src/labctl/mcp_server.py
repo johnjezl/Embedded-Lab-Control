@@ -21,6 +21,7 @@ import sys
 import threading
 import time as _time_mod
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 from functools import wraps
 from typing import Optional
 
@@ -2697,26 +2698,42 @@ def claim_sbc(
         owner=_authenticated_user(),
     )
 
-    def grant():
-        """A new claim, kept only if no board sharing this one's hardware
-        is someone else's (else it couldn't be used: release it again)."""
-        claim = manager.claim_sbc(**claim_args)
+    def shared_hardware_refusal():
+        """Refuse a new claim if a board sharing this one's hardware is
+        someone else's (the claim couldn't be used). Report the board's
+        own holder instead, if someone else still holds it (active or in
+        its grace period), as claim_sbc itself would."""
         shared_err = _check_claims_of(
             manager, manager.sbcs_sharing_hardware_with(sbc_name), for_sbc=sbc_name
         )
-        if shared_err:
-            manager.release_claim(
-                sbc_name,
-                claim.session_id,
-                owner=claim.owner,
-                released_by="system (shared hardware is claimed)",
-            )
-            return None, shared_err
-        return claim, None
+        if not shared_err:
+            return None
+        own = manager.get_open_claim(sbc_name)
+        grace = timedelta(seconds=config.claims.grace_period_seconds)
+        if (
+            own is not None
+            and not _caller_actor().holds(own)
+            and own.expires_at >= datetime.now() - grace
+        ):
+            return _claimed_error(sbc_name, own)
+        return shared_err
+
+    def grant():
+        refusal = shared_hardware_refusal()
+        if refusal:
+            return None, refusal
+        return manager.claim_sbc(**claim_args), None
 
     try:
-        # The board's own holder, if someone else, is reported first
-        # (ClaimConflict); your own active claim is renewed below.
+        # Your own active claim is renewed (below) without re-checking
+        # boards that share its hardware; anything else is a new claim.
+        open_claim = manager.get_open_claim(sbc_name)
+        if (
+            open_claim is not None
+            and open_claim.is_active
+            and _caller_actor().holds(open_claim)
+        ):
+            raise ClaimConflict(open_claim)
         claim, shared_err = grant()
         if shared_err:
             return shared_err
