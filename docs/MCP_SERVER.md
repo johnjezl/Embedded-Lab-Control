@@ -393,7 +393,8 @@ Tools perform mutations — the AI assistant calls these to take action.
 | `force_release_sbc` | `sbc_name`, `reason` | Operator override — forcibly release (operators only, D013) |
 
 **Claim enforcement:** every tool that changes a board checks its claim:
-operating it (`power_on/off/cycle`, `serial_send`, `sdwire_to_host/dut`,
+operating it (`power_on/off/cycle`, `serial_send`, `serial_capture`
+(it holds the console's connection), `sdwire_to_host/dut`,
 `sdwire_update`, `sdwire_ls/cat/info`, `flash_image`, `boot_test`,
 `actuate`/`release`/`press`, `enter_recovery`/`exit_recovery`) and changing
 its configuration (`update_sbc`, `remove_sbc`, `assign_serial_port`,
@@ -428,7 +429,7 @@ refuse on a board nobody has claimed, with `"error": "claim_required"`:
 agents must `claim_sbc` first. Only the board named in the call needs the
 caller's claim; boards it shares hardware with just must not be claimed
 by someone else. A value that isn't a boolean counts as `true` (with a
-warning) unless it plainly means off (`"false"`, `"no"`, `"off"`, `0`). Read-only tools are never refused.
+warning) unless it plainly means off (`"false"`, `"no"`, `"off"`, `0`). Other read-only tools are never refused.
 
 ### Tool Return Values
 

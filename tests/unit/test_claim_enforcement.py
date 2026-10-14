@@ -131,6 +131,31 @@ class TestConfigRoundTrip:
         assert any("require_claim" in w for w in config.claims.validate())
 
 
+class TestRequireAgentNameParsing:
+    @pytest.mark.parametrize("value, expected", [(True, True), ("false", False)])
+    def test_parsed_like_require_claim(self, value, expected):
+        config = Config.from_dict({"claims": {"require_agent_name": value}})
+        assert config.claims.require_agent_name is expected
+
+
+class TestRenewAfterRelease:
+    def test_renew_does_not_revive_a_released_claim(self, manager, monkeypatch):
+        from labctl.core.models import ClaimNotFoundError
+
+        claim = _claim(manager)
+        real = manager.get_active_claim
+        # renew_claim loads the claim, then it is released elsewhere.
+        monkeypatch.setattr(manager, "get_active_claim", lambda name: claim)
+        manager.db.execute_modify(
+            "UPDATE claims SET released_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (claim.id,),
+        )
+        with pytest.raises(ClaimNotFoundError):
+            manager.renew_claim("pi-1", "s-alice", owner="alice")
+        monkeypatch.setattr(manager, "get_active_claim", real)
+        assert manager.get_active_claim("pi-1") is None
+
+
 class TestOwnerColumn:
     def test_schema_version(self):
         assert SCHEMA_VERSION == 9

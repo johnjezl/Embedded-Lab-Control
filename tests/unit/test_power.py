@@ -471,6 +471,33 @@ class TestKasaSingleOutletIndex:
         device.disconnect.assert_awaited_once()
 
 
+class TestPlugIndexAtUse:
+    @pytest.mark.parametrize("index", [0, -1])
+    def test_controller_refuses_index_below_one(self, index):
+        from labctl.power.tasmota import TasmotaController
+
+        with pytest.raises(RuntimeError, match="1 or more"):
+            TasmotaController("10.0.0.6", plug_index=index)
+
+    def test_kasa_error_survives_running_event_loop(self):
+        """Inside a running loop (the MCP server) the driver's own error
+        is reported, not an asyncio one."""
+        import asyncio
+
+        from labctl.power.kasa import KasaController
+
+        controller = KasaController("10.0.0.5", plug_index=2)
+
+        async def failing():
+            raise RuntimeError("single-outlet plug")
+
+        async def main():
+            controller._run_async(failing, "power_on", retries=0)
+
+        with pytest.raises(RuntimeError, match="single-outlet"):
+            asyncio.run(main())
+
+
 class TestKasaHostStateCache:
     """Per-host state cache eliminates parallel KLAP handshakes per cycle."""
 

@@ -1825,17 +1825,19 @@ class ResourceManager:
         )
         now = datetime.now()
         new_expiry = now + timedelta(seconds=new_duration)
-        self.db.execute_modify(
+        updated = self.db.execute_modify(
             """
             UPDATE claims
             SET duration_seconds = ?,
                 last_activity = ?,
                 expires_at = ?,
                 renewal_count = renewal_count + 1
-            WHERE id = ?
+            WHERE id = ? AND released_at IS NULL
             """,
             (new_duration, self._fmt_ts(now), self._fmt_ts(new_expiry), claim.id),
         )
+        if not updated:  # released meanwhile (e.g. force-released elsewhere)
+            raise ClaimNotFoundError(f"No active claim on SBC '{sbc_name}'")
         return self._get_claim_by_id(claim.id)
 
     def heartbeat_claim(

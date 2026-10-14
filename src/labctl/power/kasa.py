@@ -209,12 +209,16 @@ class KasaController(PowerController):
                 # from a running event loop" error.
                 try:
                     asyncio.get_running_loop()
+                    in_loop = True
+                except RuntimeError:
+                    in_loop = False
+                if in_loop:
                     import concurrent.futures
 
                     with concurrent.futures.ThreadPoolExecutor() as pool:
                         future = pool.submit(asyncio.run, coro_factory())
                         result = future.result(timeout=self.timeout + 10)
-                except RuntimeError:
+                else:
                     result = asyncio.run(coro_factory())
 
                 if attempt > 0:
