@@ -635,17 +635,21 @@ class TestParallelCheckAll:
         assert elapsed < 0.7, f"expected parallel speedup but took {elapsed:.2f}s"
 
 
-class TestCheckSbcBadPlugIndex:
-    def test_bad_stored_plug_index_fails_power_check_only(self):
-        """A stored plug index below 1 fails the power check instead of
-        raising out of check_sbc (which would drop the other results)."""
+class TestCheckSbcControllerError:
+    def test_controller_error_fails_power_check_only(self):
+        """A plug whose controller can't be built fails the power check
+        instead of raising out of check_sbc (dropping the other results)."""
         from labctl.core.models import SBC, PlugType, PowerPlug
 
         sbc = SBC(id=1, name="pi-1")
         sbc.power_plug = PowerPlug(
-            sbc_id=1, plug_type=PlugType.TASMOTA, address="10.0.0.6", plug_index=0
+            sbc_id=1, plug_type=PlugType.TASMOTA, address="10.0.0.6"
         )
-        summary = HealthChecker().check_sbc(sbc, [CheckType.POWER])
+        with patch(
+            "labctl.health.checks.PowerController.from_plug",
+            side_effect=RuntimeError("bad plug"),
+        ):
+            summary = HealthChecker().check_sbc(sbc, [CheckType.POWER])
         assert summary.power_result.success is False
-        assert "1 or more" in summary.power_result.message
+        assert summary.power_result.message == "bad plug"
         assert summary.power_state == PowerState.UNKNOWN

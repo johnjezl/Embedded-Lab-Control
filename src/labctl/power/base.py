@@ -20,6 +20,13 @@ class PowerState(Enum):
     UNKNOWN = "unknown"
 
 
+class PlugConfigError(RuntimeError):
+    """The plug's stored configuration doesn't match the device (e.g. an
+    outlet index a single-outlet plug doesn't have). Unlike a transient
+    network error, retrying or carrying on "best effort" won't help, so
+    callers that power a board off before touching its SD card stop."""
+
+
 class PowerController(ABC):
     """Abstract base class for power controllers."""
 
@@ -31,18 +38,7 @@ class PowerController(ABC):
             address: IP address or hostname of the device
             plug_index: Outlet index for multi-relay devices (1-based)
             timeout: Request timeout in seconds
-
-        Raises:
-            RuntimeError: ``plug_index`` below 1. Tasmota's ``Power0``
-                switches every relay and Shelly's relay -1 is invalid; rows
-                stored before assignment refused such indexes still need
-                refusing here (and claim checks match plugs by index).
         """
-        if plug_index < 1:
-            raise RuntimeError(
-                f"Plug index must be 1 or more, got {plug_index} "
-                f"({address}); reassign the plug with a valid index"
-            )
         self.address = address
         self.plug_index = plug_index
         self.timeout = timeout

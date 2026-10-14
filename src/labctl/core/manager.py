@@ -898,11 +898,14 @@ class ResourceManager:
         names: set[str] = set()
         if plug is not None:
             plug_type, address, plug_index = plug
+            # An index below 1 (rows saved before assignment refused it)
+            # addresses the whole device on Tasmota (Power0), so it
+            # shares every outlet on that address.
             rows = self.db.execute(
                 "SELECT s.name FROM power_plugs p JOIN sbcs s ON s.id = p.sbc_id"
                 " WHERE p.plug_type = ? AND lower(trim(p.address)) = lower(?)"
-                " AND p.plug_index = ?",
-                (plug_type, address.strip(), plug_index),
+                " AND (p.plug_index = ? OR p.plug_index < 1 OR ? < 1)",
+                (plug_type, address.strip(), plug_index, plug_index),
             )
             names.update(r["name"] for r in rows)
         if sdwire_device_id is not None:
@@ -1832,11 +1835,17 @@ class ResourceManager:
                 last_activity = ?,
                 expires_at = ?,
                 renewal_count = renewal_count + 1
-            WHERE id = ? AND released_at IS NULL
+            WHERE id = ? AND released_at IS NULL AND expires_at >= ?
             """,
-            (new_duration, self._fmt_ts(now), self._fmt_ts(new_expiry), claim.id),
+            (
+                new_duration,
+                self._fmt_ts(now),
+                self._fmt_ts(new_expiry),
+                claim.id,
+                self._fmt_ts(now),
+            ),
         )
-        if not updated:  # released meanwhile (e.g. force-released elsewhere)
+        if not updated:  # released or expired meanwhile
             raise ClaimNotFoundError(f"No active claim on SBC '{sbc_name}'")
         return self._get_claim_by_id(claim.id)
 

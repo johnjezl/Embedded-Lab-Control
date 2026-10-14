@@ -29,6 +29,7 @@ from mcp.types import ToolAnnotations
 
 from labctl import __version__
 from labctl.core import audit
+from labctl.power.base import PlugConfigError
 
 # All logging must go to stderr (stdout is the JSON-RPC channel for stdio transport)
 logging.basicConfig(
@@ -801,6 +802,8 @@ def _sdwire_host_switch_guard_mcp(
             if allow_force_override:
                 message += " Use force=true to override (risks SD card corruption)."
             return message
+    except PlugConfigError as e:
+        return f"Error: can't read {sbc_name}'s power state: {e}"
     except Exception:
         return None
 
@@ -1257,18 +1260,20 @@ def remove_sbc(name: str) -> str:
     # The check above passed, so any claim is the caller's own: release it
     # (so the release is recorded) before removing the board.
     claim = manager.get_active_claim(name)
+    released = False
     if claim is not None and _caller_actor().holds(claim):
         from labctl.core.models import ClaimNotFoundError
 
         try:
             manager.release_claim(name, _get_session_id(), owner=_authenticated_user())
+            released = True
         except ClaimNotFoundError:
             pass  # expired or released meanwhile: nothing to release
     try:
         deleted = manager.delete_sbc(sbc.id)
     except ClaimConflict as exc:  # claimed by someone else since the check
         err = json.loads(_claimed_error(name, exc.claim))
-        if claim is not None:
+        if released:
             err["message"] += "; your own claim on it was released first"
         return json.dumps(err)
     if deleted:
@@ -1901,6 +1906,10 @@ def sdwire_update(
                 power_ctrl = PowerController.from_plug(sbc.power_plug)
                 power_ctrl.power_off()
                 time.sleep(1)
+            except PlugConfigError as e:
+                # The plug can't be switched as configured, so the board
+                # may still be running: don't pull its SD card.
+                return f"Error: can't power off {sbc_name}: {e}"
             except Exception:
                 pass  # Best effort — continue even if power off fails
 
@@ -2227,6 +2236,10 @@ def flash_image(
                 power_ctrl = PowerController.from_plug(sbc.power_plug)
                 power_ctrl.power_off()
                 time_mod.sleep(1)
+            except PlugConfigError as e:
+                # The plug can't be switched as configured, so the board
+                # may still be running: don't pull its SD card.
+                return f"Error: can't power off {sbc_name}: {e}"
             except Exception:
                 pass  # Continue even if power off fails
 
@@ -2634,6 +2647,7 @@ def claim_sbc(
         ClaimConflict,
         ClaimError,
         ClaimNotFoundError,
+        NotClaimantError,
         UnknownSBCError,
     )
 
@@ -2716,6 +2730,14 @@ def claim_sbc(
                 return json.dumps({"error": "claim_failed", "message": str(claim_exc)})
             return json.dumps(
                 {"status": "claimed", "sbc_name": sbc_name, "claim": claim.to_dict()}
+            )
+        except NotClaimantError:
+            # It lapsed and someone else claimed the board meanwhile.
+            current = manager.get_active_claim(sbc_name)
+            if current is not None:
+                return _claimed_error(sbc_name, current)
+            return json.dumps(
+                {"error": "renew_failed", "message": "Claim changed; retry"}
             )
         except ClaimError as renew_exc:
             return json.dumps({"error": "renew_failed", "message": str(renew_exc)})

@@ -138,6 +138,20 @@ class TestRequireAgentNameParsing:
         assert config.claims.require_agent_name is expected
 
 
+class TestRenewAfterExpiry:
+    def test_renew_does_not_revive_an_expired_claim(self, manager, monkeypatch):
+        from labctl.core.models import ClaimNotFoundError
+
+        claim = _claim(manager)
+        monkeypatch.setattr(manager, "get_active_claim", lambda name: claim)
+        manager.db.execute_modify(
+            "UPDATE claims SET expires_at = '2000-01-01 00:00:00' WHERE id = ?",
+            (claim.id,),
+        )
+        with pytest.raises(ClaimNotFoundError):
+            manager.renew_claim("pi-1", "s-alice", owner="alice")
+
+
 class TestRenewAfterRelease:
     def test_renew_does_not_revive_a_released_claim(self, manager, monkeypatch):
         from labctl.core.models import ClaimNotFoundError
@@ -332,6 +346,24 @@ class TestSharedHardware:
             device_path="/dev/lab/port-1",
         )
         assert manager.sbcs_sharing_hardware(serial_device_path="port-1") == ["pi-1"]
+
+    def test_legacy_index_zero_shares_every_outlet(self, manager):
+        from labctl.core.models import PlugType
+
+        manager.create_sbc(name="pi-2")
+        manager.assign_power_plug(
+            sbc_id=manager.get_sbc_by_name("pi-1").id,
+            plug_type=PlugType.TASMOTA,
+            address="10.0.0.6",
+            plug_index=1,
+        )
+        manager.db.execute_modify(
+            "INSERT INTO power_plugs (sbc_id, plug_type, address, plug_index)"
+            " VALUES (?, 'tasmota', '10.0.0.6', 0)",
+            (manager.get_sbc_by_name("pi-2").id,),
+        )
+        assert manager.sbcs_sharing_hardware_with("pi-1") == ["pi-2"]
+        assert manager.sbcs_sharing_hardware_with("pi-2") == ["pi-1"]
 
     @pytest.mark.parametrize("index", [0, -1])
     def test_plug_index_below_one_refused(self, manager, index):

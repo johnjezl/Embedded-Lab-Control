@@ -455,6 +455,7 @@ class TestKasaSingleOutletIndex:
         import asyncio
         from unittest.mock import AsyncMock
 
+        from labctl.power.base import PlugConfigError
         from labctl.power.kasa import KasaController
 
         device = Mock()
@@ -466,19 +467,12 @@ class TestKasaSingleOutletIndex:
             patch.object(controller, "_load_credentials", return_value=None),
             patch("kasa.Discover.discover_single", new=AsyncMock(return_value=device)),
         ):
-            with pytest.raises(RuntimeError, match="single-outlet"):
+            with pytest.raises(PlugConfigError, match="single-outlet"):
                 asyncio.run(controller._get_device())
         device.disconnect.assert_awaited_once()
 
 
-class TestPlugIndexAtUse:
-    @pytest.mark.parametrize("index", [0, -1])
-    def test_controller_refuses_index_below_one(self, index):
-        from labctl.power.tasmota import TasmotaController
-
-        with pytest.raises(RuntimeError, match="1 or more"):
-            TasmotaController("10.0.0.6", plug_index=index)
-
+class TestKasaRunningLoopErrors:
     def test_kasa_error_survives_running_event_loop(self):
         """Inside a running loop (the MCP server) the driver's own error
         is reported, not an asyncio one."""
