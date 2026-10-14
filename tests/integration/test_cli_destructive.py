@@ -228,3 +228,11 @@ class TestReviewRound4:
         power.power_off.assert_not_called()
         ctrl.switch_to_host.assert_not_called()
         ctrl.flash_image.assert_not_called()
+
+
+def test_plug_assign_refuses_index_below_one(lab):
+    """Outlet 0 means Power0 on Tasmota (every relay): refused cleanly."""
+    config, _, _ = lab
+    result = run(config, "plug", "assign", "pi-1", "tasmota", "10.0.0.9", "-i", "0")
+    assert result.exit_code == 2
+    assert "Traceback" not in result.output

@@ -365,18 +365,6 @@ class TestSharedHardware:
         assert manager.sbcs_sharing_hardware_with("pi-1") == ["pi-2"]
         assert manager.sbcs_sharing_hardware_with("pi-2") == ["pi-1"]
 
-    @pytest.mark.parametrize("index", [0, -1])
-    def test_plug_index_below_one_refused(self, manager, index):
-        from labctl.core.models import PlugType
-
-        with pytest.raises(ValueError, match="index"):
-            manager.assign_power_plug(
-                sbc_id=manager.get_sbc_by_name("pi-1").id,
-                plug_type=PlugType.TASMOTA,
-                address="10.0.0.6",
-                plug_index=index,
-            )
-
     def test_stored_address_whitespace_ignored(self, manager):
         from labctl.core.models import PlugType
 

@@ -1255,7 +1255,8 @@ def remove_sbc(name: str) -> str:
     from labctl.core.models import ClaimConflict
 
     # The check above passed, so any claim is the caller's own: release it
-    # (so the release is recorded) before removing the board.
+    # (so the release is recorded; an expired one is just deleted) before
+    # removing the board.
     claim = manager.get_active_claim(name)
     released = False
     if claim is not None and _caller_actor().holds(claim):
@@ -1397,7 +1398,7 @@ def assign_power_plug(
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
-    if index < 1:
+    if index < 1:  # Tasmota's Power0 switches every relay on the device
         return f"Error: Plug index must be 1 or more, got {index}"
     claim_err = _check_claim(manager, sbc_name, shared=False) or _check_shared_hardware(
         manager, sbc_name, plug=(plug_type, address, index)

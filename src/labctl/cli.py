@@ -2811,7 +2811,7 @@ def plug_group() -> None:
 @click.option(
     "--index",
     "-i",
-    type=int,
+    type=click.IntRange(min=1),
     default=1,
     help="Outlet index for multi-relay devices (default: 1)",
 )
