@@ -144,7 +144,7 @@ def _role(user: dict) -> str:
     keep working); anything unrecognised means agent, the role with less
     privilege, with a warning."""
     value = user.get("role")
-    if value is None or value == "":
+    if value is None or (isinstance(value, str) and not value.strip()):
         return ROLE_OPERATOR
     if isinstance(value, str) and value.strip().lower() in ROLES:
         return value.strip().lower()
