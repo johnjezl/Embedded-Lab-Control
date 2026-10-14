@@ -170,8 +170,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   configuration (`update_sbc`, `assign_*`/`remove_*` for ports, plugs and
   addresses, `sdwire_assign`/`unassign`, `bind`/`unbind`) now refuse under
   another user's claim, as do `actuator_set`/`actuator_remove` on channels
-  bound to a claimed board, and assigning a plug outlet, SDWire or serial
-  device that a claimed board already uses.
+  bound to a claimed board. A claim also covers the board's hardware:
+  calls on a board that shares a plug outlet, SDWire, serial device or
+  relay channel with a claimed board are refused too, as is assigning
+  such hardware to another board.
 - `auth.users[].role`: `operator` (default) or `agent`. Only operators may
   `force_release_sbc`; agents get `not_operator`.
 - `claims.require_claim` (default `false`): MCP calls that change a board

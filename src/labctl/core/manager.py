@@ -909,13 +909,71 @@ class ResourceManager:
             )
             names.update(r["name"] for r in rows)
         if serial_device_path is not None:
+            # "/dev/lab/<name>" and "<name>" name the same registered
+            # adapter (see _resolve_serial_device_id).
+            device_id = self._resolve_serial_device_id(serial_device_path)
             rows = self.db.execute(
                 "SELECT s.name FROM serial_ports p JOIN sbcs s ON s.id = p.sbc_id"
-                " WHERE p.device_path = ?",
-                (serial_device_path,),
+                " WHERE p.device_path = ? OR p.serial_device_id = ?",
+                (serial_device_path, device_id),
             )
             names.update(r["name"] for r in rows)
         return sorted(names)
+
+    def sbcs_sharing_hardware_with(self, sbc_name: str) -> list[str]:
+        """Other SBCs wired to any of ``sbc_name``'s plug outlet, SDWire,
+        serial devices or relay channels: acting on one acts on the other,
+        so a claim on either covers both (D013)."""
+        sbc = self.get_sbc_by_name(sbc_name)
+        if sbc is None:
+            return []
+        names: set[str] = set()
+        if sbc.power_plug is not None:
+            plug = sbc.power_plug
+            names.update(
+                self.sbcs_sharing_hardware(
+                    plug=(plug.plug_type.value, plug.address, plug.plug_index)
+                )
+            )
+        row = self.db.execute_one(
+            "SELECT sdwire_device_id FROM sdwire_assignments WHERE sbc_id = ?",
+            (sbc.id,),
+        )
+        if row:
+            names.update(
+                self.sbcs_sharing_hardware(sdwire_device_id=row["sdwire_device_id"])
+            )
+        for port in sbc.serial_ports:
+            names.update(
+                self.sbcs_sharing_hardware(serial_device_path=port.device_path)
+            )
+        channel_ids = {b.actuator_channel_id for b in self.list_bindings(sbc_id=sbc.id)}
+        if channel_ids:
+            for b in self.list_bindings(
+                channel_ids=self.channels_on_same_device(channel_ids)
+            ):
+                names.add(b.sbc_name)
+        names.discard(sbc_name)
+        names.discard(None)
+        return sorted(names)
+
+    def channels_on_same_device(self, channel_ids: Iterable[int]) -> set[int]:
+        """``channel_ids`` plus the same-index channels of any other
+        actuator record with the same device path (nothing stops two
+        records naming one relay board)."""
+        ids = set(channel_ids)
+        if not ids:
+            return ids
+        rows = self.db.execute(
+            "SELECT c2.id FROM actuator_channels c1"
+            " JOIN actuators a1 ON a1.id = c1.actuator_id"
+            " JOIN actuators a2 ON a2.device_path = a1.device_path"
+            " JOIN actuator_channels c2 ON c2.actuator_id = a2.id"
+            " AND c2.channel_index = c1.channel_index"
+            f" WHERE c1.id IN ({','.join('?' * len(ids))})",
+            tuple(ids),
+        )
+        return ids | {r["id"] for r in rows}
 
     def assign_sdwire(self, sbc_id: int, sdwire_device_id: int) -> None:
         """Assign an SDWire device to an SBC."""
@@ -1724,17 +1782,21 @@ class ResourceManager:
         claim = self.get_active_claim(sbc_name)
         if claim is None or not ClaimActor(session_id, owner).holds(claim):
             return False
+        self.touch_claim(claim)
+        return True
+
+    def touch_claim(self, claim: Claim) -> None:
+        """Heartbeat an already-loaded active claim."""
         now = datetime.now()
         new_expiry = now + timedelta(seconds=claim.duration_seconds)
         self.db.execute_modify(
             """
             UPDATE claims
             SET last_activity = ?, expires_at = ?
-            WHERE id = ?
+            WHERE id = ? AND released_at IS NULL
             """,
             (self._fmt_ts(now), self._fmt_ts(new_expiry), claim.id),
         )
-        return True
 
     def check_claim(
         self,
@@ -1743,6 +1805,7 @@ class ResourceManager:
         *,
         override: bool = False,
         require_claim: bool = False,
+        include_shared: bool = True,
     ) -> Optional[Claim]:
         """Gate an operation that changes ``sbc_name`` on its claim (D013).
 
@@ -1754,7 +1817,26 @@ class ResourceManager:
         to override, and :class:`ClaimRequiredError` when ``require_claim``
         is set and nobody holds it (an operator's ``override`` also covers
         that case, and is logged). Unknown SBCs raise UnknownSBCError.
+
+        With ``include_shared`` (the default), boards that share hardware
+        with ``sbc_name`` (see :meth:`sbcs_sharing_hardware_with`) are
+        checked too, for someone else's claim only: ``require_claim``
+        applies to the named board alone. A conflict there raises
+        ClaimConflict carrying that board's claim.
         """
+        claim = self._check_one_claim(sbc_name, actor, override, require_claim)
+        if include_shared:
+            for other in self.sbcs_sharing_hardware_with(sbc_name):
+                self._check_one_claim(other, actor, override, False)
+        return claim
+
+    def _check_one_claim(
+        self,
+        sbc_name: str,
+        actor: ClaimActor,
+        override: bool,
+        require_claim: bool,
+    ) -> Optional[Claim]:
         claim = self.get_active_claim(sbc_name)
         if claim is None:
             if not require_claim:
@@ -1774,7 +1856,7 @@ class ResourceManager:
             )
             return None
         if actor.holds(claim):
-            self.heartbeat_claim(sbc_name, claim.session_id)
+            self.touch_claim(claim)
             return claim
         if not override:
             raise ClaimConflict(claim)

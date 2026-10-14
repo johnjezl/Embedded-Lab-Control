@@ -101,22 +101,26 @@ def _path_list(section: dict, key: str) -> list[str]:
     return paths
 
 
-def _safety_flag(section: dict, key: str, default: bool = True) -> bool:
+def _safety_flag(
+    section: dict, key: str, default: bool = True, invalid: Optional[bool] = None
+) -> bool:
     """Read an on/off safety switch: only an explicit boolean counts.
 
     A key left blank (``confirm_destructive:``) parses as None, and
-    ``bool(None)`` would silently turn the safety off. Blank keeps the safe
-    default; any other non-boolean also keeps it, with a warning.
+    ``bool(None)`` would silently turn the safety off. Blank keeps the
+    default; any other non-boolean gets ``invalid`` (the safe value,
+    which is ``default`` unless given), with a warning.
     """
     value = section.get(key)
     if value is None:
         return default
     if isinstance(value, bool):
         return value
+    fallback = default if invalid is None else invalid
     logger.warning(
-        "Config: %s must be true or false, got %r; keeping %s", key, value, default
+        "Config: %s must be true or false, got %r; using %s", key, value, fallback
     )
-    return default
+    return fallback
 
 
 def _role(user: dict) -> str:
@@ -544,7 +548,11 @@ class Config:
                 "auto_prune_released_after_days", 30
             ),
             require_agent_name=claims_data.get("require_agent_name", False),
-            require_claim=_safety_flag(claims_data, "require_claim", default=False),
+            # Off unless set, but a value that looks like an attempt to
+            # turn it on ("yes", "true") fails safe: on.
+            require_claim=_safety_flag(
+                claims_data, "require_claim", default=False, invalid=True
+            ),
         )
 
         # Validate and clamp claim config bounds

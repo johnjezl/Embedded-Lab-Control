@@ -403,6 +403,9 @@ def _caller_actor():
 
 
 def _claimed_error(sbc_name: str, claim) -> str:
+    """``sbc_claimed`` for ``sbc_name``; ``claim`` may be on another board
+    that shares its hardware (plug, SDWire, console, relay)."""
+    holder_board = claim.sbc_name or sbc_name
     hints = [
         "Wait for claim to expire or be released",
         "Request early release with request_sbc_release",
@@ -410,14 +413,17 @@ def _claimed_error(sbc_name: str, claim) -> str:
     if _caller_is_operator():
         hints.append("Operator override with force_release_sbc")
     # claim.to_dict() carries time_remaining_seconds for the caller.
+    shared = (
+        f" (it shares hardware with '{sbc_name}')" if holder_board != sbc_name else ""
+    )
     return json.dumps(
         {
             "error": "sbc_claimed",
-            "sbc_name": sbc_name,
+            "sbc_name": holder_board,
             "message": (
-                f"SBC '{sbc_name}' is claimed by "
+                f"SBC '{holder_board}' is claimed by "
                 f"'{claim.agent_name}' until "
-                f"{claim.expires_at.isoformat()}"
+                f"{claim.expires_at.isoformat()}{shared}"
             ),
             "claim": claim.to_dict(),
             "hints": hints,
@@ -425,15 +431,21 @@ def _claimed_error(sbc_name: str, claim) -> str:
     )
 
 
-def _check_claim(manager, sbc_name: str, mutating: bool = True) -> str | None:
+def _check_claim(
+    manager, sbc_name: str, mutating: bool = True, *, direct: bool = True
+) -> str | None:
     """Check claim state for an SBC-targeting tool call.
 
     - The caller's own claim (this session, or the same authenticated
       user from any session) → heartbeat + return None (proceed).
-    - Someone else's claim + mutating → structured JSON error string.
+    - Someone else's claim + mutating → structured JSON error string,
+      also when it is on a board sharing hardware with this one.
     - No claim → proceed, unless ``claims.require_claim`` is on and the
       call is mutating (structured ``claim_required`` error).
     - Read-only calls never refuse.
+
+    ``direct=False`` is for boards a call affects only through shared
+    hardware: only someone else's claim on that board refuses.
     """
     config = _get_config()
     if not config.claims.enabled:
@@ -450,9 +462,14 @@ def _check_claim(manager, sbc_name: str, mutating: bool = True) -> str | None:
         if not mutating:
             claim = manager.get_active_claim(sbc_name)
             if claim is not None and actor.holds(claim):
-                manager.heartbeat_claim(sbc_name, claim.session_id)
+                manager.touch_claim(claim)
             return None
-        manager.check_claim(sbc_name, actor, require_claim=config.claims.require_claim)
+        manager.check_claim(
+            sbc_name,
+            actor,
+            require_claim=direct and config.claims.require_claim,
+            include_shared=direct,
+        )
     except UnknownSBCError:
         return None
     except ClaimConflict as exc:
@@ -470,9 +487,10 @@ def _check_claim(manager, sbc_name: str, mutating: bool = True) -> str | None:
 
 
 def _check_claims_of(manager, sbc_names) -> str | None:
-    """Claim-check each named SBC; the first refusal wins."""
+    """Refuse if someone else claims one of these SBCs (boards a call
+    reaches through shared hardware; require_claim doesn't apply)."""
     for name in sorted(n for n in sbc_names if n):
-        claim_err = _check_claim(manager, name)
+        claim_err = _check_claim(manager, name, direct=False)
         if claim_err:
             return claim_err
     return None
@@ -2832,7 +2850,7 @@ def force_release_sbc(sbc_name: str, reason: str) -> str:
     manager = _get_manager()
     try:
         released = manager.force_release_claim(
-            sbc_name, reason, released_by=_get_agent_name()
+            sbc_name, reason, released_by=_authenticated_user() or _get_agent_name()
         )
     except UnknownSBCError:
         return json.dumps(
@@ -3085,6 +3103,7 @@ def _check_bound_claims(manager, channel_ids: set) -> str | None:
     relay wired to a claimed board's reset or power is part of that board."""
     if not _get_config().claims.enabled:
         return None
+    channel_ids = manager.channels_on_same_device(channel_ids)
     names = {b.sbc_name for b in manager.list_bindings(channel_ids=channel_ids)}
     return _check_claims_of(manager, names)
 
