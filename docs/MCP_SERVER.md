@@ -402,19 +402,25 @@ its configuration (`update_sbc`, `remove_sbc`, `assign_serial_port`,
 `actuator_remove` on channels bound to a claimed board. A claim also
 covers the board's hardware: if two boards share a plug outlet, SDWire,
 serial device or relay channel, a claim on either refuses other users'
-calls on both (the error names the claimed board), and assigning hardware
-another board already uses checks that board's claim. Boards match by
-plug type, address text and outlet, by SDWire, by serial device path or
-registered adapter, and by relay device path and channel; two different
-addresses for one plug (a hostname and its IP) are not recognised as the
-same. If someone else
+tools that operate the other (the error names the claimed board), and
+`claim_sbc` refuses a board whose shared hardware someone else holds.
+Configuration tools only change the named board's records, so they check
+that board alone; assigning hardware another board already uses checks
+that board's claim. Boards match by plug type, address text and outlet,
+by SDWire, by serial device path or registered adapter, and by relay
+device path (symlinks resolved) or USB serial number and channel. Two
+different addresses for one plug (a hostname and its IP) are not
+recognised as the same, nor are relay records known only by VID/PID.
+`actuator_set` drives raw relay channels, so leave
+`mcp.allow_admin_actuator_ops` off when agents share the lab. If someone else
 holds the claim, a structured JSON error is returned with
 `"error": "sbc_claimed"` and hints. The claimant's calls proceed and
 heartbeat the claim. Claiming a board you already hold (e.g. from an
 earlier session) returns `"status": "already_claimed"` and renews it for
 the requested duration.
 
-With `claims.require_claim: true` (default `false`), those tools also
+With `claims.require_claim: true` (default `false`), the tools that name
+a board (all of the above except `actuator_set`/`actuator_remove`) also
 refuse on a board nobody has claimed, with `"error": "claim_required"`:
 agents must `claim_sbc` first. Only the board named in the call needs the
 caller's claim; boards it shares hardware with just must not be claimed
