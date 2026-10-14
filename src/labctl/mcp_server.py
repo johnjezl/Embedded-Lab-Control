@@ -3043,11 +3043,11 @@ def actuator_remove(name: str) -> str:
 def _check_bound_claims(manager, channel_ids: set) -> str | None:
     """Claim-check every SBC bound to one of these actuator channels: a
     relay wired to a claimed board's reset or power is part of that board."""
-    for b in manager.list_bindings():
-        if b.actuator_channel_id in channel_ids and b.sbc_name:
-            claim_err = _check_claim(manager, b.sbc_name)
-            if claim_err:
-                return claim_err
+    names = {b.sbc_name for b in manager.list_bindings(channel_ids=channel_ids)}
+    for sbc_name in sorted(n for n in names if n):
+        claim_err = _check_claim(manager, sbc_name)
+        if claim_err:
+            return claim_err
     return None
 
 
@@ -3184,6 +3184,11 @@ def bind(
     ch = manager.get_actuator_channel(a.id, channel)
     if not ch:
         return f"Error: channel {channel} not on {actuator!r}"
+    # A channel takes one binding; if a claimed board has it, say so
+    # rather than fail on the constraint.
+    claim_err = _check_bound_claims(manager, {ch.id})
+    if claim_err:
+        return claim_err
 
     if ch.default_state == shape_active:
         return (

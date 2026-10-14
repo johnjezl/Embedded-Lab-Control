@@ -102,12 +102,13 @@ class ClaimActor:
 
     ``owner`` is the authenticated labctl username, if any: a claim made
     by that user from any session (MCP, REST, an earlier server process)
-    counts as theirs. ``operator`` may override another user's claim.
+    counts as theirs. ``operator`` may override another user's claim; it
+    defaults to False so a caller that forgets to set it fails closed.
     """
 
     session_id: str
     owner: Optional[str] = None
-    operator: bool = True
+    operator: bool = False
 
     def holds(self, claim: "Claim") -> bool:
         if claim.session_id == self.session_id:

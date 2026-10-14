@@ -9,7 +9,7 @@ import logging
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 from labctl.core import audit
 from labctl.core.database import DEFAULT_TIMEOUT_SECONDS as DEFAULT_DB_TIMEOUT
@@ -1714,12 +1714,26 @@ class ResourceManager:
         in the activity log). Raises :class:`ClaimConflict` when someone
         else holds the claim, :class:`NotOperatorError` when an agent asks
         to override, and :class:`ClaimRequiredError` when ``require_claim``
-        is set and nobody holds it. Unknown SBCs raise UnknownSBCError.
+        is set and nobody holds it (an operator's ``override`` also covers
+        that case, and is logged). Unknown SBCs raise UnknownSBCError.
         """
         claim = self.get_active_claim(sbc_name)
         if claim is None:
-            if require_claim:
+            if not require_claim:
+                return None
+            if not override:
                 raise ClaimRequiredError(sbc_name)
+            if not actor.operator:
+                raise NotOperatorError(
+                    f"Only operators may act on '{sbc_name}' without a claim"
+                )
+            self._audit_log(
+                "claim_override",
+                "sbc",
+                self._require_sbc_id(sbc_name),
+                sbc_name,
+                "Acted on an unclaimed board without a claim (operator override)",
+            )
             return None
         if actor.holds(claim):
             self.heartbeat_claim(sbc_name, claim.session_id)
@@ -2117,7 +2131,11 @@ class ResourceManager:
         )
         return Binding.from_row(row) if row else None
 
-    def list_bindings(self, sbc_id: Optional[int] = None) -> list[Binding]:
+    def list_bindings(
+        self,
+        sbc_id: Optional[int] = None,
+        channel_ids: Optional[Iterable[int]] = None,
+    ) -> list[Binding]:
         sql = (
             "SELECT b.*, s.name AS sbc_name,"
             " a.name AS actuator_name, c.channel_index AS channel_index"
@@ -2126,12 +2144,21 @@ class ResourceManager:
             " LEFT JOIN actuator_channels c ON c.id = b.actuator_channel_id"
             " LEFT JOIN actuators a ON a.id = c.actuator_id"
         )
-        params: tuple = ()
+        where: list[str] = []
+        params: list = []
         if sbc_id is not None:
-            sql += " WHERE b.sbc_id = ?"
-            params = (sbc_id,)
+            where.append("b.sbc_id = ?")
+            params.append(sbc_id)
+        if channel_ids is not None:
+            ids = list(channel_ids)
+            if not ids:
+                return []
+            where.append(f"b.actuator_channel_id IN ({','.join('?' * len(ids))})")
+            params.extend(ids)
+        if where:
+            sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY s.name, b.purpose"
-        return [Binding.from_row(r) for r in self.db.execute(sql, params)]
+        return [Binding.from_row(r) for r in self.db.execute(sql, tuple(params))]
 
     def delete_binding(self, binding_id: int) -> bool:
         binding = self.get_binding(binding_id)

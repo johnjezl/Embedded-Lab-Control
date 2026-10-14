@@ -39,11 +39,13 @@ ser2net:
 #       api_key: "generate with: labctl user generate-key"
 #       role: agent
 
-# Claims (exclusive access to a board). Every surface (MCP, CLI, web, REST)
-# refuses to change a board someone else has claimed.
+# Claims (exclusive access to a board). MCP tools refuse to change a board
+# someone else has claimed. (The CLI, web UI and REST API don't check
+# claims yet; that follows in a later release.)
 # claims:
-#   # Refuse MCP/REST calls that change a board unless the caller has
-#   # claimed it first. Recommended when several agents share the lab.
+#   # Refuse MCP calls that change a board unless the caller has claimed
+#   # it first. Recommended when several agents share the lab. Needs
+#   # claims enabled (the default).
 #   require_claim: false
 
 # Web server SSL/TLS (disabled by default, serves HTTP)

@@ -3795,6 +3795,14 @@ class TestMcpActuatorToolsHonourClaims:
         )
         assert env["manager"].list_bindings()
 
+    def test_bind_to_claimed_boards_channel_refused(self, env):
+        from labctl.mcp_server import bind
+
+        env["manager"].create_sbc(name="other-sbc")
+        result = json.loads(bind("other-sbc", "reset", "relay-1", 1, "latch"))
+        assert result["error"] == "sbc_claimed"
+        assert result["sbc_name"] == "test-sbc-1"
+
 
 class TestMcpRoles:
     def test_agent_cannot_force_release(self, claims_env):
