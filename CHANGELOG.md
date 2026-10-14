@@ -170,7 +170,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   configuration (`update_sbc`, `assign_*`/`remove_*` for ports, plugs and
   addresses, `sdwire_assign`/`unassign`, `bind`/`unbind`) now refuse under
   another user's claim, as do `actuator_set`/`actuator_remove` on channels
-  bound to a claimed board.
+  bound to a claimed board, and assigning a plug outlet, SDWire or serial
+  device that a claimed board already uses.
 - `auth.users[].role`: `operator` (default) or `agent`. Only operators may
   `force_release_sbc`; agents get `not_operator`.
 - `claims.require_claim` (default `false`): MCP calls that change a board
@@ -178,7 +179,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Claims record their authenticated owner (schema v9): the same user's
   other MCP sessions, and the same user after a server restart, count as
   the claimant (use, renew, release). Claiming a board you already hold
-  returns `already_claimed`.
+  returns `already_claimed` and renews it for the requested duration.
 - `docs/CLAUDE_CODE_AGENTS.md`: connecting Claude Code agents to the HTTP
   MCP server with one labctl user and API key each, so claims keep them
   apart. Covers `claude mcp add` (manual) and a shared `--mcp-config` file

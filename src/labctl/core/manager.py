@@ -880,6 +880,43 @@ class ResourceManager:
             return True
         return False
 
+    def sbcs_sharing_hardware(
+        self,
+        *,
+        plug: Optional[tuple[str, str, int]] = None,
+        sdwire_device_id: Optional[int] = None,
+        serial_device_path: Optional[str] = None,
+    ) -> list[str]:
+        """Names of SBCs already wired to this plug outlet (type, address,
+        index), SDWire device or serial device path. Nothing in the schema
+        stops two boards sharing one, so a claim check on a new assignment
+        has to cover the boards that have it already (D013)."""
+        names: set[str] = set()
+        if plug is not None:
+            plug_type, address, plug_index = plug
+            rows = self.db.execute(
+                "SELECT s.name FROM power_plugs p JOIN sbcs s ON s.id = p.sbc_id"
+                " WHERE p.plug_type = ? AND lower(p.address) = lower(?)"
+                " AND p.plug_index = ?",
+                (plug_type, address.strip(), plug_index),
+            )
+            names.update(r["name"] for r in rows)
+        if sdwire_device_id is not None:
+            rows = self.db.execute(
+                "SELECT s.name FROM sdwire_assignments a"
+                " JOIN sbcs s ON s.id = a.sbc_id WHERE a.sdwire_device_id = ?",
+                (sdwire_device_id,),
+            )
+            names.update(r["name"] for r in rows)
+        if serial_device_path is not None:
+            rows = self.db.execute(
+                "SELECT s.name FROM serial_ports p JOIN sbcs s ON s.id = p.sbc_id"
+                " WHERE p.device_path = ?",
+                (serial_device_path,),
+            )
+            names.update(r["name"] for r in rows)
+        return sorted(names)
+
     def assign_sdwire(self, sbc_id: int, sdwire_device_id: int) -> None:
         """Assign an SDWire device to an SBC."""
         sbc = self.get_sbc(sbc_id)
@@ -1271,9 +1308,10 @@ class ResourceManager:
         return started <= epoch + self._SESSION_START_SLACK_SECONDS
 
     def release_dead_sessions(self, grace_seconds: int = 60) -> int:
-        """Release claims whose MCP stdio session process has exited.
+        """Release claims whose MCP server process has exited.
 
-        Parses ``mcp-stdio:<pid>-<epoch>`` session IDs. If the session's
+        Parses ``mcp-stdio:<pid>-<epoch>`` and ``mcp-http:<pid>-<epoch>``
+        session IDs (HTTP ones may end in ``:<username>``). If the session's
         process is gone (dead PID, or the PID now belongs to a newer
         process — see ``_is_session_alive``) **and** the claim's deadline +
         grace has passed, the claim is released as ``session-lost``. Claims
@@ -1289,7 +1327,7 @@ class ResourceManager:
         cutoff = datetime.now() - timedelta(seconds=grace_seconds)
         for row in rows:
             claim = Claim.from_row(row)
-            # Parse "mcp-stdio:<pid>-<epoch>" (epoch optional for old IDs)
+            # Parse "mcp-<transport>:<pid>-<epoch>" (epoch optional for old IDs)
             try:
                 payload = claim.session_id.split(":", 1)[1]
                 pid_part, _, epoch_part = payload.partition("-")
