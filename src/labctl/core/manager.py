@@ -987,7 +987,7 @@ class ResourceManager:
         actuator record for the same relay board (nothing stops two records
         naming one). Records match by device path after resolving symlinks
         (``/dev/lab/relay-a`` and the ``/dev/ttyUSB0`` it points to), or by
-        USB serial number. Records identified only by VID/PID can't be told
+        USB serial number with VID/PID. Records identified only by VID/PID can't be told
         apart from other boards of the same model and aren't matched."""
         ids = set(channel_ids)
         if not ids:
@@ -1002,8 +1002,11 @@ class ResourceManager:
             keys = set()
             if actuator.device_path:
                 keys.add(("path", os.path.realpath(actuator.device_path)))
-            if actuator.serial_no:
-                keys.add(("serial", actuator.serial_no))
+            # Cheap USB-serial chips often share placeholder serial
+            # numbers, so a serial number only identifies a board together
+            # with its VID/PID.
+            if actuator.serial_no and actuator.vid and actuator.pid:
+                keys.add(("serial", actuator.vid, actuator.pid, actuator.serial_no))
             return keys
 
         # Repeat until stable: a record may share its path with one record
@@ -1882,6 +1885,7 @@ class ResourceManager:
         override: bool = False,
         require_claim: bool = False,
         include_shared: bool = True,
+        heartbeat: bool = True,
     ) -> Optional[Claim]:
         """Gate an operation that changes ``sbc_name`` on its claim (D013).
 
@@ -1898,13 +1902,20 @@ class ResourceManager:
         with ``sbc_name`` (see :meth:`sbcs_sharing_hardware_with`) are
         checked too, for someone else's claim only: ``require_claim``
         applies to the named board alone. A conflict there raises
-        ClaimConflict carrying that board's claim.
+        ClaimConflict carrying that board's claim. Only the named board's
+        claim is heartbeated, and not at all with ``heartbeat=False``.
         """
-        claim = self._check_one_claim(sbc_name, actor, override, require_claim)
+        claim = self._check_one_claim(
+            sbc_name, actor, override, require_claim, heartbeat=heartbeat
+        )
         if include_shared:
             for other in self.sbcs_sharing_hardware_with(sbc_name):
                 try:
-                    self._check_one_claim(other, actor, override, False)
+                    # Don't heartbeat the caller's claim on a board it
+                    # didn't name: using A mustn't keep B's claim alive.
+                    self._check_one_claim(
+                        other, actor, override, False, heartbeat=False
+                    )
                 except UnknownSBCError:
                     continue  # deleted meanwhile: nothing left to protect
         return claim
@@ -1915,6 +1926,7 @@ class ResourceManager:
         actor: ClaimActor,
         override: bool,
         require_claim: bool,
+        heartbeat: bool = True,
     ) -> Optional[Claim]:
         claim = self.get_active_claim(sbc_name)
         if claim is None:
@@ -1935,7 +1947,8 @@ class ResourceManager:
             )
             return None
         if actor.holds(claim):
-            self.touch_claim(claim)
+            if heartbeat:
+                self.touch_claim(claim)
             return claim
         if not override:
             raise ClaimConflict(claim)

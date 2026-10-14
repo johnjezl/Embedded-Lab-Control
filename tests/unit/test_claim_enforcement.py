@@ -447,13 +447,51 @@ class TestSharedHardware:
         for name, kwargs in (
             ("r1", {"device_path": str(link)}),
             ("r1b", {"device_path": str(real)}),
-            ("r1c", {"serial_no": "SN9", "device_path": str(link)}),
-            ("r1d", {"serial_no": "SN9"}),
+            (
+                "r1c",
+                {
+                    "serial_no": "SN9",
+                    "vid": "1a86",
+                    "pid": "7523",
+                    "device_path": str(link),
+                },
+            ),
+            ("r1d", {"serial_no": "SN9", "vid": "1a86", "pid": "7523"}),
         ):
             a = manager.create_actuator(name, DriverName.LCUS1_SERIAL, **kwargs)
             manager.add_actuator_channel(a.id, 1, default_state=ChannelState.OPEN)
             ids.append(manager.get_actuator_channel(a.id, 1).id)
         assert manager.channels_on_same_device({ids[0]}) == set(ids)
+
+    def test_same_serial_different_model_and_path_not_merged(self, manager):
+        from labctl.core.models import ChannelState, DriverName
+
+        ids = []
+        for name, path in (("ra", "/dev/lab/relay-a"), ("rb", "/dev/lab/relay-b")):
+            a = manager.create_actuator(
+                name, DriverName.LCUS1_SERIAL, device_path=path, serial_no="0001"
+            )
+            manager.add_actuator_channel(a.id, 1, default_state=ChannelState.OPEN)
+            ids.append(manager.get_actuator_channel(a.id, 1).id)
+        assert manager.channels_on_same_device({ids[0]}) == {ids[0]}
+
+    def test_using_a_board_does_not_heartbeat_sharers(self, lab):
+        lab.claim_sbc(
+            sbc_name="pi-2",
+            agent_name="alice",
+            session_id="s-alice-2",
+            session_kind="mcp-http",
+            duration_seconds=600,
+            reason="x",
+            owner="alice",
+        )
+        lab.db.execute_modify(
+            "UPDATE claims SET last_activity = '2000-01-01 00:00:00'"
+            " WHERE session_id = 's-alice-2'"
+        )
+        before = lab.get_active_claim("pi-2").last_activity
+        lab.check_claim("pi-1", ClaimActor("s-alice", "alice"))
+        assert lab.get_active_claim("pi-2").last_activity == before
 
     def test_actuator_records_on_one_device_share_channels(self, manager):
         from labctl.core.models import ChannelState, DriverName

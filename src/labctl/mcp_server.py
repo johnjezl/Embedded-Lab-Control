@@ -490,6 +490,7 @@ def _check_claim(
             actor,
             require_claim=direct and config.claims.require_claim,
             include_shared=direct and shared,
+            heartbeat=direct,
         )
     except UnknownSBCError:
         return None
@@ -2667,6 +2668,17 @@ def claim_sbc(
         )
 
     manager = _get_manager()
+    claim_args = dict(
+        sbc_name=sbc_name,
+        agent_name=_get_agent_name(),
+        session_id=_get_session_id(),
+        session_kind=_SESSION_KIND,
+        duration_seconds=duration_s,
+        reason=reason or "no reason given",
+        context=context,
+        grace_seconds=config.claims.grace_period_seconds,
+        owner=_authenticated_user(),
+    )
     try:
         # A board sharing hardware with a board someone else holds can't
         # be operated, so a claim on it would be unusable.
@@ -2678,17 +2690,7 @@ def claim_sbc(
 
         # Your own claim, if expired (even inside its grace period), is
         # replaced; an active one raises ClaimConflict and is renewed below.
-        claim = manager.claim_sbc(
-            sbc_name=sbc_name,
-            agent_name=_get_agent_name(),
-            session_id=_get_session_id(),
-            session_kind=_SESSION_KIND,
-            duration_seconds=duration_s,
-            reason=reason or "no reason given",
-            context=context,
-            grace_seconds=config.claims.grace_period_seconds,
-            owner=_authenticated_user(),
-        )
+        claim = manager.claim_sbc(**claim_args)
     except UnknownSBCError:
         return json.dumps(
             {"error": "unknown_sbc", "message": f"SBC '{sbc_name}' not found"}
@@ -2709,17 +2711,7 @@ def claim_sbc(
         except ClaimNotFoundError:
             # It lapsed between the two calls: the board is free now.
             try:
-                claim = manager.claim_sbc(
-                    sbc_name=sbc_name,
-                    agent_name=_get_agent_name(),
-                    session_id=_get_session_id(),
-                    session_kind=_SESSION_KIND,
-                    duration_seconds=duration_s,
-                    reason=reason or "no reason given",
-                    context=context,
-                    grace_seconds=config.claims.grace_period_seconds,
-                    owner=_authenticated_user(),
-                )
+                claim = manager.claim_sbc(**claim_args)
             except ClaimConflict as again:
                 return _claimed_error(sbc_name, again.claim)
             except ClaimError as claim_exc:

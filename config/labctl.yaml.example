@@ -35,7 +35,8 @@ ser2net:
 #       api_key: "generate with: labctl user generate-key"
 #       # role: operator (default) may force-release other users' claims
 #       # (force_release_sbc); give AI agents role: agent (they can only
-#       # ask, with request_sbc_release).
+#       # ask, with request_sbc_release). MCP only for now: the REST API
+#       # doesn't check roles yet.
 #     - username: "fw-dev"
 #       api_key: "generate with: labctl user generate-key"
 #       role: agent
