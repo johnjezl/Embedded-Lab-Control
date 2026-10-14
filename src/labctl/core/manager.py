@@ -1625,7 +1625,7 @@ class ResourceManager:
             )
             # The grace period protects an expired claim from others, not
             # from its own holder: re-claiming replaces it straight away.
-            conn.execute(
+            replaced = conn.execute(
                 """
                 UPDATE claims
                 SET released_at = CURRENT_TIMESTAMP,
@@ -1641,7 +1641,7 @@ class ResourceManager:
                     session_id,
                     owner,
                 ),
-            )
+            ).rowcount
 
             # Check for active claim after the sweep
             cursor = conn.execute(
@@ -1693,6 +1693,14 @@ class ResourceManager:
             )
             claim = Claim.from_row(cursor.fetchone())
 
+        if replaced:
+            self._audit_log(
+                "claim_expired",
+                "sbc",
+                sbc_id,
+                sbc_name,
+                "Expired claim replaced by its holder's new claim",
+            )
         self._audit_log(
             "claim",
             "sbc",

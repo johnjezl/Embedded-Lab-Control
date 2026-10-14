@@ -451,6 +451,7 @@ def _check_claim(
     *,
     direct: bool = True,
     shared: bool = True,
+    for_sbc: str | None = None,
 ) -> str | None:
     """Check claim state for an SBC-targeting tool call.
 
@@ -464,6 +465,8 @@ def _check_claim(
 
     ``direct=False`` is for boards a call affects only through shared
     hardware: only someone else's claim on that board refuses.
+    ``for_sbc`` names the board the call is about, when that isn't
+    ``sbc_name`` (a board sharing its hardware), for the error message.
     ``shared=False`` is for calls that only change this board's own
     records (configuration), which don't touch hardware it shares with
     another board, so that board's claim doesn't matter.
@@ -495,7 +498,7 @@ def _check_claim(
     except UnknownSBCError:
         return None
     except ClaimConflict as exc:
-        return _claimed_error(sbc_name, exc.claim)
+        return _claimed_error(for_sbc or sbc_name, exc.claim)
     except ClaimRequiredError as exc:
         return json.dumps(
             {
@@ -508,11 +511,12 @@ def _check_claim(
     return None
 
 
-def _check_claims_of(manager, sbc_names) -> str | None:
-    """Refuse if someone else claims one of these SBCs (boards a call
-    reaches through shared hardware; require_claim doesn't apply)."""
+def _check_claims_of(manager, sbc_names, for_sbc: str | None = None) -> str | None:
+    """Refuse if someone else claims one of these SBCs (boards a call on
+    ``for_sbc`` reaches through shared hardware; require_claim doesn't
+    apply)."""
     for name in sorted(n for n in sbc_names if n):
-        claim_err = _check_claim(manager, name, direct=False)
+        claim_err = _check_claim(manager, name, direct=False, for_sbc=for_sbc)
         if claim_err:
             return claim_err
     return None
@@ -526,7 +530,7 @@ def _check_shared_hardware(manager, sbc_name: str, **hardware) -> str | None:
     if not _get_config().claims.enabled:
         return None
     others = set(manager.sbcs_sharing_hardware(**hardware)) - {sbc_name}
-    return _check_claims_of(manager, others)
+    return _check_claims_of(manager, others, for_sbc=sbc_name)
 
 
 def _claim_advisory(manager, sbc_name: str) -> str:
@@ -2681,12 +2685,15 @@ def claim_sbc(
     )
     try:
         # A board sharing hardware with a board someone else holds can't
-        # be operated, so a claim on it would be unusable.
-        shared_err = _check_claims_of(
-            manager, manager.sbcs_sharing_hardware_with(sbc_name)
-        )
-        if shared_err:
-            return shared_err
+        # be operated, so a claim on it would be unusable. (If the board
+        # itself is someone else's, claim_sbc below says so instead.)
+        current = manager.get_active_claim(sbc_name)
+        if current is None or _caller_actor().holds(current):
+            shared_err = _check_claims_of(
+                manager, manager.sbcs_sharing_hardware_with(sbc_name), for_sbc=sbc_name
+            )
+            if shared_err:
+                return shared_err
 
         # Your own claim, if expired (even inside its grace period), is
         # replaced; an active one raises ClaimConflict and is renewed below.
