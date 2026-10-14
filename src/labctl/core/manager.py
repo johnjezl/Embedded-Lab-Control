@@ -1732,6 +1732,20 @@ class ResourceManager:
         self._load_pending_requests(claim)
         return claim
 
+    def get_open_claim(self, sbc_name: str) -> Optional[Claim]:
+        """The unreleased claim on an SBC, including one past its deadline
+        that hasn't been swept yet, or None."""
+        sbc_id = self._require_sbc_id(sbc_name)
+        row = self.db.execute_one(
+            """
+            SELECT c.*, s.name AS sbc_name
+            FROM claims c JOIN sbcs s ON s.id = c.sbc_id
+            WHERE c.sbc_id = ? AND c.released_at IS NULL
+            """,
+            (sbc_id,),
+        )
+        return Claim.from_row(row) if row else None
+
     def list_active_claims(self) -> list[Claim]:
         """All currently active claims across the lab."""
         rows = self.db.execute("""

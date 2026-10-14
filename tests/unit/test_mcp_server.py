@@ -4016,6 +4016,31 @@ class TestMcpSharedHardwareHonoursClaims:
         assert result["sbc_name"] == "test-sbc-1"
         assert env.get_active_claim("spare") is None
 
+    def test_refused_reclaim_keeps_own_grace_period_claim(self, env):
+        from labctl.mcp_server import claim_sbc
+
+        self._share_plug(env)
+        env.claim_sbc(
+            sbc_name="spare",
+            agent_name="bob",
+            session_id="s-bob",
+            session_kind="mcp-http",
+            duration_seconds=600,
+            reason="x",
+            owner="bob",
+        )
+        env.db.execute_modify(
+            "UPDATE claims SET expires_at = ? WHERE session_id = 's-bob'",
+            (env._fmt_ts(datetime.now() - timedelta(seconds=5)),),
+        )
+        result = json.loads(claim_sbc("spare", reason="y"))
+        assert result["error"] == "sbc_claimed"
+        assert result["sbc_name"] == "test-sbc-1"
+        assert env.get_open_claim("spare").session_id == "s-bob"
+        assert not any(
+            c.released_at for c in env.list_claim_history("spare") if c.reason == "y"
+        )
+
     def test_claiming_a_claimed_board_names_that_board_first(self, env):
         from labctl.mcp_server import claim_sbc
 
