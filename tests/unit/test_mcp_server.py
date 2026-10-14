@@ -3804,6 +3804,68 @@ class TestMcpActuatorToolsHonourClaims:
         assert result["sbc_name"] == "test-sbc-1"
 
 
+class TestMcpSharedHardwareHonoursClaims:
+    """A claimed board's plug, SDWire or console can't be attached to
+    another board and driven from there."""
+
+    @pytest.fixture
+    def env(self, claims_env, monkeypatch):
+        import labctl.mcp_server as srv
+        from labctl.core.models import PlugType, PortType
+
+        board = claims_env.get_sbc_by_name("test-sbc-1")
+        claims_env.assign_power_plug(
+            sbc_id=board.id,
+            plug_type=PlugType.KASA,
+            address="10.0.0.5",
+            plug_index=2,
+        )
+        claims_env.assign_serial_port(
+            sbc_id=board.id,
+            port_type=PortType.CONSOLE,
+            device_path="/dev/lab/b-console",
+        )
+        sdwire = claims_env.create_sdwire_device("sdw-1", "SN-1")
+        claims_env.assign_sdwire(board.id, sdwire.id)
+        claims_env.create_sbc(name="spare")
+        _hold(claims_env)
+        monkeypatch.setattr(srv, "_authenticated_user", lambda: "bob")
+        return claims_env
+
+    def test_plug_refused(self, env):
+        from labctl.mcp_server import assign_power_plug
+
+        result = json.loads(assign_power_plug("spare", "kasa", "10.0.0.5 ", 2))
+        assert result["error"] == "sbc_claimed"
+        assert result["sbc_name"] == "test-sbc-1"
+        assert env.get_sbc_by_name("spare").power_plug is None
+
+    def test_other_outlet_allowed(self, env):
+        from labctl.mcp_server import assign_power_plug
+
+        assert "Assigned" in assign_power_plug("spare", "kasa", "10.0.0.5", 3)
+
+    def test_sdwire_refused(self, env):
+        from labctl.mcp_server import sdwire_assign
+
+        result = json.loads(sdwire_assign("spare", "sdw-1"))
+        assert result["error"] == "sbc_claimed"
+
+    def test_serial_device_refused(self, env):
+        from labctl.mcp_server import assign_serial_port
+
+        result = json.loads(
+            assign_serial_port("spare", "console", "/dev/lab/b-console")
+        )
+        assert result["error"] == "sbc_claimed"
+
+    def test_holder_may_share(self, env, monkeypatch):
+        import labctl.mcp_server as srv
+
+        monkeypatch.setattr(srv, "_authenticated_user", lambda: "alice")
+        assert "Assigned" in srv.sdwire_assign("spare", "sdw-1")
+
+
 class TestMcpRoles:
     def test_agent_cannot_force_release(self, claims_env):
         from labctl.mcp_server import force_release_sbc
@@ -3880,6 +3942,14 @@ class TestMcpClaimOwners:
         with patch("labctl.mcp_server._authenticated_user", return_value="alice"):
             result = json.loads(claim_sbc("test-sbc-1", reason="again"))
         assert result["status"] == "already_claimed"
+
+    def test_reclaiming_own_claim_renews_it(self, claims_env):
+        from labctl.mcp_server import claim_sbc
+
+        _hold(claims_env, session_id="mcp-http:42-1:alice")
+        with patch("labctl.mcp_server._authenticated_user", return_value="alice"):
+            claim_sbc("test-sbc-1", duration_minutes=60, reason="again")
+        assert claims_env.get_active_claim("test-sbc-1").duration_seconds == 3600
 
     def test_claim_records_owner(self, claims_env):
         from labctl.mcp_server import claim_sbc

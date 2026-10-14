@@ -399,11 +399,15 @@ operating it (`power_on/off/cycle`, `serial_send`, `sdwire_to_host/dut`,
 its configuration (`update_sbc`, `remove_sbc`, `assign_serial_port`,
 `assign_power_plug`, `set_network_address`, the matching `remove_*` tools,
 `sdwire_assign`/`unassign`, `bind`/`unbind`), plus `actuator_set` and
-`actuator_remove` on channels bound to a claimed board. If someone else
+`actuator_remove` on channels bound to a claimed board. Assigning a plug
+outlet, SDWire or serial device path that another board already uses also
+checks that board's claim, so a claimed board's hardware can't be
+attached to an unclaimed board and driven from there. If someone else
 holds the claim, a structured JSON error is returned with
 `"error": "sbc_claimed"` and hints. The claimant's calls proceed and
 heartbeat the claim. Claiming a board you already hold (e.g. from an
-earlier session) returns `"status": "already_claimed"`.
+earlier session) returns `"status": "already_claimed"` and renews it for
+the requested duration.
 
 With `claims.require_claim: true` (default `false`), those tools also
 refuse on a board nobody has claimed, with `"error": "claim_required"`:

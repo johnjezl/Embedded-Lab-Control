@@ -469,6 +469,26 @@ def _check_claim(manager, sbc_name: str, mutating: bool = True) -> str | None:
     return None
 
 
+def _check_claims_of(manager, sbc_names) -> str | None:
+    """Claim-check each named SBC; the first refusal wins."""
+    for name in sorted(n for n in sbc_names if n):
+        claim_err = _check_claim(manager, name)
+        if claim_err:
+            return claim_err
+    return None
+
+
+def _check_shared_hardware(manager, sbc_name: str, **hardware) -> str | None:
+    """Before wiring hardware to ``sbc_name``, claim-check the boards that
+    already have it: otherwise an agent could attach a claimed board's
+    plug, SDWire or console to an unclaimed board and drive it from there.
+    ``hardware`` is passed to ResourceManager.sbcs_sharing_hardware."""
+    if not _get_config().claims.enabled:
+        return None
+    others = set(manager.sbcs_sharing_hardware(**hardware)) - {sbc_name}
+    return _check_claims_of(manager, others)
+
+
 def _claim_advisory(manager, sbc_name: str) -> str:
     """Return advisory text about pending release requests, or empty string.
 
@@ -1270,7 +1290,9 @@ def assign_serial_port(
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
-    claim_err = _check_claim(manager, sbc_name)
+    claim_err = _check_claim(manager, sbc_name) or _check_shared_hardware(
+        manager, sbc_name, serial_device_path=device
+    )
     if claim_err:
         return claim_err
 
@@ -1311,7 +1333,9 @@ def assign_power_plug(
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
-    claim_err = _check_claim(manager, sbc_name)
+    claim_err = _check_claim(manager, sbc_name) or _check_shared_hardware(
+        manager, sbc_name, plug=(plug_type, address, index)
+    )
     if claim_err:
         return claim_err
 
@@ -1577,6 +1601,9 @@ def sdwire_assign(sbc_name: str, device_name: str) -> str:
     device = manager.get_sdwire_device_by_name(device_name)
     if not device:
         return f"Error: SDWire device '{device_name}' not found"
+    claim_err = _check_shared_hardware(manager, sbc_name, sdwire_device_id=device.id)
+    if claim_err:
+        return claim_err
 
     try:
         manager.assign_sdwire(sbc.id, device.id)
@@ -2536,7 +2563,7 @@ def claim_sbc(
         agent_name: Self-declared agent identifier
         context: Optional metadata (git branch, ticket, etc.)
     """
-    from labctl.core.models import ClaimConflict, UnknownSBCError
+    from labctl.core.models import ClaimConflict, ClaimError, UnknownSBCError
 
     if agent_name:
         _set_agent_name(agent_name)
@@ -2575,18 +2602,31 @@ def claim_sbc(
             {"error": "unknown_sbc", "message": f"SBC '{sbc_name}' not found"}
         )
     except ClaimConflict as exc:
-        if _caller_actor().holds(exc.claim):
-            # Already yours (e.g. from your previous session or a server
-            # restart): renew_sbc_claim extends it.
-            return json.dumps(
-                {
-                    "status": "already_claimed",
-                    "sbc_name": sbc_name,
-                    "claim": exc.claim.to_dict(),
-                    "hints": ["Extend it with renew_sbc_claim"],
-                }
+        if not _caller_actor().holds(exc.claim):
+            return _claimed_error(sbc_name, exc.claim)
+        # Already yours (e.g. from your previous session or a server
+        # restart): renew it for the duration asked, so a claim adopted
+        # with minutes left doesn't lapse mid-task.
+        try:
+            renewed = manager.renew_claim(
+                sbc_name,
+                _get_session_id(),
+                duration_seconds=duration_s,
+                owner=_authenticated_user(),
             )
-        return _claimed_error(sbc_name, exc.claim)
+        except ClaimError as renew_exc:
+            return json.dumps({"error": "renew_failed", "message": str(renew_exc)})
+        return json.dumps(
+            {
+                "status": "already_claimed",
+                "sbc_name": sbc_name,
+                "claim": renewed.to_dict(),
+                "message": (
+                    "You already held this claim; it now runs for the "
+                    "requested duration (its original reason is kept)."
+                ),
+            }
+        )
 
     return json.dumps(
         {"status": "claimed", "sbc_name": sbc_name, "claim": claim.to_dict()}
@@ -3043,12 +3083,10 @@ def actuator_remove(name: str) -> str:
 def _check_bound_claims(manager, channel_ids: set) -> str | None:
     """Claim-check every SBC bound to one of these actuator channels: a
     relay wired to a claimed board's reset or power is part of that board."""
+    if not _get_config().claims.enabled:
+        return None
     names = {b.sbc_name for b in manager.list_bindings(channel_ids=channel_ids)}
-    for sbc_name in sorted(n for n in names if n):
-        claim_err = _check_claim(manager, sbc_name)
-        if claim_err:
-            return claim_err
-    return None
+    return _check_claims_of(manager, names)
 
 
 @mcp.tool(annotations=TOOL_ANNOTATIONS["actuator_set"])
