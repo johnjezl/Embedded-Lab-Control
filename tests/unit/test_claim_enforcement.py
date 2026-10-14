@@ -79,10 +79,10 @@ class TestRequireClaimParsing:
         config = Config.from_dict({"claims": {"require_claim": None}})
         assert config.claims.require_claim is False
 
-    def test_non_bool_keeps_default_with_warning(self, caplog):
+    def test_non_bool_fails_safe_on_with_warning(self, caplog):
         with caplog.at_level(logging.WARNING, logger="labctl.core.config"):
-            config = Config.from_dict({"claims": {"require_claim": "always"}})
-        assert config.claims.require_claim is False
+            config = Config.from_dict({"claims": {"require_claim": "true"}})
+        assert config.claims.require_claim is True
         assert "require_claim" in caplog.text
 
 
@@ -224,6 +224,73 @@ class TestCheckClaim:
             manager.check_claim(
                 "pi-1", ClaimActor("s-bob", "bob"), override=True, require_claim=True
             )
+
+
+class TestSharedHardware:
+    @pytest.fixture
+    def lab(self, manager):
+        from labctl.core.models import PlugType
+
+        manager.create_sbc(name="pi-2")
+        for name in ("pi-1", "pi-2"):
+            manager.assign_power_plug(
+                sbc_id=manager.get_sbc_by_name(name).id,
+                plug_type=PlugType.KASA,
+                address="10.0.0.5",
+                plug_index=2,
+            )
+        return manager
+
+    def test_sharing_found_both_ways(self, lab):
+        assert lab.sbcs_sharing_hardware_with("pi-1") == ["pi-2"]
+        assert lab.sbcs_sharing_hardware_with("pi-2") == ["pi-1"]
+
+    def test_claim_on_sharer_refuses(self, lab):
+        _claim(lab)  # alice claims pi-1
+        with pytest.raises(ClaimConflict) as exc:
+            lab.check_claim("pi-2", ClaimActor("s-bob", "bob"))
+        assert exc.value.claim.sbc_name == "pi-1"
+
+    def test_include_shared_false_skips_sharers(self, lab):
+        _claim(lab)
+        actor = ClaimActor("s-bob", "bob")
+        assert lab.check_claim("pi-2", actor, include_shared=False) is None
+
+    def test_require_claim_only_for_named_board(self, lab):
+        lab.claim_sbc(
+            sbc_name="pi-2",
+            agent_name="bob",
+            session_id="s-bob",
+            session_kind="mcp-http",
+            duration_seconds=600,
+            reason="x",
+            owner="bob",
+        )
+        actor = ClaimActor("s-bob", "bob")
+        assert lab.check_claim("pi-2", actor, require_claim=True) is not None
+
+    def test_serial_device_matched_by_registered_name(self, manager):
+        from labctl.core.models import PortType
+
+        manager.create_serial_device(name="port-1", usb_path="1-1.1")
+        manager.assign_serial_port(
+            sbc_id=manager.get_sbc_by_name("pi-1").id,
+            port_type=PortType.CONSOLE,
+            device_path="/dev/lab/port-1",
+        )
+        assert manager.sbcs_sharing_hardware(serial_device_path="port-1") == ["pi-1"]
+
+    def test_actuator_records_on_one_device_share_channels(self, manager):
+        from labctl.core.models import ChannelState, DriverName
+
+        ids = []
+        for name in ("r1", "r1b"):
+            a = manager.create_actuator(
+                name, DriverName.LCUS1_SERIAL, device_path="/dev/lab/relay-a"
+            )
+            manager.add_actuator_channel(a.id, 1, default_state=ChannelState.OPEN)
+            ids.append(manager.get_actuator_channel(a.id, 1).id)
+        assert manager.channels_on_same_device({ids[1]}) == set(ids)
 
 
 class TestOwnerReleaseAndRenew:

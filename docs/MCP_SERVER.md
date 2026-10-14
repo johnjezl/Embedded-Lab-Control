@@ -399,10 +399,15 @@ operating it (`power_on/off/cycle`, `serial_send`, `sdwire_to_host/dut`,
 its configuration (`update_sbc`, `remove_sbc`, `assign_serial_port`,
 `assign_power_plug`, `set_network_address`, the matching `remove_*` tools,
 `sdwire_assign`/`unassign`, `bind`/`unbind`), plus `actuator_set` and
-`actuator_remove` on channels bound to a claimed board. Assigning a plug
-outlet, SDWire or serial device path that another board already uses also
-checks that board's claim, so a claimed board's hardware can't be
-attached to an unclaimed board and driven from there. If someone else
+`actuator_remove` on channels bound to a claimed board. A claim also
+covers the board's hardware: if two boards share a plug outlet, SDWire,
+serial device or relay channel, a claim on either refuses other users'
+calls on both (the error names the claimed board), and assigning hardware
+another board already uses checks that board's claim. Boards match by
+plug type, address text and outlet, by SDWire, by serial device path or
+registered adapter, and by relay device path and channel; two different
+addresses for one plug (a hostname and its IP) are not recognised as the
+same. If someone else
 holds the claim, a structured JSON error is returned with
 `"error": "sbc_claimed"` and hints. The claimant's calls proceed and
 heartbeat the claim. Claiming a board you already hold (e.g. from an
@@ -411,7 +416,10 @@ the requested duration.
 
 With `claims.require_claim: true` (default `false`), those tools also
 refuse on a board nobody has claimed, with `"error": "claim_required"`:
-agents must `claim_sbc` first. Read-only tools are never refused.
+agents must `claim_sbc` first. Only the board named in the call needs the
+caller's claim; boards it shares hardware with just must not be claimed
+by someone else. A value that isn't `true`/`false` (e.g. `"yes"`) counts
+as `true`, with a warning. Read-only tools are never refused.
 
 ### Tool Return Values
 

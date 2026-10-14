@@ -3865,6 +3865,40 @@ class TestMcpSharedHardwareHonoursClaims:
         monkeypatch.setattr(srv, "_authenticated_user", lambda: "alice")
         assert "Assigned" in srv.sdwire_assign("spare", "sdw-1")
 
+    def test_operating_a_board_sharing_a_claimed_plug_refused(self, env):
+        from labctl.core.models import PlugType
+        from labctl.mcp_server import power_off
+
+        env.assign_power_plug(
+            sbc_id=env.get_sbc_by_name("spare").id,
+            plug_type=PlugType.KASA,
+            address="10.0.0.5",
+            plug_index=2,
+        )
+        with patch("labctl.power.base.PowerController.from_plug") as power:
+            result = json.loads(power_off("spare"))
+        assert result["error"] == "sbc_claimed"
+        assert result["sbc_name"] == "test-sbc-1"
+        assert "shares hardware" in result["message"]
+        power.assert_not_called()
+
+    def test_require_claim_not_extended_to_unclaimed_sharers(self, env, monkeypatch):
+        import labctl.mcp_server as srv
+
+        srv._get_config().claims.require_claim = True
+        env.release_claim("test-sbc-1", "mcp-http:1-1:alice")
+        env.claim_sbc(
+            sbc_name="spare",
+            agent_name="bob",
+            session_id="s-bob",
+            session_kind="mcp-http",
+            duration_seconds=600,
+            reason="x",
+            owner="bob",
+        )
+        # sdw-1 is test-sbc-1's (unclaimed): bob needn't claim it too.
+        assert "Assigned" in srv.sdwire_assign("spare", "sdw-1")
+
 
 class TestMcpRoles:
     def test_agent_cannot_force_release(self, claims_env):
@@ -3886,6 +3920,8 @@ class TestMcpRoles:
         with patch("labctl.mcp_server._authenticated_user", return_value="op"):
             result = json.loads(force_release_sbc("test-sbc-1", "stuck agent"))
         assert result["status"] == "force_released"
+        released = claims_env.list_claim_history("test-sbc-1")[0]
+        assert released.released_by == "op"
 
     def test_agent_hints_omit_force_release(self, claims_env):
         from labctl.mcp_server import power_on
