@@ -3788,6 +3788,18 @@ class TestMcpActuatorToolsHonourClaims:
         assert result["error"] == "sbc_claimed"
         assert env["manager"].get_actuator_by_name("relay-1") is not None
 
+    def test_removing_unbound_duplicate_record_allowed(self, env):
+        from labctl.core.models import ChannelState, DriverName
+        from labctl.mcp_server import actuator_remove
+
+        dup = env["manager"].create_actuator(
+            "relay-1-dup",
+            DriverName.LCUS1_SERIAL,
+            device_path=env["actuator"].device_path,
+        )
+        env["manager"].add_actuator_channel(dup.id, 1, default_state=ChannelState.OPEN)
+        assert "Removed" in actuator_remove(name="relay-1-dup")
+
     def test_bind_and_unbind_refused(self, env):
         from labctl.mcp_server import unbind
 
@@ -3961,6 +3973,18 @@ class TestMcpRoles:
             result = json.loads(power_on("test-sbc-1"))
         assert not any("force_release" in h for h in result["hints"])
 
+    def test_recovery_with_bad_stored_plug_index_returns_error(self, claims_env):
+        from labctl.mcp_server import _run_recovery_composite
+
+        sbc = claims_env.get_sbc_by_name("test-sbc-1")
+        claims_env.db.execute_modify(
+            "UPDATE power_plugs SET plug_index = 0 WHERE sbc_id = ?", (sbc.id,)
+        )
+        result = _run_recovery_composite(
+            "test-sbc-1", "enter_recovery", lambda *a, **kw: None
+        )
+        assert result.startswith("Error:") and "1 or more" in result
+
     def test_unauthenticated_caller_is_operator(self):
         from labctl.mcp_server import _caller_is_operator
 
@@ -4072,6 +4096,25 @@ class TestMcpClaimOwners:
             result = json.loads(serial_capture("test-sbc-1", timeout=1))
         assert result["error"] == "sbc_claimed"
         capture.assert_not_called()
+
+    def test_reclaim_when_own_claim_lapses_mid_call(self, claims_env):
+        from labctl.mcp_server import claim_sbc
+
+        _hold(claims_env, session_id="mcp-http:42-1:alice")
+        real = claims_env.renew_claim
+
+        def lapse_then_renew(*a, **kw):
+            claims_env.db.execute_modify(
+                "UPDATE claims SET released_at = CURRENT_TIMESTAMP"
+            )
+            return real(*a, **kw)
+
+        with (
+            patch("labctl.mcp_server._authenticated_user", return_value="alice"),
+            patch.object(claims_env, "renew_claim", side_effect=lapse_then_renew),
+        ):
+            result = json.loads(claim_sbc("test-sbc-1", reason="again"))
+        assert result["status"] == "claimed"
 
     def test_other_user_cannot_remove_claimed_board(self, claims_env):
         from labctl.mcp_server import remove_sbc
