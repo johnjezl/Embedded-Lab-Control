@@ -49,6 +49,12 @@ from labctl.core.models import (
 logger = logging.getLogger(__name__)
 
 
+def _norm_usb_id(value: str) -> str:
+    """``1A86``, ``0x1a86`` and ``1a86`` name the same USB VID/PID."""
+    value = value.strip().lower()
+    return value[2:] if value.startswith("0x") else value
+
+
 class ResourceManager:
     """Manager for lab resources (SBCs, ports, etc.)."""
 
@@ -1006,7 +1012,14 @@ class ResourceManager:
             # numbers, so a serial number only identifies a board together
             # with its VID/PID.
             if actuator.serial_no and actuator.vid and actuator.pid:
-                keys.add(("serial", actuator.vid, actuator.pid, actuator.serial_no))
+                keys.add(
+                    (
+                        "serial",
+                        _norm_usb_id(actuator.vid),
+                        _norm_usb_id(actuator.pid),
+                        actuator.serial_no.strip(),
+                    )
+                )
             return keys
 
         # Repeat until stable: a record may share its path with one record
@@ -1872,9 +1885,9 @@ class ResourceManager:
             """
             UPDATE claims
             SET last_activity = ?, expires_at = ?
-            WHERE id = ? AND released_at IS NULL
+            WHERE id = ? AND released_at IS NULL AND expires_at >= ?
             """,
-            (self._fmt_ts(now), self._fmt_ts(new_expiry), claim.id),
+            (self._fmt_ts(now), self._fmt_ts(new_expiry), claim.id, self._fmt_ts(now)),
         )
 
     def check_claim(
@@ -1905,19 +1918,22 @@ class ResourceManager:
         ClaimConflict carrying that board's claim. Only the named board's
         claim is heartbeated, and not at all with ``heartbeat=False``.
         """
+        # Heartbeat only once every check has passed (a refused call
+        # mustn't extend the claim), and only the named board's claim
+        # (using A mustn't keep the caller's claim on a sharing B alive).
         claim = self._check_one_claim(
-            sbc_name, actor, override, require_claim, heartbeat=heartbeat
+            sbc_name, actor, override, require_claim, heartbeat=False
         )
         if include_shared:
             for other in self.sbcs_sharing_hardware_with(sbc_name):
                 try:
-                    # Don't heartbeat the caller's claim on a board it
-                    # didn't name: using A mustn't keep B's claim alive.
                     self._check_one_claim(
                         other, actor, override, False, heartbeat=False
                     )
                 except UnknownSBCError:
                     continue  # deleted meanwhile: nothing left to protect
+        if heartbeat and claim is not None and actor.holds(claim):
+            self.touch_claim(claim)
         return claim
 
     def _check_one_claim(
