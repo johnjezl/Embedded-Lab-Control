@@ -1258,7 +1258,12 @@ def remove_sbc(name: str) -> str:
     # (so the release is recorded) before removing the board.
     claim = manager.get_active_claim(name)
     if claim is not None and _caller_actor().holds(claim):
-        manager.release_claim(name, _get_session_id(), owner=_authenticated_user())
+        from labctl.core.models import ClaimNotFoundError
+
+        try:
+            manager.release_claim(name, _get_session_id(), owner=_authenticated_user())
+        except ClaimNotFoundError:
+            pass  # expired or released meanwhile: nothing to release
     try:
         deleted = manager.delete_sbc(sbc.id)
     except ClaimConflict as exc:  # claimed by someone else since the check

@@ -574,7 +574,7 @@ class Config:
             auto_prune_released_after_days=claims_data.get(
                 "auto_prune_released_after_days", 30
             ),
-            require_agent_name=claims_data.get("require_agent_name", False),
+            require_agent_name=_opt_in_flag(claims_data, "require_agent_name"),
             require_claim=_opt_in_flag(claims_data, "require_claim"),
         )
 
