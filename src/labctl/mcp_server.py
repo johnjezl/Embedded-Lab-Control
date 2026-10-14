@@ -416,14 +416,21 @@ def _claimed_error(sbc_name: str, claim) -> str:
     shared = (
         f" (it shares hardware with '{sbc_name}')" if holder_board != sbc_name else ""
     )
+    if claim.is_active:
+        until = f"until {claim.expires_at.isoformat()}"
+    else:
+        # Past its deadline but inside the grace period.
+        until = (
+            f"(expired at {claim.expires_at.isoformat()}; free once its "
+            f"{_get_config().claims.grace_period_seconds}s grace period ends)"
+        )
     return json.dumps(
         {
             "error": "sbc_claimed",
             "sbc_name": holder_board,
             "message": (
                 f"SBC '{holder_board}' is claimed by "
-                f"'{claim.agent_name}' until "
-                f"{claim.expires_at.isoformat()}{shared}"
+                f"'{claim.agent_name}' {until}{shared}"
             ),
             "claim": claim.to_dict(),
             "hints": hints,
@@ -2631,20 +2638,19 @@ def claim_sbc(
         if shared_err:
             return shared_err
 
-        def new_claim(grace_seconds: int):
-            return manager.claim_sbc(
-                sbc_name=sbc_name,
-                agent_name=_get_agent_name(),
-                session_id=_get_session_id(),
-                session_kind=_SESSION_KIND,
-                duration_seconds=duration_s,
-                reason=reason or "no reason given",
-                context=context,
-                grace_seconds=grace_seconds,
-                owner=_authenticated_user(),
-            )
-
-        claim = new_claim(config.claims.grace_period_seconds)
+        # Your own claim, if expired (even inside its grace period), is
+        # replaced; an active one raises ClaimConflict and is renewed below.
+        claim = manager.claim_sbc(
+            sbc_name=sbc_name,
+            agent_name=_get_agent_name(),
+            session_id=_get_session_id(),
+            session_kind=_SESSION_KIND,
+            duration_seconds=duration_s,
+            reason=reason or "no reason given",
+            context=context,
+            grace_seconds=config.claims.grace_period_seconds,
+            owner=_authenticated_user(),
+        )
     except UnknownSBCError:
         return json.dumps(
             {"error": "unknown_sbc", "message": f"SBC '{sbc_name}' not found"}
@@ -2652,13 +2658,6 @@ def claim_sbc(
     except ClaimConflict as exc:
         if not _caller_actor().holds(exc.claim):
             return _claimed_error(sbc_name, exc.claim)
-        if not exc.claim.is_active:
-            # Your own claim, past its deadline but inside the grace
-            # period: the grace only protects it from others, so replace it.
-            claim = new_claim(0)
-            return json.dumps(
-                {"status": "claimed", "sbc_name": sbc_name, "claim": claim.to_dict()}
-            )
         # Already yours (e.g. from your previous session or a server
         # restart): renew it for the duration asked, so a claim adopted
         # with minutes left doesn't lapse mid-task.

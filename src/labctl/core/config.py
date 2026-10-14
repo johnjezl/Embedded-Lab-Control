@@ -128,6 +128,8 @@ def _opt_in_flag(section: dict, key: str) -> bool:
     it plainly means off ("false", "no", "off", 0): a quoted ``"true"``
     or ``"yes"`` mustn't silently leave the protection off."""
     value = section.get(key)
+    if isinstance(value, str) and not value.strip():
+        value = None  # blank, like an empty YAML value
     if value is None or isinstance(value, bool):
         return bool(value)
     enabled = str(value).strip().lower() not in _FALSE_WORDS

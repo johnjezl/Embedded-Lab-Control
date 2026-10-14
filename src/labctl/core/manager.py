@@ -1601,6 +1601,25 @@ class ResourceManager:
                 """,
                 (ReleaseReason.EXPIRED.value, cutoff),
             )
+            # The grace period protects an expired claim from others, not
+            # from its own holder: re-claiming replaces it straight away.
+            conn.execute(
+                """
+                UPDATE claims
+                SET released_at = CURRENT_TIMESTAMP,
+                    release_reason = ?,
+                    released_by = 'system'
+                WHERE released_at IS NULL AND sbc_id = ? AND expires_at < ?
+                  AND (session_id = ? OR (owner IS NOT NULL AND owner = ?))
+                """,
+                (
+                    ReleaseReason.EXPIRED.value,
+                    sbc_id,
+                    self._fmt_ts(datetime.now()),
+                    session_id,
+                    owner,
+                ),
+            )
 
             # Check for active claim after the sweep
             cursor = conn.execute(

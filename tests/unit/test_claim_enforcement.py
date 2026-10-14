@@ -3,6 +3,7 @@ ResourceManager.check_claim."""
 
 import logging
 import sqlite3
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -75,8 +76,9 @@ class TestRequireClaimParsing:
         config = Config.from_dict({"claims": {"require_claim": True}})
         assert config.claims.require_claim is True
 
-    def test_blank_keeps_default(self):
-        config = Config.from_dict({"claims": {"require_claim": None}})
+    @pytest.mark.parametrize("blank", [None, "", "  "])
+    def test_blank_keeps_default(self, blank):
+        config = Config.from_dict({"claims": {"require_claim": blank}})
         assert config.claims.require_claim is False
 
     @pytest.mark.parametrize(
@@ -388,6 +390,55 @@ class TestSharedHardware:
             manager.add_actuator_channel(a.id, 1, default_state=ChannelState.OPEN)
             ids.append(manager.get_actuator_channel(a.id, 1).id)
         assert manager.channels_on_same_device({ids[1]}) == set(ids)
+
+
+class TestReclaimInGrace:
+    def _expire(self, manager, sbc_name, seconds_ago=5):
+        sbc_id = manager.get_sbc_by_name(sbc_name).id
+        manager.db.execute_modify(
+            "UPDATE claims SET expires_at = ? WHERE sbc_id = ?",
+            (
+                manager._fmt_ts(datetime.now() - timedelta(seconds=seconds_ago)),
+                sbc_id,
+            ),
+        )
+
+    def test_own_expired_claim_replaced_others_keep_grace(self, manager):
+        manager.create_sbc(name="pi-2")
+        _claim(manager)  # alice, pi-1
+        manager.claim_sbc(
+            sbc_name="pi-2",
+            agent_name="bob",
+            session_id="s-bob",
+            session_kind="mcp-http",
+            duration_seconds=600,
+            reason="x",
+            owner="bob",
+        )
+        self._expire(manager, "pi-1")
+        self._expire(manager, "pi-2")
+        manager.claim_sbc(
+            sbc_name="pi-2",
+            agent_name="bob",
+            session_id="s-bob-2",
+            session_kind="mcp-http",
+            duration_seconds=600,
+            reason="again",
+            owner="bob",
+            grace_seconds=60,
+        )
+        # alice's expired pi-1 claim is still inside its grace period.
+        with pytest.raises(ClaimConflict):
+            manager.claim_sbc(
+                sbc_name="pi-1",
+                agent_name="carol",
+                session_id="s-carol",
+                session_kind="mcp-http",
+                duration_seconds=600,
+                reason="x",
+                owner="carol",
+                grace_seconds=60,
+            )
 
 
 class TestOwnerReleaseAndRenew:
