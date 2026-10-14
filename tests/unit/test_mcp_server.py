@@ -4027,6 +4027,19 @@ class TestMcpClaimOwners:
         assert result["status"] == "claimed"
         assert claims_env.get_active_claim("test-sbc-1").owner == "alice"
 
+    def test_expired_claim_in_grace_reported_as_such(self, claims_env):
+        from labctl.mcp_server import claim_sbc
+
+        _hold(claims_env, session_id="mcp-http:42-1:alice")
+        claims_env.db.execute_modify(
+            "UPDATE claims SET expires_at = ?",
+            (claims_env._fmt_ts(datetime.now() - timedelta(seconds=5)),),
+        )
+        with patch("labctl.mcp_server._authenticated_user", return_value="bob"):
+            result = json.loads(claim_sbc("test-sbc-1", reason="mine"))
+        assert result["error"] == "sbc_claimed"
+        assert "grace period" in result["message"]
+
     def test_claimant_can_remove_its_board(self, claims_env):
         from labctl.mcp_server import remove_sbc
 
