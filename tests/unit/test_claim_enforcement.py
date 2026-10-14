@@ -463,6 +463,55 @@ class TestSharedHardware:
             ids.append(manager.get_actuator_channel(a.id, 1).id)
         assert manager.channels_on_same_device({ids[0]}) == set(ids)
 
+    def test_vid_pid_case_and_prefix_normalised(self, manager):
+        from labctl.core.models import ChannelState, DriverName
+
+        ids = []
+        for name, vid in (("ra", "1A86"), ("rb", "0x1a86")):
+            a = manager.create_actuator(
+                name,
+                DriverName.LCUS1_SERIAL,
+                device_path=f"/dev/lab/{name}",
+                vid=vid,
+                pid="7523",
+                serial_no="X",
+            )
+            manager.add_actuator_channel(a.id, 1, default_state=ChannelState.OPEN)
+            ids.append(manager.get_actuator_channel(a.id, 1).id)
+        assert manager.channels_on_same_device({ids[0]}) == set(ids)
+
+    def test_refused_call_does_not_heartbeat(self, lab):
+        _claim(lab)  # alice holds pi-1
+        lab.claim_sbc(
+            sbc_name="pi-2",
+            agent_name="bob",
+            session_id="s-bob",
+            session_kind="mcp-http",
+            duration_seconds=600,
+            reason="x",
+            owner="bob",
+        )
+        lab.db.execute_modify(
+            "UPDATE claims SET last_activity = '2000-01-01 00:00:00'"
+            " WHERE session_id = 's-alice'"
+        )
+        before = lab.get_active_claim("pi-1").last_activity
+        with pytest.raises(ClaimConflict):
+            lab.check_claim("pi-1", ClaimActor("s-alice", "alice"))
+        assert lab.get_active_claim("pi-1").last_activity == before
+
+    def test_heartbeat_does_not_revive_expired_claim(self, manager):
+        claim = _claim(manager)
+        manager.db.execute_modify(
+            "UPDATE claims SET expires_at = '2000-01-01 00:00:00' WHERE id = ?",
+            (claim.id,),
+        )
+        manager.touch_claim(claim)
+        row = manager.db.execute_one(
+            "SELECT expires_at FROM claims WHERE id = ?", (claim.id,)
+        )
+        assert str(row["expires_at"]).startswith("2000-01-01")
+
     def test_same_serial_different_model_and_path_not_merged(self, manager):
         from labctl.core.models import ChannelState, DriverName
 
