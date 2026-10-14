@@ -4039,6 +4039,7 @@ class TestMcpClaimOwners:
             result = json.loads(claim_sbc("test-sbc-1", reason="mine"))
         assert result["error"] == "sbc_claimed"
         assert "grace period" in result["message"]
+        assert not any("release" in h for h in result["hints"])
 
     def test_claimant_can_remove_its_board(self, claims_env):
         from labctl.mcp_server import remove_sbc

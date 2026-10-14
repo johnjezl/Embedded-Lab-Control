@@ -406,12 +406,17 @@ def _claimed_error(sbc_name: str, claim) -> str:
     """``sbc_claimed`` for ``sbc_name``; ``claim`` may be on another board
     that shares its hardware (plug, SDWire, console, relay)."""
     holder_board = claim.sbc_name or sbc_name
-    hints = [
-        "Wait for claim to expire or be released",
-        "Request early release with request_sbc_release",
-    ]
-    if _caller_is_operator():
-        hints.append("Operator override with force_release_sbc")
+    if claim.is_active:
+        hints = [
+            "Wait for claim to expire or be released",
+            "Request early release with request_sbc_release",
+        ]
+        if _caller_is_operator():
+            hints.append("Operator override with force_release_sbc")
+    else:
+        # Past its deadline: release requests and force-release only act
+        # on active claims, so the only way is to wait out the grace.
+        hints = ["Retry claim_sbc once the grace period ends"]
     # claim.to_dict() carries time_remaining_seconds for the caller.
     shared = (
         f" (it shares hardware with '{sbc_name}')" if holder_board != sbc_name else ""
@@ -421,8 +426,9 @@ def _claimed_error(sbc_name: str, claim) -> str:
     else:
         # Past its deadline but inside the grace period.
         until = (
-            f"(expired at {claim.expires_at.isoformat()}; free once its "
-            f"{_get_config().claims.grace_period_seconds}s grace period ends)"
+            f"(expired at {claim.expires_at.isoformat()}; it can be claimed "
+            f"once its {_get_config().claims.grace_period_seconds}s grace "
+            "period ends)"
         )
     return json.dumps(
         {

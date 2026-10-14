@@ -416,7 +416,9 @@ recognised as the same, nor are relay records known only by VID/PID.
 `mcp.allow_admin_actuator_ops` off when agents share the lab. If someone else
 holds the claim, a structured JSON error is returned with
 `"error": "sbc_claimed"` and hints. The claimant's calls proceed and
-heartbeat the claim. Claiming a board you already hold (e.g. from an
+heartbeat the claim. A claim stops protecting the board when it expires;
+for `claims.grace_period_seconds` after that, only its holder can claim
+the board again. Claiming a board you already hold (e.g. from an
 earlier session) returns `"status": "already_claimed"` and renews it for
 the requested duration.
 

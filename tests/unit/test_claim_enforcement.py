@@ -53,6 +53,7 @@ class TestRoleParsing:
     def test_blank_role_is_operator(self):
         assert self._role({"role": None}).role == ROLE_OPERATOR
         assert self._role({"role": ""}).role == ROLE_OPERATOR
+        assert self._role({"role": "  "}).role == ROLE_OPERATOR
 
     def test_agent(self):
         user = self._role({"role": "agent"})
