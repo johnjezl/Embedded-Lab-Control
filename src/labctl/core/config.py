@@ -331,6 +331,10 @@ class ClaimsConfig:
         still functions. Call after construction.
         """
         warnings = []
+        if self.require_claim and not self.enabled:
+            warnings.append(
+                "claims.require_claim has no effect while claims.enabled is false"
+            )
         if self.min_duration_minutes < 1:
             warnings.append(
                 f"claims.min_duration_minutes={self.min_duration_minutes}"
@@ -620,6 +624,7 @@ class Config:
                         "username": u.username,
                         "password_hash": u.password_hash,
                         "api_key": u.api_key,
+                        "role": u.role,
                     }
                     for u in self.auth.users
                 ],
@@ -644,6 +649,7 @@ class Config:
                     self.claims.auto_prune_released_after_days
                 ),
                 "require_agent_name": self.claims.require_agent_name,
+                "require_claim": self.claims.require_claim,
             },
             "mcp": {
                 "allow_admin_actuator_ops": self.mcp.allow_admin_actuator_ops,

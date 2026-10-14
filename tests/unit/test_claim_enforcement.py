@@ -86,6 +86,23 @@ class TestRequireClaimParsing:
         assert "require_claim" in caplog.text
 
 
+class TestConfigRoundTrip:
+    def test_role_and_require_claim_survive_to_dict(self):
+        config = Config.from_dict(
+            {
+                "auth": {"users": [{"username": "u", "api_key": "k", "role": "agent"}]},
+                "claims": {"require_claim": True},
+            }
+        )
+        again = Config.from_dict(config.to_dict())
+        assert again.auth.users[0].role == ROLE_AGENT
+        assert again.claims.require_claim is True
+
+    def test_require_claim_without_claims_warns(self):
+        config = Config.from_dict({"claims": {"enabled": False, "require_claim": True}})
+        assert any("require_claim" in w for w in config.claims.validate())
+
+
 class TestOwnerColumn:
     def test_schema_version(self):
         assert SCHEMA_VERSION == 9
@@ -185,7 +202,28 @@ class TestCheckClaim:
         assert manager.get_active_claim("pi-1").owner == "alice"
 
     def test_override_without_claim_is_a_no_op(self, manager):
-        assert manager.check_claim("pi-1", ClaimActor("s"), override=True) is None
+        actor = ClaimActor("s", operator=True)
+        assert manager.check_claim("pi-1", actor, override=True) is None
+
+    def test_actor_defaults_to_not_operator(self, manager):
+        _claim(manager)
+        with pytest.raises(NotOperatorError):
+            manager.check_claim("pi-1", ClaimActor("s-bob", "bob"), override=True)
+
+    def test_operator_override_satisfies_require_claim(self, manager):
+        actor = ClaimActor("s-op", owner="op", operator=True)
+        assert (
+            manager.check_claim("pi-1", actor, override=True, require_claim=True)
+            is None
+        )
+        events = audit.query_events(manager.db, limit=5, sbc="pi-1")
+        assert any(e["action"] == "claim_override" for e in events)
+
+    def test_agent_override_with_require_claim_refused(self, manager):
+        with pytest.raises(NotOperatorError):
+            manager.check_claim(
+                "pi-1", ClaimActor("s-bob", "bob"), override=True, require_claim=True
+            )
 
 
 class TestOwnerReleaseAndRenew:
@@ -208,6 +246,30 @@ class TestOwnerReleaseAndRenew:
         _claim(manager, owner=None, kind="cli")
         manager.release_claim("pi-1", "s-alice")
         assert manager.get_active_claim("pi-1") is None
+
+
+class TestListBindingsByChannel:
+    def test_filters_and_empty(self, manager):
+        from labctl.core.models import ChannelState, DriverName, ShapeMode
+
+        a = manager.create_actuator("r", DriverName.LCUS1_SERIAL, device_path="/x")
+        manager.add_actuator_channel(a.id, 1, default_state=ChannelState.OPEN)
+        manager.add_actuator_channel(a.id, 2, default_state=ChannelState.OPEN)
+        ch1 = manager.get_actuator_channel(a.id, 1)
+        sbc = manager.get_sbc_by_name("pi-1")
+        manager.create_binding(
+            sbc.id,
+            "reset",
+            ch1.id,
+            shape_mode=ShapeMode.LATCH,
+            shape_active=ChannelState.CLOSED,
+        )
+        ch2 = manager.get_actuator_channel(a.id, 2)
+        assert [b.purpose for b in manager.list_bindings(channel_ids={ch1.id})] == [
+            "reset"
+        ]
+        assert manager.list_bindings(channel_ids={ch2.id}) == []
+        assert manager.list_bindings(channel_ids=set()) == []
 
 
 class TestDeadSessionSweep:

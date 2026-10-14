@@ -57,12 +57,13 @@ What keys do *not* do:
   running as the same Linux user can read each other's key files (and
   `~/.claude.json`). For isolation between people, use separate Linux
   accounts.
-- **Restarting `labctl-mcp` drops every claim.** A clean stop releases
-  the server's claims, and agents must claim again. If the process is
-  killed instead (crash, stop timeout), its claims stay until they expire:
-  they still belong to their agents (by username), who can keep using or
-  release them, and block everyone else. Restart when no agent is
-  mid-operation.
+- **Restarting `labctl-mcp` drops claims.** A clean stop releases the
+  claims made through that server process, and agents must claim again.
+  If the process is killed instead (crash, stop timeout), its claims stay
+  until they expire: they still belong to their agents (by username), who
+  can keep using or release them, and block everyone else. A later clean
+  stop doesn't release those older claims either. Restart when no agent
+  is mid-operation.
 
 ## Prerequisites
 
@@ -88,7 +89,8 @@ claims:
 
 Agents then get `"error": "claim_required"` instead of touching a board
 they haven't claimed, so a forgotten `claim_sbc` can't hurt another
-agent. Restart `labctl-mcp` (and `labctl-web`) to apply it.
+agent. Restart `labctl-mcp` to apply it. (The REST API doesn't check
+claims yet.)
 
 ## Step 1: create the agent's labctl user
 
@@ -305,6 +307,7 @@ agent's `CLAUDE.md`:
   `agent_name` unset so the claim shows your labctl user). If it
   is claimed by someone else, wait or call `request_sbc_release`.
 - `release_sbc` as soon as you are done; `renew_sbc_claim` for long runs.
+- Never call `force_release_sbc` unless I ask.
 - Destructive tools return `confirmation_required` first: check the plan,
   then call again with the same arguments plus `confirm_token`. Never
   call one "to see what happens": if confirmation is turned off, the

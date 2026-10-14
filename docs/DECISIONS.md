@@ -251,7 +251,8 @@ This document records significant design decisions made during development.
   2. **CLI refuses** board-changing commands on a board someone else has claimed, naming the holder; an explicit override flag acts anyway and is recorded in the activity log.
   3. **Web UI and REST refuse** too (REST: 409 `sbc_claimed`); the claim owner's own key or login is allowed, and operators can override explicitly, logged.
   4. **`claims.require_claim`** (opt-in, default off): MCP and REST calls that change a board refuse unless the caller holds its claim.
-- **Also**: claims record the authenticated **owner** username (schema v9), so one user is one claimant across MCP and REST and across MCP server restarts; configuration-changing MCP tools check claims; HTTP MCP sessions are labelled `mcp-http`; REST claims no longer embed an API-key prefix in the session ID.
+- **Also**: claims record the authenticated **owner** username (schema v9), so one user is one claimant across MCP server restarts (and, once REST records owners, across MCP and REST); configuration-changing MCP tools check claims; HTTP MCP sessions are labelled `mcp-http`; REST claims are to stop embedding an API-key prefix in the session ID.
+- **Delivery**: three PRs in order — core + MCP (roles, owners, `require_claim` for MCP), then the CLI checks, then web/REST checks (with `require_claim` for REST, owners on REST claims and the session-ID change). Until the last two land, only MCP enforces claims.
 - **Rationale**: claims are the mechanism that keeps agents apart, so every surface that can change a board has to honour them; roles make the override a privilege instead of an honour system, with defaults that keep existing single-user setups unchanged.
 
 ---
