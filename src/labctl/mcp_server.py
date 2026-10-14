@@ -1267,7 +1267,10 @@ def remove_sbc(name: str) -> str:
     try:
         deleted = manager.delete_sbc(sbc.id)
     except ClaimConflict as exc:  # claimed by someone else since the check
-        return _claimed_error(name, exc.claim)
+        err = json.loads(_claimed_error(name, exc.claim))
+        if claim is not None:
+            err["message"] += "; your own claim on it was released first"
+        return json.dumps(err)
     if deleted:
         result = f"Removed SBC: {name}"
         advisory = _claim_advisory(manager, name)
@@ -2627,7 +2630,12 @@ def claim_sbc(
         agent_name: Self-declared agent identifier
         context: Optional metadata (git branch, ticket, etc.)
     """
-    from labctl.core.models import ClaimConflict, ClaimError, UnknownSBCError
+    from labctl.core.models import (
+        ClaimConflict,
+        ClaimError,
+        ClaimNotFoundError,
+        UnknownSBCError,
+    )
 
     if agent_name:
         _set_agent_name(agent_name)
@@ -2687,6 +2695,27 @@ def claim_sbc(
                 _get_session_id(),
                 duration_seconds=duration_s,
                 owner=_authenticated_user(),
+            )
+        except ClaimNotFoundError:
+            # It lapsed between the two calls: the board is free now.
+            try:
+                claim = manager.claim_sbc(
+                    sbc_name=sbc_name,
+                    agent_name=_get_agent_name(),
+                    session_id=_get_session_id(),
+                    session_kind=_SESSION_KIND,
+                    duration_seconds=duration_s,
+                    reason=reason or "no reason given",
+                    context=context,
+                    grace_seconds=config.claims.grace_period_seconds,
+                    owner=_authenticated_user(),
+                )
+            except ClaimConflict as again:
+                return _claimed_error(sbc_name, again.claim)
+            except ClaimError as claim_exc:
+                return json.dumps({"error": "claim_failed", "message": str(claim_exc)})
+            return json.dumps(
+                {"status": "claimed", "sbc_name": sbc_name, "claim": claim.to_dict()}
             )
         except ClaimError as renew_exc:
             return json.dumps({"error": "renew_failed", "message": str(renew_exc)})
@@ -3147,19 +3176,26 @@ def actuator_remove(name: str) -> str:
     actuator = manager.get_actuator_by_name(name)
     if not actuator:
         return f"Error: actuator '{name}' not found"
-    claim_err = _check_bound_claims(manager, {c.id for c in actuator.channels})
+    claim_err = _check_bound_claims(
+        manager, {c.id for c in actuator.channels}, same_device=False
+    )
     if claim_err:
         return claim_err
     manager.delete_actuator(actuator.id)
     return f"Removed actuator {name!r}"
 
 
-def _check_bound_claims(manager, channel_ids: set) -> str | None:
+def _check_bound_claims(
+    manager, channel_ids: set, *, same_device: bool = True
+) -> str | None:
     """Claim-check every SBC bound to one of these actuator channels: a
-    relay wired to a claimed board's reset or power is part of that board."""
+    relay wired to a claimed board's reset or power is part of that board.
+    ``same_device`` also covers other actuator records for the same relay
+    board (needed when driving a channel, not when deleting a record)."""
     if not _get_config().claims.enabled:
         return None
-    channel_ids = manager.channels_on_same_device(channel_ids)
+    if same_device:
+        channel_ids = manager.channels_on_same_device(channel_ids)
     names = {b.sbc_name for b in manager.list_bindings(channel_ids=channel_ids)}
     return _check_claims_of(manager, names)
 
@@ -3477,8 +3513,8 @@ def _run_recovery_composite(sbc_name: str, fn_name: str, fn) -> str:
         if sbc.power_cycle_delay_seconds is not None
         else 3.0
     )
-    controller = PowerController.from_plug(sbc.power_plug)
     try:
+        controller = PowerController.from_plug(sbc.power_plug)
         fn(manager, sbc, controller, delay_s=delay)
     except (ActuationError, RuntimeError) as e:
         return f"Error: {fn_name} failed: {e}"

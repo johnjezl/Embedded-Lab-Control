@@ -633,3 +633,19 @@ class TestParallelCheckAll:
         # Serial would be 4 × 0.25 = 1.0s; parallel should be ~0.25-0.5s.
         # Generous bound to avoid flakes on slow CI: < 0.7s.
         assert elapsed < 0.7, f"expected parallel speedup but took {elapsed:.2f}s"
+
+
+class TestCheckSbcBadPlugIndex:
+    def test_bad_stored_plug_index_fails_power_check_only(self):
+        """A stored plug index below 1 fails the power check instead of
+        raising out of check_sbc (which would drop the other results)."""
+        from labctl.core.models import SBC, PlugType, PowerPlug
+
+        sbc = SBC(id=1, name="pi-1")
+        sbc.power_plug = PowerPlug(
+            sbc_id=1, plug_type=PlugType.TASMOTA, address="10.0.0.6", plug_index=0
+        )
+        summary = HealthChecker().check_sbc(sbc, [CheckType.POWER])
+        assert summary.power_result.success is False
+        assert "1 or more" in summary.power_result.message
+        assert summary.power_state == PowerState.UNKNOWN
