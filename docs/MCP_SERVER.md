@@ -424,7 +424,8 @@ heartbeat the claim. A claim stops protecting the board when it expires;
 for `claims.grace_period_seconds` after that, only its holder can claim
 the board again. Claiming a board you already hold (e.g. from an
 earlier session) returns `"status": "already_claimed"` and renews it for
-the requested duration.
+the requested duration (without re-checking boards it shares hardware
+with).
 
 With `claims.require_claim: true` (default `false`), the tools that name
 a board (all of the above except `actuator_set`/`actuator_remove`) also
