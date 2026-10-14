@@ -1254,13 +1254,13 @@ def remove_sbc(name: str) -> str:
 
     from labctl.core.models import ClaimConflict
 
-    # The check above passed, so any claim is the caller's own: removing
-    # the board ends it (the claim rows go with the board).
+    # The check above passed, so any claim is the caller's own: release it
+    # (so the release is recorded) before removing the board.
     claim = manager.get_active_claim(name)
+    if claim is not None and _caller_actor().holds(claim):
+        manager.release_claim(name, _get_session_id(), owner=_authenticated_user())
     try:
-        deleted = manager.delete_sbc(
-            sbc.id, force=claim is not None and _caller_actor().holds(claim)
-        )
+        deleted = manager.delete_sbc(sbc.id)
     except ClaimConflict as exc:  # claimed by someone else since the check
         return _claimed_error(name, exc.claim)
     if deleted:
@@ -2331,6 +2331,15 @@ def serial_capture(
         port = resolve_port(manager, port_name)
     except ValueError as e:
         return f"Error: {e}"
+
+    # Capturing holds the board's ser2net session, so it is claim-checked
+    # like serial_send.
+    if port.sbc_id:
+        sbc = manager.get_sbc(port.sbc_id)
+        if sbc:
+            claim_err = _check_claim(manager, sbc.name, mutating=True)
+            if claim_err:
+                return claim_err
 
     if not port.tcp_port:
         return f"Error: Port '{port_name}' has no TCP port configured"

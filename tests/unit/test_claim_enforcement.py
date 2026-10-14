@@ -20,6 +20,15 @@ from labctl.core.models import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _fresh_config_warnings():
+    from labctl.core import config
+
+    config._warned.clear()
+    yield
+    config._warned.clear()
+
+
 @pytest.fixture
 def manager(tmp_path):
     m = ResourceManager(get_database(tmp_path / "lab.db"))
@@ -67,6 +76,15 @@ class TestRoleParsing:
         with caplog.at_level(logging.WARNING, logger="labctl.core.config"):
             assert self._role({"role": bad}).role == ROLE_AGENT
         assert "unknown role" in caplog.text
+
+
+class TestConfigWarningsOnce:
+    def test_same_bad_value_warns_once(self, caplog):
+        entry = {"auth": {"users": [{"username": "u", "api_key": "k", "role": "x"}]}}
+        with caplog.at_level(logging.WARNING, logger="labctl.core.config"):
+            Config.from_dict(entry)
+            Config.from_dict(entry)
+        assert caplog.text.count("unknown role") == 1
 
 
 class TestRequireClaimParsing:
@@ -289,6 +307,18 @@ class TestSharedHardware:
             device_path="/dev/lab/port-1",
         )
         assert manager.sbcs_sharing_hardware(serial_device_path="port-1") == ["pi-1"]
+
+    @pytest.mark.parametrize("index", [0, -1])
+    def test_plug_index_below_one_refused(self, manager, index):
+        from labctl.core.models import PlugType
+
+        with pytest.raises(ValueError, match="index"):
+            manager.assign_power_plug(
+                sbc_id=manager.get_sbc_by_name("pi-1").id,
+                plug_type=PlugType.TASMOTA,
+                address="10.0.0.6",
+                plug_index=index,
+            )
 
     def test_stored_address_whitespace_ignored(self, manager):
         from labctl.core.models import PlugType

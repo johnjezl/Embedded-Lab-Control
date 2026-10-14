@@ -4048,6 +4048,31 @@ class TestMcpClaimOwners:
         with patch("labctl.mcp_server._authenticated_user", return_value="alice"):
             assert "Removed SBC" in remove_sbc("test-sbc-1")
 
+    def test_claimant_removal_records_the_release(self, claims_env):
+        from labctl.mcp_server import remove_sbc
+
+        _hold(claims_env)
+        with (
+            patch("labctl.mcp_server._authenticated_user", return_value="alice"),
+            patch.object(
+                claims_env, "release_claim", wraps=claims_env.release_claim
+            ) as release,
+        ):
+            remove_sbc("test-sbc-1")
+        release.assert_called_once()
+
+    def test_serial_capture_refused_under_others_claim(self, claims_env):
+        from labctl.mcp_server import serial_capture
+
+        _hold(claims_env)
+        with (
+            patch("labctl.mcp_server._authenticated_user", return_value="bob"),
+            patch("labctl.serial.capture.capture_serial_output") as capture,
+        ):
+            result = json.loads(serial_capture("test-sbc-1", timeout=1))
+        assert result["error"] == "sbc_claimed"
+        capture.assert_not_called()
+
     def test_other_user_cannot_remove_claimed_board(self, claims_env):
         from labctl.mcp_server import remove_sbc
 

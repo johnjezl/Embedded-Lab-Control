@@ -42,7 +42,7 @@ ser2net:
 
 # Claims (exclusive access to a board). MCP tools refuse to change a board
 # someone else has claimed. (The CLI, web UI and REST API don't check
-# claims yet; that follows in a later release.)
+# claims yet, except `labctl remove`; that follows in a later release.)
 # claims:
 #   # Refuse MCP calls that change a board unless the caller has claimed
 #   # it first. Recommended when several agents share the lab. Needs

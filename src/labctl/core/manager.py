@@ -768,6 +768,9 @@ class ResourceManager:
         sbc = self.get_sbc(sbc_id)
         if not sbc:
             raise ValueError(f"SBC with ID {sbc_id} not found")
+        if plug_index < 1:
+            # Tasmota's Power0 switches every relay on the device.
+            raise ValueError(f"Plug index must be 1 or more, got {plug_index}")
 
         # Atomic upsert
         plug_id = self.db.execute_insert(

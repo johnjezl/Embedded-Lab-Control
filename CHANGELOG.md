@@ -138,6 +138,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `session-lost` rather than later as `expired`.
 
 ### Changed
+- Power plugs: an outlet index below 1 is refused, and a single-outlet
+  Kasa plug refuses any index other than 1 (it used to switch the whole
+  plug, which claim checks couldn't see as shared with index 1).
+- MCP `serial_capture` is claim-checked like `serial_send`: it holds the
+  board's ser2net session.
 - HTTP MCP sessions are labelled `mcp-http` (claims' `session_kind` and
   activity-log actors), not `mcp-stdio`; the dead-session sweep covers both.
 - **Package renamed for PyPI**: the distribution is now
