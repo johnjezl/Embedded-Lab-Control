@@ -1239,7 +1239,18 @@ def remove_sbc(name: str) -> str:
     if not sbc:
         return f"Error: SBC '{name}' not found"
 
-    if manager.delete_sbc(sbc.id):
+    from labctl.core.models import ClaimConflict
+
+    # The check above passed, so any claim is the caller's own: removing
+    # the board ends it (the claim rows go with the board).
+    claim = manager.get_active_claim(name)
+    try:
+        deleted = manager.delete_sbc(
+            sbc.id, force=claim is not None and _caller_actor().holds(claim)
+        )
+    except ClaimConflict as exc:  # claimed by someone else since the check
+        return _claimed_error(name, exc.claim)
+    if deleted:
         result = f"Removed SBC: {name}"
         advisory = _claim_advisory(manager, name)
         return f"{result}\n\n{advisory}" if advisory else result
@@ -2619,17 +2630,21 @@ def claim_sbc(
         )
         if shared_err:
             return shared_err
-        claim = manager.claim_sbc(
-            sbc_name=sbc_name,
-            agent_name=_get_agent_name(),
-            session_id=_get_session_id(),
-            session_kind=_SESSION_KIND,
-            duration_seconds=duration_s,
-            reason=reason or "no reason given",
-            context=context,
-            grace_seconds=config.claims.grace_period_seconds,
-            owner=_authenticated_user(),
-        )
+
+        def new_claim(grace_seconds: int):
+            return manager.claim_sbc(
+                sbc_name=sbc_name,
+                agent_name=_get_agent_name(),
+                session_id=_get_session_id(),
+                session_kind=_SESSION_KIND,
+                duration_seconds=duration_s,
+                reason=reason or "no reason given",
+                context=context,
+                grace_seconds=grace_seconds,
+                owner=_authenticated_user(),
+            )
+
+        claim = new_claim(config.claims.grace_period_seconds)
     except UnknownSBCError:
         return json.dumps(
             {"error": "unknown_sbc", "message": f"SBC '{sbc_name}' not found"}
@@ -2637,6 +2652,13 @@ def claim_sbc(
     except ClaimConflict as exc:
         if not _caller_actor().holds(exc.claim):
             return _claimed_error(sbc_name, exc.claim)
+        if not exc.claim.is_active:
+            # Your own claim, past its deadline but inside the grace
+            # period: the grace only protects it from others, so replace it.
+            claim = new_claim(0)
+            return json.dumps(
+                {"status": "claimed", "sbc_name": sbc_name, "claim": claim.to_dict()}
+            )
         # Already yours (e.g. from your previous session or a server
         # restart): renew it for the duration asked, so a claim adopted
         # with minutes left doesn't lapse mid-task.

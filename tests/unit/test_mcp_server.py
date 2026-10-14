@@ -2,6 +2,7 @@
 
 import json
 import os
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -4012,6 +4013,34 @@ class TestMcpClaimOwners:
         with patch("labctl.mcp_server._authenticated_user", return_value="alice"):
             claim_sbc("test-sbc-1", duration_minutes=60, reason="again")
         assert claims_env.get_active_claim("test-sbc-1").duration_seconds == 3600
+
+    def test_reclaiming_own_claim_in_grace_period(self, claims_env):
+        from labctl.mcp_server import claim_sbc
+
+        _hold(claims_env, session_id="mcp-http:42-1:alice")
+        claims_env.db.execute_modify(
+            "UPDATE claims SET expires_at = ?",
+            (claims_env._fmt_ts(datetime.now() - timedelta(seconds=5)),),
+        )
+        with patch("labctl.mcp_server._authenticated_user", return_value="alice"):
+            result = json.loads(claim_sbc("test-sbc-1", reason="again"))
+        assert result["status"] == "claimed"
+        assert claims_env.get_active_claim("test-sbc-1").owner == "alice"
+
+    def test_claimant_can_remove_its_board(self, claims_env):
+        from labctl.mcp_server import remove_sbc
+
+        _hold(claims_env)
+        with patch("labctl.mcp_server._authenticated_user", return_value="alice"):
+            assert "Removed SBC" in remove_sbc("test-sbc-1")
+
+    def test_other_user_cannot_remove_claimed_board(self, claims_env):
+        from labctl.mcp_server import remove_sbc
+
+        _hold(claims_env)
+        with patch("labctl.mcp_server._authenticated_user", return_value="bob"):
+            result = json.loads(remove_sbc("test-sbc-1"))
+        assert result["error"] == "sbc_claimed"
 
     def test_claim_records_owner(self, claims_env):
         from labctl.mcp_server import claim_sbc
