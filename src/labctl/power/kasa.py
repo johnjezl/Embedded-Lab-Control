@@ -27,7 +27,7 @@ import time
 from functools import lru_cache
 
 from labctl.core.config import load_config
-from labctl.power.base import PowerController, PowerState
+from labctl.power.base import PlugConfigError, PowerController, PowerState
 
 logger = logging.getLogger(__name__)
 
@@ -174,7 +174,7 @@ class KasaController(PowerController):
             # switch the whole plug, and boards sharing it by index 1
             # wouldn't be recognised as sharing it (claim checks, D013).
             await device.disconnect()
-            raise RuntimeError(
+            raise PlugConfigError(
                 f"{self.address} is a single-outlet plug; its index must be 1, "
                 f"not {self.plug_index}"
             )

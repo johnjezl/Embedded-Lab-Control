@@ -140,10 +140,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 - Kasa: driver errors (bad outlet, unreachable plug) inside the MCP server
   are reported as such, not as an unrelated asyncio error.
-- Power plugs: an outlet index below 1 is refused (when assigned and when
-  used, for rows saved earlier), and a single-outlet
+- Power plugs: an outlet index below 1 is refused when assigned (rows
+  saved earlier count as sharing every outlet on that address for claim
+  checks), and a single-outlet
   Kasa plug refuses any index other than 1 (it used to switch the whole
   plug, which claim checks couldn't see as shared with index 1).
+  `flash_image` and `sdwire_update` then stop instead of switching the SD
+  card to the host with the board possibly still powered.
 - MCP `serial_capture` is claim-checked like `serial_send`: it holds the
   board's ser2net session.
 - HTTP MCP sessions are labelled `mcp-http` (claims' `session_kind` and
