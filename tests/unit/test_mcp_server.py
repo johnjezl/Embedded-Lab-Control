@@ -667,25 +667,6 @@ class TestMcpSDWireTools:
         mock_ctrl_instance.switch_to_host.assert_called_once()
         mock_ctrl_instance.switch_to_dut.assert_called_once()
 
-    def test_sdwire_update_stops_when_plug_misconfigured(self, mock_manager):
-        from labctl.mcp_server import sdwire_update
-        from labctl.power.base import PlugConfigError
-
-        mock_ctrl = MagicMock()
-        power = MagicMock()
-        power.power_off.side_effect = PlugConfigError("single-outlet plug")
-        with (
-            patch("labctl.sdwire.SDWireController", return_value=mock_ctrl),
-            patch("labctl.power.base.PowerController.from_plug", return_value=power),
-        ):
-            result = sdwire_update(
-                sbc_name="test-sbc-1",
-                partition=1,
-                copies=[f"{self.host_dir}/local.bin:kernel.img"],
-            )
-        assert result.startswith("Error: can't power off")
-        mock_ctrl.switch_to_host.assert_not_called()
-
     def test_sdwire_update_uses_mutating_claim_check(self, mock_manager):
         from labctl.mcp_server import sdwire_update
 
@@ -1829,24 +1810,6 @@ class TestMcpFlashImage:
         assert "1024000" in result
         mock_ctrl.switch_to_host.assert_called_once()
         mock_ctrl.switch_to_dut.assert_called_once()
-
-    def test_flash_image_stops_when_plug_misconfigured(self, mock_manager):
-        from labctl.mcp_server import flash_image
-        from labctl.power.base import PlugConfigError
-
-        mock_ctrl = MagicMock()
-        power = MagicMock()
-        power.power_off.side_effect = PlugConfigError("single-outlet plug")
-        with (
-            patch("labctl.sdwire.SDWireController", return_value=mock_ctrl),
-            patch("labctl.power.base.PowerController.from_plug", return_value=power),
-        ):
-            result = flash_image(
-                sbc_name="test-sbc-1", image_path=f"{self.host_dir}/test.img"
-            )
-        assert result.startswith("Error: can't power off")
-        mock_ctrl.switch_to_host.assert_not_called()
-        mock_ctrl.flash_image.assert_not_called()
 
     def test_flash_image_with_reboot(self, mock_manager):
         from unittest.mock import MagicMock
@@ -4022,17 +3985,11 @@ class TestMcpRoles:
             )
         assert result == "Error: enter_recovery failed: bad plug"
 
-    def test_host_switch_guard_stops_on_plug_config_error(self, claims_env):
-        from labctl.mcp_server import _sdwire_host_switch_guard_mcp
-        from labctl.power.base import PlugConfigError
+    def test_assign_plug_index_below_one_reports_the_index(self, claims_env):
+        from labctl.mcp_server import assign_power_plug
 
-        sbc = claims_env.get_sbc_by_name("test-sbc-1")
-        with patch(
-            "labctl.power.PowerController.from_plug",
-            side_effect=PlugConfigError("single-outlet plug"),
-        ):
-            result = _sdwire_host_switch_guard_mcp("test-sbc-1", sbc)
-        assert result.startswith("Error:") and "single-outlet" in result
+        result = assign_power_plug("test-sbc-1", "tasmota", "10.0.0.5", index=0)
+        assert result == "Error: Plug index must be 1 or more, got 0"
 
     def test_unauthenticated_caller_is_operator(self):
         from labctl.mcp_server import _caller_is_operator

@@ -20,13 +20,6 @@ class PowerState(Enum):
     UNKNOWN = "unknown"
 
 
-class PlugConfigError(RuntimeError):
-    """The plug's stored configuration doesn't match the device (e.g. an
-    outlet index a single-outlet plug doesn't have). Unlike a transient
-    network error, retrying or carrying on "best effort" won't help, so
-    callers that power a board off before touching its SD card stop."""
-
-
 class PowerController(ABC):
     """Abstract base class for power controllers."""
 

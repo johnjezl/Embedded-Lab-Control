@@ -27,7 +27,7 @@ import time
 from functools import lru_cache
 
 from labctl.core.config import load_config
-from labctl.power.base import PlugConfigError, PowerController, PowerState
+from labctl.power.base import PowerController, PowerState
 
 logger = logging.getLogger(__name__)
 
@@ -169,15 +169,6 @@ class KasaController(PowerController):
             )
             return device, target
 
-        if self.plug_index != 1:
-            # A single plug has one outlet; acting on "outlet 2" would
-            # switch the whole plug, and boards sharing it by index 1
-            # wouldn't be recognised as sharing it (claim checks, D013).
-            await device.disconnect()
-            raise PlugConfigError(
-                f"{self.address} is a single-outlet plug; its index must be 1, "
-                f"not {self.plug_index}"
-            )
         return device, device
 
     def _run_async(self, coro_factory, action: str, retries: int = 2):

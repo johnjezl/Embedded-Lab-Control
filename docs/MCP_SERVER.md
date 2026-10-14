@@ -407,12 +407,14 @@ tools that operate the other (the error names the claimed board), and
 `claim_sbc` refuses a board whose shared hardware someone else holds.
 Configuration tools only change the named board's records, so they check
 that board alone; assigning hardware another board already uses checks
-that board's claim. Boards match by plug type, address text and outlet,
-by SDWire, by serial device path (symlinks resolved) or registered
-adapter, and by relay
-device path (symlinks resolved) or USB serial number and channel. Two
-different addresses for one plug (a hostname and its IP) are not
-recognised as the same, nor are relay records known only by VID/PID.
+that board's claim. Boards match by plug type, address text and outlet
+(a row saved with outlet 0 matches every outlet on its address), by
+SDWire, by serial device path (symlinks resolved) or registered adapter,
+and by relay device path (symlinks resolved) or USB serial number and
+channel. Two different addresses for one plug (a hostname and its IP)
+are not recognised as the same, nor are relay records known only by
+VID/PID. Give a single-outlet Kasa plug outlet 1: it ignores the outlet
+number, so another number would switch the same plug without matching.
 `actuator_set` drives raw relay channels, so leave
 `mcp.allow_admin_actuator_ops` off when agents share the lab. If someone else
 holds the claim, a structured JSON error is returned with
