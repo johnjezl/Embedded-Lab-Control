@@ -280,6 +280,51 @@ class TestSharedHardware:
         )
         assert manager.sbcs_sharing_hardware(serial_device_path="port-1") == ["pi-1"]
 
+    def test_stored_address_whitespace_ignored(self, manager):
+        from labctl.core.models import PlugType
+
+        manager.db.execute_modify(
+            "INSERT INTO power_plugs (sbc_id, plug_type, address, plug_index)"
+            " VALUES (?, 'kasa', ' 10.0.0.7 ', 1)",
+            (manager.get_sbc_by_name("pi-1").id,),
+        )
+        assert manager.sbcs_sharing_hardware(
+            plug=(PlugType.KASA.value, "10.0.0.7", 1)
+        ) == ["pi-1"]
+
+    def test_serial_ports_linked_to_one_adapter_share(self, manager):
+        from labctl.core.models import PortType
+
+        dev = manager.create_serial_device(name="ad3", usb_path="1-1.3")
+        manager.create_sbc(name="pi-2")
+        for name, path in (("pi-1", "/dev/lab/ad3"), ("pi-2", "/dev/ttyUSB0")):
+            manager.assign_serial_port(
+                sbc_id=manager.get_sbc_by_name(name).id,
+                port_type=PortType.CONSOLE,
+                device_path=path,
+                serial_device_id=dev.id,
+            )
+        assert manager.sbcs_sharing_hardware_with("pi-2") == ["pi-1"]
+
+    def test_actuator_records_match_through_symlink_and_serial(self, manager, tmp_path):
+        from labctl.core.models import ChannelState, DriverName
+
+        real = tmp_path / "ttyUSB0"
+        real.touch()
+        link = tmp_path / "relay-a"
+        link.symlink_to(real)
+        ids = []
+        for name, kwargs in (
+            ("r1", {"device_path": str(link)}),
+            ("r1b", {"device_path": str(real)}),
+            ("r1c", {"serial_no": "SN9", "device_path": str(link)}),
+            ("r1d", {"serial_no": "SN9"}),
+        ):
+            a = manager.create_actuator(name, DriverName.LCUS1_SERIAL, **kwargs)
+            manager.add_actuator_channel(a.id, 1, default_state=ChannelState.OPEN)
+            ids.append(manager.get_actuator_channel(a.id, 1).id)
+        assert manager.channels_on_same_device({ids[0]}) == set(ids)
+
     def test_actuator_records_on_one_device_share_channels(self, manager):
         from labctl.core.models import ChannelState, DriverName
 

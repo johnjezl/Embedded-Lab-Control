@@ -3882,6 +3882,32 @@ class TestMcpSharedHardwareHonoursClaims:
         assert "shares hardware" in result["message"]
         power.assert_not_called()
 
+    def _share_plug(self, env):
+        from labctl.core.models import PlugType
+
+        env.assign_power_plug(
+            sbc_id=env.get_sbc_by_name("spare").id,
+            plug_type=PlugType.KASA,
+            address="10.0.0.5",
+            plug_index=2,
+        )
+
+    def test_config_tools_ignore_sharers_claims(self, env):
+        from labctl.mcp_server import remove_power_plug, update_sbc
+
+        self._share_plug(env)
+        assert "Error" not in update_sbc("spare", description="x")
+        assert "sbc_claimed" not in remove_power_plug("spare")
+
+    def test_claiming_a_board_sharing_a_claimed_plug_refused(self, env):
+        from labctl.mcp_server import claim_sbc
+
+        self._share_plug(env)
+        result = json.loads(claim_sbc("spare", reason="x"))
+        assert result["error"] == "sbc_claimed"
+        assert result["sbc_name"] == "test-sbc-1"
+        assert env.get_active_claim("spare") is None
+
     def test_require_claim_not_extended_to_unclaimed_sharers(self, env, monkeypatch):
         import labctl.mcp_server as srv
 

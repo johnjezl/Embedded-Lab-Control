@@ -896,7 +896,7 @@ class ResourceManager:
             plug_type, address, plug_index = plug
             rows = self.db.execute(
                 "SELECT s.name FROM power_plugs p JOIN sbcs s ON s.id = p.sbc_id"
-                " WHERE p.plug_type = ? AND lower(p.address) = lower(?)"
+                " WHERE p.plug_type = ? AND lower(trim(p.address)) = lower(?)"
                 " AND p.plug_index = ?",
                 (plug_type, address.strip(), plug_index),
             )
@@ -947,6 +947,13 @@ class ResourceManager:
             names.update(
                 self.sbcs_sharing_hardware(serial_device_path=port.device_path)
             )
+            if port.serial_device_id is not None:
+                rows = self.db.execute(
+                    "SELECT s.name FROM serial_ports p"
+                    " JOIN sbcs s ON s.id = p.sbc_id WHERE p.serial_device_id = ?",
+                    (port.serial_device_id,),
+                )
+                names.update(r["name"] for r in rows)
         channel_ids = {b.actuator_channel_id for b in self.list_bindings(sbc_id=sbc.id)}
         if channel_ids:
             for b in self.list_bindings(
@@ -959,21 +966,45 @@ class ResourceManager:
 
     def channels_on_same_device(self, channel_ids: Iterable[int]) -> set[int]:
         """``channel_ids`` plus the same-index channels of any other
-        actuator record with the same device path (nothing stops two
-        records naming one relay board)."""
+        actuator record for the same relay board (nothing stops two records
+        naming one). Records match by device path after resolving symlinks
+        (``/dev/lab/relay-a`` and the ``/dev/ttyUSB0`` it points to), or by
+        USB serial number. Records identified only by VID/PID can't be told
+        apart from other boards of the same model and aren't matched."""
         ids = set(channel_ids)
         if not ids:
             return ids
-        rows = self.db.execute(
-            "SELECT c2.id FROM actuator_channels c1"
-            " JOIN actuators a1 ON a1.id = c1.actuator_id"
-            " JOIN actuators a2 ON a2.device_path = a1.device_path"
-            " JOIN actuator_channels c2 ON c2.actuator_id = a2.id"
-            " AND c2.channel_index = c1.channel_index"
-            f" WHERE c1.id IN ({','.join('?' * len(ids))})",
-            tuple(ids),
-        )
-        return ids | {r["id"] for r in rows}
+        by_channel = {
+            c.id: (a, c.channel_index)
+            for a in self.list_actuators()
+            for c in a.channels
+        }
+
+        def identity(actuator) -> set:
+            keys = set()
+            if actuator.device_path:
+                keys.add(("path", os.path.realpath(actuator.device_path)))
+            if actuator.serial_no:
+                keys.add(("serial", actuator.serial_no))
+            return keys
+
+        # Repeat until stable: a record may share its path with one record
+        # and its serial number with another.
+        while True:
+            wanted = {
+                (key, by_channel[cid][1])
+                for cid in ids
+                if cid in by_channel
+                for key in identity(by_channel[cid][0])
+            }
+            found = {
+                cid
+                for cid, (actuator, index) in by_channel.items()
+                if any((key, index) in wanted for key in identity(actuator))
+            }
+            if found <= ids:
+                return ids
+            ids |= found
 
     def assign_sdwire(self, sbc_id: int, sdwire_device_id: int) -> None:
         """Assign an SDWire device to an SBC."""

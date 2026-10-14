@@ -432,7 +432,12 @@ def _claimed_error(sbc_name: str, claim) -> str:
 
 
 def _check_claim(
-    manager, sbc_name: str, mutating: bool = True, *, direct: bool = True
+    manager,
+    sbc_name: str,
+    mutating: bool = True,
+    *,
+    direct: bool = True,
+    shared: bool = True,
 ) -> str | None:
     """Check claim state for an SBC-targeting tool call.
 
@@ -446,6 +451,9 @@ def _check_claim(
 
     ``direct=False`` is for boards a call affects only through shared
     hardware: only someone else's claim on that board refuses.
+    ``shared=False`` is for calls that only change this board's own
+    records (configuration), which don't touch hardware it shares with
+    another board, so that board's claim doesn't matter.
     """
     config = _get_config()
     if not config.claims.enabled:
@@ -468,7 +476,7 @@ def _check_claim(
             sbc_name,
             actor,
             require_claim=direct and config.claims.require_claim,
-            include_shared=direct,
+            include_shared=direct and shared,
         )
     except UnknownSBCError:
         return None
@@ -1224,7 +1232,7 @@ def remove_sbc(name: str) -> str:
         name: Name of the SBC to remove
     """
     manager = _get_manager()
-    claim_err = _check_claim(manager, name, mutating=True)
+    claim_err = _check_claim(manager, name, shared=False)
     if claim_err:
         return claim_err
     sbc = manager.get_sbc_by_name(name)
@@ -1264,7 +1272,7 @@ def update_sbc(
     sbc = manager.get_sbc_by_name(name)
     if not sbc:
         return f"Error: SBC '{name}' not found"
-    claim_err = _check_claim(manager, name)
+    claim_err = _check_claim(manager, name, shared=False)
     if claim_err:
         return claim_err
 
@@ -1308,7 +1316,7 @@ def assign_serial_port(
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
-    claim_err = _check_claim(manager, sbc_name) or _check_shared_hardware(
+    claim_err = _check_claim(manager, sbc_name, shared=False) or _check_shared_hardware(
         manager, sbc_name, serial_device_path=device
     )
     if claim_err:
@@ -1351,7 +1359,7 @@ def assign_power_plug(
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
-    claim_err = _check_claim(manager, sbc_name) or _check_shared_hardware(
+    claim_err = _check_claim(manager, sbc_name, shared=False) or _check_shared_hardware(
         manager, sbc_name, plug=(plug_type, address, index)
     )
     if claim_err:
@@ -1394,7 +1402,7 @@ def set_network_address(
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
-    claim_err = _check_claim(manager, sbc_name)
+    claim_err = _check_claim(manager, sbc_name, shared=False)
     if claim_err:
         return claim_err
 
@@ -1431,7 +1439,7 @@ def remove_serial_port(sbc_name: str, port_type: str = "console") -> str:
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
-    claim_err = _check_claim(manager, sbc_name)
+    claim_err = _check_claim(manager, sbc_name, shared=False)
     if claim_err:
         return claim_err
 
@@ -1458,7 +1466,7 @@ def remove_network_address(sbc_name: str, address_type: str = "ethernet") -> str
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
-    claim_err = _check_claim(manager, sbc_name)
+    claim_err = _check_claim(manager, sbc_name, shared=False)
     if claim_err:
         return claim_err
 
@@ -1482,7 +1490,7 @@ def remove_power_plug(sbc_name: str) -> str:
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
-    claim_err = _check_claim(manager, sbc_name)
+    claim_err = _check_claim(manager, sbc_name, shared=False)
     if claim_err:
         return claim_err
 
@@ -1612,7 +1620,7 @@ def sdwire_assign(sbc_name: str, device_name: str) -> str:
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
-    claim_err = _check_claim(manager, sbc_name)
+    claim_err = _check_claim(manager, sbc_name, shared=False)
     if claim_err:
         return claim_err
 
@@ -1642,7 +1650,7 @@ def sdwire_unassign(sbc_name: str) -> str:
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
-    claim_err = _check_claim(manager, sbc_name)
+    claim_err = _check_claim(manager, sbc_name, shared=False)
     if claim_err:
         return claim_err
 
@@ -2604,6 +2612,13 @@ def claim_sbc(
 
     manager = _get_manager()
     try:
+        # A board sharing hardware with a board someone else holds can't
+        # be operated, so a claim on it would be unusable.
+        shared_err = _check_claims_of(
+            manager, manager.sbcs_sharing_hardware_with(sbc_name)
+        )
+        if shared_err:
+            return shared_err
         claim = manager.claim_sbc(
             sbc_name=sbc_name,
             agent_name=_get_agent_name(),
@@ -3232,7 +3247,7 @@ def bind(
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
-    claim_err = _check_claim(manager, sbc_name)
+    claim_err = _check_claim(manager, sbc_name, shared=False)
     if claim_err:
         return claim_err
     a = manager.get_actuator_by_name(actuator)
@@ -3280,7 +3295,7 @@ def unbind(sbc_name: str, purpose: str) -> str:
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
-    claim_err = _check_claim(manager, sbc_name)
+    claim_err = _check_claim(manager, sbc_name, shared=False)
     if claim_err:
         return claim_err
     binding = manager.get_binding_by_target(sbc.id, purpose)
