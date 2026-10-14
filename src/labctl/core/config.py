@@ -121,6 +121,17 @@ def _safety_flag(section: dict, key: str, default: bool = True) -> bool:
 
 _FALSE_WORDS = {"false", "no", "off", "0"}
 
+# The MCP HTTP server re-reads the config for every request (API keys),
+# so warn about a given bad value once per process, not per request.
+_warned: set[str] = set()
+
+
+def _warn_once(msg: str, *args) -> None:
+    text = msg % args
+    if text not in _warned:
+        _warned.add(text)
+        logger.warning(text)
+
 
 def _opt_in_flag(section: dict, key: str) -> bool:
     """Read an opt-in safety switch (off by default). Booleans count as
@@ -133,7 +144,7 @@ def _opt_in_flag(section: dict, key: str) -> bool:
     if value is None or isinstance(value, bool):
         return bool(value)
     enabled = str(value).strip().lower() not in _FALSE_WORDS
-    logger.warning(
+    _warn_once(
         "Config: %s must be true or false, got %r; using %s", key, value, enabled
     )
     return enabled
@@ -148,7 +159,7 @@ def _role(user: dict) -> str:
         return ROLE_OPERATOR
     if isinstance(value, str) and value.strip().lower() in ROLES:
         return value.strip().lower()
-    logger.warning(
+    _warn_once(
         "Config: auth user %r has unknown role %r (expected %s); treating as %s",
         user.get("username", ""),
         value,
