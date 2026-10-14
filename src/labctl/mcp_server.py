@@ -1362,6 +1362,10 @@ def assign_serial_port(
         return f"Error: SBC '{sbc_name}' not found"
     # The own-board check heartbeats, so it runs last: a refused call
     # mustn't extend the caller's claim.
+    try:
+        port_kind = PortType(port_type)
+    except ValueError as e:  # before the claim check, which heartbeats
+        return f"Error: {e}"
     claim_err = _check_shared_hardware(
         manager, sbc_name, serial_device_path=device
     ) or _check_claim(manager, sbc_name, shared=False)
@@ -1371,7 +1375,7 @@ def assign_serial_port(
     try:
         port = manager.assign_serial_port(
             sbc_id=sbc.id,
-            port_type=PortType(port_type),
+            port_type=port_kind,
             device_path=device,
             baud_rate=baud_rate,
             alias=alias,
@@ -1407,6 +1411,10 @@ def assign_power_plug(
         return f"Error: SBC '{sbc_name}' not found"
     if index < 1:  # Tasmota's Power0 switches every relay on the device
         return f"Error: Plug index must be 1 or more, got {index}"
+    try:
+        plug_kind = PlugType(plug_type)
+    except ValueError as e:  # before the claim check, which heartbeats
+        return f"Error: {e}"
     claim_err = _check_shared_hardware(
         manager, sbc_name, plug=(plug_type, address, index)
     ) or _check_claim(manager, sbc_name, shared=False)
@@ -1416,7 +1424,7 @@ def assign_power_plug(
     try:
         plug = manager.assign_power_plug(
             sbc_id=sbc.id,
-            plug_type=PlugType(plug_type),
+            plug_type=plug_kind,
             address=address,
             plug_index=index,
         )
@@ -2685,10 +2693,14 @@ def claim_sbc(
     )
     try:
         # A board sharing hardware with a board someone else holds can't
-        # be operated, so a claim on it would be unusable. (If the board
-        # itself is someone else's, claim_sbc below says so instead.)
-        current = manager.get_active_claim(sbc_name)
-        if current is None or _caller_actor().holds(current):
+        # be operated, so a new claim on it would be unusable. Skipped when
+        # the board has an open claim that is someone else's (claim_sbc
+        # below reports that holder) or the caller's own active one (it
+        # is renewed below).
+        current = manager.get_open_claim(sbc_name)
+        if current is None or (
+            _caller_actor().holds(current) and not current.is_active
+        ):
             shared_err = _check_claims_of(
                 manager, manager.sbcs_sharing_hardware_with(sbc_name), for_sbc=sbc_name
             )
@@ -3203,7 +3215,11 @@ def actuator_remove(name: str) -> str:
 
 
 def _check_bound_claims(
-    manager, channel_ids: set, *, same_device: bool = True
+    manager,
+    channel_ids: set,
+    *,
+    same_device: bool = True,
+    for_sbc: str | None = None,
 ) -> str | None:
     """Claim-check every SBC bound to one of these actuator channels: a
     relay wired to a claimed board's reset or power is part of that board.
@@ -3214,7 +3230,8 @@ def _check_bound_claims(
     if same_device:
         channel_ids = manager.channels_on_same_device(channel_ids)
     names = {b.sbc_name for b in manager.list_bindings(channel_ids=channel_ids)}
-    return _check_claims_of(manager, names)
+    names.discard(for_sbc)
+    return _check_claims_of(manager, names, for_sbc=for_sbc)
 
 
 @mcp.tool(annotations=TOOL_ANNOTATIONS["actuator_set"])
@@ -3347,20 +3364,20 @@ def bind(
     ch = manager.get_actuator_channel(a.id, channel)
     if not ch:
         return f"Error: channel {channel} not on {actuator!r}"
-    # A channel takes one binding; if a claimed board has it, say so
-    # rather than fail on the constraint.
-    claim_err = _check_bound_claims(manager, {ch.id}) or _check_claim(
-        manager, sbc_name, shared=False
-    )
-    if claim_err:
-        return claim_err
-
     if ch.default_state == shape_active:
         return (
             f"Error: default_state={ch.default_state.value} and "
             f"active_when={shape_active.value}; the device would always "
             "be asserted. Verify wiring."
         )
+
+    # A channel takes one binding; if a claimed board has it, say so
+    # rather than fail on the constraint. Own-board check (heartbeats) last.
+    claim_err = _check_bound_claims(manager, {ch.id}, for_sbc=sbc_name) or _check_claim(
+        manager, sbc_name, shared=False
+    )
+    if claim_err:
+        return claim_err
 
     binding = manager.create_binding(
         sbc.id,
