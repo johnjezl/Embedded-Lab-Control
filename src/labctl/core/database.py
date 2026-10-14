@@ -33,7 +33,7 @@ from typing import Generator, Optional
 logger = logging.getLogger(__name__)
 
 # Current schema version
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 # Default SQLite busy-timeout when the Database is constructed without an
 # explicit value (e.g. tests, direct callers). Matches Config.database
@@ -171,6 +171,7 @@ CREATE TABLE IF NOT EXISTS claims (
     agent_name TEXT NOT NULL,
     session_id TEXT NOT NULL,
     session_kind TEXT NOT NULL,  -- mcp-stdio, mcp-http, cli, web
+    owner TEXT,  -- authenticated labctl username (MCP HTTP, REST, web), else NULL
     reason TEXT NOT NULL,
     context_json TEXT,
     acquired_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -635,6 +636,14 @@ class Database:
                     ON bindings(actuator_channel_id);
                 """,  # noqa: E501
             )
+
+        if from_version < 9:
+            # v9: claims.owner — the authenticated labctl username, so one
+            # user is one claimant across MCP, REST and server restarts.
+            try:
+                conn.execute("ALTER TABLE claims ADD COLUMN owner TEXT")
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
         # OR IGNORE: tolerate a concurrent process that has already
         # bumped schema_version to the current value during a race.

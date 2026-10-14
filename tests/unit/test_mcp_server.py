@@ -3684,3 +3684,252 @@ class TestDestructiveConfirmation:
         )
         assert second.content[0].text.startswith("Power OFF")
         power.power_off.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# D013: claims on configuration tools, roles, owners, require_claim
+# ---------------------------------------------------------------------------
+
+
+def _hold(manager, owner="alice", session_id="mcp-http:1-1:alice"):
+    return manager.claim_sbc(
+        sbc_name="test-sbc-1",
+        agent_name=owner,
+        session_id=session_id,
+        session_kind="mcp-http",
+        duration_seconds=600,
+        reason="holding",
+        owner=owner,
+    )
+
+
+CONFIG_TOOL_CALLS = [
+    ("update_sbc", {"name": "test-sbc-1", "description": "x"}),
+    (
+        "assign_serial_port",
+        {"sbc_name": "test-sbc-1", "port_type": "jtag", "device": "/dev/lab/x"},
+    ),
+    (
+        "assign_power_plug",
+        {"sbc_name": "test-sbc-1", "plug_type": "tasmota", "address": "10.0.0.9"},
+    ),
+    (
+        "set_network_address",
+        {"sbc_name": "test-sbc-1", "address_type": "wifi", "ip_address": "10.0.0.8"},
+    ),
+    ("remove_serial_port", {"sbc_name": "test-sbc-1"}),
+    ("remove_network_address", {"sbc_name": "test-sbc-1"}),
+    ("remove_power_plug", {"sbc_name": "test-sbc-1"}),
+    ("sdwire_assign", {"sbc_name": "test-sbc-1", "device_name": "sdwire-1"}),
+    ("sdwire_unassign", {"sbc_name": "test-sbc-1"}),
+    ("unbind", {"sbc_name": "test-sbc-1", "purpose": "recovery_mode"}),
+    (
+        "bind",
+        {
+            "sbc_name": "test-sbc-1",
+            "purpose": "reset",
+            "actuator": "relay-1",
+            "channel": 1,
+            "mode": "latch",
+        },
+    ),
+]
+
+
+class TestMcpConfigToolsHonourClaims:
+    @pytest.mark.parametrize("tool,kwargs", CONFIG_TOOL_CALLS)
+    def test_refused_under_other_users_claim(self, claims_env, tool, kwargs):
+        import labctl.mcp_server as srv
+
+        _hold(claims_env)
+        before = claims_env.get_sbc_by_name("test-sbc-1")
+        with patch("labctl.mcp_server._authenticated_user", return_value="bob"):
+            result = json.loads(getattr(srv, tool)(**kwargs))
+        assert result["error"] == "sbc_claimed"
+        after = claims_env.get_sbc_by_name("test-sbc-1")
+        assert after.to_dict() == before.to_dict()
+
+    @pytest.mark.parametrize(
+        "tool,kwargs",
+        [c for c in CONFIG_TOOL_CALLS if c[0] not in ("bind", "unbind")],
+    )
+    def test_allowed_for_claim_owner(self, claims_env, tool, kwargs):
+        import labctl.mcp_server as srv
+
+        _hold(claims_env)
+        with patch("labctl.mcp_server._authenticated_user", return_value="alice"):
+            result = getattr(srv, tool)(**kwargs)
+        assert "sbc_claimed" not in result
+
+
+class TestMcpActuatorToolsHonourClaims:
+    @pytest.fixture
+    def env(self, actuator_lab, claims_env, monkeypatch):
+        import labctl.mcp_server as srv
+
+        srv._get_config().mcp.allow_admin_actuator_ops = True
+        _hold(actuator_lab["manager"])
+        monkeypatch.setattr(srv, "_authenticated_user", lambda: "bob")
+        return actuator_lab
+
+    def test_actuator_set_on_bound_channel_refused(self, env):
+        from labctl.mcp_server import actuator_set
+
+        result = json.loads(actuator_set(name="relay-1", channel=1, state="closed"))
+        assert result["error"] == "sbc_claimed"
+        channel = env["manager"].get_actuator_channel(env["actuator"].id, 1)
+        assert channel.last_state is None
+
+    def test_actuator_remove_with_bound_channel_refused(self, env):
+        from labctl.mcp_server import actuator_remove
+
+        result = json.loads(actuator_remove(name="relay-1"))
+        assert result["error"] == "sbc_claimed"
+        assert env["manager"].get_actuator_by_name("relay-1") is not None
+
+    def test_bind_and_unbind_refused(self, env):
+        from labctl.mcp_server import unbind
+
+        assert json.loads(unbind("test-sbc-1", "recovery_mode"))["error"] == (
+            "sbc_claimed"
+        )
+        assert env["manager"].list_bindings()
+
+
+class TestMcpRoles:
+    def test_agent_cannot_force_release(self, claims_env):
+        from labctl.mcp_server import force_release_sbc
+
+        _hold(claims_env)
+        with (
+            patch("labctl.mcp_server._authenticated_user", return_value="bob"),
+            patch("labctl.mcp_server._caller_is_operator", return_value=False),
+        ):
+            result = json.loads(force_release_sbc("test-sbc-1", "mine now"))
+        assert result["error"] == "not_operator"
+        assert claims_env.get_active_claim("test-sbc-1") is not None
+
+    def test_operator_can_force_release(self, claims_env):
+        from labctl.mcp_server import force_release_sbc
+
+        _hold(claims_env)
+        with patch("labctl.mcp_server._authenticated_user", return_value="op"):
+            result = json.loads(force_release_sbc("test-sbc-1", "stuck agent"))
+        assert result["status"] == "force_released"
+
+    def test_agent_hints_omit_force_release(self, claims_env):
+        from labctl.mcp_server import power_on
+
+        _hold(claims_env)
+        with (
+            patch("labctl.mcp_server._authenticated_user", return_value="bob"),
+            patch("labctl.mcp_server._caller_is_operator", return_value=False),
+        ):
+            result = json.loads(power_on("test-sbc-1"))
+        assert not any("force_release" in h for h in result["hints"])
+
+    def test_unauthenticated_caller_is_operator(self):
+        from labctl.mcp_server import _caller_is_operator
+
+        assert _caller_is_operator() is True
+
+    def test_verifier_puts_role_in_scopes(self):
+        import anyio
+
+        from labctl.core.config import AuthConfig, Config, UserConfig
+        from labctl.mcp_server import _ApiKeyVerifier
+
+        config = Config()
+        config.auth = AuthConfig(
+            enabled=True,
+            users=[UserConfig(username="bot", api_key="k" * 20, role="agent")],
+        )
+        with patch("labctl.mcp_server._fresh_config", return_value=config):
+            token = anyio.run(_ApiKeyVerifier().verify_token, "k" * 20)
+        assert token.client_id == "bot"
+        assert token.scopes == ["agent"]
+
+
+class TestMcpClaimOwners:
+    def test_same_user_other_session_acts_and_releases(self, claims_env):
+        """A claim from the user's previous server process (or other
+        session) is still theirs."""
+        from labctl.mcp_server import power_on, release_sbc
+
+        _hold(claims_env, session_id="mcp-http:42-1:alice")
+        with (
+            patch("labctl.mcp_server._authenticated_user", return_value="alice"),
+            patch("labctl.power.base.PowerController.from_plug") as power,
+        ):
+            power.return_value.power_on.return_value = True
+            assert "Power ON" in power_on("test-sbc-1")
+            assert json.loads(release_sbc("test-sbc-1"))["status"] == "released"
+
+    def test_reclaiming_own_claim_reports_it(self, claims_env):
+        from labctl.mcp_server import claim_sbc
+
+        _hold(claims_env, session_id="mcp-http:42-1:alice")
+        with patch("labctl.mcp_server._authenticated_user", return_value="alice"):
+            result = json.loads(claim_sbc("test-sbc-1", reason="again"))
+        assert result["status"] == "already_claimed"
+
+    def test_claim_records_owner(self, claims_env):
+        from labctl.mcp_server import claim_sbc
+
+        with patch("labctl.mcp_server._authenticated_user", return_value="alice"):
+            claim_sbc("test-sbc-1", reason="mine")
+        assert claims_env.get_active_claim("test-sbc-1").owner == "alice"
+
+    def test_stdio_claim_has_no_owner(self, claims_env):
+        from labctl.mcp_server import claim_sbc
+
+        claim_sbc("test-sbc-1", reason="mine")
+        assert claims_env.get_active_claim("test-sbc-1").owner is None
+
+
+class TestMcpRequireClaim:
+    def test_mutating_tool_needs_a_claim(self, claims_env):
+        import labctl.mcp_server as srv
+
+        srv._get_config().claims.require_claim = True
+        with patch("labctl.power.base.PowerController.from_plug") as power:
+            result = json.loads(srv.power_on("test-sbc-1"))
+        assert result["error"] == "claim_required"
+        power.assert_not_called()
+
+    def test_claimant_proceeds(self, claims_env):
+        import labctl.mcp_server as srv
+
+        srv._get_config().claims.require_claim = True
+        srv.claim_sbc("test-sbc-1", reason="mine")
+        with patch("labctl.power.base.PowerController.from_plug") as power:
+            power.return_value.power_on.return_value = True
+            assert "Power ON" in srv.power_on("test-sbc-1")
+
+    def test_read_tools_unaffected(self, claims_env):
+        import labctl.mcp_server as srv
+
+        srv._get_config().claims.require_claim = True
+        assert json.loads(srv.get_claim("test-sbc-1"))["claimed"] is False
+
+    def test_off_when_claims_disabled(self, claims_env):
+        import labctl.mcp_server as srv
+
+        srv._get_config().claims.require_claim = True
+        srv._get_config().claims.enabled = False
+        with patch("labctl.power.base.PowerController.from_plug") as power:
+            power.return_value.power_on.return_value = True
+            assert "Power ON" in srv.power_on("test-sbc-1")
+
+
+class TestMcpTransportLabels:
+    def test_http_sessions_are_labelled_mcp_http(self, monkeypatch):
+        import labctl.mcp_server as srv
+
+        monkeypatch.setattr(srv, "_SESSION_ID", srv._SESSION_ID)
+        monkeypatch.setattr(srv, "_SESSION_KIND", srv._SESSION_KIND)
+        srv._set_transport("http")
+        assert srv._SESSION_KIND == "mcp-http"
+        assert srv._SESSION_ID.startswith("mcp-http:")
+        srv._set_transport("stdio")
+        assert srv._SESSION_ID.startswith("mcp-stdio:")

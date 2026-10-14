@@ -242,6 +242,20 @@ This document records significant design decisions made during development.
 
 ---
 
+## D013: Claim enforcement on every surface, operator and agent roles
+
+- **Date**: 2026-10-13
+- **Context**: Several Claude Code agents share the lab, each with its own API key (docs/CLAUDE_CODE_AGENTS.md). Claims only stopped other users' *operating* MCP tools: the CLI, web UI and REST API ignored them, configuration-changing MCP tools (plugs, ports, SDWire assignment, bindings, actuators) didn't check them, and any agent could `force_release_sbc` another's claim. The same user over MCP and REST counted as two claimants.
+- **Decisions** (the user accepted all four recommendations):
+  1. **Per-user role** in `auth.users`: `role: operator` or `role: agent`; a missing role means operator, so existing configs keep working. Only operators may force-release a claim or override one (REST/web); agents can only ask (`request_sbc_release`). Without auth (stdio, unauthenticated loopback HTTP, auth disabled) every caller is an operator, as today.
+  2. **CLI refuses** board-changing commands on a board someone else has claimed, naming the holder; an explicit override flag acts anyway and is recorded in the activity log.
+  3. **Web UI and REST refuse** too (REST: 409 `sbc_claimed`); the claim owner's own key or login is allowed, and operators can override explicitly, logged.
+  4. **`claims.require_claim`** (opt-in, default off): MCP and REST calls that change a board refuse unless the caller holds its claim.
+- **Also**: claims record the authenticated **owner** username (schema v9), so one user is one claimant across MCP and REST and across MCP server restarts; configuration-changing MCP tools check claims; HTTP MCP sessions are labelled `mcp-http`; REST claims no longer embed an API-key prefix in the session ID.
+- **Rationale**: claims are the mechanism that keeps agents apart, so every surface that can change a board has to honour them; roles make the override a privilege instead of an honour system, with defaults that keep existing single-user setups unchanged.
+
+---
+
 _Template for new decisions:_
 
 ```markdown

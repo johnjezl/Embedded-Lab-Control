@@ -33,6 +33,18 @@ ser2net:
 #     - username: admin
 #       password_hash: "generate with: labctl user hash-password"
 #       api_key: "generate with: labctl user generate-key"
+#       # role: operator (default) may force-release or override other
+#       # users' claims; give AI agents role: agent (they can only ask).
+#     - username: "fw-dev"
+#       api_key: "generate with: labctl user generate-key"
+#       role: agent
+
+# Claims (exclusive access to a board). Every surface (MCP, CLI, web, REST)
+# refuses to change a board someone else has claimed.
+# claims:
+#   # Refuse MCP/REST calls that change a board unless the caller has
+#   # claimed it first. Recommended when several agents share the lab.
+#   require_claim: false
 
 # Web server SSL/TLS (disabled by default, serves HTTP)
 # To enable HTTPS, generate a self-signed certificate:

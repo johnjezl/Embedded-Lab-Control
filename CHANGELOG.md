@@ -138,6 +138,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `session-lost` rather than later as `expired`.
 
 ### Changed
+- HTTP MCP sessions are labelled `mcp-http` (claims' `session_kind` and
+  activity-log actors), not `mcp-stdio`; the dead-session sweep covers both.
 - **Package renamed for PyPI**: the distribution is now
   `embedded-lab-control` (`pip install embedded-lab-control`); the import
   package and CLI remain `labctl`. Version `0.2.0.dev0`, single-sourced from
@@ -164,6 +166,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   from removing dead code flagged by flake8 (unused imports/variables).
 
 ### Added
+- Claim enforcement, part 1 (D013): MCP tools that change a board's
+  configuration (`update_sbc`, `assign_*`/`remove_*` for ports, plugs and
+  addresses, `sdwire_assign`/`unassign`, `bind`/`unbind`) now refuse under
+  another user's claim, as do `actuator_set`/`actuator_remove` on channels
+  bound to a claimed board.
+- `auth.users[].role`: `operator` (default) or `agent`. Only operators may
+  `force_release_sbc`; agents get `not_operator`.
+- `claims.require_claim` (default `false`): MCP calls that change a board
+  refuse with `claim_required` unless the caller has claimed it.
+- Claims record their authenticated owner (schema v9): the same user's
+  other MCP sessions, and the same user after a server restart, count as
+  the claimant (use, renew, release). Claiming a board you already hold
+  returns `already_claimed`.
 - `docs/CLAUDE_CODE_AGENTS.md`: connecting Claude Code agents to the HTTP
   MCP server with one labctl user and API key each, so claims keep them
   apart. Covers `claude mcp add` (manual) and a shared `--mcp-config` file

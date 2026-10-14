@@ -331,15 +331,23 @@ def _sbc_to_dict(sbc) -> dict:
 # --- Session identity ---
 #
 # stdio: one process = one session. Over authenticated HTTP each user is
-# its own claimant (`<process id>:<username>`), so one user's claims stop
-# another's mutating calls; unauthenticated HTTP clients share the process
-# identity. The claim sweep still sees the process id at the front.
+# its own claimant (`<process id>:<username>`, and the claim records the
+# username as its owner, so the user's other sessions and a restarted
+# server count as the same claimant); unauthenticated HTTP clients share
+# the process identity. The claim sweep still sees the process id at the
+# front. run_server() switches the prefix and kind to mcp-http.
 
 _SERVER_START_EPOCH = int(_time_mod.time())
 _SESSION_ID = f"mcp-stdio:{os.getpid()}-{_SERVER_START_EPOCH}"
 _SESSION_KIND = "mcp-stdio"
 _AGENT_NAME: str | None = None  # stdio / unauthenticated HTTP
 _USER_AGENT_NAMES: dict[str, str] = {}  # authenticated HTTP, per user
+
+
+def _set_transport(transport: str) -> None:
+    global _SESSION_ID, _SESSION_KIND
+    _SESSION_KIND = "mcp-http" if transport == "http" else "mcp-stdio"
+    _SESSION_ID = f"{_SESSION_KIND}:{os.getpid()}-{_SERVER_START_EPOCH}"
 
 
 def _get_session_id() -> str:
@@ -371,54 +379,93 @@ def _is_process_session(session_id: str) -> bool:
 # --- Claim enforcement helper ---
 
 
+def _caller_is_operator() -> bool:
+    """Operators may force-release other users' claims (D013). Over
+    authenticated HTTP that is the user's ``role`` (carried in the access
+    token's scopes by _ApiKeyVerifier); without auth there is one shared
+    identity, which is an operator."""
+    from mcp.server.auth.middleware.auth_context import get_access_token
+
+    from labctl.core.config import ROLE_OPERATOR
+
+    token = get_access_token()
+    return token is None or ROLE_OPERATOR in (token.scopes or [])
+
+
+def _caller_actor():
+    from labctl.core.models import ClaimActor
+
+    return ClaimActor(
+        session_id=_get_session_id(),
+        owner=_authenticated_user(),
+        operator=_caller_is_operator(),
+    )
+
+
+def _claimed_error(sbc_name: str, claim) -> str:
+    hints = [
+        "Wait for claim to expire or be released",
+        "Request early release with request_sbc_release",
+    ]
+    if _caller_is_operator():
+        hints.append("Operator override with force_release_sbc")
+    # claim.to_dict() carries time_remaining_seconds for the caller.
+    return json.dumps(
+        {
+            "error": "sbc_claimed",
+            "sbc_name": sbc_name,
+            "message": (
+                f"SBC '{sbc_name}' is claimed by "
+                f"'{claim.agent_name}' until "
+                f"{claim.expires_at.isoformat()}"
+            ),
+            "claim": claim.to_dict(),
+            "hints": hints,
+        }
+    )
+
+
 def _check_claim(manager, sbc_name: str, mutating: bool = True) -> str | None:
     """Check claim state for an SBC-targeting tool call.
 
-    - Claimant of this session → heartbeat + return None (proceed).
-    - Other-agent claim + mutating → return structured JSON error string.
-    - Other-agent claim + read-only → return None (proceed, no heartbeat).
-    - No claim → return None (proceed).
+    - The caller's own claim (this session, or the same authenticated
+      user from any session) → heartbeat + return None (proceed).
+    - Someone else's claim + mutating → structured JSON error string.
+    - No claim → proceed, unless ``claims.require_claim`` is on and the
+      call is mutating (structured ``claim_required`` error).
+    - Read-only calls never refuse.
     """
     config = _get_config()
     if not config.claims.enabled:
         return None
 
-    from labctl.core.models import UnknownSBCError
+    from labctl.core.models import (
+        ClaimConflict,
+        ClaimRequiredError,
+        UnknownSBCError,
+    )
 
+    actor = _caller_actor()
     try:
-        claim = manager.get_active_claim(sbc_name)
+        if not mutating:
+            claim = manager.get_active_claim(sbc_name)
+            if claim is not None and actor.holds(claim):
+                manager.heartbeat_claim(sbc_name, claim.session_id)
+            return None
+        manager.check_claim(sbc_name, actor, require_claim=config.claims.require_claim)
     except UnknownSBCError:
         return None
-
-    session_id = _get_session_id()
-
-    if claim is None:
-        return None
-
-    if claim.session_id == session_id:
-        manager.heartbeat_claim(sbc_name, session_id)
-        return None
-
-    if mutating:
-        # claim.to_dict() carries time_remaining_seconds for the caller.
+    except ClaimConflict as exc:
+        return _claimed_error(sbc_name, exc.claim)
+    except ClaimRequiredError as exc:
         return json.dumps(
             {
-                "error": "sbc_claimed",
+                "error": "claim_required",
                 "sbc_name": sbc_name,
-                "message": (
-                    f"SBC '{sbc_name}' is claimed by "
-                    f"'{claim.agent_name}' until "
-                    f"{claim.expires_at.isoformat()}"
-                ),
-                "claim": claim.to_dict(),
-                "hints": [
-                    "Wait for claim to expire or be released",
-                    "Request early release with request_sbc_release",
-                    "Operator override with force_release_sbc",
-                ],
+                "message": str(exc),
+                "hints": [f"Claim it first with claim_sbc('{sbc_name}', ...)"],
             }
         )
-
     return None
 
 
@@ -435,7 +482,7 @@ def _claim_advisory(manager, sbc_name: str) -> str:
         claim = manager.get_active_claim(sbc_name)
     except UnknownSBCError:
         return ""
-    if claim is None or claim.session_id != _get_session_id():
+    if claim is None or not _caller_actor().holds(claim):
         return ""
     if not claim.pending_requests:
         return ""
@@ -666,7 +713,7 @@ def _structured_claim_advisory(manager, sbc_name: str) -> list[dict]:
         claim = manager.get_active_claim(sbc_name)
     except UnknownSBCError:
         return []
-    if claim is None or claim.session_id != _get_session_id():
+    if claim is None or not _caller_actor().holds(claim):
         return []
     return [
         {"requested_by": req.requested_by, "reason": req.reason}
@@ -1179,6 +1226,9 @@ def update_sbc(
     sbc = manager.get_sbc_by_name(name)
     if not sbc:
         return f"Error: SBC '{name}' not found"
+    claim_err = _check_claim(manager, name)
+    if claim_err:
+        return claim_err
 
     status_enum = Status(status) if status else None
 
@@ -1220,6 +1270,9 @@ def assign_serial_port(
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
+    claim_err = _check_claim(manager, sbc_name)
+    if claim_err:
+        return claim_err
 
     try:
         port = manager.assign_serial_port(
@@ -1258,6 +1311,9 @@ def assign_power_plug(
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
+    claim_err = _check_claim(manager, sbc_name)
+    if claim_err:
+        return claim_err
 
     try:
         plug = manager.assign_power_plug(
@@ -1296,6 +1352,9 @@ def set_network_address(
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
+    claim_err = _check_claim(manager, sbc_name)
+    if claim_err:
+        return claim_err
 
     try:
         addr = manager.set_network_address(
@@ -1330,6 +1389,9 @@ def remove_serial_port(sbc_name: str, port_type: str = "console") -> str:
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
+    claim_err = _check_claim(manager, sbc_name)
+    if claim_err:
+        return claim_err
 
     try:
         if manager.remove_serial_port(sbc.id, PortType(port_type)):
@@ -1354,6 +1416,9 @@ def remove_network_address(sbc_name: str, address_type: str = "ethernet") -> str
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
+    claim_err = _check_claim(manager, sbc_name)
+    if claim_err:
+        return claim_err
 
     try:
         if manager.remove_network_address(sbc.id, AddressType(address_type)):
@@ -1375,6 +1440,9 @@ def remove_power_plug(sbc_name: str) -> str:
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
+    claim_err = _check_claim(manager, sbc_name)
+    if claim_err:
+        return claim_err
 
     if manager.remove_power_plug(sbc.id):
         return f"Removed power plug from {sbc_name}"
@@ -1502,6 +1570,9 @@ def sdwire_assign(sbc_name: str, device_name: str) -> str:
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
+    claim_err = _check_claim(manager, sbc_name)
+    if claim_err:
+        return claim_err
 
     device = manager.get_sdwire_device_by_name(device_name)
     if not device:
@@ -1526,6 +1597,9 @@ def sdwire_unassign(sbc_name: str) -> str:
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
+    claim_err = _check_claim(manager, sbc_name)
+    if claim_err:
+        return claim_err
 
     if manager.unassign_sdwire(sbc.id):
         return f"Removed SDWire assignment from {sbc_name}"
@@ -2494,25 +2568,25 @@ def claim_sbc(
             reason=reason or "no reason given",
             context=context,
             grace_seconds=config.claims.grace_period_seconds,
+            owner=_authenticated_user(),
         )
     except UnknownSBCError:
         return json.dumps(
             {"error": "unknown_sbc", "message": f"SBC '{sbc_name}' not found"}
         )
     except ClaimConflict as exc:
-        return json.dumps(
-            {
-                "error": "sbc_claimed",
-                "sbc_name": sbc_name,
-                "message": str(exc),
-                "claim": exc.claim.to_dict(),
-                "hints": [
-                    "Wait for claim to expire or be released",
-                    "Request early release with request_sbc_release",
-                    "Operator override with force_release_sbc",
-                ],
-            }
-        )
+        if _caller_actor().holds(exc.claim):
+            # Already yours (e.g. from your previous session or a server
+            # restart): renew_sbc_claim extends it.
+            return json.dumps(
+                {
+                    "status": "already_claimed",
+                    "sbc_name": sbc_name,
+                    "claim": exc.claim.to_dict(),
+                    "hints": ["Extend it with renew_sbc_claim"],
+                }
+            )
+        return _claimed_error(sbc_name, exc.claim)
 
     return json.dumps(
         {"status": "claimed", "sbc_name": sbc_name, "claim": claim.to_dict()}
@@ -2524,7 +2598,8 @@ def claim_sbc(
 def release_sbc(sbc_name: str) -> str:
     """Release a claim held by the calling session.
 
-    Only the session that created the claim can release it via this tool.
+    Only the claimant can release it via this tool: the session that
+    created the claim or, over authenticated HTTP, the same user.
 
     Args:
         sbc_name: Name of the SBC to release
@@ -2537,7 +2612,7 @@ def release_sbc(sbc_name: str) -> str:
 
     manager = _get_manager()
     try:
-        manager.release_claim(sbc_name, _get_session_id())
+        manager.release_claim(sbc_name, _get_session_id(), owner=_authenticated_user())
     except UnknownSBCError:
         return json.dumps(
             {"error": "unknown_sbc", "message": f"SBC '{sbc_name}' not found"}
@@ -2594,7 +2669,10 @@ def renew_sbc_claim(sbc_name: str, duration_minutes: int | None = None) -> str:
     manager = _get_manager()
     try:
         claim = manager.renew_claim(
-            sbc_name, _get_session_id(), duration_seconds=duration_s
+            sbc_name,
+            _get_session_id(),
+            duration_seconds=duration_s,
+            owner=_authenticated_user(),
         )
     except UnknownSBCError:
         return json.dumps(
@@ -2697,6 +2775,19 @@ def force_release_sbc(sbc_name: str, reason: str) -> str:
         reason: Why the override is needed (logged prominently)
     """
     from labctl.core.models import ClaimNotFoundError, UnknownSBCError
+
+    if not _caller_is_operator():
+        return json.dumps(
+            {
+                "error": "not_operator",
+                "sbc_name": sbc_name,
+                "message": (
+                    "Only operators may force-release a claim; your user "
+                    "has role 'agent'."
+                ),
+                "hints": ["Ask the holder with request_sbc_release"],
+            }
+        )
 
     manager = _get_manager()
     try:
@@ -2942,8 +3033,22 @@ def actuator_remove(name: str) -> str:
     actuator = manager.get_actuator_by_name(name)
     if not actuator:
         return f"Error: actuator '{name}' not found"
+    claim_err = _check_bound_claims(manager, {c.id for c in actuator.channels})
+    if claim_err:
+        return claim_err
     manager.delete_actuator(actuator.id)
     return f"Removed actuator {name!r}"
+
+
+def _check_bound_claims(manager, channel_ids: set) -> str | None:
+    """Claim-check every SBC bound to one of these actuator channels: a
+    relay wired to a claimed board's reset or power is part of that board."""
+    for b in manager.list_bindings():
+        if b.actuator_channel_id in channel_ids and b.sbc_name:
+            claim_err = _check_claim(manager, b.sbc_name)
+            if claim_err:
+                return claim_err
+    return None
 
 
 @mcp.tool(annotations=TOOL_ANNOTATIONS["actuator_set"])
@@ -2982,6 +3087,9 @@ def actuator_set(name: str, channel: int, state: str) -> str:
     ch = manager.get_actuator_channel(actuator.id, channel)
     if not ch:
         return f"Error: channel {channel} not on {name!r}"
+    claim_err = _check_bound_claims(manager, {ch.id})
+    if claim_err:
+        return claim_err
 
     try:
         driver = get_driver(
@@ -3067,6 +3175,9 @@ def bind(
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
+    claim_err = _check_claim(manager, sbc_name)
+    if claim_err:
+        return claim_err
     a = manager.get_actuator_by_name(actuator)
     if not a:
         return f"Error: actuator '{actuator}' not found"
@@ -3107,6 +3218,9 @@ def unbind(sbc_name: str, purpose: str) -> str:
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
+    claim_err = _check_claim(manager, sbc_name)
+    if claim_err:
+        return claim_err
     binding = manager.get_binding_by_target(sbc.id, purpose)
     if not binding:
         return f"Error: no binding for {sbc_name}:{purpose}"
@@ -3487,7 +3601,8 @@ class _ApiKeyVerifier:
         user = config.auth.user_for_api_key(token)
         if user is None:
             return None
-        return AccessToken(token=token, client_id=user.username, scopes=[])
+        # The role rides in the scopes: _caller_is_operator() reads it.
+        return AccessToken(token=token, client_id=user.username, scopes=[user.role])
 
 
 def _authenticated_user() -> str | None:
@@ -3716,6 +3831,7 @@ def run_server(
 
     if transport not in ("stdio", "http"):
         raise ValueError(f"Unknown transport: {transport}")
+    _set_transport(transport)
 
     security = None
     config = _get_config()

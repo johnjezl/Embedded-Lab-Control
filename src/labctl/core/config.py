@@ -119,6 +119,25 @@ def _safety_flag(section: dict, key: str, default: bool = True) -> bool:
     return default
 
 
+def _role(user: dict) -> str:
+    """A user's role: missing or blank means operator (existing configs
+    keep working); anything unrecognised means agent, the role with less
+    privilege, with a warning."""
+    value = user.get("role")
+    if value is None or value == "":
+        return ROLE_OPERATOR
+    if isinstance(value, str) and value.strip().lower() in ROLES:
+        return value.strip().lower()
+    logger.warning(
+        "Config: auth user %r has unknown role %r (expected %s); treating as %s",
+        user.get("username", ""),
+        value,
+        " or ".join(ROLES),
+        ROLE_AGENT,
+    )
+    return ROLE_AGENT
+
+
 def _name_list(section: dict, key: str) -> list[str]:
     """Read a list of names (strings) from config; skip non-strings."""
     raw = section.get(key) or []
@@ -221,13 +240,27 @@ class KasaConfig:
     password: str = ""
 
 
+ROLE_OPERATOR = "operator"
+ROLE_AGENT = "agent"
+ROLES = (ROLE_OPERATOR, ROLE_AGENT)
+
+
 @dataclass
 class UserConfig:
-    """User authentication configuration."""
+    """User authentication configuration.
+
+    ``role`` decides who may override another user's claim (D013):
+    operators may force-release or override; agents can only ask.
+    """
 
     username: str = ""
     password_hash: str = ""
     api_key: str = ""
+    role: str = ROLE_OPERATOR
+
+    @property
+    def is_operator(self) -> bool:
+        return self.role == ROLE_OPERATOR
 
 
 @dataclass
@@ -287,6 +320,9 @@ class ClaimsConfig:
     grace_period_seconds: int = 60
     auto_prune_released_after_days: int = 30
     require_agent_name: bool = False
+    # MCP/REST calls that change a board refuse unless the caller holds
+    # its claim (D013). Off by default: single-agent setups never claim.
+    require_claim: bool = False
 
     def validate(self) -> list[str]:
         """Check invariants, returning a list of warning messages.
@@ -473,6 +509,7 @@ class Config:
                     username=u.get("username", ""),
                     password_hash=u.get("password_hash", ""),
                     api_key=u.get("api_key", ""),
+                    role=_role(u),
                 )
             )
 
@@ -503,6 +540,7 @@ class Config:
                 "auto_prune_released_after_days", 30
             ),
             require_agent_name=claims_data.get("require_agent_name", False),
+            require_claim=_safety_flag(claims_data, "require_claim", default=False),
         )
 
         # Validate and clamp claim config bounds
