@@ -640,6 +640,21 @@ class TestReclaimInGrace:
             )
 
 
+class TestReclaimLogsReplacedClaim:
+    def test_replaced_expired_claim_is_logged(self, manager):
+        _claim(manager)
+        # Expired, but inside the default 60 s grace period.
+        manager.db.execute_modify(
+            "UPDATE claims SET expires_at = ?",
+            (manager._fmt_ts(datetime.now() - timedelta(seconds=5)),),
+        )
+        _claim(manager, session_id="s-alice-2")
+        actions = [
+            e["action"] for e in audit.query_events(manager.db, limit=10, sbc="pi-1")
+        ]
+        assert "claim_expired" in actions
+
+
 class TestOwnerReleaseAndRenew:
     def test_owner_releases_from_another_session(self, manager):
         _claim(manager)

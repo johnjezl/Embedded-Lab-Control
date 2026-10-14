@@ -3860,6 +3860,7 @@ class TestMcpSharedHardwareHonoursClaims:
         result = json.loads(assign_power_plug("spare", "kasa", "10.0.0.5 ", 2))
         assert result["error"] == "sbc_claimed"
         assert result["sbc_name"] == "test-sbc-1"
+        assert "shares hardware with 'spare'" in result["message"]
         assert env.get_sbc_by_name("spare").power_plug is None
 
     def test_refused_assign_does_not_heartbeat_own_claim(self, env):
@@ -3949,7 +3950,25 @@ class TestMcpSharedHardwareHonoursClaims:
         result = json.loads(claim_sbc("spare", reason="x"))
         assert result["error"] == "sbc_claimed"
         assert result["sbc_name"] == "test-sbc-1"
+        assert "shares hardware with 'spare'" in result["message"]
         assert env.get_active_claim("spare") is None
+
+    def test_claiming_a_claimed_board_names_that_board_first(self, env):
+        from labctl.mcp_server import claim_sbc
+
+        self._share_plug(env)
+        env.claim_sbc(
+            sbc_name="spare",
+            agent_name="carol",
+            session_id="s-carol",
+            session_kind="mcp-http",
+            duration_seconds=600,
+            reason="x",
+            owner="carol",
+        )
+        result = json.loads(claim_sbc("spare", reason="x"))
+        assert result["sbc_name"] == "spare"
+        assert result["claim"]["owner"] == "carol"
 
     def test_require_claim_not_extended_to_unclaimed_sharers(self, env, monkeypatch):
         import labctl.mcp_server as srv
