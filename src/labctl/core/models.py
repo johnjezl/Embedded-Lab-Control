@@ -82,6 +82,39 @@ class NotClaimantError(ClaimError):
     """The calling session does not hold the active claim."""
 
 
+class ClaimRequiredError(ClaimError):
+    """``claims.require_claim`` is on and the caller holds no claim."""
+
+    def __init__(self, sbc_name: str):
+        self.sbc_name = sbc_name
+        super().__init__(
+            f"SBC '{sbc_name}' must be claimed first (claims.require_claim is on)"
+        )
+
+
+class NotOperatorError(ClaimError):
+    """Only operators may override or force-release another user's claim."""
+
+
+@dataclass(frozen=True)
+class ClaimActor:
+    """Who is acting on a board, for claim checks (D013).
+
+    ``owner`` is the authenticated labctl username, if any: a claim made
+    by that user from any session (MCP, REST, an earlier server process)
+    counts as theirs. ``operator`` may override another user's claim.
+    """
+
+    session_id: str
+    owner: Optional[str] = None
+    operator: bool = True
+
+    def holds(self, claim: "Claim") -> bool:
+        if claim.session_id == self.session_id:
+            return True
+        return bool(self.owner) and claim.owner == self.owner
+
+
 class SessionKind(str, Enum):
     """Transport/origin of a claim session."""
 
@@ -427,6 +460,8 @@ class Claim:
     agent_name: str = ""
     session_id: str = ""
     session_kind: str = ""
+    # Authenticated labctl username (MCP HTTP, REST, web login), else None.
+    owner: Optional[str] = None
     reason: str = ""
     context: Optional[dict] = None
     acquired_at: Optional[datetime] = None
@@ -463,6 +498,7 @@ class Claim:
             agent_name=row["agent_name"],
             session_id=row["session_id"],
             session_kind=row["session_kind"],
+            owner=row["owner"] if "owner" in keys else None,
             reason=row["reason"],
             context=context,
             acquired_at=_parse_timestamp(row["acquired_at"]),
@@ -505,6 +541,8 @@ class Claim:
             "renewal_count": self.renewal_count,
             "is_active": self.is_active,
         }
+        if self.owner:
+            data["owner"] = self.owner
         remaining = self.time_remaining
         if remaining is not None:
             data["time_remaining_seconds"] = max(0, int(remaining.total_seconds()))

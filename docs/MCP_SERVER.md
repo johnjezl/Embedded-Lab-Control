@@ -92,8 +92,13 @@ that user's `api_key`.
   can't drive it, and destructive-tool `confirm_token`s are only valid for
   (and only consumed by) the user they were issued to.
 - Each user is a separate claimant: one user's claim blocks another's
-  mutating calls, and the default agent name is the username. Claims and
-  audit entries record `<server session>:<username>`.
+  mutating calls, and the default agent name is the username. Claims
+  record the username as their **owner**, so the same user's other
+  sessions (and the same user after a server restart) count as the
+  claimant; audit entries record `mcp-http:<server process>:<username>`.
+- Each user has a **role** (`auth.users[].role`): `operator` (the default
+  when unset) or `agent`. Only operators may `force_release_sbc`; agents
+  get `"error": "not_operator"` and can only `request_sbc_release`.
 - The server **refuses to start** without auth on a non-loopback `--host`,
   or when `mcp.allowed_hosts` / `allowed_origins` accept a non-loopback
   name (a reverse proxy). It can't detect a proxy that forwards
@@ -380,18 +385,29 @@ Tools perform mutations — the AI assistant calls these to take action.
 | Tool | Parameters | Description |
 |------|------------|-------------|
 | `claim_sbc` | `sbc_name`, `duration_minutes`, `reason`, `agent_name`, `context` | Claim exclusive access to an SBC |
-| `release_sbc` | `sbc_name` | Release a claim held by the calling session |
+| `release_sbc` | `sbc_name` | Release your claim (this session, or your user over authenticated HTTP) |
 | `renew_sbc_claim` | `sbc_name`, `duration_minutes` | Extend an active claim's deadline |
 | `list_claims` | — | List all active claims across the lab |
 | `get_claim` | `sbc_name` | Get the current claim on an SBC |
 | `request_sbc_release` | `sbc_name`, `reason` | Politely ask the claimant to release |
-| `force_release_sbc` | `sbc_name`, `reason` | Operator override — forcibly release |
+| `force_release_sbc` | `sbc_name`, `reason` | Operator override — forcibly release (operators only, D013) |
 
-**Claim enforcement:** Mutating tools (`power_on/off/cycle`, `serial_send`,
-`sdwire_to_host/dut`, `sdwire_update`, `flash_image`, `boot_test`, `remove_sbc`)
-check for active claims. If another agent holds the claim, a structured JSON
-error is returned with `"error": "sbc_claimed"` and hints. Claimant operations
-proceed and implicitly heartbeat the claim.
+**Claim enforcement:** every tool that changes a board checks its claim:
+operating it (`power_on/off/cycle`, `serial_send`, `sdwire_to_host/dut`,
+`sdwire_update`, `sdwire_ls/cat/info`, `flash_image`, `boot_test`,
+`actuate`/`release`/`press`, `enter_recovery`/`exit_recovery`) and changing
+its configuration (`update_sbc`, `remove_sbc`, `assign_serial_port`,
+`assign_power_plug`, `set_network_address`, the matching `remove_*` tools,
+`sdwire_assign`/`unassign`, `bind`/`unbind`), plus `actuator_set` and
+`actuator_remove` on channels bound to a claimed board. If someone else
+holds the claim, a structured JSON error is returned with
+`"error": "sbc_claimed"` and hints. The claimant's calls proceed and
+heartbeat the claim. Claiming a board you already hold (e.g. from an
+earlier session) returns `"status": "already_claimed"`.
+
+With `claims.require_claim: true` (default `false`), those tools also
+refuse on a board nobody has claimed, with `"error": "claim_required"`:
+agents must `claim_sbc` first. Read-only tools are never refused.
 
 ### Tool Return Values
 
@@ -470,7 +486,7 @@ decisions: D011, D012 in [`DECISIONS.md`](DECISIONS.md).
 | [Destructive confirmation](#confirmation-for-destructive-tools) | 23 destructive tools act only on a second call with a single-use token | on | `mcp.confirm_destructive`, `mcp.confirm_exempt` |
 | [Host file allowlist](#host-file-access-allowlist) | Tools may only read/write host files under listed directories, opened without following symlinks | deny all | `mcp.allowed_read_paths`, `mcp.allowed_write_paths` |
 | Privileged actuator tools | `actuator_add/remove/set` (raw actuator access, bypassing bindings) | off | `mcp.allow_admin_actuator_ops` |
-| Claims | An agent's claim on a board blocks other agents' mutating calls on it | on | `claims.*` |
+| Claims | An agent's claim on a board blocks other agents' calls that operate or reconfigure it; only operators may force-release; optionally, changing a board requires claiming it | on (`require_claim` off) | `claims.*`, `auth.users[].role` |
 | Serialization | One tool call (and hardware-reading resource) at a time | always | — |
 | Audit | Every change is recorded with the actor (`<session>[:<user>]`) | always | `labctl activity tail` / `export`, web `/activity` page |
 | systemd unit | `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`: on disk, only `/var/lib/labctl` is writable, plus private `/tmp` and `/var/tmp` and the host's shared `/dev` (including `/dev/shm`). Devices are outside this: SD cards are written through the SDWire `sudo` rules (`dd`, `mount`, `partprobe`; D008b), serial ports through group permissions | as shipped | `config/systemd/labctl-mcp.service` |

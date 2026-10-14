@@ -23,13 +23,16 @@ from labctl.core.models import (
     Binding,
     ChannelState,
     Claim,
+    ClaimActor,
     ClaimConflict,
     ClaimNotFoundError,
     ClaimRequest,
+    ClaimRequiredError,
     DesiredState,
     DriverName,
     NetworkAddress,
     NotClaimantError,
+    NotOperatorError,
     PlugType,
     PortType,
     PowerPlug,
@@ -1279,7 +1282,8 @@ class ResourceManager:
         rows = self.db.execute("""
             SELECT c.*, s.name AS sbc_name
             FROM claims c JOIN sbcs s ON s.id = c.sbc_id
-            WHERE c.released_at IS NULL AND c.session_kind = 'mcp-stdio'
+            WHERE c.released_at IS NULL
+              AND c.session_kind IN ('mcp-stdio', 'mcp-http')
             """)
         released = 0
         cutoff = datetime.now() - timedelta(seconds=grace_seconds)
@@ -1415,8 +1419,12 @@ class ResourceManager:
         reason: str,
         context: Optional[dict] = None,
         grace_seconds: int = 60,
+        owner: Optional[str] = None,
     ) -> Claim:
         """Acquire an exclusive claim on an SBC.
+
+        ``owner`` is the authenticated labctl username, if any (see
+        :class:`ClaimActor`).
 
         Runs an expire-stale sweep inside the acquisition transaction so
         the partial unique index can't block a legitimate caller behind a
@@ -1471,17 +1479,18 @@ class ResourceManager:
             cursor = conn.execute(
                 """
                 INSERT INTO claims (
-                    sbc_id, agent_name, session_id, session_kind, reason,
-                    context_json, acquired_at, duration_seconds,
+                    sbc_id, agent_name, session_id, session_kind, owner,
+                    reason, context_json, acquired_at, duration_seconds,
                     last_activity, expires_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     sbc_id,
                     agent_name,
                     session_id,
                     session_kind,
+                    owner or None,
                     reason,
                     context_json,
                     self._fmt_ts(now),
@@ -1563,12 +1572,15 @@ class ResourceManager:
         )
         return [Claim.from_row(r) for r in rows]
 
-    def release_claim(self, sbc_name: str, session_id: str) -> Claim:
-        """Release the active claim held by ``session_id`` on an SBC."""
+    def release_claim(
+        self, sbc_name: str, session_id: str, owner: Optional[str] = None
+    ) -> Claim:
+        """Release the active claim held by ``session_id`` (or by the
+        authenticated user ``owner``, from any session) on an SBC."""
         claim = self.get_active_claim(sbc_name)
         if claim is None:
             raise ClaimNotFoundError(f"No active claim on SBC '{sbc_name}'")
-        if claim.session_id != session_id:
+        if not ClaimActor(session_id, owner).holds(claim):
             raise NotClaimantError(
                 f"Claim on '{sbc_name}' is held by a different session"
             )
@@ -1628,8 +1640,10 @@ class ResourceManager:
         sbc_name: str,
         session_id: str,
         duration_seconds: Optional[int] = None,
+        owner: Optional[str] = None,
     ) -> Claim:
-        """Extend an active claim's deadline.
+        """Extend an active claim's deadline (held by ``session_id`` or
+        by the authenticated user ``owner``).
 
         If ``duration_seconds`` is omitted the previous duration is reused.
         ``last_activity`` and ``expires_at`` are both advanced to "now" and
@@ -1638,7 +1652,7 @@ class ResourceManager:
         claim = self.get_active_claim(sbc_name)
         if claim is None:
             raise ClaimNotFoundError(f"No active claim on SBC '{sbc_name}'")
-        if claim.session_id != session_id:
+        if not ClaimActor(session_id, owner).holds(claim):
             raise NotClaimantError(
                 f"Claim on '{sbc_name}' is held by a different session"
             )
@@ -1660,7 +1674,9 @@ class ResourceManager:
         )
         return self._get_claim_by_id(claim.id)
 
-    def heartbeat_claim(self, sbc_name: str, session_id: str) -> bool:
+    def heartbeat_claim(
+        self, sbc_name: str, session_id: str, owner: Optional[str] = None
+    ) -> bool:
         """Advance last_activity and expires_at on the claim, if any.
 
         Called from every claimant tool path (reads and writes). Silent
@@ -1668,7 +1684,7 @@ class ResourceManager:
         that non-claim-aware callers don't need special handling.
         """
         claim = self.get_active_claim(sbc_name)
-        if claim is None or claim.session_id != session_id:
+        if claim is None or not ClaimActor(session_id, owner).holds(claim):
             return False
         now = datetime.now()
         new_expiry = now + timedelta(seconds=claim.duration_seconds)
@@ -1681,6 +1697,48 @@ class ResourceManager:
             (self._fmt_ts(now), self._fmt_ts(new_expiry), claim.id),
         )
         return True
+
+    def check_claim(
+        self,
+        sbc_name: str,
+        actor: ClaimActor,
+        *,
+        override: bool = False,
+        require_claim: bool = False,
+    ) -> Optional[Claim]:
+        """Gate an operation that changes ``sbc_name`` on its claim (D013).
+
+        Returns the active claim (or None) when ``actor`` may proceed:
+        no claim (unless ``require_claim``), the actor's own claim (which
+        is heartbeated), or an operator's explicit ``override`` (recorded
+        in the activity log). Raises :class:`ClaimConflict` when someone
+        else holds the claim, :class:`NotOperatorError` when an agent asks
+        to override, and :class:`ClaimRequiredError` when ``require_claim``
+        is set and nobody holds it. Unknown SBCs raise UnknownSBCError.
+        """
+        claim = self.get_active_claim(sbc_name)
+        if claim is None:
+            if require_claim:
+                raise ClaimRequiredError(sbc_name)
+            return None
+        if actor.holds(claim):
+            self.heartbeat_claim(sbc_name, claim.session_id)
+            return claim
+        if not override:
+            raise ClaimConflict(claim)
+        if not actor.operator:
+            raise NotOperatorError(
+                f"Only operators may override the claim on '{sbc_name}' "
+                f"(held by '{claim.agent_name}')"
+            )
+        self._audit_log(
+            "claim_override",
+            "sbc",
+            claim.sbc_id,
+            sbc_name,
+            f"Acted on a board claimed by {claim.agent_name} (operator override)",
+        )
+        return claim
 
     def record_release_request(
         self, sbc_name: str, requested_by: str, reason: str

@@ -13,12 +13,17 @@ agent is using.
   `/etc/labctl/config.yaml`. The server identifies the caller **from the
   key alone**: the agent never sends, or needs to know, its username.
 - Each user is a separate **claimant**. When an agent claims a board
-  (`claim_sbc`), tools that *operate* that board are refused for every
-  *other* user with `"error": "sbc_claimed"`: power, `serial_send`,
-  `sdwire_to_dut`/`to_host`/`update`/`ls`/`cat`/`info`, `flash_image`,
-  `boot_test`, `actuate`/`release`/`press`, `enter_recovery`/
-  `exit_recovery` and `remove_sbc`. This needs `claims.enabled` (the
-  default); with it `false`, nothing is enforced.
+  (`claim_sbc`), every MCP tool that operates or reconfigures that board
+  is refused for every *other* user with `"error": "sbc_claimed"`: power,
+  `serial_send`, SDWire, flashing, boot tests, relay bindings and
+  recovery, and changes to its plugs, ports, addresses, SDWire assignment
+  and bindings (full list in
+  [MCP_SERVER.md](MCP_SERVER.md#claims-exclusive-access-coordination)).
+  This needs `claims.enabled` (the default); with it `false`, nothing is
+  enforced.
+- Give agents `role: agent`. Agents can't force-release another user's
+  claim, only ask for it (`request_sbc_release`); users without a role
+  are operators, who can.
 
 So the rule is **one labctl user and key per agent**. Two agents sharing a
 key are the same claimant, and their claims do not protect them from each
@@ -37,18 +42,12 @@ works on the lab host. This guide covers the HTTP service.)
 
 What keys do *not* do:
 
-- **Unclaimed boards are open to everyone.** Agents must claim before they
-  touch a board (see [Agent instructions](#agent-instructions)).
-- **Changing a claimed board's configuration is not blocked.** Another
-  agent can still `update_sbc` (even rename it), assign or remove its
-  power plug, serial port or network address, `sdwire_assign`/`unassign`,
-  `bind`/`unbind` it, or change actuators. `actuator_set` (when admin
-  actuator operations are enabled) drives a relay channel directly, with
-  no claim check, even if it is wired to a claimed board.
-- **Any agent can break another's claim** with `force_release_sbc`: the
-  server doesn't restrict it to an operator. Only the agent instructions
-  below stop it. (People can also force-release from the web dashboard
-  or the CLI.)
+- **Unclaimed boards are open to everyone**, unless you turn on
+  `claims.require_claim` (recommended for several agents; see
+  [Recommended settings](#recommended-settings)). Otherwise agents must
+  remember to claim first (see [Agent instructions](#agent-instructions)).
+- **Operators can still break a claim**: any user without `role: agent`
+  over MCP, and people at the web dashboard or the CLI.
 - **The `labctl` CLI, web UI and REST API don't check claims** (except
   `remove`). An agent with a shell on the lab host can bypass claims by
   running `labctl power cycle ...`, and the same API key also works on the
@@ -58,12 +57,12 @@ What keys do *not* do:
   running as the same Linux user can read each other's key files (and
   `~/.claude.json`). For isolation between people, use separate Linux
   accounts.
-- **Restarting `labctl-mcp` drops every claim.** Claims belong to the
-  server process. A clean stop releases them, and agents must claim
-  again. If the process is killed instead (crash, stop timeout), its
-  claims stay until they expire and block everyone, their former owners
-  included; `labctl claims list` shows them, and an operator can
-  force-release them. Restart when no agent is mid-operation.
+- **Restarting `labctl-mcp` drops every claim.** A clean stop releases
+  the server's claims, and agents must claim again. If the process is
+  killed instead (crash, stop timeout), its claims stay until they expire:
+  they still belong to their agents (by username), who can keep using or
+  release them, and block everyone else. Restart when no agent is
+  mid-operation.
 
 ## Prerequisites
 
@@ -76,6 +75,20 @@ What keys do *not* do:
 - Claude Code is installed on the machine the agent runs on. If that is
   not the lab host, forward the port first, e.g.
   `ssh -N -L 8080:127.0.0.1:8080 labhost`.
+
+## Recommended settings
+
+In `/etc/labctl/config.yaml` on the lab host, when several agents share
+the lab:
+
+```yaml
+claims:
+  require_claim: true    # MCP calls that change a board need its claim
+```
+
+Agents then get `"error": "claim_required"` instead of touching a board
+they haven't claimed, so a forgotten `claim_sbc` can't hurt another
+agent. Restart `labctl-mcp` (and `labctl-web`) to apply it.
 
 ## Step 1: create the agent's labctl user
 
@@ -95,7 +108,8 @@ mkdir -p -m 700 ~/.config/labctl/agents
 (umask 077; set -C
  python3 -c 'import secrets; print(secrets.token_urlsafe(32))' > "$KEY") &&
     [ -s "$KEY" ] &&
-    printf -- '- username: "%s"\n  api_key: "%s"\n' "$NAME" "$(cat "$KEY")"
+    printf -- '- username: "%s"\n  api_key: "%s"\n  role: agent\n' \
+        "$NAME" "$(cat "$KEY")"
 ```
 
 The key is the same kind `labctl user generate-key` prints; `python3`
@@ -119,9 +133,11 @@ auth:
       ...
     - username: "fw-dev"        # new agent
       api_key: "<key>"
+      role: agent
 ```
 
 Agents don't need a `password_hash` (that is only for web UI logins).
+`role: agent` keeps them from force-releasing other agents' claims.
 
 If the service's own copy of the config exists
 (`/var/lib/labctl/.config/labctl/config.yaml`), keep it identical:
@@ -285,12 +301,9 @@ agent's `CLAUDE.md`:
 ## Lab hardware (labctl)
 - Use the labctl MCP tools for all lab hardware. Never run the `labctl`
   CLI for power, serial, SDWire or flashing: it bypasses claims.
-- Don't change the configuration (plugs, ports, SDWire, bindings) of a
-  board someone else has claimed.
 - Before touching a board, `claim_sbc` it (with a short `reason`; leave
   `agent_name` unset so the claim shows your labctl user). If it
-  is claimed by someone else, wait or call `request_sbc_release`; never
-  call `force_release_sbc` unless I ask.
+  is claimed by someone else, wait or call `request_sbc_release`.
 - `release_sbc` as soon as you are done; `renew_sbc_claim` for long runs.
 - Destructive tools return `confirmation_required` first: check the plan,
   then call again with the same arguments plus `confirm_token`. Never
@@ -304,7 +317,7 @@ Ask the agent to claim a spare board, then:
 
 ```bash
 labctl -c /etc/labctl/config.yaml activity tail
-#   ... mcp-stdio:<process>:fw-dev  claim  test-board ...
+#   ... mcp-http:<process>:fw-dev  claim  test-board ...
 labctl -c /etc/labctl/config.yaml claims list
 #   test-board  held by fw-dev (...)
 ```
@@ -333,13 +346,12 @@ reads keys only at startup.
   Method A, `claude mcp remove labctl -s local` in that directory.
 - **Rotate:** delete the key file, rerun Step 1 with the same name, put
   the new `api_key` in the config in place of the old one, and for
-  Method A `claude mcp remove labctl -s local` and add it again. Claims belong to the username, not the key,
-  so they survive; sessions still running with the old key get 401 until
-  you restart them.
+  Method A `claude mcp remove labctl -s local` and add it again. Claims
+  belong to the username, not the key, so they survive; sessions still
+  running with the old key get 401 until you restart them.
 
 ## Later
 
-Planned to reduce friction further (not implemented yet): a labctl
-command that creates the user and key file in one step, claim checks
-in the CLI, the web API and the configuration-changing MCP tools, and
-restricting `force_release_sbc` to operators.
+Planned (not implemented yet): claim checks in the CLI and the web UI /
+REST API, and a labctl command that creates the user and key file in one
+step.
