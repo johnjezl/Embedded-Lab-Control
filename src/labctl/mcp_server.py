@@ -29,7 +29,6 @@ from mcp.types import ToolAnnotations
 
 from labctl import __version__
 from labctl.core import audit
-from labctl.power.base import PlugConfigError
 
 # All logging must go to stderr (stdout is the JSON-RPC channel for stdio transport)
 logging.basicConfig(
@@ -802,8 +801,6 @@ def _sdwire_host_switch_guard_mcp(
             if allow_force_override:
                 message += " Use force=true to override (risks SD card corruption)."
             return message
-    except PlugConfigError as e:
-        return f"Error: can't read {sbc_name}'s power state: {e}"
     except Exception:
         return None
 
@@ -1262,13 +1259,17 @@ def remove_sbc(name: str) -> str:
     claim = manager.get_active_claim(name)
     released = False
     if claim is not None and _caller_actor().holds(claim):
-        from labctl.core.models import ClaimNotFoundError
+        from labctl.core.models import ClaimNotFoundError, NotClaimantError
 
         try:
             manager.release_claim(name, _get_session_id(), owner=_authenticated_user())
             released = True
         except ClaimNotFoundError:
             pass  # expired or released meanwhile: nothing to release
+        except NotClaimantError:  # lapsed, and someone else claimed it
+            current = manager.get_active_claim(name)
+            if current is not None:
+                return _claimed_error(name, current)
     try:
         deleted = manager.delete_sbc(sbc.id)
     except ClaimConflict as exc:  # claimed by someone else since the check
@@ -1396,6 +1397,8 @@ def assign_power_plug(
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
+    if index < 1:
+        return f"Error: Plug index must be 1 or more, got {index}"
     claim_err = _check_claim(manager, sbc_name, shared=False) or _check_shared_hardware(
         manager, sbc_name, plug=(plug_type, address, index)
     )
@@ -1906,10 +1909,6 @@ def sdwire_update(
                 power_ctrl = PowerController.from_plug(sbc.power_plug)
                 power_ctrl.power_off()
                 time.sleep(1)
-            except PlugConfigError as e:
-                # The plug can't be switched as configured, so the board
-                # may still be running: don't pull its SD card.
-                return f"Error: can't power off {sbc_name}: {e}"
             except Exception:
                 pass  # Best effort — continue even if power off fails
 
@@ -2236,10 +2235,6 @@ def flash_image(
                 power_ctrl = PowerController.from_plug(sbc.power_plug)
                 power_ctrl.power_off()
                 time_mod.sleep(1)
-            except PlugConfigError as e:
-                # The plug can't be switched as configured, so the board
-                # may still be running: don't pull its SD card.
-                return f"Error: can't power off {sbc_name}: {e}"
             except Exception:
                 pass  # Continue even if power off fails
 

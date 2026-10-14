@@ -474,21 +474,10 @@ class HealthChecker:
 
         # Power check - requires power plug
         if CheckType.POWER in check_types and sbc.power_plug:
-            try:
-                controller = PowerController.from_plug(sbc.power_plug)
-            except RuntimeError as e:  # e.g. a stored plug index below 1
-                summary.power_result = CheckResult(
-                    sbc_name=sbc.name,
-                    check_type=CheckType.POWER,
-                    success=False,
-                    message=str(e),
-                    duration_ms=0.0,
-                )
-                summary.power_state = PowerState.UNKNOWN
-            else:
-                result, state = self.power_check(controller, sbc.name)
-                summary.power_result = result
-                summary.power_state = state
+            controller = PowerController.from_plug(sbc.power_plug)
+            result, state = self.power_check(controller, sbc.name)
+            summary.power_result = result
+            summary.power_state = state
 
         # Determine recommended status
         summary.recommended_status = summary.determine_status()

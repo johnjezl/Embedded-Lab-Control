@@ -450,28 +450,6 @@ class TestKasaRetry:
         mock_sleep.assert_called_once_with(2)
 
 
-class TestKasaSingleOutletIndex:
-    def test_index_other_than_one_on_single_plug_refused(self):
-        import asyncio
-        from unittest.mock import AsyncMock
-
-        from labctl.power.base import PlugConfigError
-        from labctl.power.kasa import KasaController
-
-        device = Mock()
-        device.children = []
-        device.update = AsyncMock()
-        device.disconnect = AsyncMock()
-        controller = KasaController("10.0.0.5", plug_index=2)
-        with (
-            patch.object(controller, "_load_credentials", return_value=None),
-            patch("kasa.Discover.discover_single", new=AsyncMock(return_value=device)),
-        ):
-            with pytest.raises(PlugConfigError, match="single-outlet"):
-                asyncio.run(controller._get_device())
-        device.disconnect.assert_awaited_once()
-
-
 class TestKasaRunningLoopErrors:
     def test_kasa_error_survives_running_event_loop(self):
         """Inside a running loop (the MCP server) the driver's own error

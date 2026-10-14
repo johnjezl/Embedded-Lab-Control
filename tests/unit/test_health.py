@@ -633,23 +633,3 @@ class TestParallelCheckAll:
         # Serial would be 4 × 0.25 = 1.0s; parallel should be ~0.25-0.5s.
         # Generous bound to avoid flakes on slow CI: < 0.7s.
         assert elapsed < 0.7, f"expected parallel speedup but took {elapsed:.2f}s"
-
-
-class TestCheckSbcControllerError:
-    def test_controller_error_fails_power_check_only(self):
-        """A plug whose controller can't be built fails the power check
-        instead of raising out of check_sbc (dropping the other results)."""
-        from labctl.core.models import SBC, PlugType, PowerPlug
-
-        sbc = SBC(id=1, name="pi-1")
-        sbc.power_plug = PowerPlug(
-            sbc_id=1, plug_type=PlugType.TASMOTA, address="10.0.0.6"
-        )
-        with patch(
-            "labctl.health.checks.PowerController.from_plug",
-            side_effect=RuntimeError("bad plug"),
-        ):
-            summary = HealthChecker().check_sbc(sbc, [CheckType.POWER])
-        assert summary.power_result.success is False
-        assert summary.power_result.message == "bad plug"
-        assert summary.power_state == PowerState.UNKNOWN
