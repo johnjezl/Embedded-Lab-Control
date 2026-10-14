@@ -1713,21 +1713,10 @@ class ResourceManager:
 
     def get_active_claim(self, sbc_name: str) -> Optional[Claim]:
         """Return the active claim on an SBC, or None if free."""
-        sbc_id = self._require_sbc_id(sbc_name)
-        row = self.db.execute_one(
-            """
-            SELECT c.*, s.name AS sbc_name
-            FROM claims c JOIN sbcs s ON s.id = c.sbc_id
-            WHERE c.sbc_id = ? AND c.released_at IS NULL
-            """,
-            (sbc_id,),
-        )
-        if not row:
-            return None
-        claim = Claim.from_row(row)
+        claim = self.get_open_claim(sbc_name)
         # If materialized deadline passed, treat as free — the next sweep
         # will commit the release. Don't return a zombie as active.
-        if not claim.is_active:
+        if claim is None or not claim.is_active:
             return None
         self._load_pending_requests(claim)
         return claim
