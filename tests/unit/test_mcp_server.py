@@ -3824,6 +3824,7 @@ class TestMcpActuatorToolsHonourClaims:
         result = json.loads(bind("other-sbc", "reset", "relay-1", 1, "latch"))
         assert result["error"] == "sbc_claimed"
         assert result["sbc_name"] == "test-sbc-1"
+        assert "shares hardware with 'other-sbc'" in result["message"]
 
 
 class TestMcpSharedHardwareHonoursClaims:
@@ -3952,6 +3953,44 @@ class TestMcpSharedHardwareHonoursClaims:
         assert result["sbc_name"] == "test-sbc-1"
         assert "shares hardware with 'spare'" in result["message"]
         assert env.get_active_claim("spare") is None
+
+    def test_reclaiming_own_board_renews_despite_claimed_sharer(self, env):
+        import labctl.mcp_server as srv
+
+        self._share_plug(env)
+        env.claim_sbc(
+            sbc_name="spare",
+            agent_name="bob",
+            session_id="s-bob",
+            session_kind="mcp-http",
+            duration_seconds=60,
+            reason="x",
+            owner="bob",
+        )
+        # test-sbc-1 (sharing spare's plug) is alice's; bob re-claims spare.
+        result = json.loads(srv.claim_sbc("spare", duration_minutes=60, reason="y"))
+        assert result["status"] == "already_claimed"
+        assert env.get_active_claim("spare").duration_seconds == 3600
+
+    def test_bad_plug_type_does_not_heartbeat(self, env):
+        from labctl.mcp_server import assign_power_plug
+
+        env.claim_sbc(
+            sbc_name="spare",
+            agent_name="bob",
+            session_id="s-bob",
+            session_kind="mcp-http",
+            duration_seconds=600,
+            reason="x",
+            owner="bob",
+        )
+        env.db.execute_modify(
+            "UPDATE claims SET last_activity = '2000-01-01 00:00:00'"
+            " WHERE session_id = 's-bob'"
+        )
+        before = env.get_active_claim("spare").last_activity
+        assert assign_power_plug("spare", "tasmotta", "10.0.0.8").startswith("Error")
+        assert env.get_active_claim("spare").last_activity == before
 
     def test_claiming_a_claimed_board_names_that_board_first(self, env):
         from labctl.mcp_server import claim_sbc
