@@ -1924,15 +1924,11 @@ class ResourceManager:
         # Heartbeat only once every check has passed (a refused call
         # mustn't extend the claim), and only the named board's claim
         # (using A mustn't keep the caller's claim on a sharing B alive).
-        claim = self._check_one_claim(
-            sbc_name, actor, override, require_claim, heartbeat=False
-        )
+        claim = self._check_one_claim(sbc_name, actor, override, require_claim)
         if include_shared:
             for other in self.sbcs_sharing_hardware_with(sbc_name):
                 try:
-                    self._check_one_claim(
-                        other, actor, override, False, heartbeat=False
-                    )
+                    self._check_one_claim(other, actor, override, False)
                 except UnknownSBCError:
                     continue  # deleted meanwhile: nothing left to protect
         if heartbeat and claim is not None and actor.holds(claim):
@@ -1945,8 +1941,9 @@ class ResourceManager:
         actor: ClaimActor,
         override: bool,
         require_claim: bool,
-        heartbeat: bool = True,
     ) -> Optional[Claim]:
+        """One board's part of check_claim; never heartbeats (check_claim
+        does, once everything has passed)."""
         claim = self.get_active_claim(sbc_name)
         if claim is None:
             if not require_claim:
@@ -1966,8 +1963,6 @@ class ResourceManager:
             )
             return None
         if actor.holds(claim):
-            if heartbeat:
-                self.touch_claim(claim)
             return claim
         if not override:
             raise ClaimConflict(claim)

@@ -3742,6 +3742,15 @@ class TestMcpConfigToolsHonourClaims:
     def test_refused_under_other_users_claim(self, claims_env, tool, kwargs):
         import labctl.mcp_server as srv
 
+        if tool == "bind":  # bind looks the relay up before the claim
+            from labctl.core.models import ChannelState, DriverName
+
+            relay = claims_env.create_actuator(
+                "relay-1", DriverName.LCUS1_SERIAL, device_path="/dev/lab/r1"
+            )
+            claims_env.add_actuator_channel(
+                relay.id, 1, default_state=ChannelState.OPEN
+            )
         _hold(claims_env)
         before = claims_env.get_sbc_by_name("test-sbc-1")
         with patch("labctl.mcp_server._authenticated_user", return_value="bob"):
@@ -3852,6 +3861,27 @@ class TestMcpSharedHardwareHonoursClaims:
         assert result["error"] == "sbc_claimed"
         assert result["sbc_name"] == "test-sbc-1"
         assert env.get_sbc_by_name("spare").power_plug is None
+
+    def test_refused_assign_does_not_heartbeat_own_claim(self, env):
+        from labctl.mcp_server import assign_power_plug
+
+        env.claim_sbc(
+            sbc_name="spare",
+            agent_name="bob",
+            session_id="s-bob",
+            session_kind="mcp-http",
+            duration_seconds=600,
+            reason="x",
+            owner="bob",
+        )
+        env.db.execute_modify(
+            "UPDATE claims SET last_activity = '2000-01-01 00:00:00'"
+            " WHERE session_id = 's-bob'"
+        )
+        before = env.get_active_claim("spare").last_activity
+        result = json.loads(assign_power_plug("spare", "kasa", "10.0.0.5", 2))
+        assert result["error"] == "sbc_claimed"
+        assert env.get_active_claim("spare").last_activity == before
 
     def test_other_outlet_allowed(self, env):
         from labctl.mcp_server import assign_power_plug

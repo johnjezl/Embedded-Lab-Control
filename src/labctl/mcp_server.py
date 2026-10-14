@@ -1356,9 +1356,11 @@ def assign_serial_port(
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
-    claim_err = _check_claim(manager, sbc_name, shared=False) or _check_shared_hardware(
+    # The own-board check heartbeats, so it runs last: a refused call
+    # mustn't extend the caller's claim.
+    claim_err = _check_shared_hardware(
         manager, sbc_name, serial_device_path=device
-    )
+    ) or _check_claim(manager, sbc_name, shared=False)
     if claim_err:
         return claim_err
 
@@ -1401,9 +1403,9 @@ def assign_power_plug(
         return f"Error: SBC '{sbc_name}' not found"
     if index < 1:  # Tasmota's Power0 switches every relay on the device
         return f"Error: Plug index must be 1 or more, got {index}"
-    claim_err = _check_claim(manager, sbc_name, shared=False) or _check_shared_hardware(
+    claim_err = _check_shared_hardware(
         manager, sbc_name, plug=(plug_type, address, index)
-    )
+    ) or _check_claim(manager, sbc_name, shared=False)
     if claim_err:
         return claim_err
 
@@ -1662,14 +1664,12 @@ def sdwire_assign(sbc_name: str, device_name: str) -> str:
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
-    claim_err = _check_claim(manager, sbc_name, shared=False)
-    if claim_err:
-        return claim_err
-
     device = manager.get_sdwire_device_by_name(device_name)
     if not device:
         return f"Error: SDWire device '{device_name}' not found"
-    claim_err = _check_shared_hardware(manager, sbc_name, sdwire_device_id=device.id)
+    claim_err = _check_shared_hardware(
+        manager, sbc_name, sdwire_device_id=device.id
+    ) or _check_claim(manager, sbc_name, shared=False)
     if claim_err:
         return claim_err
 
@@ -3334,9 +3334,6 @@ def bind(
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return f"Error: SBC '{sbc_name}' not found"
-    claim_err = _check_claim(manager, sbc_name, shared=False)
-    if claim_err:
-        return claim_err
     a = manager.get_actuator_by_name(actuator)
     if not a:
         return f"Error: actuator '{actuator}' not found"
@@ -3345,7 +3342,9 @@ def bind(
         return f"Error: channel {channel} not on {actuator!r}"
     # A channel takes one binding; if a claimed board has it, say so
     # rather than fail on the constraint.
-    claim_err = _check_bound_claims(manager, {ch.id})
+    claim_err = _check_bound_claims(manager, {ch.id}) or _check_claim(
+        manager, sbc_name, shared=False
+    )
     if claim_err:
         return claim_err
 
