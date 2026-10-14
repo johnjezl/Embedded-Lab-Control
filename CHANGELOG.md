@@ -140,8 +140,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 - Kasa: driver errors (bad outlet, unreachable plug) inside the MCP server
   are reported as such, not as an unrelated asyncio error.
-- Power plugs: an outlet index below 1 is refused when assigned (Tasmota's
-  `Power0` switches every relay). Rows saved earlier with such an index
+- Power plugs: `labctl plug assign --index` and MCP `assign_power_plug`
+  refuse an outlet index below 1 (Tasmota's `Power0` switches every
+  relay). Rows saved with such an index (earlier, or by `labctl import`)
   count as sharing every outlet on that address for claim checks.
 - MCP `serial_capture` is claim-checked like `serial_send`: it holds the
   board's ser2net session.
