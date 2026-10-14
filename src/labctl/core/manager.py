@@ -1732,20 +1732,6 @@ class ResourceManager:
         self._load_pending_requests(claim)
         return claim
 
-    def get_open_claim(self, sbc_name: str) -> Optional[Claim]:
-        """The unreleased claim on an SBC, including one past its deadline
-        but not yet swept (in its grace period), or None."""
-        sbc_id = self._require_sbc_id(sbc_name)
-        row = self.db.execute_one(
-            """
-            SELECT c.*, s.name AS sbc_name
-            FROM claims c JOIN sbcs s ON s.id = c.sbc_id
-            WHERE c.sbc_id = ? AND c.released_at IS NULL
-            """,
-            (sbc_id,),
-        )
-        return Claim.from_row(row) if row else None
-
     def list_active_claims(self) -> list[Claim]:
         """All currently active claims across the lab."""
         rows = self.db.execute("""
@@ -1778,10 +1764,16 @@ class ResourceManager:
         return [Claim.from_row(r) for r in rows]
 
     def release_claim(
-        self, sbc_name: str, session_id: str, owner: Optional[str] = None
+        self,
+        sbc_name: str,
+        session_id: str,
+        owner: Optional[str] = None,
+        released_by: Optional[str] = None,
     ) -> Claim:
         """Release the active claim held by ``session_id`` (or by the
-        authenticated user ``owner``, from any session) on an SBC."""
+        authenticated user ``owner``, from any session) on an SBC.
+        ``released_by`` names who released it (default: the claim's
+        agent name)."""
         claim = self.get_active_claim(sbc_name)
         if claim is None:
             raise ClaimNotFoundError(f"No active claim on SBC '{sbc_name}'")
@@ -1797,14 +1789,14 @@ class ResourceManager:
                 released_by = ?
             WHERE id = ?
             """,
-            (ReleaseReason.RELEASED.value, claim.agent_name, claim.id),
+            (ReleaseReason.RELEASED.value, released_by or claim.agent_name, claim.id),
         )
         self._audit_log(
             "release",
             "sbc",
             claim.sbc_id,
             sbc_name,
-            f"Released by {claim.agent_name}",
+            f"Released by {released_by or claim.agent_name}",
         )
         # Re-fetch fresh state so callers see released_at populated.
         return self._get_claim_by_id(claim.id)

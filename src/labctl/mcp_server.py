@@ -1268,7 +1268,12 @@ def remove_sbc(name: str) -> str:
         from labctl.core.models import ClaimNotFoundError, NotClaimantError
 
         try:
-            manager.release_claim(name, _get_session_id(), owner=_authenticated_user())
+            manager.release_claim(
+                name,
+                _get_session_id(),
+                owner=_authenticated_user(),
+                released_by=_get_agent_name(),
+            )
             released = True
         except ClaimNotFoundError:
             pass  # expired or released meanwhile: nothing to release
@@ -2691,25 +2696,30 @@ def claim_sbc(
         grace_seconds=config.claims.grace_period_seconds,
         owner=_authenticated_user(),
     )
-    try:
-        # A board sharing hardware with a board someone else holds can't
-        # be operated, so a new claim on it would be unusable. Skipped when
-        # the board has an open claim that is someone else's (claim_sbc
-        # below reports that holder) or the caller's own active one (it
-        # is renewed below).
-        current = manager.get_open_claim(sbc_name)
-        if current is None or (
-            _caller_actor().holds(current) and not current.is_active
-        ):
-            shared_err = _check_claims_of(
-                manager, manager.sbcs_sharing_hardware_with(sbc_name), for_sbc=sbc_name
-            )
-            if shared_err:
-                return shared_err
 
-        # Your own claim, if expired (even inside its grace period), is
-        # replaced; an active one raises ClaimConflict and is renewed below.
+    def grant():
+        """A new claim, kept only if no board sharing this one's hardware
+        is someone else's (else it couldn't be used: release it again)."""
         claim = manager.claim_sbc(**claim_args)
+        shared_err = _check_claims_of(
+            manager, manager.sbcs_sharing_hardware_with(sbc_name), for_sbc=sbc_name
+        )
+        if shared_err:
+            manager.release_claim(
+                sbc_name,
+                claim.session_id,
+                owner=claim.owner,
+                released_by="system (shared hardware is claimed)",
+            )
+            return None, shared_err
+        return claim, None
+
+    try:
+        # The board's own holder, if someone else, is reported first
+        # (ClaimConflict); your own active claim is renewed below.
+        claim, shared_err = grant()
+        if shared_err:
+            return shared_err
     except UnknownSBCError:
         return json.dumps(
             {"error": "unknown_sbc", "message": f"SBC '{sbc_name}' not found"}
@@ -2730,11 +2740,13 @@ def claim_sbc(
         except ClaimNotFoundError:
             # It lapsed between the two calls: the board is free now.
             try:
-                claim = manager.claim_sbc(**claim_args)
+                claim, shared_err = grant()
             except ClaimConflict as again:
                 return _claimed_error(sbc_name, again.claim)
             except ClaimError as claim_exc:
                 return json.dumps({"error": "claim_failed", "message": str(claim_exc)})
+            if shared_err:
+                return shared_err
             return json.dumps(
                 {"status": "claimed", "sbc_name": sbc_name, "claim": claim.to_dict()}
             )
@@ -2784,7 +2796,12 @@ def release_sbc(sbc_name: str) -> str:
 
     manager = _get_manager()
     try:
-        manager.release_claim(sbc_name, _get_session_id(), owner=_authenticated_user())
+        manager.release_claim(
+            sbc_name,
+            _get_session_id(),
+            owner=_authenticated_user(),
+            released_by=_get_agent_name(),
+        )
     except UnknownSBCError:
         return json.dumps(
             {"error": "unknown_sbc", "message": f"SBC '{sbc_name}' not found"}

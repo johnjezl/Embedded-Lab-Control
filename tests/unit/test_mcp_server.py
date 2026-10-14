@@ -3992,6 +3992,30 @@ class TestMcpSharedHardwareHonoursClaims:
         assert assign_power_plug("spare", "tasmotta", "10.0.0.8").startswith("Error")
         assert env.get_active_claim("spare").last_activity == before
 
+    def test_stale_unswept_claim_does_not_skip_sharer_check(self, env):
+        """A long-expired, not yet swept claim on the board is replaced by
+        claim_sbc's sweep; the sharer check must still refuse."""
+        from labctl.mcp_server import claim_sbc
+
+        self._share_plug(env)
+        env.claim_sbc(
+            sbc_name="spare",
+            agent_name="carol",
+            session_id="s-carol",
+            session_kind="mcp-http",
+            duration_seconds=600,
+            reason="x",
+            owner="carol",
+        )
+        env.db.execute_modify(
+            "UPDATE claims SET expires_at = '2000-01-01 00:00:00'"
+            " WHERE session_id = 's-carol'"
+        )
+        result = json.loads(claim_sbc("spare", reason="x"))
+        assert result["error"] == "sbc_claimed"
+        assert result["sbc_name"] == "test-sbc-1"
+        assert env.get_active_claim("spare") is None
+
     def test_claiming_a_claimed_board_names_that_board_first(self, env):
         from labctl.mcp_server import claim_sbc
 
@@ -4217,6 +4241,19 @@ class TestMcpClaimOwners:
         with patch("labctl.mcp_server._authenticated_user", return_value="bob"):
             result = json.loads(remove_sbc("test-sbc-1"))
         assert result["error"] == "sbc_claimed"
+
+    def test_release_from_other_session_names_the_releaser(self, claims_env):
+        from labctl.mcp_server import release_sbc
+
+        _hold(claims_env, session_id="mcp-http:42-1:alice")
+        with (
+            patch("labctl.mcp_server._authenticated_user", return_value="alice"),
+            patch("labctl.mcp_server._get_agent_name", return_value="agent-beta"),
+        ):
+            release_sbc("test-sbc-1")
+        assert claims_env.list_claim_history("test-sbc-1")[0].released_by == (
+            "agent-beta"
+        )
 
     def test_claim_records_owner(self, claims_env):
         from labctl.mcp_server import claim_sbc

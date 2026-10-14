@@ -189,7 +189,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Claims record their authenticated owner (schema v9): the same user's
   other MCP sessions, and the same user after a server restart, count as
   the claimant (use, renew, release). Claiming a board you already hold
-  returns `already_claimed` and renews it for the requested duration.
+  returns `already_claimed` and renews it for the requested duration
+  (boards sharing its hardware aren't re-checked).
 - `docs/CLAUDE_CODE_AGENTS.md`: connecting Claude Code agents to the HTTP
   MCP server with one labctl user and API key each, so claims keep them
   apart. Covers `claude mcp add` (manual) and a shared `--mcp-config` file
