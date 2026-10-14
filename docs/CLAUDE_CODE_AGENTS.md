@@ -21,9 +21,9 @@ agent is using.
   [MCP_SERVER.md](MCP_SERVER.md#claims-exclusive-access-coordination)).
   This needs `claims.enabled` (the default); with it `false`, nothing is
   enforced.
-- Give agents `role: agent`. Agents can't force-release another user's
-  claim, only ask for it (`request_sbc_release`); users without a role
-  are operators, who can.
+- Give agents `role: agent`. Over MCP, agents can't force-release another
+  user's claim, only ask for it (`request_sbc_release`); users without a
+  role are operators, who can. (The web REST API doesn't check roles yet.)
 
 So the rule is **one labctl user and key per agent**. Two agents sharing a
 key are the same claimant, and their claims do not protect them from each
@@ -51,8 +51,9 @@ What keys do *not* do:
 - **The `labctl` CLI, web UI and REST API don't check claims** (except
   `remove`). An agent with a shell on the lab host can bypass claims by
   running `labctl power cycle ...`, and the same API key also works on the
-  web REST API (`X-API-Key` header) if `labctl-web` is running. Tell
-  agents to use MCP tools only.
+  web REST API (`X-API-Key` header) if `labctl-web` is running, where it
+  can also force-release claims whatever its role. Tell agents to use MCP
+  tools only.
 - **Keys separate cooperating agents; they don't isolate them.** Agents
   running as the same Linux user can read each other's key files (and
   `~/.claude.json`). For isolation between people, use separate Linux
@@ -139,7 +140,8 @@ auth:
 ```
 
 Agents don't need a `password_hash` (that is only for web UI logins).
-`role: agent` keeps them from force-releasing other agents' claims.
+`role: agent` keeps them from force-releasing other agents' claims over
+MCP.
 
 If the service's own copy of the config exists
 (`/var/lib/labctl/.config/labctl/config.yaml`), keep it identical:
