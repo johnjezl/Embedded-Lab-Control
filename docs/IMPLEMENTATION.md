@@ -835,3 +835,11 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
   - ⏸️ Remaining by-path root operations under `/var/lib/labctl`
     (`chown -R`, `mkdir -p`, drift `cmp`, allowlist read): #19
   - ☐ Deploy Phase 1 to tarrasque (allowlist config, client heads-up)
+- Claim enforcement on every surface (D013), three PRs
+  - ✅ Part 1: core + MCP — roles, claim owners (schema v9),
+    `claims.require_claim`, config tools and shared hardware checked
+    (PR #22)
+  - ✅ Part 2: CLI — board-changing commands refuse on another user's
+    claim; `--override-claim` (logged)
+  - ☐ Part 3: web UI / REST — 409 `sbc_claimed`, REST roles and
+    `require_claim`, owners on REST claims, #21

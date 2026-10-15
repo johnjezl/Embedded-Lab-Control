@@ -174,6 +174,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   from removing dead code flagged by flake8 (unused imports/variables).
 
 ### Added
+- Claim enforcement, part 2 (D013): CLI commands that operate or
+  reconfigure a board refuse when another user has claimed it (or a board
+  sharing its plug outlet, SDWire, console adapter or relay channel), naming
+  the holder, before any confirmation question. `--override-claim` acts
+  anyway and is recorded in the activity log as `claim_override`;
+  `power-all` skips claimed boards; `import` checks every board before
+  changing any; `claim` refuses a board whose shared hardware someone else
+  holds. `remove` releases the user's own CLI claim before deleting, and
+  `remove --force` is now an alias for `--override-claim` (also logged).
+  See docs/OPERATIONS.md for the list.
 - Claim enforcement, part 1 (D013): MCP tools that change a board's
   configuration (`update_sbc`, `assign_*`/`remove_*` for ports, plugs and
   addresses, `sdwire_assign`/`unassign`, `bind`/`unbind`) now refuse under

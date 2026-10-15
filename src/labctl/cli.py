@@ -107,6 +107,10 @@ def destructive_command(action: str):
         @functools.wraps(f)
         def wrapper(*args, yes: bool = False, **kwargs):
             if not yes and not kwargs.get("dry_run") and _stdin_is_tty():
+                # Refuse a claimed board before asking, not after (D013).
+                precheck = getattr(f, "_claim_precheck", None)
+                if precheck is not None:
+                    precheck(kwargs)
                 # Identity checks: `0 in (None, False, ())` is True in Python
                 # (0 == False), which would hide e.g. channel=0 or delay=0.
                 shown = ", ".join(
@@ -137,6 +141,238 @@ def _get_manager(ctx: click.Context) -> ResourceManager:
             timeout_seconds=config.database.timeout_seconds,
         )
     return ctx.obj["manager"]
+
+
+# --- Claim checks (D013) ---
+
+override_claim_option = click.option(
+    "--override-claim",
+    is_flag=True,
+    help="Act even if another user has claimed the board "
+    "(recorded in the activity log).",
+)
+
+
+def _cli_claim_actor():
+    """The CLI has the database and the hardware in reach, so it acts as an
+    operator: it may override another user's claim, but only when asked
+    to (``--override-claim``). It has no login, so a claim counts as its
+    own only when made from the CLI by the same user on this host."""
+    from labctl.core.models import ClaimActor
+
+    return ClaimActor(session_id=_cli_session_id(), operator=True)
+
+
+def _refuse_claimed(sbc_name: str, claim, *, override_hint: bool = True) -> None:
+    """Exit with an error naming the claim that stops a change to
+    ``sbc_name``; the claim may be on a board sharing its hardware."""
+    holder_board = claim.sbc_name or sbc_name
+    remaining = (
+        int(claim.time_remaining.total_seconds())
+        if claim.time_remaining is not None
+        else 0
+    )
+    shared = (
+        f" (it shares hardware with '{sbc_name}')" if holder_board != sbc_name else ""
+    )
+    hint = f"Ask for it with 'labctl request-release {holder_board} -r REASON'"
+    if override_hint:
+        hint += ", or rerun with --override-claim (recorded in the activity log)"
+    else:
+        hint += f" or take it with 'labctl force-release {holder_board} -r REASON'"
+    click.echo(
+        f"Error: '{holder_board}' is claimed by '{claim.agent_name or 'unknown'}' "
+        f"({_format_remaining(remaining)} remaining){shared}. {hint}.",
+        err=True,
+    )
+    sys.exit(1)
+
+
+def _cli_claim_conflict(
+    ctx: click.Context,
+    sbc_name: str,
+    *,
+    override: bool = False,
+    shared: bool = True,
+    direct: bool = True,
+    probe: bool = False,
+):
+    """The claim that stops this CLI user changing ``sbc_name``, or None.
+
+    None also when the user holds the claim (it is heartbeated), when
+    ``override`` is set (the override is recorded in the activity log),
+    when claims are disabled and when the board doesn't exist (the
+    command reports that). ``shared`` also checks the boards sharing
+    ``sbc_name``'s hardware; ``direct=False`` is for a board a command
+    reaches only through shared hardware (no heartbeat, no sharers).
+    ``probe`` checks without side effects: nothing is heartbeated and
+    ``override`` is ignored, so the conflict is returned. The CLI doesn't
+    apply ``claims.require_claim`` (MCP and REST only).
+    """
+    config: Config = ctx.obj["config"]
+    if not config.claims.enabled:
+        return None
+    from labctl.core.models import ClaimConflict, UnknownSBCError
+
+    try:
+        _get_manager(ctx).check_claim(
+            sbc_name,
+            _cli_claim_actor(),
+            override=override and not probe,
+            include_shared=direct and shared,
+            heartbeat=direct and not probe,
+        )
+    except UnknownSBCError:
+        return None
+    except ClaimConflict as exc:
+        return exc.claim
+    return None
+
+
+def _check_claim_cli(
+    ctx: click.Context,
+    sbc_name: str,
+    override: bool = False,
+    *,
+    shared: bool = True,
+    direct: bool = True,
+    for_sbc: str | None = None,
+    probe: bool = False,
+):
+    """Exit unless this CLI user may change ``sbc_name`` (see
+    _cli_claim_conflict). ``for_sbc`` names the board the command is
+    about when ``sbc_name`` is one sharing its hardware. A ``probe`` with
+    ``override`` doesn't exit and returns the conflicting claim, if any."""
+    claim = _cli_claim_conflict(
+        ctx, sbc_name, override=override, shared=shared, direct=direct, probe=probe
+    )
+    if claim is not None and not (probe and override):
+        _refuse_claimed(for_sbc or sbc_name, claim)
+    return claim
+
+
+def _check_claims_of_cli(
+    ctx: click.Context,
+    sbc_names,
+    override: bool = False,
+    *,
+    for_sbc: str | None = None,
+    probe: bool = False,
+) -> None:
+    """Exit if someone else claims one of these boards, which a command on
+    ``for_sbc`` (if any) reaches through shared hardware."""
+    for name in sorted(n for n in sbc_names if n and n != for_sbc):
+        _check_claim_cli(
+            ctx, name, override, direct=False, for_sbc=for_sbc, probe=probe
+        )
+
+
+def _check_shared_hardware_cli(
+    ctx: click.Context,
+    sbc_name: str | None,
+    override: bool = False,
+    *,
+    probe: bool = False,
+    **hardware,
+) -> None:
+    """Before wiring hardware to ``sbc_name``, claim-check the boards that
+    already have it, so a claimed board's plug, SDWire or console can't be
+    driven through another board. ``hardware`` is passed to
+    ResourceManager.sbcs_sharing_hardware."""
+    if not ctx.obj["config"].claims.enabled:
+        return
+    others = _get_manager(ctx).sbcs_sharing_hardware(**hardware)
+    _check_claims_of_cli(ctx, others, override, for_sbc=sbc_name, probe=probe)
+
+
+def _check_bound_claims_cli(
+    ctx: click.Context,
+    channel_ids: set,
+    override: bool = False,
+    *,
+    same_device: bool = True,
+    for_sbc: str | None = None,
+    probe: bool = False,
+) -> None:
+    """Claim-check every board bound to one of these actuator channels (a
+    relay wired to a board's reset or power is part of that board).
+    ``same_device`` also covers other actuator records for the same relay
+    board (needed when driving a channel, not when deleting a record)."""
+    if not ctx.obj["config"].claims.enabled:
+        return
+    manager = _get_manager(ctx)
+    if same_device:
+        channel_ids = manager.channels_on_same_device(channel_ids)
+    names = {b.sbc_name for b in manager.list_bindings(channel_ids=channel_ids)}
+    _check_claims_of_cli(ctx, names, override, for_sbc=for_sbc, probe=probe)
+
+
+def claim_checked(
+    sbc_arg: str = "sbc_name", *, shared: bool = True, resolve=None, check=None
+):
+    """Add ``--override-claim`` to a command that changes a board, and
+    refuse when another user has claimed it (D013).
+
+    ``sbc_arg`` names the parameter holding the board; ``resolve(ctx,
+    value)`` maps it to a board name (or None: nothing to check) when
+    it holds something else, like a port alias. ``shared=False`` is for
+    commands that only change the board's own records, so boards sharing
+    its hardware don't matter. ``check(ctx, kwargs, override, probe)``
+    replaces all that for commands that aren't about one board.
+
+    Apply below ``@destructive_command``, so a refusal comes before the
+    confirmation question and the override is recorded only once the
+    user has said yes. With ``--dry-run`` the check changes nothing and
+    an override is reported, not recorded.
+    """
+
+    def decorator(f):
+        def run(ctx, kwargs, override, probe):
+            if check is not None:
+                return check(ctx, kwargs, override, probe)
+            name = kwargs.get(sbc_arg)
+            if name is not None and resolve is not None:
+                name = resolve(ctx, name)
+            if name is None:
+                return None
+            return _check_claim_cli(ctx, name, override, shared=shared, probe=probe)
+
+        @functools.wraps(f)
+        def wrapper(*args, override_claim: bool = False, **kwargs):
+            ctx = click.get_current_context()
+            claim = run(ctx, kwargs, override_claim, bool(kwargs.get("dry_run")))
+            if claim is not None:  # dry run with --override-claim
+                click.echo(
+                    f"Dry run: would override '{claim.agent_name}'s claim "
+                    f"on '{claim.sbc_name}'."
+                )
+            return f(*args, **kwargs)
+
+        def precheck(kwargs):
+            run(
+                click.get_current_context(),
+                kwargs,
+                kwargs.get("override_claim", False),
+                True,
+            )
+
+        wrapper._claim_precheck = precheck
+        return override_claim_option(wrapper)
+
+    return decorator
+
+
+def _port_sbc_name(ctx: click.Context, port_name: str) -> str | None:
+    """The board a serial port alias (or board name) belongs to, if any."""
+    from labctl.serial.capture import resolve_port
+
+    manager = _get_manager(ctx)
+    try:
+        port = resolve_port(manager, port_name)
+    except ValueError:
+        return None  # the command reports it
+    sbc = manager.get_sbc(port.sbc_id) if port.sbc_id else None
+    return sbc.name if sbc else None
 
 
 def _status_power_cache_key(plug) -> tuple[str, str, int]:
@@ -906,18 +1142,30 @@ def add_cmd(
 
 
 @main.command("remove")
+@override_claim_option
 @click.argument("name")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
 @click.option(
     "--force",
     is_flag=True,
-    help="Remove even if an active claim is held (cascades claim rows)",
+    help="Same as --override-claim (kept for compatibility).",
 )
 @click.pass_context
-def remove_cmd(ctx: click.Context, name: str, yes: bool, force: bool) -> None:
-    """Remove an SBC."""
-    from labctl.core.models import ClaimConflict
+def remove_cmd(
+    ctx: click.Context, name: str, yes: bool, force: bool, override_claim: bool
+) -> None:
+    """Remove an SBC.
 
+    Refuses while another user has claimed it, unless --override-claim.
+    Your own claim on it (made from the CLI) is released first.
+    """
+    from labctl.core.models import (
+        ClaimConflict,
+        ClaimNotFoundError,
+        NotClaimantError,
+    )
+
+    override = override_claim or force
     manager = _get_manager(ctx)
 
     sbc = manager.get_sbc_by_name(name)
@@ -925,19 +1173,27 @@ def remove_cmd(ctx: click.Context, name: str, yes: bool, force: bool) -> None:
         click.echo(f"Error: SBC '{name}' not found", err=True)
         sys.exit(1)
 
+    _check_claim_cli(ctx, name, override, shared=False, probe=True)
     if not yes:
         click.confirm(f"Remove SBC '{name}' and all associated data?", abort=True)
+    _check_claim_cli(ctx, name, override, shared=False)
+
+    # Any claim left is the user's own (or overridden): release the user's
+    # own so the release is recorded, rather than deleted with the board.
+    actor = _cli_claim_actor()
+    claim = manager.get_active_claim(name)
+    if claim is not None and actor.holds(claim):
+        try:
+            manager.release_claim(
+                name, actor.session_id, released_by=_default_agent_name()
+            )
+        except (ClaimNotFoundError, NotClaimantError):
+            pass  # expired, or released meanwhile: delete_sbc decides
 
     try:
-        deleted = manager.delete_sbc(sbc.id, force=force)
+        deleted = manager.delete_sbc(sbc.id, force=override)
     except ClaimConflict as exc:
-        holder = exc.claim.agent_name or "unknown agent"
-        click.echo(
-            f"Error: '{name}' is claimed by '{holder}'. "
-            f"Release the claim or rerun with --force.",
-            err=True,
-        )
-        sys.exit(1)
+        _refuse_claimed(name, exc.claim)
     if deleted:
         click.echo(f"Removed SBC: {name}")
     else:
@@ -1011,6 +1267,7 @@ def info_cmd(ctx: click.Context, name: str) -> None:
 
 
 @main.command("edit")
+@claim_checked("name", shared=False)
 @click.argument("name")
 @click.option("--rename", "-n", "new_name", help="Rename the SBC")
 @click.option("--project", "-p", help="Set project name")
@@ -1222,10 +1479,13 @@ def sdwire_list_cmd(ctx: click.Context) -> None:
 
 
 @sdwire_group.command("assign")
+@override_claim_option
 @click.argument("sbc_name")
 @click.argument("device_name")
 @click.pass_context
-def sdwire_assign_cmd(ctx: click.Context, sbc_name: str, device_name: str) -> None:
+def sdwire_assign_cmd(
+    ctx: click.Context, sbc_name: str, device_name: str, override_claim: bool
+) -> None:
     """Assign an SDWire device to an SBC."""
     manager = _get_manager(ctx)
 
@@ -1239,6 +1499,11 @@ def sdwire_assign_cmd(ctx: click.Context, sbc_name: str, device_name: str) -> No
         click.echo(f"Error: SDWire device '{device_name}' not found", err=True)
         sys.exit(1)
 
+    _check_shared_hardware_cli(
+        ctx, sbc_name, override_claim, sdwire_device_id=device.id
+    )
+    _check_claim_cli(ctx, sbc_name, override_claim, shared=False)
+
     try:
         manager.assign_sdwire(sbc.id, device.id)
         click.echo(f"Assigned SDWire '{device_name}' to {sbc_name}")
@@ -1249,6 +1514,7 @@ def sdwire_assign_cmd(ctx: click.Context, sbc_name: str, device_name: str) -> No
 
 @sdwire_group.command("unassign")
 @destructive_command("Remove the SDWire assignment")
+@claim_checked(shared=False)
 @click.argument("sbc_name")
 @click.pass_context
 def sdwire_unassign_cmd(ctx: click.Context, sbc_name: str) -> None:
@@ -1267,6 +1533,7 @@ def sdwire_unassign_cmd(ctx: click.Context, sbc_name: str) -> None:
 
 
 @sdwire_group.command("dut")
+@claim_checked()
 @click.argument("sbc_name")
 @click.pass_context
 def sdwire_dut_cmd(ctx: click.Context, sbc_name: str) -> None:
@@ -1294,6 +1561,7 @@ def sdwire_dut_cmd(ctx: click.Context, sbc_name: str) -> None:
 
 @sdwire_group.command("host")
 @destructive_command("Switch the SD card to the host (away from the board)")
+@claim_checked()
 @click.argument("sbc_name")
 @click.option("--force", is_flag=True, help="Override power-on safety check")
 @click.pass_context
@@ -1341,6 +1609,7 @@ def sdwire_host_cmd(ctx: click.Context, sbc_name: str, force: bool) -> None:
 
 @sdwire_group.command("flash")
 @destructive_command("Overwrite the whole SD card")
+@claim_checked()
 @click.argument("sbc_name")
 @click.argument("image", type=click.Path(exists=True, path_type=Path))
 @click.option("--no-reboot", is_flag=True, help="Don't power cycle after flashing")
@@ -1517,6 +1786,7 @@ def sdwire_flash_cmd(
 
 @sdwire_group.command("update")
 @destructive_command("Change files on the SD card")
+@claim_checked()
 @click.argument("sbc_name")
 @click.option(
     "--partition",
@@ -1705,6 +1975,7 @@ def sdwire_update_cmd(
 
 
 @sdwire_group.command("ls")
+@claim_checked()
 @click.argument("sbc_name")
 @click.option(
     "--partition",
@@ -1808,6 +2079,7 @@ def sdwire_ls_cmd(
 
 
 @sdwire_group.command("cat")
+@claim_checked()
 @click.argument("sbc_name")
 @click.option(
     "--partition",
@@ -1927,6 +2199,7 @@ def sdwire_cat_cmd(
 
 
 @sdwire_group.command("info")
+@claim_checked()
 @click.argument("sbc_name")
 @click.pass_context
 def sdwire_info_cmd(ctx: click.Context, sbc_name: str) -> None:
@@ -2171,17 +2444,26 @@ def serial_repair_cmd(ctx: click.Context, apply: bool) -> None:
 
 
 @serial_group.command("rename")
+@override_claim_option
 @click.argument("name")
 @click.argument("new_name")
 @click.pass_context
-def serial_rename_cmd(ctx: click.Context, name: str, new_name: str) -> None:
-    """Rename a USB-serial adapter."""
+def serial_rename_cmd(
+    ctx: click.Context, name: str, new_name: str, override_claim: bool
+) -> None:
+    """Rename a USB-serial adapter.
+
+    Its /dev/lab name changes once the udev rules are reinstalled, which
+    cuts off the boards using it, so a claim on one of them refuses.
+    """
     manager = _get_manager(ctx)
 
     device = manager.get_serial_device_by_name(name)
     if not device:
         click.echo(f"Error: Serial device '{name}' not found", err=True)
         sys.exit(1)
+
+    _check_shared_hardware_cli(ctx, None, override_claim, serial_device_id=device.id)
 
     try:
         manager.rename_serial_device(device.id, new_name)
@@ -2231,6 +2513,7 @@ def serial_udev_cmd(ctx: click.Context, install: bool, reload: bool) -> None:
 
 
 @serial_group.command("capture")
+@claim_checked("port_name", resolve=_port_sbc_name)
 @click.argument("port_name")
 @click.option(
     "--timeout",
@@ -2357,6 +2640,7 @@ def _resolve_send_pacing(
 
 @serial_group.command("send")
 @destructive_command("Send to a running board's console")
+@claim_checked("port_name", resolve=_port_sbc_name)
 @click.argument("port_name")
 @click.argument("data")
 @click.option(
@@ -2469,6 +2753,7 @@ def port_group() -> None:
 
 
 @port_group.command("assign")
+@override_claim_option
 @click.argument("sbc_name")
 @click.argument("port_type", type=click.Choice([t.value for t in PortType]))
 @click.argument("device", required=False, default=None)
@@ -2495,6 +2780,7 @@ def port_assign_cmd(
     baud: int,
     alias: str | None,
     serial_device_name: str | None,
+    override_claim: bool,
 ) -> None:
     """Assign a serial port to an SBC.
 
@@ -2527,6 +2813,15 @@ def port_assign_cmd(
         )
         sys.exit(1)
 
+    _check_shared_hardware_cli(
+        ctx,
+        sbc_name,
+        override_claim,
+        serial_device_path=device,
+        serial_device_id=serial_device_id,
+    )
+    _check_claim_cli(ctx, sbc_name, override_claim, shared=False)
+
     try:
         port = manager.assign_serial_port(
             sbc_id=sbc.id,
@@ -2549,6 +2844,7 @@ def port_assign_cmd(
 
 @port_group.command("remove")
 @destructive_command("Remove the serial port assignment")
+@claim_checked(shared=False)
 @click.argument("sbc_name")
 @click.argument("port_type", type=click.Choice([t.value for t in PortType]))
 @click.pass_context
@@ -2647,6 +2943,7 @@ def network_group() -> None:
 
 
 @network_group.command("set")
+@claim_checked(shared=False)
 @click.argument("sbc_name")
 @click.argument("address_type", type=click.Choice([t.value for t in AddressType]))
 @click.argument("ip_address")
@@ -2681,6 +2978,7 @@ def network_set_cmd(
 
 @network_group.command("remove")
 @destructive_command("Remove the network address")
+@claim_checked(shared=False)
 @click.argument("sbc_name")
 @click.argument("address_type", type=click.Choice([t.value for t in AddressType]))
 @click.pass_context
@@ -2805,6 +3103,7 @@ def plug_group() -> None:
 
 
 @plug_group.command("assign")
+@override_claim_option
 @click.argument("sbc_name")
 @click.argument("plug_type", type=click.Choice([t.value for t in PlugType]))
 @click.argument("address")
@@ -2822,6 +3121,7 @@ def plug_assign_cmd(
     plug_type: str,
     address: str,
     index: int,
+    override_claim: bool,
 ) -> None:
     """Assign a power plug to an SBC."""
     manager = _get_manager(ctx)
@@ -2830,6 +3130,11 @@ def plug_assign_cmd(
     if not sbc:
         click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
         sys.exit(1)
+
+    _check_shared_hardware_cli(
+        ctx, sbc_name, override_claim, plug=(plug_type, address, index)
+    )
+    _check_claim_cli(ctx, sbc_name, override_claim, shared=False)
 
     manager.assign_power_plug(
         sbc_id=sbc.id,
@@ -2843,6 +3148,7 @@ def plug_assign_cmd(
 
 @plug_group.command("remove")
 @destructive_command("Remove the power plug assignment")
+@claim_checked(shared=False)
 @click.argument("sbc_name")
 @click.pass_context
 def plug_remove_cmd(ctx: click.Context, sbc_name: str) -> None:
@@ -2917,6 +3223,7 @@ def _emit_power_event(
 
 
 @power_group.command("on")
+@claim_checked()
 @click.argument("sbc_name")
 @click.pass_context
 def power_on_cmd(ctx: click.Context, sbc_name: str) -> None:
@@ -2957,6 +3264,7 @@ def power_on_cmd(ctx: click.Context, sbc_name: str) -> None:
 
 @power_group.command("off")
 @destructive_command("Power off")
+@claim_checked()
 @click.argument("sbc_name")
 @click.pass_context
 def power_off_cmd(ctx: click.Context, sbc_name: str) -> None:
@@ -3010,6 +3318,7 @@ def _resolve_cycle_delay(sbc, requested: float | None) -> tuple[float, str | Non
 
 @power_group.command("cycle")
 @destructive_command("Power cycle")
+@claim_checked()
 @click.argument("sbc_name")
 @click.option(
     "--delay",
@@ -3114,14 +3423,23 @@ def power_status_cmd(ctx: click.Context, sbc_name: str) -> None:
 
 
 @main.command("power-all")
+@override_claim_option
 @click.argument("action", type=click.Choice(["on", "off"]))
 @click.option("--project", "-p", help="Filter by project name")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
 @click.pass_context
 def power_all_cmd(
-    ctx: click.Context, action: str, project: str | None, yes: bool
+    ctx: click.Context,
+    action: str,
+    project: str | None,
+    yes: bool,
+    override_claim: bool,
 ) -> None:
-    """Turn power on or off for all SBCs."""
+    """Turn power on or off for all SBCs.
+
+    Boards another user has claimed (or that share a plug, SDWire, console
+    or relay with one) are skipped, unless --override-claim.
+    """
     manager = _get_manager(ctx)
 
     sbcs = manager.list_sbcs(project=project)
@@ -3132,20 +3450,44 @@ def power_all_cmd(
         click.echo(f"No SBCs with power plugs assigned{filter_msg}.")
         return
 
+    claimed = {}
+    for sbc in sbcs_with_plugs:
+        claim = _cli_claim_conflict(ctx, sbc.name, probe=True)
+        if claim is not None:
+            claimed[sbc.name] = claim
+
     # Show what will be affected
     click.echo(f"SBCs to power {action.upper()}:")
     for sbc in sbcs_with_plugs:
         plug_info = f"{sbc.power_plug.plug_type.value} @ {sbc.power_plug.address}"
-        click.echo(f"  - {sbc.name} ({plug_info})")
+        note = ""
+        if sbc.name in claimed:
+            claim = claimed[sbc.name]
+            on = "" if claim.sbc_name == sbc.name else f" on '{claim.sbc_name}'"
+            verb = "overriding" if override_claim else "skipped:"
+            note = f" [{verb} claimed by '{claim.agent_name}'{on}]"
+        click.echo(f"  - {sbc.name} ({plug_info}){note}")
+
+    targets = [s for s in sbcs_with_plugs if override_claim or s.name not in claimed]
+    if not targets:
+        click.echo("\nNothing to do: every board is claimed by another user.")
+        sys.exit(1)
 
     if not yes:
-        click.confirm(
-            f"\nPower {action.upper()} all {len(sbcs_with_plugs)} SBC(s)?", abort=True
-        )
+        click.confirm(f"\nPower {action.upper()} {len(targets)} SBC(s)?", abort=True)
 
     # Execute power commands
     success_count = 0
-    for sbc in sbcs_with_plugs:
+    skipped = len(sbcs_with_plugs) - len(targets)
+    for sbc in targets:
+        # Claimed since the listing: skip it (or record the override).
+        claim = _cli_claim_conflict(ctx, sbc.name, override=override_claim)
+        if claim is not None:
+            click.echo(
+                f"  {sbc.name}: SKIPPED - claimed by '{claim.agent_name}'", err=True
+            )
+            skipped += 1
+            continue
         try:
             controller = PowerController.from_plug(sbc.power_plug)
             if action == "on":
@@ -3161,9 +3503,10 @@ def power_all_cmd(
         except Exception as e:
             click.echo(f"  {sbc.name}: ERROR - {e}", err=True)
 
-    click.echo(
-        f"\n{success_count}/{len(sbcs_with_plugs)} SBCs powered {action.upper()}"
-    )
+    summary = f"\n{success_count}/{len(sbcs_with_plugs)} SBCs powered {action.upper()}"
+    if skipped:
+        summary += f" ({skipped} skipped: claimed by another user)"
+    click.echo(summary)
 
 
 # --- Actuator Commands ---
@@ -3347,8 +3690,19 @@ def actuator_probe_cmd(ctx: click.Context, name: str) -> None:
         sys.exit(1)
 
 
+def _actuator_set_claim_check(ctx, kwargs, override, probe):
+    """Driving a channel acts on every board bound to it, or to the same
+    channel of another record for that relay board."""
+    manager = _get_manager(ctx)
+    actuator = manager.get_actuator_by_name(kwargs["name"])
+    ch = actuator and manager.get_actuator_channel(actuator.id, kwargs["channel"])
+    if ch:  # else the command reports it
+        _check_bound_claims_cli(ctx, {ch.id}, override, probe=probe)
+
+
 @actuator_group.command("set")
 @destructive_command("Drive a relay channel directly")
+@claim_checked(check=_actuator_set_claim_check)
 @click.argument("name")
 @click.argument("channel", type=int)
 @click.argument("state", type=_channel_state_choice())
@@ -3417,10 +3771,13 @@ def actuator_set_cmd(ctx: click.Context, name: str, channel: int, state: str) ->
 
 
 @actuator_group.command("remove")
+@override_claim_option
 @click.argument("name")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
 @click.pass_context
-def actuator_remove_cmd(ctx: click.Context, name: str, yes: bool) -> None:
+def actuator_remove_cmd(
+    ctx: click.Context, name: str, yes: bool, override_claim: bool
+) -> None:
     """Remove an actuator and any bindings that reference it."""
     manager = _get_manager(ctx)
     actuator = manager.get_actuator_by_name(name)
@@ -3428,11 +3785,18 @@ def actuator_remove_cmd(ctx: click.Context, name: str, yes: bool) -> None:
         click.echo(f"Error: actuator {name!r} not found", err=True)
         sys.exit(1)
 
+    # Deleting the record drops its bindings, not the other records for
+    # the same relay board, so only boards bound to its own channels count.
+    channel_ids = {ch.id for ch in actuator.channels}
+    _check_bound_claims_cli(
+        ctx, channel_ids, override_claim, same_device=False, probe=True
+    )
     if not yes and not click.confirm(
         f"Remove actuator {name!r} and any bindings on its channels?"
     ):
         click.echo("Aborted.")
         return
+    _check_bound_claims_cli(ctx, channel_ids, override_claim, same_device=False)
 
     manager.delete_actuator(actuator.id)
     click.echo(f"Removed actuator {name!r}")
@@ -3442,6 +3806,7 @@ def actuator_remove_cmd(ctx: click.Context, name: str, yes: bool) -> None:
 
 
 @main.command("bind")
+@override_claim_option
 @click.argument("sbc_name")
 @click.argument("purpose")
 @click.option("--actuator", "actuator_name", required=True, help="Actuator name.")
@@ -3493,6 +3858,7 @@ def bind_cmd(
     pulse_ms: int | None,
     sample_phase: str,
     notes: str | None,
+    override_claim: bool,
 ) -> None:
     """Bind an actuator channel to a (target SBC, purpose) pair."""
     from labctl.core.models import ChannelState, ShapeMode
@@ -3533,6 +3899,11 @@ def bind_cmd(
             f"--active-when {'open' if shape_active.value == 'closed' else 'closed'}."
         )
 
+    # A channel takes one binding; if a claimed board has it (or another
+    # channel of the same relay board), say so rather than "already bound".
+    _check_bound_claims_cli(ctx, {ch.id}, override_claim, for_sbc=sbc_name)
+    _check_claim_cli(ctx, sbc_name, override_claim, shared=False)
+
     binding = manager.create_binding(
         sbc.id,
         purpose,
@@ -3552,6 +3923,7 @@ def bind_cmd(
 
 @main.command("unbind")
 @destructive_command("Remove the binding")
+@claim_checked(shared=False)
 @click.argument("sbc_name")
 @click.argument("purpose")
 @click.pass_context
@@ -3621,6 +3993,7 @@ def _run_actuator_verb(ctx, sbc_name: str, purpose: str, fn):
 
 @bindings_group.command("actuate")
 @destructive_command("Assert the binding")
+@claim_checked()
 @click.argument("sbc_name")
 @click.argument("purpose")
 @click.pass_context
@@ -3634,6 +4007,7 @@ def bindings_actuate_cmd(ctx: click.Context, sbc_name: str, purpose: str) -> Non
 
 @bindings_group.command("release")
 @destructive_command("Release the binding")
+@claim_checked()
 @click.argument("sbc_name")
 @click.argument("purpose")
 @click.pass_context
@@ -3647,6 +4021,7 @@ def bindings_release_cmd(ctx: click.Context, sbc_name: str, purpose: str) -> Non
 
 @bindings_group.command("press")
 @destructive_command("Pulse the binding")
+@claim_checked()
 @click.argument("sbc_name")
 @click.argument("purpose")
 @click.pass_context
@@ -3710,6 +4085,7 @@ def _run_composite(ctx, sbc_name: str, fn_name: str, fn) -> None:
 
 @main.command("enter-recovery")
 @destructive_command("Enter recovery (power off, assert strap, power on)")
+@claim_checked()
 @click.argument("sbc_name")
 @click.pass_context
 def enter_recovery_cmd(ctx: click.Context, sbc_name: str) -> None:
@@ -3730,6 +4106,7 @@ def enter_recovery_cmd(ctx: click.Context, sbc_name: str) -> None:
 
 @main.command("exit-recovery")
 @destructive_command("Exit recovery (power cycle without the strap)")
+@claim_checked()
 @click.argument("sbc_name")
 @click.pass_context
 def exit_recovery_cmd(ctx: click.Context, sbc_name: str) -> None:
@@ -4302,6 +4679,14 @@ def claim_cmd(
         duration_seconds = _parse_duration(duration)
     duration_seconds = _validate_duration(ctx, duration_seconds)
 
+    # A board sharing hardware with one another user has claimed can't be
+    # claimed: the claim would let this user drive the other's board.
+    if config.claims.enabled:
+        for other in manager.sbcs_sharing_hardware_with(sbc_name):
+            held = _cli_claim_conflict(ctx, other, direct=False, probe=True)
+            if held is not None:
+                _refuse_claimed(sbc_name, held, override_hint=False)
+
     try:
         claim = manager.claim_sbc(
             sbc_name=sbc_name,
@@ -4686,14 +5071,67 @@ def export_cmd(ctx: click.Context, fmt: str, output: Path | None) -> None:
         click.echo(content)
 
 
+def _check_import_claims(ctx, data, update: bool, override: bool) -> None:
+    """Claim-check every board an import changes, and the boards already
+    wired to the hardware it assigns, before it changes anything."""
+    if not ctx.obj["config"].claims.enabled or not isinstance(data, dict):
+        return
+    manager = _get_manager(ctx)
+    for sbc_data in data.get("sbcs") or []:
+        name = sbc_data.get("name") if isinstance(sbc_data, dict) else None
+        if not name:
+            continue
+        if manager.get_sbc_by_name(name):
+            if not update:
+                continue  # skipped
+            _check_claim_cli(ctx, name, override, shared=False)
+        hardware = []
+        plug = sbc_data.get("power_plug")
+        if isinstance(plug, dict) and plug.get("type") and plug.get("address"):
+            hardware.append(
+                {
+                    "plug": (
+                        str(plug["type"]),
+                        str(plug["address"]),
+                        int(plug.get("index", 1)),
+                    )
+                }
+            )
+        for port in sbc_data.get("serial_ports") or []:
+            if isinstance(port, dict) and port.get("device"):
+                sd = port.get("serial_device")
+                sd = manager.get_serial_device_by_name(sd) if sd else None
+                hardware.append(
+                    {
+                        "serial_device_path": port["device"],
+                        "serial_device_id": sd.id if sd else None,
+                    }
+                )
+        sdwire = sbc_data.get("sdwire")
+        if isinstance(sdwire, dict) and sdwire.get("name"):
+            device = manager.get_sdwire_device_by_name(sdwire["name"])
+            if device:
+                hardware.append({"sdwire_device_id": device.id})
+        for hw in hardware:
+            _check_shared_hardware_cli(ctx, name, override, **hw)
+
+
 @main.command("import")
+@override_claim_option
 @click.argument("file", type=click.Path(exists=True, path_type=Path))
 @click.option(
     "--update", "-u", is_flag=True, help="Update existing SBCs instead of skipping"
 )
 @click.pass_context
-def import_cmd(ctx: click.Context, file: Path, update: bool) -> None:
-    """Import SBC configurations from file."""
+def import_cmd(
+    ctx: click.Context, file: Path, update: bool, override_claim: bool
+) -> None:
+    """Import SBC configurations from file.
+
+    Refuses, before changing anything, when it would update a board
+    another user has claimed or give a board hardware (plug, SDWire,
+    serial port) of one, unless --override-claim.
+    """
     import json
 
     import yaml
@@ -4712,6 +5150,8 @@ def import_cmd(ctx: click.Context, file: Path, update: bool) -> None:
             data = yaml.safe_load(content)
         except Exception:
             data = json.loads(content)
+
+    _check_import_claims(ctx, data, update, override_claim)
 
     # Import serial devices first (must exist before port references)
     for sd_data in data.get("serial_devices", []):
@@ -5271,6 +5711,7 @@ def web_cmd(
 
 @main.command("boot-test")
 @destructive_command("Run a boot test (repeated power cycles)")
+@claim_checked()
 @click.argument("sbc_name")
 @click.option(
     "--image",
