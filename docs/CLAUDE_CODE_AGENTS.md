@@ -48,12 +48,14 @@ What keys do *not* do:
   remember to claim first (see [Agent instructions](#agent-instructions)).
 - **Operators can still break a claim**: any user without `role: agent`
   over MCP, and people at the web dashboard or the CLI.
-- **The `labctl` CLI, web UI and REST API don't check claims** (except
-  `remove`). An agent with a shell on the lab host can bypass claims by
-  running `labctl power cycle ...`, and the same API key also works on the
-  web REST API (`X-API-Key` header) if `labctl-web` is running, where it
-  can also force-release claims whatever its role. Tell agents to use MCP
-  tools only.
+- **The `labctl` CLI acts as an operator.** It refuses to change a board
+  someone else has claimed, but `--override-claim` overrides (logged), it
+  doesn't know about claims made over MCP (not even the agent's own), and
+  anyone with a shell on the lab host can edit the database directly.
+- **The web UI and REST API don't check claims** (except deleting a
+  board). The same API key also works on the web REST API (`X-API-Key`
+  header) if `labctl-web` is running, where it can also force-release
+  claims whatever its role. Tell agents to use MCP tools only.
 - **Keys separate cooperating agents; they don't isolate them.** Agents
   running as the same Linux user can read each other's key files (and
   `~/.claude.json`). For isolation between people, use separate Linux
@@ -304,7 +306,8 @@ agent's `CLAUDE.md`:
 ```markdown
 ## Lab hardware (labctl)
 - Use the labctl MCP tools for all lab hardware. Never run the `labctl`
-  CLI for power, serial, SDWire or flashing: it bypasses claims.
+  CLI for power, serial, SDWire or flashing: it doesn't see your MCP
+  claims, and never pass `--override-claim`.
 - Before touching a board, `claim_sbc` it (with a short `reason`; leave
   `agent_name` unset so the claim shows your labctl user). If it
   is claimed by someone else, wait or call `request_sbc_release`.
@@ -357,6 +360,5 @@ reads keys only at startup.
 
 ## Later
 
-Planned (not implemented yet): claim checks in the CLI and the web UI /
-REST API, and a labctl command that creates the user and key file in one
-step.
+Planned (not implemented yet): claim checks in the web UI / REST API,
+and a labctl command that creates the user and key file in one step.
