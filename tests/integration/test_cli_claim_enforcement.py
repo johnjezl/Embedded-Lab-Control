@@ -934,3 +934,80 @@ class TestRoundSixFixes:
             "4003",
         )
         assert result.exit_code == 0, result.output
+
+
+def _duplicate_tcp_ports(manager):
+    """pi-a and pi-b consoles on one TCP port, as saved before assignment
+    refused duplicates."""
+    manager.assign_serial_port(
+        manager.get_sbc_by_name("pi-b").id,
+        PortType.CONSOLE,
+        "/dev/lab/port-b",
+        tcp_port=4000,
+    )
+    manager.assign_serial_port(
+        manager.get_sbc_by_name("pi-a").id,
+        PortType.CONSOLE,
+        "/dev/lab/port-a",
+        tcp_port=4001,
+    )
+    manager.db.execute_modify(
+        "UPDATE serial_ports SET tcp_port = 4000 WHERE tcp_port = 4001"
+    )
+
+
+class TestRoundSevenFixes:
+    def test_existing_shared_tcp_port_counts_as_shared_hardware(self, lab):
+        run, manager, _ = lab
+        _duplicate_tcp_ports(manager)
+        with patch("labctl.serial.capture.send_serial_data") as send:
+            result = run("serial", "send", "pi-b", "hi", "--yes")
+        assert result.exit_code == 1
+        assert "'pi-a' is claimed by 'agent-x'" in result.output
+        assert "shares hardware with 'pi-b'" in result.output
+        send.assert_not_called()
+
+    def test_tcp_check_sees_every_row(self, lab):
+        """pi-b's own row comes first, but pi-a's row has the port too."""
+        run, manager, _ = lab
+        _duplicate_tcp_ports(manager)
+        with pytest.raises(ValueError, match="TCP port 4000 is already in use"):
+            manager.assign_serial_port(
+                manager.get_sbc_by_name("pi-b").id,
+                PortType.CONSOLE,
+                "/dev/lab/port-b2",
+                tcp_port=4000,
+            )
+
+    def test_import_warns_on_a_taken_tcp_port_and_carries_on(self, lab, tmp_path):
+        run, manager, _ = lab
+        manager.assign_serial_port(
+            manager.get_sbc_by_name("pi-c").id,
+            PortType.CONSOLE,
+            "/dev/lab/port-c",
+            tcp_port=4003,
+        )
+        path = tmp_path / "i.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "sbcs": [
+                        {
+                            "name": "pi-new",
+                            "serial_ports": [
+                                {
+                                    "type": "console",
+                                    "device": "/dev/lab/port-n",
+                                    "tcp_port": 4003,
+                                }
+                            ],
+                        },
+                        {"name": "pi-newer"},
+                    ]
+                }
+            )
+        )
+        result = run("import", str(path))
+        assert result.exit_code == 0, result.output
+        assert "TCP port 4003 is already in use" in result.output
+        assert manager.get_sbc_by_name("pi-newer") is not None
