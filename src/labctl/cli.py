@@ -163,25 +163,41 @@ def _cli_claim_actor():
     return ClaimActor(session_id=_cli_session_id(), operator=True)
 
 
+def _holder(claim) -> str:
+    return claim.agent_name or "unknown"
+
+
 def _refuse_claimed(sbc_name: str, claim, *, override_hint: bool = True) -> None:
     """Exit with an error naming the claim that stops a change to
     ``sbc_name``; the claim may be on a board sharing its hardware."""
     holder_board = claim.sbc_name or sbc_name
+    shared = (
+        f" (it shares hardware with '{sbc_name}')" if holder_board != sbc_name else ""
+    )
+    if not claim.is_active:
+        # Past its deadline, inside the grace period: only its holder may
+        # re-claim it, and release requests only act on active claims.
+        click.echo(
+            f"Error: '{holder_board}' was claimed by '{_holder(claim)}'; the "
+            f"claim has expired but is in its grace period{shared}. Retry "
+            "once the grace period ends.",
+            err=True,
+        )
+        sys.exit(1)
     remaining = (
         int(claim.time_remaining.total_seconds())
         if claim.time_remaining is not None
         else 0
     )
-    shared = (
-        f" (it shares hardware with '{sbc_name}')" if holder_board != sbc_name else ""
-    )
     hint = f"Ask for it with 'labctl request-release {holder_board} -r REASON'"
     if override_hint:
-        hint += ", or rerun with --override-claim (recorded in the activity log)"
+        hint += ", or rerun with --override-claim"
+        if click.get_current_context().obj["config"].claims.enabled:
+            hint += " (recorded in the activity log)"
     else:
         hint += f" or take it with 'labctl force-release {holder_board} -r REASON'"
     click.echo(
-        f"Error: '{holder_board}' is claimed by '{claim.agent_name or 'unknown'}' "
+        f"Error: '{holder_board}' is claimed by '{_holder(claim)}' "
         f"({_format_remaining(remaining)} remaining){shared}. {hint}.",
         err=True,
     )
@@ -258,13 +274,17 @@ def _check_claims_of_cli(
     *,
     for_sbc: str | None = None,
     probe: bool = False,
-) -> None:
+):
     """Exit if someone else claims one of these boards, which a command on
-    ``for_sbc`` (if any) reaches through shared hardware."""
+    ``for_sbc`` (if any) reaches through shared hardware. A ``probe`` with
+    ``override`` returns the first claim it would override, if any."""
+    found = None
     for name in sorted(n for n in sbc_names if n and n != for_sbc):
-        _check_claim_cli(
+        claim = _check_claim_cli(
             ctx, name, override, direct=False, for_sbc=for_sbc, probe=probe
         )
+        found = found or claim
+    return found
 
 
 def _check_shared_hardware_cli(
@@ -274,15 +294,15 @@ def _check_shared_hardware_cli(
     *,
     probe: bool = False,
     **hardware,
-) -> None:
+):
     """Before wiring hardware to ``sbc_name``, claim-check the boards that
     already have it, so a claimed board's plug, SDWire or console can't be
     driven through another board. ``hardware`` is passed to
     ResourceManager.sbcs_sharing_hardware."""
     if not ctx.obj["config"].claims.enabled:
-        return
+        return None
     others = _get_manager(ctx).sbcs_sharing_hardware(**hardware)
-    _check_claims_of_cli(ctx, others, override, for_sbc=sbc_name, probe=probe)
+    return _check_claims_of_cli(ctx, others, override, for_sbc=sbc_name, probe=probe)
 
 
 def _check_bound_claims_cli(
@@ -293,18 +313,24 @@ def _check_bound_claims_cli(
     same_device: bool = True,
     for_sbc: str | None = None,
     probe: bool = False,
-) -> None:
+):
     """Claim-check every board bound to one of these actuator channels (a
     relay wired to a board's reset or power is part of that board).
     ``same_device`` also covers other actuator records for the same relay
     board (needed when driving a channel, not when deleting a record)."""
     if not ctx.obj["config"].claims.enabled:
-        return
+        return None
     manager = _get_manager(ctx)
     if same_device:
         channel_ids = manager.channels_on_same_device(channel_ids)
     names = {b.sbc_name for b in manager.list_bindings(channel_ids=channel_ids)}
-    _check_claims_of_cli(ctx, names, override, for_sbc=for_sbc, probe=probe)
+    return _check_claims_of_cli(ctx, names, override, for_sbc=for_sbc, probe=probe)
+
+
+def _announce_override(claim) -> None:
+    """Before the confirmation question: say whose claim will be overridden."""
+    if claim is not None:
+        click.echo(f"This overrides '{_holder(claim)}'s claim on '{claim.sbc_name}'.")
 
 
 def claim_checked(
@@ -343,7 +369,7 @@ def claim_checked(
             claim = run(ctx, kwargs, override_claim, bool(kwargs.get("dry_run")))
             if claim is not None:  # dry run with --override-claim
                 click.echo(
-                    f"Dry run: would override '{claim.agent_name}'s claim "
+                    f"Dry run: would override '{_holder(claim)}'s claim "
                     f"on '{claim.sbc_name}'."
                 )
             return f(*args, **kwargs)
@@ -355,11 +381,7 @@ def claim_checked(
                 kwargs.get("override_claim", False),
                 True,
             )
-            if claim is not None:  # --override-claim: say so before asking
-                click.echo(
-                    f"This overrides '{claim.agent_name}'s claim on "
-                    f"'{claim.sbc_name}'."
-                )
+            _announce_override(claim)  # --override-claim: say so first
 
         wrapper._claim_precheck = precheck
         return override_claim_option(wrapper)
@@ -1178,9 +1200,7 @@ def remove_cmd(
         click.echo(f"Error: SBC '{name}' not found", err=True)
         sys.exit(1)
 
-    claim = _check_claim_cli(ctx, name, override, shared=False, probe=True)
-    if claim is not None:
-        click.echo(f"This overrides '{claim.agent_name}'s claim on '{name}'.")
+    _announce_override(_check_claim_cli(ctx, name, override, shared=False, probe=True))
     if not yes:
         click.confirm(f"Remove SBC '{name}' and all associated data?", abort=True)
     _check_claim_cli(ctx, name, override, shared=False)
@@ -2451,26 +2471,17 @@ def serial_repair_cmd(ctx: click.Context, apply: bool) -> None:
 
 
 @serial_group.command("rename")
-@override_claim_option
 @click.argument("name")
 @click.argument("new_name")
 @click.pass_context
-def serial_rename_cmd(
-    ctx: click.Context, name: str, new_name: str, override_claim: bool
-) -> None:
-    """Rename a USB-serial adapter.
-
-    Its /dev/lab name changes once the udev rules are reinstalled, which
-    cuts off the boards using it, so a claim on one of them refuses.
-    """
+def serial_rename_cmd(ctx: click.Context, name: str, new_name: str) -> None:
+    """Rename a USB-serial adapter."""
     manager = _get_manager(ctx)
 
     device = manager.get_serial_device_by_name(name)
     if not device:
         click.echo(f"Error: Serial device '{name}' not found", err=True)
         sys.exit(1)
-
-    _check_shared_hardware_cli(ctx, None, override_claim, serial_device_id=device.id)
 
     try:
         manager.rename_serial_device(device.id, new_name)
@@ -3471,7 +3482,7 @@ def power_all_cmd(
             claim = claimed[sbc.name]
             on = "" if claim.sbc_name == sbc.name else f" on '{claim.sbc_name}'"
             verb = "overriding" if override_claim else "skipped:"
-            note = f" [{verb} claimed by '{claim.agent_name}'{on}]"
+            note = f" [{verb} claimed by '{_holder(claim)}'{on}]"
         click.echo(f"  - {sbc.name} ({plug_info}){note}")
 
     targets = [s for s in sbcs_with_plugs if override_claim or s.name not in claimed]
@@ -3490,7 +3501,7 @@ def power_all_cmd(
         claim = _cli_claim_conflict(ctx, sbc.name, override=override_claim)
         if claim is not None:
             click.echo(
-                f"  {sbc.name}: SKIPPED - claimed by '{claim.agent_name}'", err=True
+                f"  {sbc.name}: SKIPPED - claimed by '{_holder(claim)}'", err=True
             )
             skipped += 1
             continue
@@ -3702,8 +3713,9 @@ def _actuator_set_claim_check(ctx, kwargs, override, probe):
     manager = _get_manager(ctx)
     actuator = manager.get_actuator_by_name(kwargs["name"])
     ch = actuator and manager.get_actuator_channel(actuator.id, kwargs["channel"])
-    if ch:  # else the command reports it
-        _check_bound_claims_cli(ctx, {ch.id}, override, probe=probe)
+    if not ch:
+        return None  # the command reports it
+    return _check_bound_claims_cli(ctx, {ch.id}, override, probe=probe)
 
 
 @actuator_group.command("set")
@@ -3794,8 +3806,10 @@ def actuator_remove_cmd(
     # Deleting the record drops its bindings, not the other records for
     # the same relay board, so only boards bound to its own channels count.
     channel_ids = {ch.id for ch in actuator.channels}
-    _check_bound_claims_cli(
-        ctx, channel_ids, override_claim, same_device=False, probe=True
+    _announce_override(
+        _check_bound_claims_cli(
+            ctx, channel_ids, override_claim, same_device=False, probe=True
+        )
     )
     if not yes and not click.confirm(
         f"Remove actuator {name!r} and any bindings on its channels?"
@@ -4653,6 +4667,21 @@ def _print_claim_row(claim) -> None:
             click.echo(f"      ⚠ release request from {req.requested_by}: {req.reason}")
 
 
+def _refuse_own_claim(sbc_name: str, claim) -> None:
+    remaining = (
+        int(claim.time_remaining.total_seconds())
+        if claim.time_remaining is not None
+        else 0
+    )
+    click.echo(
+        f"Error: you already hold the claim on '{sbc_name}' "
+        f"({_format_remaining(remaining)} remaining). Extend it with "
+        f"'labctl renew {sbc_name}'.",
+        err=True,
+    )
+    sys.exit(1)
+
+
 @main.command("claim")
 @click.argument("sbc_name")
 @click.option(
@@ -4688,12 +4717,17 @@ def claim_cmd(
     # A board sharing hardware with one another user has claimed can't be
     # claimed: the claim would let this user drive the other's board. The
     # board's own holder comes first: that's the claim to ask about.
+    actor = _cli_claim_actor()
     if config.claims.enabled:
         try:
-            own = manager.get_active_claim(sbc_name)
+            # Open, not just active: an expired claim in its grace period
+            # still blocks everyone but its holder.
+            own = manager.get_open_claim(sbc_name)
         except UnknownSBCError:
             own = None  # claim_sbc reports it
-        if own is not None and not _cli_claim_actor().holds(own):
+        if own is not None and own.is_active and actor.holds(own):
+            _refuse_own_claim(sbc_name, own)
+        if own is not None and not actor.holds(own):
             _refuse_claimed(sbc_name, own, override_hint=False)
         for other in manager.sbcs_sharing_hardware_with(sbc_name):
             held = _cli_claim_conflict(ctx, other, direct=False, probe=True)
@@ -4714,6 +4748,8 @@ def claim_cmd(
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
     except ClaimConflict as exc:
+        if actor.holds(exc.claim):
+            _refuse_own_claim(sbc_name, exc.claim)
         _refuse_claimed(sbc_name, exc.claim, override_hint=False)
     except _channel_busy_error() as exc:
         click.echo(f"Error: {exc}", err=True)
