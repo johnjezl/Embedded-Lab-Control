@@ -1331,7 +1331,7 @@ class TestClaimCommands:
             ["-c", str(config), "claim", "pi-5-1", "-r", "mine"],
         )
         assert result.exit_code != 0
-        assert "already claimed" in result.output
+        assert "is claimed by 'other'" in result.output
 
     def test_force_release_overrides(self, claim_runner):
         runner, config, manager = claim_runner

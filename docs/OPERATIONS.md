@@ -119,7 +119,7 @@ also ask (and abort without `--yes`) when stdin is not a terminal.
 **Claims (D013):** commands that change a board refuse when another user
 has claimed it, naming the holder: those that operate it (`power
 on/off/cycle`, `power-all`, `sdwire dut/host/flash/update/ls/cat/info`,
-`serial capture/send`, `bindings actuate/release/press`,
+`serial send`, `bindings actuate/release/press`,
 `enter-/exit-recovery`, `boot-test`), those that change its records
 (`edit`, `remove`, `port`/`plug`/`network` assign/set/remove,
 `sdwire assign/unassign`, `bind`/`unbind`), `actuator set`/`remove` on
@@ -130,13 +130,18 @@ a board that shares a plug outlet, SDWire, console adapter or relay
 channel with a claimed board is refused, as are assigning that hardware
 to another board and `claim` on a board that shares it. `power-all`
 skips claimed boards. `--override-claim` acts anyway and records a
-`claim_override` entry in the activity log (after the confirmation
-question, so a "no" records nothing; a `--dry-run` reports it instead).
+`claim_override` entry in the activity log against the claimed board
+when the claim check passes: after the confirmation question (so a "no"
+records nothing), but before the command's own checks and action, so a
+command that then fails (no plug assigned, a device error) still leaves
+the entry; its own result is logged after it. `import` checks, and
+records overrides for, every board before it starts. A `--dry-run`
+reports the override instead of recording it.
 `remove --force` still works as an alias. The CLI's own claims (`labctl
 claim`, per user and host) count as the user's; claims made over MCP or
 the web don't, even by the same person. `claims.require_claim` doesn't
-apply to the CLI. Not checked: interactive console and shell access
-(`connect`, `console`, `ssh`, `proxy start`), `log`, `health-check`,
+apply to the CLI. Not checked: reading a console and shell access
+(`connect`, `console`, `serial capture`, `ssh`, `proxy start`), `log`, `health-check`,
 `ser2net`, `serial repair`/`udev` and the `claims` commands.
 
 | Command | Class | Prompts | Notes |
