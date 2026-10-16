@@ -248,6 +248,7 @@ class TestConfigurationCommands:
         run, manager, _ = lab
         result = run("plug", "remove", "pi-a", "--yes")
         assert result.exit_code == 1
+        assert "'pi-a' is claimed by 'agent-x'" in result.output
         assert manager.get_sbc_by_name("pi-a").power_plug is not None
 
     def test_serial_rename_not_checked(self, lab):
@@ -365,6 +366,7 @@ class TestActuators:
         run, manager, _ = lab
         result = run("actuator", "remove", "relay-1", "--yes")
         assert result.exit_code == 1
+        assert "'pi-a' is claimed by 'agent-x'" in result.output
         assert manager.get_actuator_by_name("relay-1") is not None
 
     def test_bindings_press_refused(self, lab, relay):
@@ -372,6 +374,7 @@ class TestActuators:
         with patch("labctl.actuators.runtime.press_binding") as press:
             result = run("bindings", "press", "pi-a", "reset", "--yes")
         assert result.exit_code == 1
+        assert "'pi-a' is claimed by 'agent-x'" in result.output
         press.assert_not_called()
 
 
@@ -728,6 +731,7 @@ class TestRoundTwoFixes:
         )
         result = run("import", str(path))
         assert result.exit_code == 1
+        assert "shares hardware with 'pi-new'" in result.output
         assert manager.get_sbc_by_name("pi-new") is None
 
     def test_import_update_override_logs(self, lab, tmp_path):
@@ -893,3 +897,40 @@ class TestRoundFiveFixes:
         time.sleep(0.05)
         assert run("power-all", "on", "--yes").exit_code == 0
         assert manager.get_active_claim("pi-c").last_activity > before
+
+
+class TestRoundSixFixes:
+    def test_port_assign_refuses_another_boards_tcp_port(self, lab):
+        """A shared ser2net TCP port would reach the claimed board's console."""
+        run, manager, _ = lab
+        manager.assign_serial_port(
+            manager.get_sbc_by_name("pi-a").id,
+            PortType.CONSOLE,
+            "/dev/lab/port-a",
+            tcp_port=4001,
+        )
+        result = run(
+            "port", "assign", "pi-b", "console", "/dev/lab/port-b", "--tcp-port", "4001"
+        )
+        assert result.exit_code == 1
+        assert "TCP port 4001 is already in use" in result.output
+        assert manager.get_sbc_by_name("pi-b").console_port is None
+
+    def test_reassigning_a_ports_own_tcp_port_allowed(self, lab):
+        run, manager, _ = lab
+        manager.assign_serial_port(
+            manager.get_sbc_by_name("pi-c").id,
+            PortType.CONSOLE,
+            "/dev/lab/port-c",
+            tcp_port=4003,
+        )
+        result = run(
+            "port",
+            "assign",
+            "pi-c",
+            "console",
+            "/dev/lab/port-c2",
+            "--tcp-port",
+            "4003",
+        )
+        assert result.exit_code == 0, result.output

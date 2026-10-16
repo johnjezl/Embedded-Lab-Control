@@ -139,7 +139,9 @@ reports the override instead of recording it.
 `remove --force` still works as an alias. The CLI's own claims (`labctl
 claim`, per user and host) count as the user's; claims made over MCP or
 the web don't, even by the same person. `claims.require_claim` doesn't
-apply to the CLI. Not checked: reading a console and shell access
+apply to the CLI, and with `claims.enabled: false` nothing is checked or
+logged (`remove` still refuses a board with an open claim unless
+`--override-claim`). Not checked: reading a console and shell access
 (`connect`, `console`, `serial capture`, `ssh`, `proxy start`), `log`, `health-check`,
 the `claims` commands, and lab-wide serial setup (`ser2net`, `serial
 rename`/`repair`/`udev`), which affects every board's consoles at once.

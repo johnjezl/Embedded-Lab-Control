@@ -183,7 +183,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   changing any; `claim` refuses a board whose shared hardware someone else
   holds. `remove` releases the user's own CLI claim before deleting, and
   `remove --force` is now an alias for `--override-claim` (also logged).
-  See docs/OPERATIONS.md for the list.
+  See docs/OPERATIONS.md for the list. Assigning a serial port a TCP port
+  another board's port already uses is now refused (CLI, MCP, web): the
+  two would share one ser2net console, reaching a claimed board's console
+  through another board.
 - Claim enforcement, part 1 (D013): MCP tools that change a board's
   configuration (`update_sbc`, `assign_*`/`remove_*` for ports, plugs and
   addresses, `sdwire_assign`/`unassign`, `bind`/`unbind`) now refuse under
