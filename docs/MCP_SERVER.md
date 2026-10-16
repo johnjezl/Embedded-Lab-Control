@@ -410,7 +410,8 @@ Configuration tools only change the named board's records, so they check
 that board alone; assigning hardware another board already uses checks
 that board's claim. Boards match by plug type, address text and outlet
 (a row saved with outlet 0 matches every outlet on its address), by
-SDWire, by serial device path (symlinks resolved) or registered adapter,
+SDWire, by serial device path (symlinks resolved), registered adapter
+or ser2net TCP port (a TCP port another board's port uses is refused),
 and by relay device path (symlinks resolved) or USB serial number and
 channel. Two different addresses for one plug (a hostname and its IP)
 are not recognised as the same, nor are relay records known only by

@@ -5331,15 +5331,22 @@ def import_cmd(
                 sd = manager.get_serial_device_by_name(sd_name)
                 if sd:
                     sd_id = sd.id
-            manager.assign_serial_port(
-                sbc_id=sbc.id,
-                port_type=PortType(port_data["type"]),
-                device_path=port_data["device"],
-                tcp_port=port_data.get("tcp_port"),
-                baud_rate=port_data.get("baud_rate", 115200),
-                alias=port_data.get("alias"),
-                serial_device_id=sd_id,
-            )
+            try:
+                manager.assign_serial_port(
+                    sbc_id=sbc.id,
+                    port_type=PortType(port_data["type"]),
+                    device_path=port_data["device"],
+                    tcp_port=port_data.get("tcp_port"),
+                    baud_rate=port_data.get("baud_rate", 115200),
+                    alias=port_data.get("alias"),
+                    serial_device_id=sd_id,
+                )
+            except ValueError as e:  # e.g. TCP port or alias already in use
+                click.echo(
+                    f"  Warning: {name}: {port_data.get('type')} port not "
+                    f"assigned: {e}",
+                    err=True,
+                )
 
         # Import network addresses
         for addr_data in sbc_data.get("network_addresses", []):

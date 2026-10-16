@@ -628,13 +628,12 @@ class ResourceManager:
             # ser2net serves one port per TCP port, and a board given another
             # board's TCP port would reach that board's console past its
             # claim (D013).
-            existing = self.db.execute_one(
-                "SELECT sbc_id, port_type FROM serial_ports WHERE tcp_port = ?",
-                (tcp_port,),
+            taken = self.db.execute_one(
+                "SELECT 1 FROM serial_ports WHERE tcp_port = ?"
+                " AND NOT (sbc_id = ? AND port_type = ?)",
+                (tcp_port, sbc_id, port_type.value),
             )
-            if existing and (
-                existing["sbc_id"] != sbc_id or existing["port_type"] != port_type.value
-            ):
+            if taken:
                 raise ValueError(f"TCP port {tcp_port} is already in use")
 
         # Atomic upsert
@@ -908,6 +907,7 @@ class ResourceManager:
         sdwire_device_id: Optional[int] = None,
         serial_device_path: Optional[str] = None,
         serial_device_id: Optional[int] = None,
+        tcp_port: Optional[int] = None,
     ) -> list[str]:
         """Names of SBCs already wired to this plug outlet (type, address,
         index), SDWire device or serial device path. Nothing in the schema
@@ -945,6 +945,15 @@ class ResourceManager:
                 if wanted
                 & self._serial_identity(r["device_path"], r["serial_device_id"])
             )
+        if tcp_port is not None:
+            # One ser2net TCP port is one console, whatever the device path
+            # says (rows saved before assignment refused duplicates).
+            rows = self.db.execute(
+                "SELECT s.name FROM serial_ports p JOIN sbcs s ON s.id = p.sbc_id"
+                " WHERE p.tcp_port = ?",
+                (tcp_port,),
+            )
+            names.update(r["name"] for r in rows)
         return sorted(names)
 
     def sbcs_sharing_hardware_with(self, sbc_name: str) -> list[str]:
@@ -975,6 +984,7 @@ class ResourceManager:
                 self.sbcs_sharing_hardware(
                     serial_device_path=port.device_path,
                     serial_device_id=port.serial_device_id,
+                    tcp_port=port.tcp_port,
                 )
             )
         channel_ids = {b.actuator_channel_id for b in self.list_bindings(sbc_id=sbc.id)}
