@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+
+{% block title %}{{ sbc_name }} is claimed - Lab Controller{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <a href="{{ back }}" class="back-link">&larr; Back to {{ sbc_name }}</a>
+    <h1>Not changed: {{ sbc_name }}</h1>
+</div>
+
+<div class="claim-section">
+    <h3>{% if body.error == "sbc_claimed" %}Claimed by another user{% else %}Not allowed{% endif %}</h3>
+    <p>{{ body.message }}</p>
+    {% if body.claim and body.claim.reason %}
+    <div class="info-row">
+        <span class="label">Reason:</span>
+        <span class="value">{{ body.claim.reason }}</span>
+    </div>
+    {% endif %}
+    {% if body.error == "sbc_claimed" and body.claim and body.claim.is_active %}
+    <p>Wait for the claim to end, or ask its holder to release it
+    (<code>labctl request-release {{ body.sbc_name }} -r REASON</code>).</p>
+    {% elif body.error == "sbc_claimed" %}
+    <p>The claim has expired but is in its grace period; retry once it ends.</p>
+    {% endif %}
+    {% if can_override %}
+    <form action="{{ action }}" method="post" class="mt-2">
+        <input type="hidden" name="_csrf_token" value="{{ csrf_token() }}">
+        {% for key, value in fields %}
+        <input type="hidden" name="{{ key }}" value="{{ value }}">
+        {% endfor %}
+        <input type="hidden" name="override_claim" value="1">
+        <button type="submit" class="btn btn-sm btn-danger">Override the claim and continue</button>
+        <span>(recorded in the activity log)</span>
+    </form>
+    {% endif %}
+</div>
+{% endblock %}

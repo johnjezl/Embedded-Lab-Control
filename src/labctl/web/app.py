@@ -15,6 +15,7 @@ from labctl.core.manager import ResourceManager, get_manager
 from labctl.web.auth import (
     generate_csrf_token,
     get_user_by_api_key,
+    get_user_by_username,
     validate_csrf_token,
 )
 
@@ -113,6 +114,9 @@ def create_app(config: Config | None = None) -> Flask:
 
         api_request = bool(request.endpoint and request.endpoint.startswith("api."))
         api_user = None
+        # The authenticated user (UserConfig), for claim checks: their
+        # role decides who may override a claim (D013).
+        g.auth_user = None
 
         if api_request and config.auth.enabled:
             api_key = request.headers.get("X-API-Key", "")
@@ -120,8 +124,11 @@ def create_app(config: Config | None = None) -> Flask:
                 api_user = get_user_by_api_key(config.auth, api_key)
                 if api_user:
                     g.audit_user = api_user.username
+                    g.auth_user = api_user
         elif "user" in session:
             g.audit_user = session["user"]
+            if config.auth.enabled:
+                g.auth_user = get_user_by_username(config.auth, session["user"])
 
         actor, source = _request_activity_identity()
         ctx = audit.activity_context(actor, source)

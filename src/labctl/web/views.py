@@ -16,6 +16,7 @@ from flask import (
 
 from labctl.core.models import AddressType, PlugType, PortType, Status
 from labctl.power import PowerController, PowerState
+from labctl.web import claims
 
 views_bp = Blueprint("views", __name__)
 
@@ -91,6 +92,14 @@ def sbc_power_action(name: str, action: str):
         flash("No power plug assigned", "error")
         return redirect(url_for("views.sbc_detail", name=name))
 
+    if action not in ("on", "off", "cycle"):
+        flash(f"Unknown action: {action}", "error")
+        return redirect(url_for("views.sbc_detail", name=name))
+
+    refusal = claims.check(name)
+    if refusal:
+        return claims.refusal_page(refusal, name)
+
     try:
         controller = PowerController.from_plug(sbc.power_plug)
 
@@ -100,12 +109,9 @@ def sbc_power_action(name: str, action: str):
         elif action == "off":
             success = controller.power_off()
             msg = "Power OFF" if success else "Failed to power off"
-        elif action == "cycle":
+        else:
             success = controller.power_cycle()
             msg = "Power cycled" if success else "Failed to power cycle"
-        else:
-            flash(f"Unknown action: {action}", "error")
-            return redirect(url_for("views.sbc_detail", name=name))
 
         flash(msg, "success" if success else "error")
     except Exception as e:
@@ -169,6 +175,10 @@ def sbc_edit(name: str):
 
     status_enum = Status(status) if status else None
 
+    refusal = claims.check(name, shared=False)
+    if refusal:
+        return claims.refusal_page(refusal, name)
+
     # Only pass new_name if it actually changed
     rename = new_name if new_name and new_name != name else None
 
@@ -206,6 +216,19 @@ def sbc_port_assign(name: str):
         flash("Port type and device are required", "error")
         return redirect(url_for("views.sbc_detail", name=name))
 
+    # The boards already wired to this console are checked too: otherwise
+    # a claimed board's console could be typed into through this one.
+    refusal = claims.check(
+        name,
+        shared=False,
+        sharers=dict(
+            serial_device_path=device,
+            tcp_port=int(tcp_port) if tcp_port.isdigit() else None,
+        ),
+    )
+    if refusal:
+        return claims.refusal_page(refusal, name)
+
     try:
         g.manager.assign_serial_port(
             sbc_id=sbc.id,
@@ -229,6 +252,10 @@ def sbc_port_remove(name: str, port_type: str):
     if not sbc:
         flash(f"SBC '{name}' not found", "error")
         return redirect(url_for("views.index"))
+
+    refusal = claims.check(name, shared=False)
+    if refusal:
+        return claims.refusal_page(refusal, name)
 
     if g.manager.remove_serial_port(sbc.id, PortType(port_type)):
         flash(f"Removed {port_type} port", "success")
@@ -257,6 +284,10 @@ def sbc_network_set(name: str):
         flash("Address type and IP are required", "error")
         return redirect(url_for("views.sbc_detail", name=name))
 
+    refusal = claims.check(name, shared=False)
+    if refusal:
+        return claims.refusal_page(refusal, name)
+
     try:
         g.manager.set_network_address(
             sbc_id=sbc.id,
@@ -279,6 +310,10 @@ def sbc_network_remove(name: str, address_type: str):
     if not sbc:
         flash(f"SBC '{name}' not found", "error")
         return redirect(url_for("views.index"))
+
+    refusal = claims.check(name, shared=False)
+    if refusal:
+        return claims.refusal_page(refusal, name)
 
     if g.manager.remove_network_address(sbc.id, AddressType(address_type)):
         flash(f"Removed {address_type} address", "success")
@@ -306,10 +341,31 @@ def sbc_plug_assign(name: str):
         flash("Plug type and address are required", "error")
         return redirect(url_for("views.sbc_detail", name=name))
 
+    # Outlets are numbered from 1; index 0 addresses every outlet on a
+    # Tasmota device at once.
+    if not plug_index.isdigit() or int(plug_index) < 1:
+        flash("Plug index must be a whole number from 1", "error")
+        return redirect(url_for("views.sbc_detail", name=name))
+    try:
+        plug_type_enum = PlugType(plug_type)
+    except ValueError:
+        flash(f"Unknown plug type: {plug_type}", "error")
+        return redirect(url_for("views.sbc_detail", name=name))
+
+    # The boards already on this outlet are checked too: otherwise a
+    # claimed board could be powered through this one.
+    refusal = claims.check(
+        name,
+        shared=False,
+        sharers=dict(plug=(plug_type_enum.value, address, int(plug_index))),
+    )
+    if refusal:
+        return claims.refusal_page(refusal, name)
+
     try:
         g.manager.assign_power_plug(
             sbc_id=sbc.id,
-            plug_type=PlugType(plug_type),
+            plug_type=plug_type_enum,
             address=address,
             plug_index=int(plug_index),
         )
@@ -327,6 +383,10 @@ def sbc_plug_remove(name: str):
     if not sbc:
         flash(f"SBC '{name}' not found", "error")
         return redirect(url_for("views.index"))
+
+    refusal = claims.check(name, shared=False)
+    if refusal:
+        return claims.refusal_page(refusal, name)
 
     if g.manager.remove_power_plug(sbc.id):
         flash("Removed power plug", "success")
@@ -348,9 +408,16 @@ def sbc_force_release(name: str):
         flash(f"SBC '{name}' not found", "error")
         return redirect(url_for("views.index"))
 
+    if not claims.web_actor().operator:
+        flash(
+            "Only operators may force-release a claim; your user has role 'agent'.",
+            "error",
+        )
+        return redirect(url_for("views.sbc_detail", name=name))
+
     reason = flask_request.form.get("reason", "force-released via web dashboard")
     try:
-        g.manager.force_release_claim(name, reason, released_by="web-operator")
+        g.manager.force_release_claim(name, reason, released_by=claims.web_user_name())
         flash(f"Force-released claim on '{name}'", "success")
     except ClaimNotFoundError:
         flash(f"No active claim on '{name}'", "error")

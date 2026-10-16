@@ -4,12 +4,13 @@ REST API endpoints for lab controller.
 
 import time
 
-from flask import Blueprint, g, jsonify, request, session
+from flask import Blueprint, g, jsonify, request
 
 from labctl import __version__
 from labctl.core import audit
 from labctl.core.models import PortType, Status
 from labctl.power import PowerController
+from labctl.web import claims
 
 api_bp = Blueprint("api", __name__)
 
@@ -21,6 +22,24 @@ POWER_CYCLE_MIN_INTERVAL = 5.0  # seconds
 def sbc_to_dict(sbc) -> dict:
     """Convert SBC model to JSON-serializable dict."""
     return sbc.to_dict(include_ids=True)
+
+
+def _refused(refusal):
+    """JSON response for a claim refusal (see labctl.web.claims.check)."""
+    body, status = refusal
+    return jsonify(body), status
+
+
+def _tcp_port_or_none(value):
+    """A TCP port to look up sharers by; anything else is left to
+    assign_serial_port to refuse."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
 
 
 # --- SBC Endpoints ---
@@ -88,6 +107,10 @@ def update_sbc(name: str):
         except ValueError:
             return jsonify({"error": f"Invalid status: {data['status']}"}), 400
 
+    refusal = claims.check(sbc.name, shared=False)
+    if refusal:
+        return _refused(refusal)
+
     updated = g.manager.update_sbc(
         sbc.id,
         name=data.get("name"),
@@ -107,10 +130,35 @@ def delete_sbc(name: str):
     if not sbc:
         return jsonify({"error": f"SBC '{name}' not found"}), 404
 
-    if g.manager.delete_sbc(sbc.id):
+    from labctl.core.models import ClaimConflict, ClaimError
+
+    refusal = claims.check(sbc.name, shared=False)
+    if refusal:
+        return _refused(refusal)
+
+    # The caller's own claim goes with the board.
+    actor = claims.web_actor()
+    own = g.manager.get_active_claim(sbc.name)
+    if own is not None and actor.holds(own):
+        try:
+            g.manager.release_claim(
+                sbc.name,
+                actor.session_id,
+                owner=actor.owner,
+                released_by=claims.web_user_name(),
+            )
+        except ClaimError:
+            pass  # lapsed meanwhile
+
+    try:
+        deleted = g.manager.delete_sbc(sbc.id, force=claims.override_requested())
+    except ClaimConflict as exc:
+        # Claimed meanwhile, or claims are disabled (nothing is checked,
+        # but a claimed board is only deleted with override_claim).
+        return jsonify(claims.claimed_error(sbc.name, exc.claim)), 409
+    if deleted:
         return jsonify({"message": f"SBC '{name}' deleted"}), 200
-    else:
-        return jsonify({"error": "Failed to delete SBC"}), 500
+    return jsonify({"error": "Failed to delete SBC"}), 500
 
 
 # --- Power Endpoints ---
@@ -158,6 +206,10 @@ def control_power(name: str):
     action = data["action"].lower()
     if action not in ["on", "off", "cycle"]:
         return jsonify({"error": "action must be on, off, or cycle"}), 400
+
+    refusal = claims.check(sbc.name)
+    if refusal:
+        return _refused(refusal)
 
     # Rate limit power cycles to prevent hardware damage
     if action == "cycle":
@@ -228,6 +280,8 @@ def assign_port(name: str):
     data = request.get_json()
     if not data or "type" not in data or "device" not in data:
         return jsonify({"error": "type and device are required"}), 400
+    if not isinstance(data["device"], str) or not data["device"].strip():
+        return jsonify({"error": "device must be a device path"}), 400
 
     try:
         port_type = PortType(data["type"])
@@ -241,6 +295,20 @@ def assign_port(name: str):
         sd = g.manager.get_serial_device_by_name(sd_name)
         if sd:
             serial_device_id = sd.id
+
+    # The boards already wired to this console are checked too: otherwise
+    # a claimed board's console could be typed into through this one.
+    refusal = claims.check(
+        sbc.name,
+        shared=False,
+        sharers=dict(
+            serial_device_path=data["device"],
+            serial_device_id=serial_device_id,
+            tcp_port=_tcp_port_or_none(data.get("tcp_port")),
+        ),
+    )
+    if refusal:
+        return _refused(refusal)
 
     try:
         port = g.manager.assign_serial_port(
@@ -520,31 +588,6 @@ def run_health_check():
 # --- Claim Endpoints ---
 
 
-def _web_session_id() -> str:
-    """Derive a stable session ID for web callers.
-
-    Falls back to a per-request UUID for unauthenticated callers so
-    different anonymous users can't collide on the same session ID.
-    """
-    import uuid
-
-    sid = session.get("_id") or session.get("session_id")
-    if sid:
-        return f"web-{sid}"
-    # Fallback for API-key callers without a Flask session
-    api_key = request.headers.get("X-API-Key", "")
-    if api_key:
-        return f"web-apikey-{api_key[:12]}"
-    # Anonymous: unique per request — can claim but won't be able to
-    # release (no stable identity). Prefer enabling auth.
-    return f"web-anon-{uuid.uuid4()}"
-
-
-def _web_agent_name() -> str:
-    """Agent name for web-originated claims."""
-    return session.get("user", "web-operator")
-
-
 @api_bp.route("/claims", methods=["GET"])
 def list_claims():
     """List all active claims."""
@@ -580,59 +623,148 @@ def get_claim_history(sbc_name: str):
     return jsonify({"history": [c.to_dict() for c in history]})
 
 
+def _duration_seconds(value):
+    """Minutes from a request body as seconds within the configured bounds,
+    or an error response."""
+    claims_config = g.config.claims
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        value = None
+    try:
+        duration_s = int(value) * 60
+    except (TypeError, ValueError):
+        return None, (
+            jsonify(
+                {
+                    "error": "invalid_duration",
+                    "message": "duration_minutes must be a whole number",
+                }
+            ),
+            400,
+        )
+    min_s = claims_config.min_duration_minutes * 60
+    max_s = claims_config.max_duration_minutes * 60
+    if duration_s < min_s or duration_s > max_s:
+        return None, (
+            jsonify(
+                {
+                    "error": "duration_out_of_bounds",
+                    "message": (
+                        f"Duration {duration_s // 60}m is outside "
+                        f"[{claims_config.min_duration_minutes}m, "
+                        f"{claims_config.max_duration_minutes}m]"
+                    ),
+                }
+            ),
+            400,
+        )
+    return duration_s, None
+
+
+def _json_body() -> dict:
+    data = request.get_json(silent=True)
+    return data if isinstance(data, dict) else {}
+
+
 @api_bp.route("/claims/<sbc_name>", methods=["POST"])
 def create_claim(sbc_name: str):
-    """Claim exclusive access to an SBC."""
-    from flask import current_app
+    """Claim exclusive access to an SBC.
 
+    The claim belongs to the caller's user (with auth), so their other
+    sessions (the web UI, MCP over HTTP) count as holding it too.
+    """
+    from labctl.actuators.runtime import ChannelBusyError
     from labctl.core.models import ClaimConflict, UnknownSBCError
 
-    data = request.get_json(silent=True) or {}
-    config = current_app.config.get("LABCTL_CONFIG")
-    duration_min = data.get(
-        "duration_minutes",
-        config.claims.default_duration_minutes if config else 30,
+    data = _json_body()
+    config = g.config
+    duration_s, error = _duration_seconds(
+        data.get("duration_minutes", config.claims.default_duration_minutes)
     )
-    reason = data.get("reason", "")
-    agent_name = data.get("agent_name") or _web_agent_name()
+    if error:
+        return error
+    reason = data.get("reason") or "web claim"
+    agent_name = data.get("agent_name") or claims.web_user_name()
+    if not isinstance(reason, str) or not isinstance(agent_name, str):
+        return jsonify({"error": "reason and agent_name must be strings"}), 400
 
-    duration_s = int(duration_min) * 60
-    if config:
-        min_s = config.claims.min_duration_minutes * 60
-        max_s = config.claims.max_duration_minutes * 60
-        if duration_s < min_s or duration_s > max_s:
-            return jsonify({"error": "duration_out_of_bounds"}), 400
+    manager = g.manager
+    actor = claims.web_actor()
+    grace = config.claims.grace_period_seconds
 
-    grace = config.claims.grace_period_seconds if config else 60
+    def already_claimed(claim):
+        return (
+            jsonify(
+                {
+                    "error": "already_claimed",
+                    "sbc_name": sbc_name,
+                    "message": (
+                        f"You already hold the claim on '{sbc_name}'; extend it "
+                        f"with POST /api/claims/{sbc_name}/renew"
+                    ),
+                    "claim": claim.to_dict(),
+                }
+            ),
+            409,
+        )
+
     try:
-        claim = g.manager.claim_sbc(
+        if config.claims.enabled:
+            own = manager.get_open_claim(sbc_name)
+            if own is not None and own.is_active and actor.holds(own):
+                return already_claimed(own)
+            # The board's own holder, or another user's claim on a board
+            # sharing its hardware (the new claim would let the caller
+            # drive that board).
+            blocking = manager.new_claim_conflict(sbc_name, actor, grace)
+            if blocking is not None:
+                return (
+                    jsonify(
+                        claims.claimed_error(sbc_name, blocking, override_hint=False)
+                    ),
+                    409,
+                )
+        claim = manager.claim_sbc(
             sbc_name=sbc_name,
             agent_name=agent_name,
-            session_id=_web_session_id(),
+            session_id=actor.session_id,
             session_kind="web",
             duration_seconds=duration_s,
-            reason=reason or "web claim",
+            reason=reason,
             grace_seconds=grace,
+            owner=actor.owner,
         )
     except UnknownSBCError:
         return jsonify({"error": f"SBC '{sbc_name}' not found"}), 404
     except ClaimConflict as exc:
-        return jsonify({"error": "sbc_claimed", "claim": exc.claim.to_dict()}), 409
+        if actor.holds(exc.claim):
+            return already_claimed(exc.claim)
+        return (
+            jsonify(claims.claimed_error(sbc_name, exc.claim, override_hint=False)),
+            409,
+        )
+    except ChannelBusyError as exc:
+        return jsonify({"error": "channel_busy", "message": str(exc)}), 409
 
     return jsonify({"status": "claimed", "claim": claim.to_dict()}), 201
 
 
 @api_bp.route("/claims/<sbc_name>/release", methods=["POST"])
 def release_claim(sbc_name: str):
-    """Release a claim (caller must be claimant)."""
+    """Release a claim (the caller's user must hold it)."""
     from labctl.core.models import (
         ClaimNotFoundError,
         NotClaimantError,
         UnknownSBCError,
     )
 
+    actor = claims.web_actor()
     try:
-        g.manager.release_claim(sbc_name, _web_session_id())
+        g.manager.release_claim(
+            sbc_name,
+            actor.session_id,
+            owner=actor.owner,
+            released_by=claims.web_user_name(),
+        )
     except UnknownSBCError:
         return jsonify({"error": f"SBC '{sbc_name}' not found"}), 404
     except ClaimNotFoundError:
@@ -644,19 +776,23 @@ def release_claim(sbc_name: str):
 
 @api_bp.route("/claims/<sbc_name>/renew", methods=["POST"])
 def renew_claim(sbc_name: str):
-    """Renew / extend a claim."""
+    """Renew / extend a claim (the caller's user must hold it)."""
     from labctl.core.models import (
         ClaimNotFoundError,
         NotClaimantError,
         UnknownSBCError,
     )
 
-    data = request.get_json(silent=True) or {}
-    duration_min = data.get("duration_minutes")
-    duration_s = int(duration_min) * 60 if duration_min is not None else None
+    data = _json_body()
+    duration_s = None
+    if data.get("duration_minutes") is not None:
+        duration_s, error = _duration_seconds(data["duration_minutes"])
+        if error:
+            return error
+    actor = claims.web_actor()
     try:
         claim = g.manager.renew_claim(
-            sbc_name, _web_session_id(), duration_seconds=duration_s
+            sbc_name, actor.session_id, duration_seconds=duration_s, owner=actor.owner
         )
     except UnknownSBCError:
         return jsonify({"error": f"SBC '{sbc_name}' not found"}), 404
@@ -669,14 +805,31 @@ def renew_claim(sbc_name: str):
 
 @api_bp.route("/claims/<sbc_name>/force-release", methods=["POST"])
 def force_release_claim(sbc_name: str):
-    """Operator override — forcibly release a claim."""
+    """Operator override — forcibly release a claim (operators only)."""
     from labctl.core.models import ClaimNotFoundError, UnknownSBCError
 
-    data = request.get_json(silent=True) or {}
-    reason = data.get("reason", "operator force-release via web")
+    if not claims.web_actor().operator:
+        return (
+            jsonify(
+                {
+                    "error": "not_operator",
+                    "sbc_name": sbc_name,
+                    "message": (
+                        "Only operators may force-release a claim; your user "
+                        "has role 'agent'."
+                    ),
+                    "hints": [
+                        f"Ask for it: POST /api/claims/{sbc_name}/request-release"
+                    ],
+                }
+            ),
+            403,
+        )
+    data = _json_body()
+    reason = data.get("reason") or "operator force-release via web"
     try:
         released = g.manager.force_release_claim(
-            sbc_name, reason, released_by=_web_agent_name()
+            sbc_name, str(reason), released_by=claims.web_user_name()
         )
     except UnknownSBCError:
         return jsonify({"error": f"SBC '{sbc_name}' not found"}), 404
@@ -690,11 +843,11 @@ def request_release(sbc_name: str):
     """Politely ask the claimant to release."""
     from labctl.core.models import ClaimNotFoundError, UnknownSBCError
 
-    data = request.get_json(silent=True) or {}
-    reason = data.get("reason", "")
+    data = _json_body()
+    reason = data.get("reason") or "web request"
     try:
         g.manager.record_release_request(
-            sbc_name, requested_by=_web_agent_name(), reason=reason or "web request"
+            sbc_name, requested_by=claims.web_user_name(), reason=str(reason)
         )
     except UnknownSBCError:
         return jsonify({"error": f"SBC '{sbc_name}' not found"}), 404

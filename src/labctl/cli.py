@@ -356,10 +356,9 @@ def _check_bound_claims_cli(
     board (needed when driving a channel, not when deleting a record)."""
     if not ctx.obj["config"].claims.enabled:
         return []
-    manager = _get_manager(ctx)
-    if same_device:
-        channel_ids = manager.channels_on_same_device(channel_ids)
-    names = {b.sbc_name for b in manager.list_bindings(channel_ids=channel_ids)}
+    names = _get_manager(ctx).sbcs_bound_to_channels(
+        channel_ids, same_device=same_device
+    )
     return _check_claims_of_cli(ctx, names, override, for_sbc=for_sbc, probe=probe)
 
 
@@ -4765,8 +4764,6 @@ def claim_cmd(
     agent_name: str | None,
 ) -> None:
     """Reserve an SBC for exclusive access."""
-    from datetime import datetime, timedelta
-
     from labctl.core.models import ClaimConflict, UnknownSBCError
 
     config: Config = ctx.obj["config"]
@@ -4784,26 +4781,22 @@ def claim_cmd(
     actor = _cli_claim_actor()
     if config.claims.enabled:
         try:
-            # Open, not just active: an expired claim in its grace period
-            # still blocks everyone but its holder from claiming this board
-            # (not from claiming one sharing its hardware: see MCP_SERVER.md).
             own = manager.get_open_claim(sbc_name)
         except UnknownSBCError:
             own = None  # claim_sbc reports it
-        grace = timedelta(seconds=config.claims.grace_period_seconds)
-        if own is not None and not own.is_active:
-            # Past its grace too: claim_sbc sweeps it and grants the claim.
-            # Same test as claim_sbc's sweep (expires_at < now - grace).
-            if own.expires_at is None or own.expires_at < datetime.now() - grace:
-                own = None
         if own is not None and own.is_active and actor.holds(own):
             _refuse_own_claim(sbc_name, own)
-        if own is not None and not actor.holds(own):
-            _refuse_claimed(sbc_name, own, override_hint=False)
-        for other in manager.sbcs_sharing_hardware_with(sbc_name):
-            held = _cli_claim_conflict(ctx, other, direct=False, probe=True)
-            if held is not None:
-                _refuse_claimed(sbc_name, held, override_hint=False)
+        try:
+            # An expired claim in its grace period still blocks everyone
+            # but its holder from claiming this board (not from claiming
+            # one sharing its hardware: see MCP_SERVER.md).
+            held = manager.new_claim_conflict(
+                sbc_name, actor, config.claims.grace_period_seconds
+            )
+        except UnknownSBCError:
+            held = None
+        if held is not None:
+            _refuse_claimed(sbc_name, held, override_hint=False)
 
     try:
         claim = manager.claim_sbc(

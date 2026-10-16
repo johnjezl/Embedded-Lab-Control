@@ -99,7 +99,8 @@ that user's `api_key`.
 - Each user has a **role** (`auth.users[].role`): `operator` (the default
   when unset) or `agent`. Only operators may `force_release_sbc`; agents
   get `"error": "not_operator"` and can only `request_sbc_release`.
-  (Roles apply to MCP only for now; the web REST API doesn't check them.)
+  The web UI and REST API apply the same roles and owners (see
+  [OPERATIONS.md](OPERATIONS.md#web-ui-and-rest-api)).
 - The server **refuses to start** without auth on a non-loopback `--host`,
   or when `mcp.allowed_hosts` / `allowed_origins` accept a non-loopback
   name (a reverse proxy). It can't detect a proxy that forwards

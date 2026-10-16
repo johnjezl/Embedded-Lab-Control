@@ -314,7 +314,8 @@ Features:
 - Power control buttons
 - Web-based serial console (xterm.js)
 - Live `/activity` page backed by Server-Sent Events
-- Claim badges on the dashboard and SBC detail pages
+- Claim badges on the dashboard and SBC detail pages; changes to a board
+  someone else has claimed are refused (operators may override, logged)
 - Settings and configuration view
 - Optional login authentication (enable `auth.enabled` in config)
 - Optional HTTPS with SSL/TLS certificates

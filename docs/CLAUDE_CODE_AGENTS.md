@@ -23,7 +23,8 @@ agent is using.
   enforced.
 - Give agents `role: agent`. Over MCP, agents can't force-release another
   user's claim, only ask for it (`request_sbc_release`); users without a
-  role are operators, who can. (The web REST API doesn't check roles yet.)
+  role are operators, who can. The web REST API and web UI apply the same
+  roles.
 
 So the rule is **one labctl user and key per agent**. Two agents sharing a
 key are the same claimant, and their claims do not protect them from each
@@ -47,15 +48,17 @@ What keys do *not* do:
   [Recommended settings](#recommended-settings)). Otherwise agents must
   remember to claim first (see [Agent instructions](#agent-instructions)).
 - **Operators can still break a claim**: any user without `role: agent`
-  over MCP, and people at the web dashboard or the CLI.
+  (over MCP, REST or the web dashboard), and people at the CLI. Every
+  override is recorded in the activity log.
 - **The `labctl` CLI acts as an operator.** It refuses to change a board
   someone else has claimed, but `--override-claim` overrides (logged), it
   doesn't know about claims made over MCP (not even the agent's own), and
   anyone with a shell on the lab host can edit the database directly.
-- **The web UI and REST API don't check claims** (except deleting a
-  board). The same API key also works on the web REST API (`X-API-Key`
-  header) if `labctl-web` is running, where it can also force-release
-  claims whatever its role. Tell agents to use MCP tools only.
+- **The web UI and REST API check claims too.** The same API key works
+  on the web REST API (`X-API-Key` header) if `labctl-web` is running,
+  with the same role and as the same claimant as over MCP: another user's
+  claim is refused with `409 "sbc_claimed"`. Still, tell agents to use
+  MCP tools only, and never to pass `override_claim`.
 - **Keys separate cooperating agents; they don't isolate them.** Agents
   running as the same Linux user can read each other's key files (and
   `~/.claude.json`). For isolation between people, use separate Linux
@@ -87,13 +90,13 @@ the lab:
 
 ```yaml
 claims:
-  require_claim: true    # MCP calls that change a board need its claim
+  require_claim: true    # MCP and REST calls that change a board need its claim
 ```
 
 Agents then get `"error": "claim_required"` instead of touching a board
 they haven't claimed, so a forgotten `claim_sbc` can't hurt another
-agent. Restart `labctl-mcp` to apply it. (The REST API doesn't check
-claims yet.)
+agent. Restart `labctl-mcp` (and `labctl-web`, for the REST API) to
+apply it.
 
 ## Step 1: create the agent's labctl user
 
@@ -360,5 +363,5 @@ reads keys only at startup.
 
 ## Later
 
-Planned (not implemented yet): claim checks in the web UI / REST API,
-and a labctl command that creates the user and key file in one step.
+Planned (not implemented yet): a labctl command that creates the user and
+key file in one step.
