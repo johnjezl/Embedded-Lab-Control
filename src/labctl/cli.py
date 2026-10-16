@@ -262,6 +262,13 @@ def _check_claim_cli(
     act on (empty otherwise)."""
     if probe and override:
         return _all_conflicts(ctx, sbc_name, shared=shared, direct=direct)
+    if override and not ctx.obj.get("override_announced"):
+        # No confirmation question named them (--yes, no terminal, or a
+        # command that doesn't ask): say whose claims this acts on.
+        _announce_override(
+            _all_conflicts(ctx, sbc_name, shared=shared, direct=direct),
+            "Overriding",
+        )
     claim = _cli_claim_conflict(
         ctx, sbc_name, override=override, shared=shared, direct=direct, probe=probe
     )
@@ -356,8 +363,11 @@ def _check_bound_claims_cli(
 
 
 def _announce_override(claims, prefix: str = "This overrides") -> None:
-    """Say whose claims an override acts on (before the confirmation
-    question, or in a dry run)."""
+    """Say whose claims an override acts on: before the confirmation
+    question (which then counts as announced), in a dry run, or as it
+    acts."""
+    if prefix == "This overrides":
+        click.get_current_context().obj["override_announced"] = True
     for claim in claims or ():
         click.echo(f"{prefix} '{_holder(claim)}'s claim on '{claim.sbc_name}'.")
 
@@ -3525,15 +3535,23 @@ def power_all_cmd(
     # Execute power commands
     success_count = 0
     skipped = len(sbcs_with_plugs) - len(targets)
+    overridden: set[int] = set()
     for sbc in targets:
-        # Claimed since the listing: skip it (or record the override).
-        claim = _cli_claim_conflict(ctx, sbc.name, override=override_claim)
-        if claim is not None:
+        # Re-check (claims may have appeared since the listing). Boards
+        # sharing a plug reach the same claims: record each override once.
+        conflicts = _all_conflicts(ctx, sbc.name)
+        if conflicts and not override_claim:
             click.echo(
-                f"  {sbc.name}: SKIPPED - claimed by '{_holder(claim)}'", err=True
+                f"  {sbc.name}: SKIPPED - claimed by '{_holder(conflicts[0])}'",
+                err=True,
             )
             skipped += 1
             continue
+        for claim in conflicts:
+            if claim.id not in overridden:
+                overridden.add(claim.id)
+                # Logs the override on that board (no sharers, no heartbeat).
+                _cli_claim_conflict(ctx, claim.sbc_name, override=True, direct=False)
         try:
             controller = PowerController.from_plug(sbc.power_plug)
             if action == "on":
@@ -4760,7 +4778,8 @@ def claim_cmd(
         grace = timedelta(seconds=config.claims.grace_period_seconds)
         if own is not None and not own.is_active:
             # Past its grace too: claim_sbc sweeps it and grants the claim.
-            if own.expires_at is None or datetime.now() > own.expires_at + grace:
+            # Same test as claim_sbc's sweep (expires_at < now - grace).
+            if own.expires_at is None or own.expires_at < datetime.now() - grace:
                 own = None
         if own is not None and own.is_active and actor.holds(own):
             _refuse_own_claim(sbc_name, own)
