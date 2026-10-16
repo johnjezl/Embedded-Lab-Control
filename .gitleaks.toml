@@ -1,8 +1,11 @@
-# gitleaks configuration: default ruleset plus one path allowlist.
+# gitleaks configuration: default ruleset plus a small allowlist.
 # Reviewed false positives are listed by fingerprint in .gitleaksignore.
 [extend]
 useDefault = true
 
 [allowlist]
-description = "The ignore file lists finding fingerprints, which look like keys"
+description = "The ignore file lists finding fingerprints, which look like keys; fake test keys"
 paths = ['''^\.gitleaksignore$''']
+# Fake API keys in tests/integration/test_web_claim_enforcement.py. Matched
+# by value, not fingerprint: a rebase-merge gives the commit a new hash.
+regexes = ['''^(operator|agent2?)-key-0123456789$''']
