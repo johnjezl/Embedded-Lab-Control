@@ -131,21 +131,25 @@ def delete_sbc(name: str):
     if not sbc:
         return jsonify({"error": f"SBC '{name}' not found"}), 404
 
-    from labctl.core.models import ClaimConflict
+    from labctl.core.models import ClaimConflict, UnknownSBCError
+
+    # Force only past the claim there before the check: the caller's own
+    # (it goes with the board; nobody else can claim it meanwhile) or, for
+    # an operator's override, the one check() logs (also with claims
+    # disabled, when nothing is checked). A claim made after it isn't
+    # forced: delete_sbc refuses it below.
+    actor = claims.web_actor()
+    try:
+        current = g.manager.get_active_claim(sbc.name)
+    except UnknownSBCError:
+        return jsonify({"error": f"SBC '{name}' not found"}), 404
+    force = current is not None and (
+        actor.holds(current) or (claims.override_requested() and actor.operator)
+    )
 
     refusal = claims.check(sbc.name, shared=False)
     if refusal:
         return _refused(refusal)
-
-    # The caller's own claim goes with the board (claims are deleted with
-    # it); nobody else can claim it while the caller holds it. Only
-    # operators may delete someone else's claimed board, also when claims
-    # are disabled and nothing above checked.
-    actor = claims.web_actor()
-    own = g.manager.get_active_claim(sbc.name)
-    force = (own is not None and actor.holds(own)) or (
-        claims.override_requested() and actor.operator
-    )
     try:
         deleted = g.manager.delete_sbc(sbc.id, force=force)
     except ClaimConflict as exc:
@@ -623,6 +627,8 @@ def _duration_seconds(value):
     """Minutes from a request body as seconds within the configured bounds,
     or an error response."""
     claims_config = g.config.claims
+    if isinstance(value, float) and value.is_integer():
+        value = int(value)
     if isinstance(value, bool) or not isinstance(value, (int, str)):
         value = None
     try:

@@ -737,3 +737,52 @@ class TestWebUi:
         resp = client.post("/sbc/a/power/on", data={"override_claim": "1"})
         assert resp.status_code == 302
         view_power.power_on.assert_called_once()
+
+
+class TestRaces:
+    def test_claim_made_after_check_is_not_force_deleted(self, lab):
+        """An operator's override only forces past the claim check() saw."""
+        client, manager = lab
+        from labctl.web import claims as web_claims
+
+        real_check = web_claims.check
+
+        def check_then_claim(*args, **kwargs):
+            result = real_check(*args, **kwargs)
+            _claim(manager, "c", owner="bot2")
+            return result
+
+        with patch.object(web_claims, "check", check_then_claim):
+            resp = client.delete("/api/sbcs/c?override_claim=1", headers=OP)
+        assert resp.status_code == 409
+        assert manager.get_sbc_by_name("c") is not None
+        assert manager.get_active_claim("c") is not None
+
+    def test_board_renamed_before_check_is_refused(self, lab):
+        client, manager = lab
+        from flask import g
+
+        from labctl.web import claims as web_claims
+
+        app = client.application
+        with app.test_request_context("/api/sbcs/gone/power", method="POST"):
+            g.config = app.config["LABCTL_CONFIG"]
+            g.manager = manager
+            g.auth_user = None
+            body, status = web_claims.check("gone")
+        assert status == 404
+        assert body["error"] == "sbc_changed"
+
+
+@pytest.mark.parametrize("minutes", [30.0, 5.0])
+def test_whole_float_duration_accepted(lab, minutes):
+    client, manager = lab
+    resp = client.post("/api/claims/c", json={"duration_minutes": minutes}, headers=BOT)
+    assert resp.status_code == 201
+    assert resp.get_json()["claim"]["duration_seconds"] == int(minutes) * 60
+
+
+def test_fractional_duration_refused(lab):
+    client, _ = lab
+    resp = client.post("/api/claims/c", json={"duration_minutes": 2.5}, headers=BOT)
+    assert resp.status_code == 400

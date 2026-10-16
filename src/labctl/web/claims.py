@@ -171,7 +171,16 @@ def check(
             include_shared=shared,
         )
     except UnknownSBCError:
-        return None
+        # Callers load the board first, so it was renamed or deleted
+        # meanwhile: don't act on what they loaded unchecked.
+        return (
+            {
+                "error": "sbc_changed",
+                "sbc_name": sbc_name,
+                "message": f"SBC '{sbc_name}' was renamed or removed; retry",
+            },
+            404,
+        )
     except (ClaimConflict, NotOperatorError, ClaimRequiredError) as exc:
         return _refusal(exc, sbc_name, None)
     return None
