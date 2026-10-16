@@ -17,7 +17,7 @@ from labctl.core.config import (
     UserConfig,
 )
 from labctl.core.manager import get_manager
-from labctl.core.models import PlugType, PortType
+from labctl.core.models import AddressType, PlugType, PortType
 from labctl.power import PowerState
 from labctl.web.app import create_app
 
@@ -353,6 +353,15 @@ class TestRestConfiguration:
         assert resp.status_code == 409
         assert resp.get_json()["sbc_name"] == "a"
 
+    def test_non_decimal_tcp_port_is_400(self, lab):
+        client, _ = lab
+        resp = client.post(
+            "/api/sbcs/c/ports",
+            json={"type": "console", "device": "/dev/x", "tcp_port": "²"},
+            headers=BOT,
+        )
+        assert resp.status_code == 400
+
     def test_port_device_must_be_a_path(self, lab):
         client, _ = lab
         resp = client.post(
@@ -414,10 +423,24 @@ class TestRestDelete:
         _, client, manager = _make(tmp_path, enabled=False)
         manager.create_sbc(name="a")
         _claim(manager, "a", owner="bot2")
-        resp = client.delete("/api/sbcs/a", headers=BOT)
+        resp = client.delete("/api/sbcs/a", headers=OP)
         assert resp.status_code == 409
-        resp = client.delete("/api/sbcs/a?override_claim=true", headers=BOT)
+        resp = client.delete("/api/sbcs/a?override_claim=true", headers=OP)
         assert resp.status_code == 200
+
+    def test_claims_disabled_agent_override_refused(self, tmp_path):
+        _, client, manager = _make(tmp_path, enabled=False)
+        manager.create_sbc(name="a")
+        _claim(manager, "a", owner="bot2")
+        resp = client.delete("/api/sbcs/a?override_claim=true", headers=BOT)
+        assert resp.status_code == 409
+        assert manager.get_sbc_by_name("a") is not None
+
+    def test_own_claim_on_board_shared_with_others_claim(self, lab):
+        """Deleting your own claimed board isn't stopped by your claim."""
+        client, manager = lab
+        _claim(manager, "c", owner="bot", session="mcp-http:1-2:bot")
+        assert client.delete("/api/sbcs/c", headers=BOT).status_code == 200
 
 
 # --- REST: the claims endpoints ---
@@ -633,7 +656,7 @@ class TestWebUi:
         assert resp.status_code == 409
         assert manager.get_sbc_by_name("c").power_plug.plug_index == 2
 
-    @pytest.mark.parametrize("index", ["0", "-1", "x"])
+    @pytest.mark.parametrize("index", ["0", "-1", "x", "²"])
     def test_plug_index_from_one(self, lab, index):
         client, manager = lab
         _login(client, "alice")
@@ -654,17 +677,28 @@ class TestWebUi:
             ("/sbc/a/edit", {"name": "a", "project": "x"}),
             ("/sbc/a/port/remove/console", {}),
             ("/sbc/a/network/remove/ethernet", {}),
+            (
+                "/sbc/a/network/set",
+                {"address_type": "ethernet", "ip_address": "10.9.9.9"},
+            ),
             ("/sbc/a/plug/remove", {}),
             ("/sbc/a/port/assign", {"port_type": "console", "device": "/dev/x"}),
         ],
     )
     def test_config_forms_refused(self, lab, path, data):
         client, manager = lab
+        a = manager.get_sbc_by_name("a")
+        manager.assign_serial_port(a.id, PortType.CONSOLE, "/dev/lab/port-a")
+        manager.set_network_address(a.id, AddressType.ETHERNET, "10.1.1.1")
         _claim(manager, "a", owner="bot2")
         _login(client, "alice")
         resp = client.post(path, data={"_csrf_token": _csrf(client, "/sbc/a"), **data})
         assert resp.status_code == 409
-        assert manager.get_sbc_by_name("a").power_plug is not None
+        a = manager.get_sbc_by_name("a")
+        assert a.project is None
+        assert a.power_plug is not None
+        assert a.console_port.device_path == "/dev/lab/port-a"
+        assert [n.ip_address for n in a.network_addresses] == ["10.1.1.1"]
 
     def test_no_auth_is_one_operator_identity(self, tmp_path, view_power):
         _, client, manager = _make(tmp_path, auth=False)

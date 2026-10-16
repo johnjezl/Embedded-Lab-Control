@@ -223,7 +223,7 @@ def sbc_port_assign(name: str):
         shared=False,
         sharers=dict(
             serial_device_path=device,
-            tcp_port=int(tcp_port) if tcp_port.isdigit() else None,
+            tcp_port=int(tcp_port) if tcp_port.isdecimal() else None,
         ),
     )
     if refusal:
@@ -343,7 +343,7 @@ def sbc_plug_assign(name: str):
 
     # Outlets are numbered from 1; index 0 addresses every outlet on a
     # Tasmota device at once.
-    if not plug_index.isdigit() or int(plug_index) < 1:
+    if not plug_index.isdecimal() or int(plug_index) < 1:
         flash("Plug index must be a whole number from 1", "error")
         return redirect(url_for("views.sbc_detail", name=name))
     try:

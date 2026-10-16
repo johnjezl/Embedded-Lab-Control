@@ -270,9 +270,9 @@ caller's claim (`409 "claim_required"`); the web UI doesn't (its users
 are people, like the CLI's). Without auth every web/REST caller is the
 same operator, so they share one claimant identity.
 
-Deleting a board releases the caller's own claim on it first; a board
-someone else has claimed is `409` (`override_claim` deletes it anyway,
-even with `claims.enabled: false`). Claiming over REST (`POST
+Deleting a board deletes the caller's own claim on it with it; a board
+someone else has claimed is `409` (an operator's `override_claim` deletes
+it anyway, even with `claims.enabled: false`). Claiming over REST (`POST
 /api/claims/<name>`) records the user as the claim's owner and refuses a
 board whose shared hardware someone else holds, or one the caller already
 holds (`409 "already_claimed"`: renew it instead). Durations (claim and

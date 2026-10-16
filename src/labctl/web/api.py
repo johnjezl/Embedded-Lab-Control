@@ -37,7 +37,7 @@ def _tcp_port_or_none(value):
         return None
     if isinstance(value, int):
         return value
-    if isinstance(value, str) and value.strip().isdigit():
+    if isinstance(value, str) and value.strip().isdecimal():
         return int(value.strip())
     return None
 
@@ -130,28 +130,23 @@ def delete_sbc(name: str):
     if not sbc:
         return jsonify({"error": f"SBC '{name}' not found"}), 404
 
-    from labctl.core.models import ClaimConflict, ClaimError
+    from labctl.core.models import ClaimConflict
 
     refusal = claims.check(sbc.name, shared=False)
     if refusal:
         return _refused(refusal)
 
-    # The caller's own claim goes with the board.
+    # The caller's own claim goes with the board (claims are deleted with
+    # it); nobody else can claim it while the caller holds it. Only
+    # operators may delete someone else's claimed board, also when claims
+    # are disabled and nothing above checked.
     actor = claims.web_actor()
     own = g.manager.get_active_claim(sbc.name)
-    if own is not None and actor.holds(own):
-        try:
-            g.manager.release_claim(
-                sbc.name,
-                actor.session_id,
-                owner=actor.owner,
-                released_by=claims.web_user_name(),
-            )
-        except ClaimError:
-            pass  # lapsed meanwhile
-
+    force = (own is not None and actor.holds(own)) or (
+        claims.override_requested() and actor.operator
+    )
     try:
-        deleted = g.manager.delete_sbc(sbc.id, force=claims.override_requested())
+        deleted = g.manager.delete_sbc(sbc.id, force=force)
     except ClaimConflict as exc:
         # Claimed meanwhile, or claims are disabled (nothing is checked,
         # but a claimed board is only deleted with override_claim).

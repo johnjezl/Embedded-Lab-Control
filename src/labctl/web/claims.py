@@ -137,7 +137,6 @@ def check(
     *,
     shared: bool = True,
     sharers: Optional[dict] = None,
-    override: Optional[bool] = None,
 ) -> Optional[Refusal]:
     """Refusal for a change to ``sbc_name`` by this caller, or None to go
     ahead (the caller's own claim is heartbeated; an override is logged).
@@ -148,14 +147,13 @@ def check(
     ResourceManager.sbcs_sharing_hardware): the boards that already have
     it are checked first, so a claimed board's plug, SDWire or console
     can't be driven through another board. ``claims.require_claim``
-    applies to REST calls, not to the web UI. ``override`` defaults to
-    what the request asks for.
+    applies to REST calls, not to the web UI. An override is what the
+    request asks for (see override_requested).
     """
     config = g.config
     if not config.claims.enabled:
         return None
-    if override is None:
-        override = override_requested()
+    override = override_requested()
     manager = g.manager
     actor = web_actor()
     if sharers:
@@ -176,23 +174,6 @@ def check(
         return None
     except (ClaimConflict, NotOperatorError, ClaimRequiredError) as exc:
         return _refusal(exc, sbc_name, None)
-    return None
-
-
-def check_bound(
-    sbc_name: str, channel_ids, *, override: Optional[bool] = None
-) -> Optional[Refusal]:
-    """Refusal if another user claims a board bound to one of these
-    actuator channels (other than ``sbc_name``)."""
-    if not g.config.claims.enabled:
-        return None
-    if override is None:
-        override = override_requested()
-    names = set(g.manager.sbcs_bound_to_channels(channel_ids)) - {sbc_name}
-    try:
-        g.manager.check_claims_of(names, web_actor(), override=override)
-    except (ClaimConflict, NotOperatorError) as exc:
-        return _refusal(exc, sbc_name, sbc_name)
     return None
 
 
