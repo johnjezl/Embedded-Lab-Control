@@ -250,7 +250,8 @@ class TestConfigurationCommands:
         assert result.exit_code == 1
         assert manager.get_sbc_by_name("pi-a").power_plug is not None
 
-    def test_serial_rename_of_a_claimed_boards_adapter_refused(self, lab):
+    def test_serial_rename_not_checked(self, lab):
+        """Lab-wide serial setup (rename/udev/ser2net) isn't claim-checked."""
         run, manager, _ = lab
         device = manager.create_serial_device("port-a", "1-1.1")
         manager.assign_serial_port(
@@ -260,9 +261,8 @@ class TestConfigurationCommands:
             serial_device_id=device.id,
         )
         result = run("serial", "rename", "port-a", "port-z")
-        assert result.exit_code == 1
-        assert "'pi-a' is claimed" in result.output
-        assert manager.get_serial_device_by_name("port-a") is not None
+        assert result.exit_code == 0, result.output
+        assert manager.get_serial_device_by_name("port-z") is not None
 
 
 class TestRemove:
@@ -537,3 +537,189 @@ class TestRoundOneFixes:
             result = run("serial", "capture", "pi-a", "-t", "0.1")
         assert result.exit_code == 0, result.output
         capture.assert_called_once()
+
+
+# Every decorated command refuses on pi-a's claim before acting. Arguments
+# beyond the board are enough to get past click's own parsing.
+REFUSED_COMMANDS = [
+    ["power", "on", "pi-a"],
+    ["power", "off", "pi-a", "--yes"],
+    ["power", "cycle", "pi-a", "--yes"],
+    ["sdwire", "unassign", "pi-a", "--yes"],
+    ["sdwire", "dut", "pi-a"],
+    ["sdwire", "host", "pi-a", "--yes"],
+    ["sdwire", "update", "pi-a", "-p", "1", "-d", "x", "--yes"],
+    ["sdwire", "ls", "pi-a", "-p", "1"],
+    ["sdwire", "cat", "pi-a", "-p", "1", "--path", "/x"],
+    ["sdwire", "info", "pi-a"],
+    ["port", "remove", "pi-a", "console", "--yes"],
+    ["network", "set", "pi-a", "ethernet", "10.0.0.9"],
+    ["network", "remove", "pi-a", "ethernet", "--yes"],
+    ["plug", "remove", "pi-a", "--yes"],
+    ["unbind", "pi-a", "reset", "--yes"],
+    ["bindings", "actuate", "pi-a", "reset", "--yes"],
+    ["bindings", "release", "pi-a", "reset", "--yes"],
+    ["bindings", "press", "pi-a", "reset", "--yes"],
+    ["enter-recovery", "pi-a", "--yes"],
+    ["exit-recovery", "pi-a", "--yes"],
+    ["boot-test", "pi-a", "-e", "login", "--no-deploy", "--yes"],
+    ["edit", "pi-a", "--project", "x"],
+]
+
+
+@pytest.mark.parametrize("args", REFUSED_COMMANDS, ids=lambda a: " ".join(a[:2]))
+def test_command_refused_on_another_users_claim(lab, controller, args):
+    run, manager, _ = lab
+    before = manager.get_sbc_by_name("pi-a")
+    result = run(*args)
+    assert result.exit_code == 1, result.output
+    assert "'pi-a' is claimed by 'agent-x'" in result.output
+    controller.power_on.assert_not_called()
+    controller.power_off.assert_not_called()
+    after = manager.get_sbc_by_name("pi-a")
+    assert after.project == before.project
+    assert after.power_plug is not None
+
+
+@pytest.fixture
+def grace_lab(lab):
+    """pi-a's claim has expired but is inside a 60 s grace period."""
+    run, manager, config_path = lab
+    config_path.write_text(
+        config_path.read_text().replace(
+            "grace_period_seconds: 0", "grace_period_seconds: 60"
+        )
+    )
+    manager.db.execute_modify(
+        "UPDATE claims SET expires_at = datetime('now', '-5 seconds')"
+        " WHERE released_at IS NULL"
+    )
+    return lab
+
+
+class TestRoundTwoFixes:
+    def test_reclaiming_your_own_board_points_at_renew(self, lab):
+        run, _, _ = lab
+        assert run("claim", "pi-c", "-r", "mine").exit_code == 0
+        result = run("claim", "pi-c", "-r", "again")
+        assert result.exit_code == 1
+        assert "you already hold the claim on 'pi-c'" in result.output
+        assert "labctl renew pi-c" in result.output
+        assert "force-release" not in result.output
+
+    def test_claim_in_grace_period_says_so(self, grace_lab):
+        run, manager, _ = grace_lab
+        result = run("claim", "pi-a", "-r", "x")
+        assert result.exit_code == 1
+        assert "grace period" in result.output
+        assert "request-release" not in result.output
+
+    def test_remove_hint_without_claims_doesnt_promise_a_log(self, lab):
+        run, manager, config_path = lab
+        config_path.write_text(
+            config_path.read_text().replace("enabled: true", "enabled: false")
+        )
+        result = run("remove", "pi-a", "--yes")
+        assert result.exit_code == 1
+        assert "--override-claim" in result.output
+        assert "recorded in the activity log" not in result.output
+
+    def test_actuator_set_prompt_names_the_overridden_claim(self, lab, monkeypatch):
+        run, manager, _ = lab
+        actuator = manager.create_actuator(
+            "relay-1", DriverName.LCUS1_SERIAL, device_path="/dev/ttyUSB-r1"
+        )
+        manager.add_actuator_channel(actuator.id, 1, default_state=ChannelState.OPEN)
+        manager.create_binding(
+            manager.get_sbc_by_name("pi-a").id,
+            "reset",
+            manager.get_actuator_channel(actuator.id, 1).id,
+            shape_mode=ShapeMode.MOMENTARY,
+            shape_active=ChannelState.CLOSED,
+            momentary_pulse_ms=100,
+        )
+        monkeypatch.setattr("labctl.cli._stdin_is_tty", lambda: True)
+        result = run(
+            "actuator",
+            "set",
+            "relay-1",
+            "1",
+            "closed",
+            "--override-claim",
+            input="n\n",
+        )
+        assert "This overrides 'agent-x's claim on 'pi-a'." in result.output
+        assert _overrides(manager, "pi-a") == []
+
+        result = run("actuator", "remove", "relay-1", "--override-claim", input="y\n")
+        assert result.exit_code == 0, result.output
+        assert "This overrides 'agent-x's claim on 'pi-a'." in result.output
+        assert manager.get_actuator_by_name("relay-1") is None
+        assert len(_overrides(manager, "pi-a")) == 1
+
+    def test_power_all_skips_a_board_claimed_after_the_listing(
+        self, lab, controller, monkeypatch
+    ):
+        import labctl.cli as cli
+
+        run, manager, _ = lab
+        real = cli._cli_claim_conflict
+
+        def unclaimed_at_listing(ctx, sbc_name, **kw):
+            return None if kw.get("probe") else real(ctx, sbc_name, **kw)
+
+        monkeypatch.setattr(cli, "_cli_claim_conflict", unclaimed_at_listing)
+        result = run("power-all", "on", "--yes")
+        assert result.exit_code == 0, result.output
+        assert "pi-a: SKIPPED - claimed by 'agent-x'" in result.output
+        assert "(1 skipped: claimed by another user)" in result.output
+        assert controller.power_on.call_count == 1
+        assert _overrides(manager, "pi-a") == []
+
+    def test_import_serial_port_on_a_claimed_boards_adapter_refused(
+        self, lab, tmp_path
+    ):
+        run, manager, _ = lab
+        manager.assign_serial_port(
+            manager.get_sbc_by_name("pi-a").id, PortType.CONSOLE, "/dev/lab/port-a"
+        )
+        path = tmp_path / "i.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "sbcs": [
+                        {
+                            "name": "pi-new",
+                            "serial_ports": [
+                                {"type": "console", "device": "/dev/lab/port-a"}
+                            ],
+                        }
+                    ]
+                }
+            )
+        )
+        result = run("import", str(path))
+        assert result.exit_code == 1
+        assert "shares hardware with 'pi-new'" in result.output
+        assert manager.get_sbc_by_name("pi-new") is None
+
+    def test_import_sdwire_of_a_claimed_board_refused(self, lab, tmp_path):
+        run, manager, _ = lab
+        device = manager.create_sdwire_device("sw-1", "SN1", "sdwirec")
+        manager.assign_sdwire(manager.get_sbc_by_name("pi-a").id, device.id)
+        path = tmp_path / "i.json"
+        path.write_text(
+            json.dumps({"sbcs": [{"name": "pi-new", "sdwire": {"name": "sw-1"}}]})
+        )
+        result = run("import", str(path))
+        assert result.exit_code == 1
+        assert manager.get_sbc_by_name("pi-new") is None
+
+    def test_import_update_override_logs(self, lab, tmp_path):
+        run, manager, _ = lab
+        path = tmp_path / "i.json"
+        path.write_text(json.dumps({"sbcs": [{"name": "pi-a", "project": "new"}]}))
+        result = run("import", str(path), "--update", "--override-claim")
+        assert result.exit_code == 0, result.output
+        assert manager.get_sbc_by_name("pi-a").project == "new"
+        assert len(_overrides(manager, "pi-a")) == 1

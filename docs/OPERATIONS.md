@@ -123,8 +123,7 @@ on/off/cycle`, `power-all`, `sdwire dut/host/flash/update/ls/cat/info`,
 `enter-/exit-recovery`, `boot-test`), those that change its records
 (`edit`, `remove`, `port`/`plug`/`network` assign/set/remove,
 `sdwire assign/unassign`, `bind`/`unbind`), `actuator set`/`remove` on
-channels bound to a claimed board, `serial rename` of a claimed board's
-adapter, and `import` (checked for every board before anything changes).
+channels bound to a claimed board, and `import` (checked for every board before anything changes).
 As over MCP, a claim covers hardware shared with other boards: operating
 a board that shares a plug outlet, SDWire, console adapter or relay
 channel with a claimed board is refused, as are assigning that hardware
@@ -142,7 +141,8 @@ claim`, per user and host) count as the user's; claims made over MCP or
 the web don't, even by the same person. `claims.require_claim` doesn't
 apply to the CLI. Not checked: reading a console and shell access
 (`connect`, `console`, `serial capture`, `ssh`, `proxy start`), `log`, `health-check`,
-`ser2net`, `serial repair`/`udev` and the `claims` commands.
+the `claims` commands, and lab-wide serial setup (`ser2net`, `serial
+rename`/`repair`/`udev`), which affects every board's consoles at once.
 
 | Command | Class | Prompts | Notes |
 |---|---|---|---|
