@@ -624,6 +624,18 @@ class ResourceManager:
         # Auto-assign TCP port if not specified
         if tcp_port is None:
             tcp_port = self._next_tcp_port()
+        else:
+            # ser2net serves one port per TCP port, and a board given another
+            # board's TCP port would reach that board's console past its
+            # claim (D013).
+            existing = self.db.execute_one(
+                "SELECT sbc_id, port_type FROM serial_ports WHERE tcp_port = ?",
+                (tcp_port,),
+            )
+            if existing and (
+                existing["sbc_id"] != sbc_id or existing["port_type"] != port_type.value
+            ):
+                raise ValueError(f"TCP port {tcp_port} is already in use")
 
         # Atomic upsert
         port_id = self.db.execute_insert(
