@@ -262,9 +262,10 @@ def _check_claim_cli(
     act on (empty otherwise)."""
     if probe and override:
         return _all_conflicts(ctx, sbc_name, shared=shared, direct=direct)
-    if override and not ctx.obj.get("override_announced"):
-        # No confirmation question named them (--yes, no terminal, or a
-        # command that doesn't ask): say whose claims this acts on.
+    if override:
+        # Say whose claims this acts on, unless the confirmation question
+        # already named them (--yes, no terminal, a command that doesn't
+        # ask, or a claim made while the question was waiting).
         _announce_override(
             _all_conflicts(ctx, sbc_name, shared=shared, direct=direct),
             "Overriding",
@@ -363,12 +364,13 @@ def _check_bound_claims_cli(
 
 
 def _announce_override(claims, prefix: str = "This overrides") -> None:
-    """Say whose claims an override acts on: before the confirmation
-    question (which then counts as announced), in a dry run, or as it
-    acts."""
-    if prefix == "This overrides":
-        click.get_current_context().obj["override_announced"] = True
+    """Say whose claims an override acts on (before the confirmation
+    question, in a dry run, or as it acts), each claim once per command."""
+    announced = click.get_current_context().obj.setdefault("announced_claims", set())
     for claim in claims or ():
+        if claim.id in announced:
+            continue
+        announced.add(claim.id)
         click.echo(f"{prefix} '{_holder(claim)}'s claim on '{claim.sbc_name}'.")
 
 
@@ -3508,6 +3510,10 @@ def power_all_cmd(
         claims = _all_conflicts(ctx, sbc.name)
         if claims:
             claimed[sbc.name] = claims
+    if override_claim:  # the listing names them
+        ctx.obj.setdefault("announced_claims", set()).update(
+            c.id for claims in claimed.values() for c in claims
+        )
 
     # Show what will be affected
     click.echo(f"SBCs to power {action.upper()}:")
@@ -3540,6 +3546,11 @@ def power_all_cmd(
         # Re-check (claims may have appeared since the listing). Boards
         # sharing a plug reach the same claims: record each override once.
         conflicts = _all_conflicts(ctx, sbc.name)
+        if not conflicts:
+            # Heartbeats the user's own claim; catches one made just now.
+            late = _cli_claim_conflict(ctx, sbc.name)
+            if late is not None:
+                conflicts = _all_conflicts(ctx, sbc.name) or [late]
         if conflicts and not override_claim:
             click.echo(
                 f"  {sbc.name}: SKIPPED - claimed by '{_holder(conflicts[0])}'",
@@ -3547,6 +3558,7 @@ def power_all_cmd(
             )
             skipped += 1
             continue
+        _announce_override(conflicts, "Overriding")  # any not listed above
         for claim in conflicts:
             if claim.id not in overridden:
                 overridden.add(claim.id)

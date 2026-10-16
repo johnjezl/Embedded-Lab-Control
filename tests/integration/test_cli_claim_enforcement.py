@@ -837,3 +837,59 @@ class TestRoundFourFixes:
         assert result.exit_code == 0, result.output
         assert len(_overrides(manager, "pi-a")) == 1
         assert len(_overrides(manager, "pi-b")) == 1
+
+
+class TestRoundFiveFixes:
+    def test_claim_made_while_prompt_waits_is_named(self, lab, controller, monkeypatch):
+        run, manager, _ = lab
+        _share_plug(manager, "pi-b")
+        monkeypatch.setattr("labctl.cli._stdin_is_tty", lambda: True)
+
+        def confirm_after_a_new_claim(*args, **kwargs):
+            manager.claim_sbc(
+                sbc_name="pi-b",
+                agent_name="agent-y",
+                session_id="mcp-http:1:agent-y",
+                session_kind="mcp-http",
+                duration_seconds=600,
+                reason="r",
+                owner="agent-y",
+            )
+            return True
+
+        monkeypatch.setattr("labctl.cli.click.confirm", confirm_after_a_new_claim)
+        result = run("power", "off", "pi-a", "--override-claim")
+        assert result.exit_code == 0, result.output
+        assert "This overrides 'agent-x's claim on 'pi-a'." in result.output
+        assert "Overriding 'agent-y's claim on 'pi-b'." in result.output
+        assert "Overriding 'agent-x's" not in result.output
+
+    def test_power_all_names_a_claim_made_after_the_listing(
+        self, lab, controller, monkeypatch
+    ):
+        import labctl.cli as cli
+
+        run, manager, _ = lab
+        real, seen = cli._all_conflicts, set()
+
+        def claimed_after_listing(ctx, sbc_name, **kw):
+            if sbc_name not in seen:
+                seen.add(sbc_name)
+                return []
+            return real(ctx, sbc_name, **kw)
+
+        monkeypatch.setattr(cli, "_all_conflicts", claimed_after_listing)
+        result = run("power-all", "on", "--yes", "--override-claim")
+        assert result.exit_code == 0, result.output
+        assert "Overriding 'agent-x's claim on 'pi-a'." in result.output
+        assert len(_overrides(manager, "pi-a")) == 1
+
+    def test_power_all_heartbeats_own_claim(self, lab, controller):
+        run, manager, _ = lab
+        assert run("claim", "pi-c", "-r", "mine", "-d", "5m").exit_code == 0
+        before = manager.get_active_claim("pi-c").last_activity
+        import time
+
+        time.sleep(0.05)
+        assert run("power-all", "on", "--yes").exit_code == 0
+        assert manager.get_active_claim("pi-c").last_activity > before
