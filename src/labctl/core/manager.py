@@ -624,9 +624,18 @@ class ResourceManager:
         # Auto-assign TCP port if not specified
         if tcp_port is None:
             tcp_port = self._next_tcp_port()
-        elif not 1 <= tcp_port <= 65535:
-            raise ValueError(f"TCP port {tcp_port} is out of range (1-65535)")
+            if not 1 <= tcp_port <= 65535:
+                raise ValueError(
+                    f"No TCP port left to auto-assign (next would be {tcp_port});"
+                    " pass one explicitly"
+                )
         else:
+            try:
+                tcp_port = int(tcp_port)  # e.g. "4000" from JSON or YAML
+            except (TypeError, ValueError):
+                raise ValueError(f"TCP port {tcp_port!r} is not a number") from None
+            if not 1 <= tcp_port <= 65535:
+                raise ValueError(f"TCP port {tcp_port} is out of range (1-65535)")
             # ser2net serves one port per TCP port, and a board given another
             # board's TCP port would reach that board's console past its
             # claim (D013).

@@ -1027,3 +1027,30 @@ class TestRoundEightFixes:
                 "/dev/lab/port-b",
                 tcp_port=0,
             )
+
+
+class TestRoundNineFixes:
+    def test_auto_assign_past_65535_refused(self, lab):
+        _, manager, _ = lab
+        manager.assign_serial_port(
+            manager.get_sbc_by_name("pi-b").id,
+            PortType.CONSOLE,
+            "/dev/lab/port-b",
+            tcp_port=65535,
+        )
+        with pytest.raises(ValueError, match="No TCP port left"):
+            manager.assign_serial_port(
+                manager.get_sbc_by_name("pi-c").id, PortType.CONSOLE, "/dev/lab/c"
+            )
+
+    def test_tcp_port_as_text(self, lab):
+        _, manager, _ = lab
+        sbc_id = manager.get_sbc_by_name("pi-b").id
+        port = manager.assign_serial_port(
+            sbc_id, PortType.CONSOLE, "/dev/lab/port-b", tcp_port="4005"
+        )
+        assert port.tcp_port == 4005
+        with pytest.raises(ValueError, match="not a number"):
+            manager.assign_serial_port(
+                sbc_id, PortType.DEBUG, "/dev/lab/port-b2", tcp_port="four"
+            )
