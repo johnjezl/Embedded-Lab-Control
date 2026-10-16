@@ -675,7 +675,15 @@ class TestRoundTwoFixes:
 
         run, manager, _ = lab
         # The listing sees no claims; the per-board check before acting does.
-        monkeypatch.setattr(cli, "_all_conflicts", lambda *a, **kw: [])
+        real, seen = cli._all_conflicts, set()
+
+        def claimed_after_listing(ctx, sbc_name, **kw):
+            if sbc_name not in seen:
+                seen.add(sbc_name)
+                return []
+            return real(ctx, sbc_name, **kw)
+
+        monkeypatch.setattr(cli, "_all_conflicts", claimed_after_listing)
         result = run("power-all", "on", "--yes")
         assert result.exit_code == 0, result.output
         assert "pi-a: SKIPPED - claimed by 'agent-x'" in result.output
@@ -773,4 +781,59 @@ class TestRoundThreeFixes:
             owner="agent-y",
         )
         result = run("power-all", "on", "--yes")
-        assert "'agent-x', 'agent-y' on 'pi-b'" in result.output
+        assert result.exit_code == 0, result.output  # pi-c is free
+        assert "1/3 SBCs powered ON (2 skipped" in result.output
+        assert (
+            "pi-a (tasmota @ 10.0.0.5) [skipped: claimed by 'agent-x', "
+            "'agent-y' on 'pi-b']" in result.output
+        )
+        assert (
+            "pi-b (tasmota @ 10.0.0.5) [skipped: claimed by 'agent-y', "
+            "'agent-x' on 'pi-a']" in result.output
+        )
+
+
+def _claim_pi_b_sharing_pi_as_plug(manager):
+    _share_plug(manager, "pi-b")
+    manager.claim_sbc(
+        sbc_name="pi-b",
+        agent_name="agent-y",
+        session_id="mcp-http:1:agent-y",
+        session_kind="mcp-http",
+        duration_seconds=600,
+        reason="r",
+        owner="agent-y",
+    )
+
+
+class TestRoundFourFixes:
+    def test_override_without_prompt_names_the_claims(self, lab, controller):
+        run, manager, _ = lab
+        _claim_pi_b_sharing_pi_as_plug(manager)
+        result = run("power", "off", "pi-a", "--yes", "--override-claim")
+        assert result.exit_code == 0, result.output
+        assert "Overriding 'agent-x's claim on 'pi-a'." in result.output
+        assert "Overriding 'agent-y's claim on 'pi-b'." in result.output
+
+    def test_assign_override_names_the_claim(self, lab):
+        run, _, _ = lab
+        result = run(
+            "plug", "assign", "pi-b", "tasmota", "10.0.0.5", "--override-claim"
+        )
+        assert result.exit_code == 0, result.output
+        assert "Overriding 'agent-x's claim on 'pi-a'." in result.output
+
+    def test_prompted_override_announced_once(self, lab, controller, monkeypatch):
+        run, _, _ = lab
+        monkeypatch.setattr("labctl.cli._stdin_is_tty", lambda: True)
+        result = run("power", "off", "pi-a", "--override-claim", input="y\n")
+        assert result.exit_code == 0, result.output
+        assert result.output.count("agent-x's claim") == 1
+
+    def test_power_all_records_each_override_once(self, lab, controller):
+        run, manager, _ = lab
+        _claim_pi_b_sharing_pi_as_plug(manager)
+        result = run("power-all", "on", "--yes", "--override-claim")
+        assert result.exit_code == 0, result.output
+        assert len(_overrides(manager, "pi-a")) == 1
+        assert len(_overrides(manager, "pi-b")) == 1
