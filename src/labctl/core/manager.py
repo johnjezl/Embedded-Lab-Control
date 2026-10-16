@@ -1995,6 +1995,70 @@ class ResourceManager:
             self.touch_claim(claim)
         return claim
 
+    def check_claims_of(
+        self, sbc_names: Iterable[str], actor: ClaimActor, *, override: bool = False
+    ) -> None:
+        """:meth:`check_claim` for boards a call reaches only through
+        shared hardware (wiring a claimed board's plug to another board,
+        driving a relay bound to it): someone else's claim refuses, but
+        ``require_claim`` doesn't apply, nothing is heartbeated and their
+        own sharers aren't followed. Boards deleted meanwhile are skipped."""
+        for name in sorted({n for n in sbc_names if n}):
+            try:
+                self.check_claim(
+                    name,
+                    actor,
+                    override=override,
+                    include_shared=False,
+                    heartbeat=False,
+                )
+            except UnknownSBCError:
+                continue
+
+    def sbcs_bound_to_channels(
+        self, channel_ids: Iterable[int], *, same_device: bool = True
+    ) -> list[str]:
+        """SBCs bound to one of these actuator channels: a relay wired to a
+        board's reset or power is part of that board (D013).
+        ``same_device`` also covers other actuator records for the same
+        relay board (needed when driving a channel, not when deleting a
+        record)."""
+        channel_ids = set(channel_ids)
+        if not channel_ids:
+            return []
+        if same_device:
+            channel_ids = self.channels_on_same_device(channel_ids)
+        names = {b.sbc_name for b in self.list_bindings(channel_ids=channel_ids)}
+        names.discard(None)
+        return sorted(names)
+
+    def new_claim_conflict(
+        self, sbc_name: str, actor: ClaimActor, grace_seconds: int
+    ) -> Optional[Claim]:
+        """The claim that stops ``actor`` claiming ``sbc_name``, or None.
+
+        First the board's own open claim if someone else holds it, while
+        active or inside its grace period (only its holder may re-claim it
+        then; past the grace :meth:`claim_sbc` sweeps it). Then another
+        user's active claim on a board sharing its hardware: the new claim
+        would let ``actor`` drive that board. The actor's own claim is not
+        returned (callers renew it). Unknown SBCs raise UnknownSBCError.
+        """
+        own = self.get_open_claim(sbc_name)
+        if own is not None and not actor.holds(own):
+            cutoff = datetime.now() - timedelta(seconds=grace_seconds)
+            # Same test as claim_sbc's sweep (expires_at < now - grace).
+            if own.expires_at is not None and own.expires_at >= cutoff:
+                return own
+        for other in self.sbcs_sharing_hardware_with(sbc_name):
+            try:
+                claim = self.get_active_claim(other)
+            except UnknownSBCError:
+                continue
+            if claim is not None and not actor.holds(claim):
+                return claim
+        return None
+
     def _check_one_claim(
         self,
         sbc_name: str,

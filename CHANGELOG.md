@@ -97,6 +97,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   follow-up read doesn't misjudge the mux position.
 
 ### Fixed
+- REST `DELETE /api/sbcs/<name>` on a claimed board answered `500`; it is
+  now `409 "sbc_claimed"` (#21). A non-numeric `duration_minutes` on
+  claim or renew answered `500`, now `400`; renew durations are now
+  bounded like claims. The web plug form refuses an outlet index below 1
+  (index 0 switches every outlet on a Tasmota device).
+- REST and web claims used a session ID the next request often didn't
+  share (a per-request ID without auth, an API-key prefix with it), so a
+  claim made over REST could not always be renewed or released; they now
+  use `web:<user>` (`web:anonymous` without auth) and record the user as
+  owner. Claims made before the upgrade keep their old ID: release them
+  with force-release if needed.
 - A command given a config file by name (`-c FILE` or `LABCTL_CONFIG`)
   fails if it doesn't load (YAML error or invalid value) instead of
   running on built-in defaults (commands that don't read the config,
@@ -174,6 +185,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   from removing dead code flagged by flake8 (unused imports/variables).
 
 ### Added
+- Claim enforcement, part 3 (D013): the web UI and REST API refuse to
+  operate or reconfigure a board another user has claimed (REST: `409`
+  `"sbc_claimed"`; web UI: a page naming the holder), including boards
+  sharing its hardware and boards already wired to a port or plug being
+  assigned. Operators may override (`"override_claim": true`, or the
+  button on the refusal page), recorded as `claim_override`; agents
+  (`role: agent`) get `403 "not_operator"`, also for force-release (which
+  any REST or web user could do before). `claims.require_claim` applies
+  to the REST API. REST claims record the user as owner, so one user is
+  one claimant across REST, the web UI and MCP over HTTP. See
+  docs/OPERATIONS.md.
 - Claim enforcement, part 2 (D013): CLI commands that operate or
   reconfigure a board refuse when another user has claimed it (or a board
   sharing its plug outlet, SDWire, console adapter or relay channel), naming

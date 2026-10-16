@@ -841,5 +841,5 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
     (PR #22)
   - ✅ Part 2: CLI — board-changing commands refuse on another user's
     claim; `--override-claim` (logged)
-  - ☐ Part 3: web UI / REST — 409 `sbc_claimed`, REST roles and
+  - ✅ Part 3: web UI / REST — 409 `sbc_claimed`, REST roles and
     `require_claim`, owners on REST claims, #21

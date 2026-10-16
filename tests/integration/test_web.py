@@ -758,19 +758,11 @@ class TestClaimApi:
         data = response.get_json()
         assert len(data["history"]) == 1
 
-    def test_release_requires_claimant_identity(self, client, manager, sample_sbc):
-        response = client.post(
-            f"/api/claims/{sample_sbc.name}",
-            json={"duration_minutes": 10, "reason": "web test"},
-        )
-        assert response.status_code == 201
-
-        response = client.post(f"/api/claims/{sample_sbc.name}/release")
-        assert response.status_code == 403
-        data = response.get_json()
-        assert data["error"] == "not_claimant"
-
-    def test_renew_requires_claimant_identity(self, client, manager, sample_sbc):
+    def test_release_and_renew_own_claim_without_auth(
+        self, client, manager, sample_sbc
+    ):
+        """Without auth, web/REST callers share one identity (an operator),
+        so a claim made over REST can be renewed and released over REST."""
         response = client.post(
             f"/api/claims/{sample_sbc.name}",
             json={"duration_minutes": 10, "reason": "web test"},
@@ -781,9 +773,32 @@ class TestClaimApi:
             f"/api/claims/{sample_sbc.name}/renew",
             json={"duration_minutes": 20},
         )
+        assert response.status_code == 200
+        assert response.get_json()["claim"]["duration_seconds"] == 1200
+
+        response = client.post(f"/api/claims/{sample_sbc.name}/release")
+        assert response.status_code == 200
+        assert manager.get_active_claim(sample_sbc.name) is None
+
+    def test_release_and_renew_require_claimant(self, client, manager, sample_sbc):
+        manager.claim_sbc(
+            sbc_name=sample_sbc.name,
+            agent_name="other",
+            session_id="other-session",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="holding",
+        )
+        response = client.post(f"/api/claims/{sample_sbc.name}/release")
         assert response.status_code == 403
-        data = response.get_json()
-        assert data["error"] == "not_claimant"
+        assert response.get_json()["error"] == "not_claimant"
+
+        response = client.post(
+            f"/api/claims/{sample_sbc.name}/renew",
+            json={"duration_minutes": 20},
+        )
+        assert response.status_code == 403
+        assert response.get_json()["error"] == "not_claimant"
 
     def test_claim_not_found_sbc(self, client):
         response = client.get("/api/claims/nonexistent")

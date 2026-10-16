@@ -243,3 +243,40 @@ the host and back without the MCP tools' strict power check (they proceed
 when the board has no power plug). The MCP tools were hardened first because
 agents may call them unprompted; aligning the CLI is tracked in the Phase 1
 notes.
+
+## Web UI and REST API
+
+**Claims (D013):** a request that operates or reconfigures a board is
+refused when another user has claimed it: the REST API answers `409`
+with `"error": "sbc_claimed"` (the holder, their claim and hints), the web
+UI shows a page naming the holder. That covers power (`POST
+/api/sbcs/<name>/power`, the power buttons), editing and deleting a board
+(`PUT`/`DELETE /api/sbcs/<name>`, the edit form) and its ports, network
+addresses and power plug (`POST /api/sbcs/<name>/ports`, the forms).
+Power also checks boards sharing the board's plug outlet, SDWire, console
+adapter or relay channel; assigning a port or plug checks the boards
+already wired to that console or outlet. A claim counts as the caller's
+when it belongs to the same user from any session (REST, the web UI, MCP
+over HTTP), so an agent can claim over MCP and use its key on REST.
+
+Operators may override: `"override_claim": true` in the JSON body (only
+`true`; `?override_claim=1` also works, e.g. for `DELETE`), or the
+override button on the web UI's refusal page. The override is recorded in
+the activity log as `claim_override`, as with the CLI's
+`--override-claim`. Agents (`role: agent`) get `403 "not_operator"`, and
+can't force-release a claim over REST or the web UI either. With
+`claims.require_claim`, REST calls that change a board also need the
+caller's claim (`409 "claim_required"`); the web UI doesn't (its users
+are people, like the CLI's). Without auth every web/REST caller is the
+same operator, so they share one claimant identity.
+
+Deleting a board releases the caller's own claim on it first; a board
+someone else has claimed is `409` (`override_claim` deletes it anyway,
+even with `claims.enabled: false`). Claiming over REST (`POST
+/api/claims/<name>`) records the user as the claim's owner and refuses a
+board whose shared hardware someone else holds, or one the caller already
+holds (`409 "already_claimed"`: renew it instead). Durations (claim and
+renew) must be whole minutes within the configured bounds.
+
+Not checked: reading (every `GET`), the web serial console, health
+checks, and the claims endpoints themselves.

@@ -21,7 +21,6 @@ import sys
 import threading
 import time as _time_mod
 from contextlib import contextmanager
-from datetime import datetime, timedelta
 from functools import wraps
 from typing import Optional
 
@@ -2699,24 +2698,15 @@ def claim_sbc(
     )
 
     def shared_hardware_refusal():
-        """Refuse a new claim if a board sharing this one's hardware is
-        someone else's (the claim couldn't be used). Report the board's
-        own holder instead, if someone else still holds it (active or in
-        its grace period), as claim_sbc itself would."""
-        shared_err = _check_claims_of(
-            manager, manager.sbcs_sharing_hardware_with(sbc_name), for_sbc=sbc_name
-        )
-        if not shared_err:
+        """Refuse a new claim the board's own holder or another user's
+        claim on a board sharing its hardware stops (see
+        ResourceManager.new_claim_conflict)."""
+        if not config.claims.enabled:
             return None
-        own = manager.get_open_claim(sbc_name)
-        grace = timedelta(seconds=config.claims.grace_period_seconds)
-        if (
-            own is not None
-            and not _caller_actor().holds(own)
-            and own.expires_at >= datetime.now() - grace
-        ):
-            return _claimed_error(sbc_name, own)
-        return shared_err
+        claim = manager.new_claim_conflict(
+            sbc_name, _caller_actor(), config.claims.grace_period_seconds
+        )
+        return _claimed_error(sbc_name, claim) if claim is not None else None
 
     def grant():
         refusal = shared_hardware_refusal()
@@ -3261,9 +3251,7 @@ def _check_bound_claims(
     board (needed when driving a channel, not when deleting a record)."""
     if not _get_config().claims.enabled:
         return None
-    if same_device:
-        channel_ids = manager.channels_on_same_device(channel_ids)
-    names = {b.sbc_name for b in manager.list_bindings(channel_ids=channel_ids)}
+    names = set(manager.sbcs_bound_to_channels(channel_ids, same_device=same_device))
     names.discard(for_sbc)
     return _check_claims_of(manager, names, for_sbc=for_sbc)
 
