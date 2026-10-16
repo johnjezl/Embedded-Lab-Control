@@ -1011,3 +1011,19 @@ class TestRoundSevenFixes:
         assert result.exit_code == 0, result.output
         assert "TCP port 4003 is already in use" in result.output
         assert manager.get_sbc_by_name("pi-newer") is not None
+
+
+class TestRoundEightFixes:
+    def test_tcp_port_zero_refused(self, lab):
+        run, manager, _ = lab
+        result = run(
+            "port", "assign", "pi-b", "console", "/dev/lab/port-b", "--tcp-port", "0"
+        )
+        assert result.exit_code == 2
+        with pytest.raises(ValueError, match="out of range"):
+            manager.assign_serial_port(
+                manager.get_sbc_by_name("pi-b").id,
+                PortType.CONSOLE,
+                "/dev/lab/port-b",
+                tcp_port=0,
+            )

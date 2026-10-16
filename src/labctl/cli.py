@@ -2813,7 +2813,10 @@ def port_group() -> None:
 @click.argument("port_type", type=click.Choice([t.value for t in PortType]))
 @click.argument("device", required=False, default=None)
 @click.option(
-    "--tcp-port", "-t", type=int, help="TCP port (auto-assigned if not specified)"
+    "--tcp-port",
+    "-t",
+    type=click.IntRange(1, 65535),
+    help="TCP port (auto-assigned if not specified)",
 )
 @click.option(
     "--baud", "-b", type=int, default=115200, help="Baud rate (default: 115200)"

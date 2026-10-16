@@ -624,6 +624,8 @@ class ResourceManager:
         # Auto-assign TCP port if not specified
         if tcp_port is None:
             tcp_port = self._next_tcp_port()
+        elif not 1 <= tcp_port <= 65535:
+            raise ValueError(f"TCP port {tcp_port} is out of range (1-65535)")
         else:
             # ser2net serves one port per TCP port, and a board given another
             # board's TCP port would reach that board's console past its
