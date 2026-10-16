@@ -548,6 +548,7 @@ REFUSED_COMMANDS = [
     ["sdwire", "unassign", "pi-a", "--yes"],
     ["sdwire", "dut", "pi-a"],
     ["sdwire", "host", "pi-a", "--yes"],
+    ["sdwire", "flash", "pi-a", "{image}", "--yes"],
     ["sdwire", "update", "pi-a", "-p", "1", "-d", "x", "--yes"],
     ["sdwire", "ls", "pi-a", "-p", "1"],
     ["sdwire", "cat", "pi-a", "-p", "1", "--path", "/x"],
@@ -568,8 +569,11 @@ REFUSED_COMMANDS = [
 
 
 @pytest.mark.parametrize("args", REFUSED_COMMANDS, ids=lambda a: " ".join(a[:2]))
-def test_command_refused_on_another_users_claim(lab, controller, args):
+def test_command_refused_on_another_users_claim(lab, controller, args, tmp_path):
     run, manager, _ = lab
+    image = tmp_path / "img.img"
+    image.write_bytes(b"")
+    args = [str(image) if a == "{image}" else a for a in args]
     before = manager.get_sbc_by_name("pi-a")
     result = run(*args)
     assert result.exit_code == 1, result.output
@@ -590,11 +594,18 @@ def grace_lab(lab):
             "grace_period_seconds: 0", "grace_period_seconds: 60"
         )
     )
-    manager.db.execute_modify(
-        "UPDATE claims SET expires_at = datetime('now', '-5 seconds')"
-        " WHERE released_at IS NULL"
-    )
+    _expire_claims(manager, seconds_ago=5)
     return lab
+
+
+def _expire_claims(manager, seconds_ago):
+    """Move open claims' deadlines into the past (local time, as stored)."""
+    from datetime import datetime, timedelta
+
+    manager.db.execute_modify(
+        "UPDATE claims SET expires_at = ? WHERE released_at IS NULL",
+        (manager._fmt_ts(datetime.now() - timedelta(seconds=seconds_ago)),),
+    )
 
 
 class TestRoundTwoFixes:
@@ -663,12 +674,8 @@ class TestRoundTwoFixes:
         import labctl.cli as cli
 
         run, manager, _ = lab
-        real = cli._cli_claim_conflict
-
-        def unclaimed_at_listing(ctx, sbc_name, **kw):
-            return None if kw.get("probe") else real(ctx, sbc_name, **kw)
-
-        monkeypatch.setattr(cli, "_cli_claim_conflict", unclaimed_at_listing)
+        # The listing sees no claims; the per-board check before acting does.
+        monkeypatch.setattr(cli, "_all_conflicts", lambda *a, **kw: [])
         result = run("power-all", "on", "--yes")
         assert result.exit_code == 0, result.output
         assert "pi-a: SKIPPED - claimed by 'agent-x'" in result.output
@@ -723,3 +730,47 @@ class TestRoundTwoFixes:
         assert result.exit_code == 0, result.output
         assert manager.get_sbc_by_name("pi-a").project == "new"
         assert len(_overrides(manager, "pi-a")) == 1
+
+
+class TestRoundThreeFixes:
+    def test_stale_unswept_claim_doesnt_block_claim(self, grace_lab):
+        run, manager, _ = grace_lab
+        _expire_claims(manager, seconds_ago=3600)  # long past the 60 s grace
+        result = run("claim", "pi-a", "-r", "x")
+        assert result.exit_code == 0, result.output
+        assert manager.get_active_claim("pi-a").agent_name != "agent-x"
+
+    def test_prompt_names_every_overridden_claim(self, lab, controller, monkeypatch):
+        run, manager, _ = lab
+        _share_plug(manager, "pi-b")
+        manager.claim_sbc(
+            sbc_name="pi-b",
+            agent_name="agent-y",
+            session_id="mcp-http:1:agent-y",
+            session_kind="mcp-http",
+            duration_seconds=600,
+            reason="r",
+            owner="agent-y",
+        )
+        monkeypatch.setattr("labctl.cli._stdin_is_tty", lambda: True)
+        result = run("power", "off", "pi-a", "--override-claim", input="y\n")
+        assert result.exit_code == 0, result.output
+        assert "This overrides 'agent-x's claim on 'pi-a'." in result.output
+        assert "This overrides 'agent-y's claim on 'pi-b'." in result.output
+        assert len(_overrides(manager, "pi-a")) == 1
+        assert len(_overrides(manager, "pi-b")) == 1
+
+    def test_power_all_lists_every_holder(self, lab, controller):
+        run, manager, _ = lab
+        _share_plug(manager, "pi-b")
+        manager.claim_sbc(
+            sbc_name="pi-b",
+            agent_name="agent-y",
+            session_id="mcp-http:1:agent-y",
+            session_kind="mcp-http",
+            duration_seconds=600,
+            reason="r",
+            owner="agent-y",
+        )
+        result = run("power-all", "on", "--yes")
+        assert "'agent-x', 'agent-y' on 'pi-b'" in result.output

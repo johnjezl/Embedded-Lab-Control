@@ -258,13 +258,42 @@ def _check_claim_cli(
     """Exit unless this CLI user may change ``sbc_name`` (see
     _cli_claim_conflict). ``for_sbc`` names the board the command is
     about when ``sbc_name`` is one sharing its hardware. A ``probe`` with
-    ``override`` doesn't exit and returns the conflicting claim, if any."""
+    ``override`` doesn't exit and returns every claim the override would
+    act on (empty otherwise)."""
+    if probe and override:
+        return _all_conflicts(ctx, sbc_name, shared=shared, direct=direct)
     claim = _cli_claim_conflict(
         ctx, sbc_name, override=override, shared=shared, direct=direct, probe=probe
     )
-    if claim is not None and not (probe and override):
+    if claim is not None:
         _refuse_claimed(for_sbc or sbc_name, claim)
-    return claim
+    return []
+
+
+def _all_conflicts(
+    ctx: click.Context, sbc_name: str, *, shared: bool = True, direct: bool = True
+) -> list:
+    """Every other user's active claim that changing ``sbc_name`` would
+    override: its own and (with ``shared``/``direct``) those on boards
+    sharing its hardware. No side effects."""
+    if not ctx.obj["config"].claims.enabled:
+        return []
+    from labctl.core.models import UnknownSBCError
+
+    manager = _get_manager(ctx)
+    actor = _cli_claim_actor()
+    names = [sbc_name]
+    if direct and shared:
+        names += manager.sbcs_sharing_hardware_with(sbc_name)
+    found = []
+    for name in names:
+        try:
+            claim = manager.get_active_claim(name)
+        except UnknownSBCError:
+            continue
+        if claim is not None and not actor.holds(claim):
+            found.append(claim)
+    return found
 
 
 def _check_claims_of_cli(
@@ -277,13 +306,12 @@ def _check_claims_of_cli(
 ):
     """Exit if someone else claims one of these boards, which a command on
     ``for_sbc`` (if any) reaches through shared hardware. A ``probe`` with
-    ``override`` returns the first claim it would override, if any."""
-    found = None
+    ``override`` returns the claims it would override."""
+    found = []
     for name in sorted(n for n in sbc_names if n and n != for_sbc):
-        claim = _check_claim_cli(
+        found += _check_claim_cli(
             ctx, name, override, direct=False, for_sbc=for_sbc, probe=probe
         )
-        found = found or claim
     return found
 
 
@@ -300,7 +328,7 @@ def _check_shared_hardware_cli(
     driven through another board. ``hardware`` is passed to
     ResourceManager.sbcs_sharing_hardware."""
     if not ctx.obj["config"].claims.enabled:
-        return None
+        return []
     others = _get_manager(ctx).sbcs_sharing_hardware(**hardware)
     return _check_claims_of_cli(ctx, others, override, for_sbc=sbc_name, probe=probe)
 
@@ -319,7 +347,7 @@ def _check_bound_claims_cli(
     ``same_device`` also covers other actuator records for the same relay
     board (needed when driving a channel, not when deleting a record)."""
     if not ctx.obj["config"].claims.enabled:
-        return None
+        return []
     manager = _get_manager(ctx)
     if same_device:
         channel_ids = manager.channels_on_same_device(channel_ids)
@@ -327,10 +355,11 @@ def _check_bound_claims_cli(
     return _check_claims_of_cli(ctx, names, override, for_sbc=for_sbc, probe=probe)
 
 
-def _announce_override(claim) -> None:
-    """Before the confirmation question: say whose claim will be overridden."""
-    if claim is not None:
-        click.echo(f"This overrides '{_holder(claim)}'s claim on '{claim.sbc_name}'.")
+def _announce_override(claims, prefix: str = "This overrides") -> None:
+    """Say whose claims an override acts on (before the confirmation
+    question, or in a dry run)."""
+    for claim in claims or ():
+        click.echo(f"{prefix} '{_holder(claim)}'s claim on '{claim.sbc_name}'.")
 
 
 def claim_checked(
@@ -360,28 +389,25 @@ def claim_checked(
             if name is not None and resolve is not None:
                 name = resolve(ctx, name)
             if name is None:
-                return None
+                return []
             return _check_claim_cli(ctx, name, override, shared=shared, probe=probe)
 
         @functools.wraps(f)
         def wrapper(*args, override_claim: bool = False, **kwargs):
             ctx = click.get_current_context()
-            claim = run(ctx, kwargs, override_claim, bool(kwargs.get("dry_run")))
-            if claim is not None:  # dry run with --override-claim
-                click.echo(
-                    f"Dry run: would override '{_holder(claim)}'s claim "
-                    f"on '{claim.sbc_name}'."
-                )
+            claims = run(ctx, kwargs, override_claim, bool(kwargs.get("dry_run")))
+            # Non-empty only for a dry run with --override-claim.
+            _announce_override(claims, "Dry run: would override")
             return f(*args, **kwargs)
 
         def precheck(kwargs):
-            claim = run(
+            claims = run(
                 click.get_current_context(),
                 kwargs,
                 kwargs.get("override_claim", False),
                 True,
             )
-            _announce_override(claim)  # --override-claim: say so first
+            _announce_override(claims)  # --override-claim: say so first
 
         wrapper._claim_precheck = precheck
         return override_claim_option(wrapper)
@@ -3469,9 +3495,9 @@ def power_all_cmd(
 
     claimed = {}
     for sbc in sbcs_with_plugs:
-        claim = _cli_claim_conflict(ctx, sbc.name, probe=True)
-        if claim is not None:
-            claimed[sbc.name] = claim
+        claims = _all_conflicts(ctx, sbc.name)
+        if claims:
+            claimed[sbc.name] = claims
 
     # Show what will be affected
     click.echo(f"SBCs to power {action.upper()}:")
@@ -3479,10 +3505,13 @@ def power_all_cmd(
         plug_info = f"{sbc.power_plug.plug_type.value} @ {sbc.power_plug.address}"
         note = ""
         if sbc.name in claimed:
-            claim = claimed[sbc.name]
-            on = "" if claim.sbc_name == sbc.name else f" on '{claim.sbc_name}'"
+            holders = ", ".join(
+                f"'{_holder(c)}'"
+                + ("" if c.sbc_name == sbc.name else f" on '{c.sbc_name}'")
+                for c in claimed[sbc.name]
+            )
             verb = "overriding" if override_claim else "skipped:"
-            note = f" [{verb} claimed by '{_holder(claim)}'{on}]"
+            note = f" [{verb} claimed by {holders}]"
         click.echo(f"  - {sbc.name} ({plug_info}){note}")
 
     targets = [s for s in sbcs_with_plugs if override_claim or s.name not in claimed]
@@ -3714,7 +3743,7 @@ def _actuator_set_claim_check(ctx, kwargs, override, probe):
     actuator = manager.get_actuator_by_name(kwargs["name"])
     ch = actuator and manager.get_actuator_channel(actuator.id, kwargs["channel"])
     if not ch:
-        return None  # the command reports it
+        return []  # the command reports it
     return _check_bound_claims_cli(ctx, {ch.id}, override, probe=probe)
 
 
@@ -4703,6 +4732,8 @@ def claim_cmd(
     agent_name: str | None,
 ) -> None:
     """Reserve an SBC for exclusive access."""
+    from datetime import datetime, timedelta
+
     from labctl.core.models import ClaimConflict, UnknownSBCError
 
     config: Config = ctx.obj["config"]
@@ -4721,10 +4752,16 @@ def claim_cmd(
     if config.claims.enabled:
         try:
             # Open, not just active: an expired claim in its grace period
-            # still blocks everyone but its holder.
+            # still blocks everyone but its holder from claiming this board
+            # (not from claiming one sharing its hardware: see MCP_SERVER.md).
             own = manager.get_open_claim(sbc_name)
         except UnknownSBCError:
             own = None  # claim_sbc reports it
+        grace = timedelta(seconds=config.claims.grace_period_seconds)
+        if own is not None and not own.is_active:
+            # Past its grace too: claim_sbc sweeps it and grants the claim.
+            if own.expires_at is None or datetime.now() > own.expires_at + grace:
+                own = None
         if own is not None and own.is_active and actor.holds(own):
             _refuse_own_claim(sbc_name, own)
         if own is not None and not actor.holds(own):
