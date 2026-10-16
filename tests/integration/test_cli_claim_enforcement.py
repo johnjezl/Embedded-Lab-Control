@@ -934,6 +934,8 @@ class TestRoundSixFixes:
             "4003",
         )
         assert result.exit_code == 0, result.output
+        console = manager.get_sbc_by_name("pi-c").console_port
+        assert (console.device_path, console.tcp_port) == ("/dev/lab/port-c2", 4003)
 
 
 def _duplicate_tcp_ports(manager):
@@ -1050,7 +1052,17 @@ class TestRoundNineFixes:
             sbc_id, PortType.CONSOLE, "/dev/lab/port-b", tcp_port="4005"
         )
         assert port.tcp_port == 4005
-        with pytest.raises(ValueError, match="not a number"):
-            manager.assign_serial_port(
-                sbc_id, PortType.DEBUG, "/dev/lab/port-b2", tcp_port="four"
-            )
+        for bad in ("four", "4000.0", 4000.9, True, float("inf")):
+            with pytest.raises(ValueError, match="not a whole number"):
+                manager.assign_serial_port(
+                    sbc_id, PortType.DEBUG, "/dev/lab/port-b2", tcp_port=bad
+                )
+
+    def test_reassigning_the_highest_port_keeps_it(self, lab):
+        _, manager, _ = lab
+        sbc_id = manager.get_sbc_by_name("pi-b").id
+        manager.assign_serial_port(
+            sbc_id, PortType.CONSOLE, "/dev/lab/port-b", tcp_port=65535
+        )
+        port = manager.assign_serial_port(sbc_id, PortType.CONSOLE, "/dev/lab/new")
+        assert (port.device_path, port.tcp_port) == ("/dev/lab/new", 65535)

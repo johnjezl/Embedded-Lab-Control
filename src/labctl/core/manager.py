@@ -625,15 +625,25 @@ class ResourceManager:
         if tcp_port is None:
             tcp_port = self._next_tcp_port()
             if not 1 <= tcp_port <= 65535:
-                raise ValueError(
-                    f"No TCP port left to auto-assign (next would be {tcp_port});"
-                    " pass one explicitly"
+                # Re-assigning a port that holds the highest TCP port: keep it.
+                own = self.db.execute_one(
+                    "SELECT tcp_port FROM serial_ports"
+                    " WHERE sbc_id = ? AND port_type = ?",
+                    (sbc_id, port_type.value),
                 )
+                if not (own and own["tcp_port"]):
+                    raise ValueError(
+                        f"No TCP port left to auto-assign (next would be "
+                        f"{tcp_port}); pass one explicitly"
+                    )
+                tcp_port = own["tcp_port"]
         else:
-            try:
-                tcp_port = int(tcp_port)  # e.g. "4000" from JSON or YAML
-            except (TypeError, ValueError):
-                raise ValueError(f"TCP port {tcp_port!r} is not a number") from None
+            # A whole number, or one written as text ("4000" from JSON or
+            # YAML); not a bool (YAML "yes") or a float.
+            if isinstance(tcp_port, str) and tcp_port.strip().isdigit():
+                tcp_port = int(tcp_port)
+            if isinstance(tcp_port, bool) or not isinstance(tcp_port, int):
+                raise ValueError(f"TCP port {tcp_port!r} is not a whole number")
             if not 1 <= tcp_port <= 65535:
                 raise ValueError(f"TCP port {tcp_port} is out of range (1-65535)")
             # ser2net serves one port per TCP port, and a board given another
