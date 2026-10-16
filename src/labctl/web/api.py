@@ -30,19 +30,6 @@ def _refused(refusal):
     return jsonify(body), status
 
 
-def _tcp_port_or_none(value):
-    """A TCP port to look up sharers by; anything else (including a number
-    outside 1-65535, which SQLite may not even take) is left to
-    assign_serial_port to refuse."""
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, str) and value.strip().isdecimal():
-        value = int(value.strip())
-    if isinstance(value, int) and 1 <= value <= 65535:
-        return value
-    return None
-
-
 # --- SBC Endpoints ---
 
 
@@ -304,7 +291,8 @@ def assign_port(name: str):
         sharers=dict(
             serial_device_path=data["device"],
             serial_device_id=serial_device_id,
-            tcp_port=_tcp_port_or_none(data.get("tcp_port")),
+            # Anything else is left to assign_serial_port to refuse.
+            tcp_port=claims.port_number(data.get("tcp_port")),
         ),
     )
     if refusal:

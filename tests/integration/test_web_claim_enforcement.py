@@ -357,7 +357,9 @@ class TestRestConfiguration:
         assert resp.status_code == 409
         assert resp.get_json()["sbc_name"] == "a"
 
-    @pytest.mark.parametrize("tcp_port", ["²", 10**20, str(10**20), 0, 70000, "70000"])
+    @pytest.mark.parametrize(
+        "tcp_port", ["²", 10**20, str(10**20), "1" * 5000, 0, 70000, "70000"]
+    )
     def test_bad_tcp_port_is_400(self, lab, tcp_port):
         client, _ = lab
         resp = client.post(
@@ -367,7 +369,7 @@ class TestRestConfiguration:
         )
         assert resp.status_code == 400
 
-    @pytest.mark.parametrize("tcp_port", [str(10**20), "70000"])
+    @pytest.mark.parametrize("tcp_port", [str(10**20), "70000", "1" * 5000])
     def test_web_bad_tcp_port_flashed(self, lab, tcp_port):
         client, manager = lab
         _login(client, "alice")
@@ -660,10 +662,13 @@ class TestWebUi:
         client, manager = lab
         _claim(manager, "a", owner="bot2")
         _login(client, "bot")
-        client.post(
+        resp = client.post(
             "/sbc/a/claim/force-release",
             data={"_csrf_token": _csrf(client, "/sbc/a"), "reason": "x"},
+            follow_redirects=True,
         )
+        assert resp.status_code == 200
+        assert b"Only operators may force-release" in resp.data
         assert manager.get_active_claim("a") is not None
 
     def test_plug_on_claimed_outlet_refused(self, lab):
@@ -682,7 +687,9 @@ class TestWebUi:
         assert resp.status_code == 409
         assert manager.get_sbc_by_name("c").power_plug.plug_index == 2
 
-    @pytest.mark.parametrize("index", ["0", "-1", "x", "²", str(10**20)])
+    @pytest.mark.parametrize(
+        "index", ["0", "-1", "x", "²", "70000", str(10**20), "1" * 5000]
+    )
     def test_plug_index_from_one(self, lab, index):
         client, manager = lab
         _login(client, "alice")

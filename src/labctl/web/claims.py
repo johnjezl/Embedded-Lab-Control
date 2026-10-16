@@ -25,6 +25,22 @@ Refusal = tuple[dict, int]
 _TRUE_VALUES = ("1", "true", "yes", "on")
 
 
+def port_number(value) -> Optional[int]:
+    """``value`` (an int, or text of decimal digits) when it is a whole
+    number from 1 to 65535, else None. Text is length-checked before
+    ``int()``, which refuses very long digit strings."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        value = value.strip()
+        if not value.isdecimal() or len(value) > 5:
+            return None
+        value = int(value)
+    if isinstance(value, int) and 1 <= value <= 65535:
+        return value
+    return None
+
+
 def is_api_request() -> bool:
     return bool(request.endpoint and request.endpoint.startswith("api."))
 
