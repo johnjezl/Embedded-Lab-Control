@@ -152,10 +152,14 @@ class TestRestPower:
         """A claim made by the same user over MCP counts as theirs."""
         client, manager = lab
         claim = _claim(manager, "a", owner="bot", session="mcp-http:1-2:bot")
+        manager.db.execute_modify(
+            "UPDATE claims SET last_activity = '2000-01-01 00:00:00' WHERE id = ?",
+            (claim.id,),
+        )
         resp = client.post("/api/sbcs/a/power", json={"action": "on"}, headers=BOT)
         assert resp.status_code == 200
         power.power_on.assert_called_once()
-        assert manager.get_active_claim("a").last_activity >= claim.last_activity
+        assert manager.get_active_claim("a").last_activity.year > 2000
 
     def test_shared_outlet_refused(self, lab, power):
         client, manager = lab
@@ -353,14 +357,31 @@ class TestRestConfiguration:
         assert resp.status_code == 409
         assert resp.get_json()["sbc_name"] == "a"
 
-    def test_non_decimal_tcp_port_is_400(self, lab):
+    @pytest.mark.parametrize("tcp_port", ["²", 10**20, str(10**20), 0, 70000, "70000"])
+    def test_bad_tcp_port_is_400(self, lab, tcp_port):
         client, _ = lab
         resp = client.post(
             "/api/sbcs/c/ports",
-            json={"type": "console", "device": "/dev/x", "tcp_port": "²"},
+            json={"type": "console", "device": "/dev/x", "tcp_port": tcp_port},
             headers=BOT,
         )
         assert resp.status_code == 400
+
+    @pytest.mark.parametrize("tcp_port", [str(10**20), "70000"])
+    def test_web_bad_tcp_port_flashed(self, lab, tcp_port):
+        client, manager = lab
+        _login(client, "alice")
+        resp = client.post(
+            "/sbc/c/port/assign",
+            data={
+                "_csrf_token": _csrf(client, "/sbc/c"),
+                "port_type": "console",
+                "device": "/dev/x",
+                "tcp_port": tcp_port,
+            },
+        )
+        assert resp.status_code == 302
+        assert manager.get_sbc_by_name("c").console_port is None
 
     def test_port_device_must_be_a_path(self, lab):
         client, _ = lab
@@ -437,10 +458,15 @@ class TestRestDelete:
         assert manager.get_sbc_by_name("a") is not None
 
     def test_own_claim_on_board_shared_with_others_claim(self, lab):
-        """Deleting your own claimed board isn't stopped by your claim."""
+        """Deleting your own claimed board isn't stopped by your claim, nor
+        by another user's claim on a board sharing its outlet (deleting
+        b's records doesn't touch a)."""
         client, manager = lab
-        _claim(manager, "c", owner="bot", session="mcp-http:1-2:bot")
-        assert client.delete("/api/sbcs/c", headers=BOT).status_code == 200
+        _claim(manager, "b", owner="bot", session="mcp-http:1-2:bot")
+        _claim(manager, "a", owner="bot2", session="mcp-http:1-2:bot2")
+        assert client.delete("/api/sbcs/b", headers=BOT).status_code == 200
+        assert manager.get_sbc_by_name("b") is None
+        assert manager.get_active_claim("a") is not None
 
 
 # --- REST: the claims endpoints ---
@@ -656,7 +682,7 @@ class TestWebUi:
         assert resp.status_code == 409
         assert manager.get_sbc_by_name("c").power_plug.plug_index == 2
 
-    @pytest.mark.parametrize("index", ["0", "-1", "x", "²"])
+    @pytest.mark.parametrize("index", ["0", "-1", "x", "²", str(10**20)])
     def test_plug_index_from_one(self, lab, index):
         client, manager = lab
         _login(client, "alice")

@@ -272,7 +272,8 @@ same operator, so they share one claimant identity.
 
 Deleting a board deletes the caller's own claim on it with it; a board
 someone else has claimed is `409` (an operator's `override_claim` deletes
-it anyway, even with `claims.enabled: false`). Claiming over REST (`POST
+it anyway, even with `claims.enabled: false`, when, as with the CLI,
+nothing is checked or logged as an override). Claiming over REST (`POST
 /api/claims/<name>`) records the user as the claim's owner and refuses a
 board whose shared hardware someone else holds, or one the caller already
 holds (`409 "already_claimed"`: renew it instead). Durations (claim and

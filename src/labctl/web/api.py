@@ -31,14 +31,15 @@ def _refused(refusal):
 
 
 def _tcp_port_or_none(value):
-    """A TCP port to look up sharers by; anything else is left to
+    """A TCP port to look up sharers by; anything else (including a number
+    outside 1-65535, which SQLite may not even take) is left to
     assign_serial_port to refuse."""
     if isinstance(value, bool):
         return None
-    if isinstance(value, int):
-        return value
     if isinstance(value, str) and value.strip().isdecimal():
-        return int(value.strip())
+        value = int(value.strip())
+    if isinstance(value, int) and 1 <= value <= 65535:
+        return value
     return None
 
 
