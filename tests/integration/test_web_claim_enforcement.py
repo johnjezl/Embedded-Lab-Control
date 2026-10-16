@@ -758,20 +758,41 @@ class TestRaces:
         assert manager.get_sbc_by_name("c") is not None
         assert manager.get_active_claim("c") is not None
 
-    def test_board_renamed_before_check_is_refused(self, lab):
+    @staticmethod
+    def _rename_after_load(manager):
+        """Rename board 'a' to 'z' (and claim it as bot2) right after a
+        handler loads it, before its claim check."""
+        from labctl.core.manager import ResourceManager
+
+        real = ResourceManager.get_sbc_by_name
+        done = []
+
+        def load_then_rename(self, name):
+            sbc = real(self, name)
+            if name == "a" and not done:
+                done.append(True)
+                manager.update_sbc(sbc.id, name="z")
+                _claim(manager, "z", owner="bot2")
+            return sbc
+
+        return patch.object(ResourceManager, "get_sbc_by_name", load_then_rename)
+
+    def test_rest_board_renamed_after_load_is_refused(self, lab, power):
         client, manager = lab
-        from flask import g
+        with self._rename_after_load(manager):
+            resp = client.post("/api/sbcs/a/power", json={"action": "on"}, headers=BOT)
+        assert resp.status_code == 404
+        assert resp.get_json()["error"] == "sbc_changed"
+        power.power_on.assert_not_called()
 
-        from labctl.web import claims as web_claims
-
-        app = client.application
-        with app.test_request_context("/api/sbcs/gone/power", method="POST"):
-            g.config = app.config["LABCTL_CONFIG"]
-            g.manager = manager
-            g.auth_user = None
-            body, status = web_claims.check("gone")
-        assert status == 404
-        assert body["error"] == "sbc_changed"
+    def test_web_board_renamed_after_load_is_refused(self, lab, view_power):
+        client, manager = lab
+        _login(client, "alice")
+        token = _csrf(client, "/sbc/a")
+        with self._rename_after_load(manager):
+            resp = client.post("/sbc/a/power/on", data={"_csrf_token": token})
+        assert resp.status_code == 404
+        view_power.power_on.assert_not_called()
 
 
 @pytest.mark.parametrize("minutes", [30.0, 5.0])
