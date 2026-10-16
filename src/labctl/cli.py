@@ -349,12 +349,17 @@ def claim_checked(
             return f(*args, **kwargs)
 
         def precheck(kwargs):
-            run(
+            claim = run(
                 click.get_current_context(),
                 kwargs,
                 kwargs.get("override_claim", False),
                 True,
             )
+            if claim is not None:  # --override-claim: say so before asking
+                click.echo(
+                    f"This overrides '{claim.agent_name}'s claim on "
+                    f"'{claim.sbc_name}'."
+                )
 
         wrapper._claim_precheck = precheck
         return override_claim_option(wrapper)
@@ -1173,7 +1178,9 @@ def remove_cmd(
         click.echo(f"Error: SBC '{name}' not found", err=True)
         sys.exit(1)
 
-    _check_claim_cli(ctx, name, override, shared=False, probe=True)
+    claim = _check_claim_cli(ctx, name, override, shared=False, probe=True)
+    if claim is not None:
+        click.echo(f"This overrides '{claim.agent_name}'s claim on '{name}'.")
     if not yes:
         click.confirm(f"Remove SBC '{name}' and all associated data?", abort=True)
     _check_claim_cli(ctx, name, override, shared=False)
@@ -2513,7 +2520,6 @@ def serial_udev_cmd(ctx: click.Context, install: bool, reload: bool) -> None:
 
 
 @serial_group.command("capture")
-@claim_checked("port_name", resolve=_port_sbc_name)
 @click.argument("port_name")
 @click.option(
     "--timeout",
@@ -4680,8 +4686,15 @@ def claim_cmd(
     duration_seconds = _validate_duration(ctx, duration_seconds)
 
     # A board sharing hardware with one another user has claimed can't be
-    # claimed: the claim would let this user drive the other's board.
+    # claimed: the claim would let this user drive the other's board. The
+    # board's own holder comes first: that's the claim to ask about.
     if config.claims.enabled:
+        try:
+            own = manager.get_active_claim(sbc_name)
+        except UnknownSBCError:
+            own = None  # claim_sbc reports it
+        if own is not None and not _cli_claim_actor().holds(own):
+            _refuse_claimed(sbc_name, own, override_hint=False)
         for other in manager.sbcs_sharing_hardware_with(sbc_name):
             held = _cli_claim_conflict(ctx, other, direct=False, probe=True)
             if held is not None:
@@ -4701,19 +4714,7 @@ def claim_cmd(
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
     except ClaimConflict as exc:
-        holder = exc.claim.agent_name or "unknown"
-        remaining = (
-            int(exc.claim.time_remaining.total_seconds())
-            if exc.claim.time_remaining is not None
-            else 0
-        )
-        click.echo(
-            f"Error: '{sbc_name}' is already claimed by '{holder}' "
-            f"({_format_remaining(remaining)} remaining). "
-            f"Use 'labctl request-release' or 'labctl force-release'.",
-            err=True,
-        )
-        sys.exit(1)
+        _refuse_claimed(sbc_name, exc.claim, override_hint=False)
     except _channel_busy_error() as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
@@ -5088,15 +5089,11 @@ def _check_import_claims(ctx, data, update: bool, override: bool) -> None:
         hardware = []
         plug = sbc_data.get("power_plug")
         if isinstance(plug, dict) and plug.get("type") and plug.get("address"):
-            hardware.append(
-                {
-                    "plug": (
-                        str(plug["type"]),
-                        str(plug["address"]),
-                        int(plug.get("index", 1)),
-                    )
-                }
-            )
+            try:
+                index = int(plug.get("index", 1))
+            except (TypeError, ValueError):
+                index = 0  # unreadable: check every outlet on the address
+            hardware.append({"plug": (str(plug["type"]), str(plug["address"]), index)})
         for port in sbc_data.get("serial_ports") or []:
             if isinstance(port, dict) and port.get("device"):
                 sd = port.get("serial_device")

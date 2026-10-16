@@ -461,3 +461,79 @@ class TestClaim:
 
     def test_cli_session_id_shape(self):
         assert _cli_session_id().startswith("cli-")
+
+
+class TestRoundOneFixes:
+    def test_claim_names_the_boards_own_holder_first(self, lab):
+        run, manager, _ = lab
+        _share_plug(manager, "pi-b")
+        manager.claim_sbc(
+            sbc_name="pi-b",
+            agent_name="agent-y",
+            session_id="mcp-http:1:agent-y",
+            session_kind="mcp-http",
+            duration_seconds=600,
+            reason="mine",
+            owner="agent-y",
+        )
+        result = run("claim", "pi-b", "-r", "x")
+        assert result.exit_code == 1
+        assert "'pi-b' is claimed by 'agent-y'" in result.output
+        assert "force-release pi-b" in result.output
+
+    def test_import_with_unreadable_plug_index_doesnt_crash(self, lab, tmp_path):
+        run, manager, _ = lab
+        path = tmp_path / "import.json"
+        path.write_text(
+            json.dumps(
+                {
+                    "sbcs": [
+                        {
+                            "name": "pi-new",
+                            "power_plug": {
+                                "type": "tasmota",
+                                "address": "10.0.0.5",
+                                "index": None,
+                            },
+                        }
+                    ]
+                }
+            )
+        )
+        result = run("import", str(path))
+        # Unreadable index: checked against every outlet on the address.
+        assert result.exit_code == 1
+        assert not isinstance(result.exception, TypeError)
+        assert "'pi-a' is claimed" in result.output
+
+    def test_prompt_says_which_claim_is_overridden(self, lab, controller, monkeypatch):
+        run, _, _ = lab
+        monkeypatch.setattr("labctl.cli._stdin_is_tty", lambda: True)
+        result = run("power", "off", "pi-a", "--override-claim", input="n\n")
+        assert "This overrides 'agent-x's claim on 'pi-a'." in result.output
+        assert result.output.index("This overrides") < result.output.index("Continue?")
+
+    def test_remove_prompt_says_which_claim_is_overridden(self, lab):
+        run, manager, _ = lab
+        result = run("remove", "pi-a", "--override-claim", input="n\n")
+        assert "This overrides 'agent-x's claim on 'pi-a'." in result.output
+        assert manager.get_sbc_by_name("pi-a") is not None
+        assert _overrides(manager, "pi-a") == []
+
+    def test_serial_capture_not_checked(self, lab):
+        """Reading a console is unchecked, like `console` and `connect`."""
+        run, manager, _ = lab
+        manager.assign_serial_port(
+            manager.get_sbc_by_name("pi-a").id,
+            PortType.CONSOLE,
+            "/dev/lab/port-a",
+            tcp_port=4001,
+        )
+        captured = MagicMock(output="", pattern_matched=False, lines=0)
+        captured.elapsed_seconds = 0.0
+        with patch(
+            "labctl.serial.capture.capture_serial_output", return_value=captured
+        ) as capture:
+            result = run("serial", "capture", "pi-a", "-t", "0.1")
+        assert result.exit_code == 0, result.output
+        capture.assert_called_once()
