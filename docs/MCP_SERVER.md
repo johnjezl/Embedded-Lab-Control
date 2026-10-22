@@ -726,8 +726,9 @@ curl --fail-with-body -T build/sdcard.img \
   `mcp.max_upload_mb`, or that would leave less than 1 GiB free on the
   file system (counting what uploads in progress still have to write),
   are refused before anything is written.
-- The body goes to a temp file, renamed into place only when complete and,
-  with `?sha256=HEX`, only if the checksum matches. A failed upload stores
+- The body goes to a temp file (mode `600`), renamed into place (mode
+  `644`, writable by the service only) only when complete and, with
+  `?sha256=HEX`, only if the checksum matches. A failed upload stores
   nothing, and a tool already reading the old image keeps reading it.
 - An existing image is replaced only with `?overwrite=1`, and only by the
   user who uploaded it or an operator. Files put in the directory another
