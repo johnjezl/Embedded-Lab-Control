@@ -253,12 +253,14 @@ CREATE TABLE IF NOT EXISTS claim_requests (
 );
 
 -- Images uploaded over MCP HTTP (mcp.upload_dir): who uploaded each one,
--- so agents can replace or delete only their own (D014)
+-- so agents can replace or delete only their own (D014). file_id
+-- (device:inode:mtime_ns:size) ties a row to the file it describes.
 CREATE TABLE IF NOT EXISTS images (
     name TEXT PRIMARY KEY,
     uploaded_by TEXT,
     size INTEGER NOT NULL,
     sha256 TEXT NOT NULL,
+    file_id TEXT,
     uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -683,6 +685,7 @@ class Database:
                     uploaded_by TEXT,
                     size INTEGER NOT NULL,
                     sha256 TEXT NOT NULL,
+                    file_id TEXT,
                     uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """)

@@ -32,6 +32,7 @@ def _reset_mcp_upload_security():
     server = sys.modules.get("labctl.mcp_server")
     if server is not None:
         server._http_security = server._UNSET
+        server._http_tls = False
 
 
 @pytest.fixture

@@ -721,14 +721,16 @@ curl --fail-with-body -T build/sdcard.img \
   letter or digit: no paths.
 - `Content-Length` is required (`curl -T` sends it). Bodies over
   `mcp.max_upload_mb`, or that would leave less than 1 GiB free on the
-  file system, are refused before anything is written.
+  file system (counting what uploads in progress still have to write),
+  are refused before anything is written.
 - The body goes to a temp file, renamed into place only when complete and,
   with `?sha256=HEX`, only if the checksum matches. A failed upload stores
   nothing, and a tool already reading the old image keeps reading it.
 - An existing image is replaced only with `?overwrite=1`, and only by the
   user who uploaded it or an operator. Files put in the directory another
-  way (scp, the CLI) have no uploader, so only operators may replace them.
-  `delete_image` follows the same rule.
+  way (scp, the CLI), or changed since they were uploaded, have no
+  uploader, so only operators may replace them. `delete_image` follows
+  the same rule.
 - Uploads (accepted or refused) and deletions are in the activity log
   (`image_upload`, `image_delete`). The `images` table (schema v10)
   records each upload's user, size and SHA-256; `list_images` shows them.

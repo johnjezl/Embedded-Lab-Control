@@ -234,15 +234,80 @@ class TestStoreUpload:
         assert e.value.code == "not_a_file"
         assert target.read_bytes() == b"keep"
 
-    def test_symlinked_directory_refused(self, tmp_path, db):
-        real = tmp_path / "real"
-        real.mkdir()
-        (tmp_path / "link").symlink_to(real)
-        store = ImageStore(str(tmp_path / "link"), db)
+    def test_symlinked_upload_dir_resolved_like_tool_paths(self, tmp_path, db):
+        """The configured path is resolved once, as tools resolve host
+        paths (e.g. /srv -> /data/srv); nothing below it is followed."""
+        real = tmp_path / "data" / "images"
+        real.mkdir(parents=True)
+        (tmp_path / "srv").symlink_to(tmp_path / "data")
+        store = ImageStore(str(tmp_path / "srv" / "images"), db)
+        _put(store, "a.img", b"x", BOT)
+        assert (real / "a.img").read_bytes() == b"x"
+        assert [i["name"] for i in store.list()] == ["a.img"]
+
+    def test_missing_upload_dir(self, tmp_path, db):
+        store = ImageStore(str(tmp_path / "nope"), db)
         with pytest.raises(ImageError) as e:
             store.begin_upload("a.img", 1, BOT, max_bytes=9)
         assert e.value.code == "upload_dir_unavailable"
-        assert os.listdir(real) == []
+
+    def test_concurrent_uploads_share_the_free_space(self, store, images_dir):
+        """Each upload counts what the others still have to write."""
+        free = 10 << 30
+        fake = os.statvfs_result((4096, 1, free, free, free, 0, 0, 0, 0, 255))
+        with patch("labctl.core.images.os.statvfs", return_value=fake):
+            first = store.begin_upload("a.img", 6 << 30, BOT, max_bytes=1 << 40)
+            try:
+                with pytest.raises(ImageError) as e:
+                    store.begin_upload("b.img", 6 << 30, BOT2, max_bytes=1 << 40)
+                assert e.value.code == "insufficient_space"
+            finally:
+                first.abort()
+            # Once it's gone, there is room again.
+            store.begin_upload("b.img", 6 << 30, BOT2, max_bytes=1 << 40).abort()
+        assert _temps(images_dir) == []
+
+    def test_disk_full_mid_upload_is_507(self, store, images_dir):
+        import errno
+
+        upload = store.begin_upload("a.img", 4, BOT, max_bytes=99)
+        try:
+            with patch(
+                "labctl.core.images.os.write",
+                side_effect=OSError(errno.ENOSPC, "No space left on device"),
+            ):
+                with pytest.raises(ImageError) as e:
+                    upload.write(b"data")
+            assert e.value.code == "insufficient_space" and e.value.status == 507
+        finally:
+            upload.abort()
+        assert os.listdir(images_dir) == []
+
+    def test_record_failure_stores_nothing(self, store, images_dir):
+        """The record and the rename are one step: no record, no image."""
+        import sqlite3
+
+        upload = store.begin_upload("a.img", 1, BOT, max_bytes=9)
+        upload.write(b"x")
+
+        def broken():
+            raise sqlite3.OperationalError("database is locked")
+
+        with patch.object(store.db, "connect", side_effect=broken):
+            with pytest.raises(sqlite3.OperationalError):
+                upload.commit()
+        assert os.listdir(images_dir) == []
+
+    def test_rename_failure_rolls_back_record(self, store, images_dir, db):
+        _put(store, "a.img", b"one", BOT)
+        upload = store.begin_upload("a.img", 3, BOT, overwrite=True, max_bytes=9)
+        upload.write(b"two")
+        with patch("labctl.core.images.os.rename", side_effect=OSError("boom")):
+            with pytest.raises(OSError):
+                upload.commit()
+        (image,) = store.list()
+        assert image["uploaded_by"] == "bot"
+        assert image["sha256"] == hashlib.sha256(b"one").hexdigest()
 
     def test_stale_temps_removed(self, store, images_dir):
         stale = images_dir / f"{TEMP_PREFIX}old"
@@ -276,6 +341,31 @@ class TestStoreListDelete:
         assert images[1]["uploaded_by"] == "bot"
         assert images[1]["sha256"] == hashlib.sha256(b"bb").hexdigest()
         assert images[1]["path"] == str(images_dir / "b.img")
+
+    def test_record_of_file_replaced_another_way_gives_no_rights(
+        self, store, images_dir
+    ):
+        """Same size, same name, but not the uploaded file: operators only."""
+        _put(store, "a.img", b"one", BOT)
+        os.unlink(images_dir / "a.img")
+        (images_dir / "a.img").write_bytes(b"two")
+        for act in (
+            lambda: store.delete("a.img", BOT),
+            lambda: _put(store, "a.img", b"new", BOT, overwrite=True),
+        ):
+            with pytest.raises(ImageError) as e:
+                act()
+            assert e.value.code == "not_owner"
+        assert (images_dir / "a.img").read_bytes() == b"two"
+        (image,) = store.list()
+        assert image["uploaded_by"] is None
+
+    def test_record_survives_own_replace(self, store):
+        _put(store, "a.img", b"one", BOT)
+        _put(store, "a.img", b"two", BOT, overwrite=True)
+        (image,) = store.list()
+        assert image["uploaded_by"] == "bot"
+        store.delete("a.img", BOT)
 
     def test_list_drops_record_of_file_replaced_another_way(self, store, images_dir):
         _put(store, "a.img", b"one", BOT)
@@ -581,11 +671,10 @@ def _free_port():
 
 @pytest.fixture
 def serve(lab, http_restore):
-    """Start the real HTTP app (as run_server builds it) on a loopback
-    port; returns a function taking ``auth`` and ``tls`` and giving the
-    base URL."""
-    import uvicorn
-
+    """Start the server as `labctl mcp --http` does (run_server, then the
+    uvicorn server _serve_http would run) on a loopback port; returns a
+    function taking ``auth``, ``tls`` and ``allowed_hosts`` and giving
+    the base URL."""
     from labctl import mcp_server
 
     servers = []
@@ -594,23 +683,17 @@ def serve(lab, http_restore):
         config = lab[0]
         config.auth.enabled = auth
         config.mcp.allowed_hosts = list(allowed_hosts or [])
-        if auth:
-            mcp_server._enable_http_auth()
-        else:
-            mcp_server.mcp.settings.auth = None
-            mcp_server.mcp._token_verifier = None
-        security = mcp_server._transport_security("127.0.0.1", config.mcp)
-        mcp_server._http_security = security
+        config.mcp.cert_file, config.mcp.key_file = tls or ("", "")
+        mcp_server.mcp.settings.auth = None
+        mcp_server.mcp._token_verifier = None
         port = _free_port()
-        app = mcp_server.mcp.streamable_http_app(
-            transport_security=security, host="127.0.0.1"
-        )
-        ssl_args = {"ssl_certfile": tls[0], "ssl_keyfile": tls[1]} if tls else {}
-        server = uvicorn.Server(
-            uvicorn.Config(
-                app, host="127.0.0.1", port=port, log_level="warning", **ssl_args
-            )
-        )
+        with (
+            patch.object(mcp_server, "_serve_http") as serve_http,
+            patch.object(mcp_server, "_start_expiry_thread"),
+            patch("atexit.register"),
+        ):
+            mcp_server.run_server(transport="http", http_port=port, host="127.0.0.1")
+        server = mcp_server._http_server(*serve_http.call_args.args)
         thread = threading.Thread(target=server.run, daemon=True)
         thread.start()
         servers.append((server, thread))
@@ -799,6 +882,24 @@ class TestUploadRoute:
         assert e.value.code == 411
         assert os.listdir(images_dir) == []
 
+    def test_unexpected_error_is_json_500_and_audited(self, serve, lab, images_dir):
+        import sqlite3
+
+        base = serve()
+        with patch.object(
+            ImageStore,
+            "begin_upload",
+            side_effect=sqlite3.OperationalError("database is locked"),
+        ):
+            status, body = _request(
+                f"{base}/images/a.img", data=b"x", headers=_bearer(BOT_KEY)
+            )
+        assert status == 500 and body["error"] == "upload_failed"
+        row = lab[1].db.execute_one(
+            "SELECT result, details FROM audit_log WHERE action = 'image_upload'"
+        )
+        assert row["result"] == "error" and "OperationalError" in row["details"]
+
     def test_uploads_off(self, serve, lab, images_dir):
         base = serve()
         lab[0].mcp.upload_dir = ""
@@ -888,6 +989,51 @@ class TestTls:
 
         with pytest.raises(McpStartupError, match="both"):
             http_tls_files(Config(), cert_pair[0], None)
+
+    def test_mismatched_pair_refused(self, cert_pair, tmp_path):
+        from labctl.mcp_server import McpStartupError, http_tls_files
+
+        other = tmp_path / "other"
+        other.mkdir()
+        subprocess.run(
+            [
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-days",
+                "1",
+                "-subj",
+                "/CN=x",
+                "-keyout",
+                str(other / "key.pem"),
+                "-out",
+                str(other / "cert.pem"),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        with pytest.raises(McpStartupError, match="don't load as a pair"):
+            http_tls_files(Config(), cert_pair[0], str(other / "key.pem"))
+
+    def test_garbage_pem_refused(self, cert_pair, tmp_path):
+        from labctl.mcp_server import McpStartupError, http_tls_files
+
+        junk = tmp_path / "junk.pem"
+        junk.write_text("not a certificate\n")
+        with pytest.raises(McpStartupError, match="don't load as a pair"):
+            http_tls_files(Config(), str(junk), cert_pair[1])
+
+    def test_upload_example_follows_scheme(self, serve, cert_pair, lab):
+        from labctl import mcp_server
+
+        with patch.object(mcp_server, "_SESSION_KIND", "mcp-http"):
+            serve()
+            assert '"http://' in mcp_server._upload_instructions()["example"]
+            serve(tls=cert_pair)
+            assert '"https://' in mcp_server._upload_instructions()["example"]
 
     def test_unreadable_refused(self, cert_pair, tmp_path):
         from labctl.mcp_server import McpStartupError, http_tls_files
