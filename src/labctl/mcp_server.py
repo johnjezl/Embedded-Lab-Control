@@ -2657,13 +2657,14 @@ def _upload_instructions() -> dict:
         if mcp._token_verifier is not None
         else ""
     )
+    scheme = "https" if _http_tls else "http"
     return {
         "available": True,
         "method": "PUT",
         "url": "<your MCP URL without /mcp>/images/<name>",
         "example": (
             "curl --fail-with-body -T build/sdcard.img" + auth + " "
-            '"https://lab.example.com:8080/images/sdcard.img'
+            f'"{scheme}://lab.example.com:8080/images/sdcard.img'
             '?sha256=$(sha256sum build/sdcard.img | cut -d" " -f1)"'
         ),
         "notes": [
@@ -2749,6 +2750,8 @@ def delete_image(name: str) -> str:
 # _UNSET (a server built another way) checks as for a loopback bind.
 _UNSET = object()
 _http_security = _UNSET
+# Whether the HTTP transport serves TLS (for the upload instructions).
+_http_tls = False
 
 
 def _upload_security():
@@ -2814,7 +2817,7 @@ async def upload_image_route(request):
     if store is None:
         return refuse("uploads_disabled", 403, _UPLOADS_OFF[len("Error: ") :])
     length = request.headers.get("content-length")
-    if length is None or not length.isdigit():
+    if length is None or not (length.isascii() and length.isdigit()):
         return refuse(
             "length_required",
             411,
@@ -2855,29 +2858,41 @@ async def upload_image_route(request):
         async for chunk in request.stream():
             pending += chunk
             if len(pending) >= _UPLOAD_WRITE_BYTES:
-                data, pending = bytes(pending), bytearray()
+                data, pending = pending, bytearray()
                 await anyio.to_thread.run_sync(upload.write, data)
         if pending:
-            await anyio.to_thread.run_sync(upload.write, bytes(pending))
+            await anyio.to_thread.run_sync(upload.write, pending)
         result = await anyio.to_thread.run_sync(upload.commit)
     except ImageError as e:
-        await anyio.to_thread.run_sync(
-            record,
-            "forbidden" if e.status == 403 else "error",
-            {"error": e.code, "size": int(length)},
-        )
-        return refuse(e.code, e.status, e.message)
+        failure = (e, "forbidden" if e.status == 403 else "error", e.code)
     except ClientDisconnect:
-        return refuse("disconnected", 400, "the client disconnected mid-upload")
-    except OSError as e:
-        logger.warning("Image upload %r failed: %s", name, e)
-        await anyio.to_thread.run_sync(
-            record, "error", {"error": "os_error", "size": int(length)}
+        failure = (
+            ImageError("disconnected", 400, "the client disconnected mid-upload"),
+            "error",
+            "disconnected",
         )
-        return refuse("write_failed", 500, f"could not store the image: {e.strerror}")
+    except Exception as e:  # noqa: BLE001 - a JSON error and an audit row
+        logger.exception("Image upload %r failed", name)
+        failure = (
+            ImageError(
+                "upload_failed",
+                500,
+                f"could not store the image: {getattr(e, 'strerror', None) or e}",
+            ),
+            "error",
+            type(e).__name__,
+        )
+    else:
+        failure = None
     finally:
         if upload is not None:
             await anyio.to_thread.run_sync(upload.abort)
+    if failure is not None:
+        error, outcome, code = failure
+        await anyio.to_thread.run_sync(
+            record, outcome, {"error": code, "size": int(length)}
+        )
+        return JSONResponse(error.to_dict(), status_code=error.status)
     await anyio.to_thread.run_sync(
         record,
         "ok",
@@ -4311,6 +4326,8 @@ def http_tls_files(config, cert: str | None = None, key: str | None = None):
             "TLS needs both a certificate and a key (--cert/--key or "
             "mcp.cert_file/mcp.key_file); only one was given"
         )
+    import ssl
+
     for label, path in (("certificate", cert), ("key", key)):
         try:
             with open(path, "rb"):
@@ -4319,6 +4336,14 @@ def http_tls_files(config, cert: str | None = None, key: str | None = None):
             raise McpStartupError(
                 f"TLS {label} {path} can't be read: {e.strerror or e}"
             ) from e
+    try:
+        # What uvicorn will do, now, so a bad file fails the start (and
+        # --check) instead of crashing after "TLS with certificate".
+        ssl.create_default_context(ssl.Purpose.CLIENT_AUTH).load_cert_chain(cert, key)
+    except (ssl.SSLError, ValueError) as e:
+        raise McpStartupError(
+            f"TLS certificate {cert} and key {key} don't load as a pair: {e}"
+        ) from e
     return cert, key
 
 
@@ -4410,7 +4435,7 @@ def run_server(
         raise ValueError(f"Unknown transport: {transport}")
     _set_transport(transport)
 
-    global _http_security
+    global _http_security, _http_tls
 
     security = tls = None
     config = _get_config()
@@ -4433,6 +4458,7 @@ def run_server(
         if required:
             _enable_http_auth()
         _http_security = security
+        _http_tls = bool(tls)
     else:
         check_stdio_startup(config)
     # From here on, every load_config() in this process (tools, database,
@@ -4453,16 +4479,16 @@ def run_server(
         _serve_http(host, http_port, security, tls)
 
 
-def _serve_http(host: str, port: int, security, tls) -> None:
-    """Serve the streamable-HTTP app (with the upload route) under uvicorn,
-    with TLS when ``tls`` is ``(cert_file, key_file)``. The SDK's own
-    runner takes no TLS options; this is the same app and server config
-    otherwise."""
+def _http_server(host: str, port: int, security, tls):
+    """The uvicorn server for the streamable-HTTP app (with the upload
+    route), with TLS when ``tls`` is ``(cert_file, key_file)``. The SDK's
+    own runner takes no TLS options; this is the same app and server
+    config otherwise."""
     import uvicorn
 
     app = mcp.streamable_http_app(transport_security=security, host=host)
     ssl = {"ssl_certfile": tls[0], "ssl_keyfile": tls[1]} if tls else {}
-    uvicorn.Server(
+    return uvicorn.Server(
         uvicorn.Config(
             app,
             host=host,
@@ -4470,7 +4496,11 @@ def _serve_http(host: str, port: int, security, tls) -> None:
             log_level=mcp.settings.log_level.lower(),
             **ssl,
         )
-    ).run()
+    )
+
+
+def _serve_http(host: str, port: int, security, tls) -> None:
+    _http_server(host, port, security, tls).run()
 
 
 if __name__ == "__main__":
