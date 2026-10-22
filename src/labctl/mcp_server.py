@@ -291,8 +291,11 @@ def _open_host_read(path: str) -> tuple[int | None, str | None]:
     resolved, err = _resolve_host_path(path, "read")
     if err:
         return None, err
-    if _in_upload_dir(resolved) and os.path.basename(resolved).startswith("."):
-        # Uploads in progress (.upload-*): unfinished and unverified.
+    if os.path.basename(resolved).startswith(".") and (
+        _in_upload_dir(resolved) or _is_upload_dir_path(os.path.dirname(resolved))
+    ):
+        # Uploads in progress (.upload-*): unfinished and unverified. Also
+        # under another name for upload_dir (bind mount, case alias).
         return None, f"Error: {path!r} is not an image (dot files in mcp.upload_dir)"
     try:
         # Refuses non-regular files (e.g. a planted FIFO) without blocking.
@@ -338,14 +341,15 @@ def _open_host_write_dir(path: str) -> tuple[int | None, str | None, str | None]
         return None, None, _host_open_error(path, e)
     # The same directory under another name (a bind mount, letter case on
     # a case-insensitive file system) passes the path check above.
-    if _is_upload_dir(fd):
+    if _is_upload_dir_stat(os.fstat(fd)):
         os.close(fd)
         return refused
     return fd, resolved, None
 
 
-def _is_upload_dir(dir_fd: int) -> bool:
-    """Whether open directory ``dir_fd`` is mcp.upload_dir itself."""
+def _is_upload_dir_stat(st: os.stat_result) -> bool:
+    """Whether the directory ``st`` describes is mcp.upload_dir itself,
+    whatever name reached it."""
     upload_dir = _get_config().mcp.upload_dir
     if not upload_dir:
         return False
@@ -353,8 +357,14 @@ def _is_upload_dir(dir_fd: int) -> bool:
         upload = os.stat(upload_dir)
     except OSError:
         return False
-    opened = os.fstat(dir_fd)
-    return (opened.st_dev, opened.st_ino) == (upload.st_dev, upload.st_ino)
+    return (st.st_dev, st.st_ino) == (upload.st_dev, upload.st_ino)
+
+
+def _is_upload_dir_path(path: str) -> bool:
+    try:
+        return _is_upload_dir_stat(os.stat(path))
+    except OSError:
+        return False
 
 
 def _open_copy_sources(
@@ -2805,18 +2815,10 @@ _http_tls = False
 
 
 def _upload_security():
-    from mcp.server.transport_security import TransportSecuritySettings
-
     if _http_security is _UNSET:
-        return TransportSecuritySettings(
-            enable_dns_rebinding_protection=True,
-            allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*"],
-            allowed_origins=[
-                "http://127.0.0.1:*",
-                "http://localhost:*",
-                "http://[::1]:*",
-            ],
-        )
+        from labctl.core.config import McpConfig
+
+        return _transport_security("127.0.0.1", McpConfig())
     return _http_security
 
 

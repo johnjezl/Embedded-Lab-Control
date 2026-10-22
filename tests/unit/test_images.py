@@ -587,6 +587,30 @@ class TestBareNames:
         finally:
             upload.abort()
 
+    def test_upload_in_progress_unreadable_under_another_name(
+        self, lab, images_dir, tmp_path
+    ):
+        from labctl import mcp_server
+
+        store = ImageStore(str(images_dir), lab[1].db)
+        upload = store.begin_upload("a.img", 9, BOT, max_bytes=99)
+        try:
+            upload.write(b"half")
+            with patch.object(mcp_server, "_in_upload_dir", return_value=False):
+                fd, err = mcp_server._open_host_read(str(images_dir / upload.temp))
+            assert fd is None and "dot files in mcp.upload_dir" in err
+        finally:
+            upload.abort()
+
+    def test_default_upload_security_matches_loopback(self):
+        from labctl import mcp_server
+        from labctl.core.config import McpConfig
+
+        assert mcp_server._http_security is mcp_server._UNSET
+        assert mcp_server._upload_security() == mcp_server._transport_security(
+            "127.0.0.1", McpConfig()
+        )
+
     def test_tools_never_write_into_upload_dir(self, lab, images_dir):
         """boot_test's output_dir would truncate uploaded images in place."""
         from labctl import mcp_server
