@@ -6,6 +6,10 @@ useDefault = true
 [allowlist]
 description = "The ignore file lists finding fingerprints, which look like keys; fake test keys"
 paths = ['''^\.gitleaksignore$''']
-# Fake API keys in tests/integration/test_web_claim_enforcement.py. Matched
-# by value, not fingerprint: a rebase-merge gives the commit a new hash.
-regexes = ['''^(operator|agent2?)-key-0123456789$''']
+# Fake API keys in tests/integration/test_web_claim_enforcement.py and
+# tests/unit/test_images.py. Matched by value, not fingerprint: a
+# rebase-merge gives the commit a new hash.
+regexes = [
+  '''^(operator|agent2?)-key-0123456789$''',
+  '''^(alice|bot2?)-key-0123456789abcdefg?h?$''',
+]
