@@ -2945,7 +2945,10 @@ async def upload_image_route(request):
         failure = None
     finally:
         if upload is not None:
-            await anyio.to_thread.run_sync(upload.abort)
+            # Shielded: a cancelled request (shutdown, disconnect) must
+            # still drop its temp file and free-space reservation.
+            with anyio.CancelScope(shield=True):
+                await anyio.to_thread.run_sync(upload.abort)
     if failure is not None:
         error, outcome, code = failure
         await anyio.to_thread.run_sync(
