@@ -162,41 +162,51 @@ class ImageStore:
         who uploaded them where known."""
         dir_fd = self._open_dir()
         try:
-            names = sorted(os.listdir(dir_fd))
-            records = {
-                r["name"]: r
-                for r in self.db.execute(
-                    "SELECT name, uploaded_by, sha256, file_id FROM images"
-                )
-            }
-            images = []
-            for name in names:
-                if name.startswith("."):
-                    continue
-                st = self._existing(dir_fd, name)
-                if st is None or not stat.S_ISREG(st.st_mode):
-                    continue
-                record = records.get(name)
-                # A record describes this file only while it is the file
-                # uploaded; one replaced or changed another way has no
-                # uploader or checksum.
-                if record is not None and record["file_id"] != file_id(st):
-                    record = None
-                images.append(
-                    {
-                        "name": name,
-                        "path": os.path.join(self.directory, name),
-                        "size": st.st_size,
-                        "modified": time.strftime(
-                            "%Y-%m-%dT%H:%M:%SZ", time.gmtime(st.st_mtime)
-                        ),
-                        "uploaded_by": record["uploaded_by"] if record else None,
-                        "sha256": record["sha256"] if record else None,
-                    }
-                )
-            return images
+            return self._list(dir_fd)
+        except OSError as e:
+            raise ImageError(
+                "upload_dir_unavailable",
+                500,
+                f"upload directory {self.directory} can't be listed: "
+                f"{e.strerror or e}",
+            ) from e
         finally:
             os.close(dir_fd)
+
+    def _list(self, dir_fd: int) -> "list[dict]":
+        names = sorted(os.listdir(dir_fd))
+        records = {
+            r["name"]: r
+            for r in self.db.execute(
+                "SELECT name, uploaded_by, sha256, file_id FROM images"
+            )
+        }
+        images = []
+        for name in names:
+            if name.startswith("."):
+                continue
+            st = self._existing(dir_fd, name)
+            if st is None or not stat.S_ISREG(st.st_mode):
+                continue
+            record = records.get(name)
+            # A record describes this file only while it is the file
+            # uploaded; one replaced or changed another way has no
+            # uploader or checksum.
+            if record is not None and record["file_id"] != file_id(st):
+                record = None
+            images.append(
+                {
+                    "name": name,
+                    "path": os.path.join(self.directory, name),
+                    "size": st.st_size,
+                    "modified": time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime(st.st_mtime)
+                    ),
+                    "uploaded_by": record["uploaded_by"] if record else None,
+                    "sha256": record["sha256"] if record else None,
+                }
+            )
+        return images
 
     # -- upload ----------------------------------------------------------
 
@@ -467,8 +477,11 @@ class Upload:
 
 def _remove_stale_temps(dir_fd: int) -> None:
     cutoff = time.time() - STALE_TEMP_SECONDS
+    with _space_lock:
+        # A stalled upload of this process is still alive, however old.
+        live = {u.temp for u in _active}
     for entry in os.listdir(dir_fd):
-        if not entry.startswith(TEMP_PREFIX):
+        if not entry.startswith(TEMP_PREFIX) or entry in live:
             continue
         try:
             st = os.stat(entry, dir_fd=dir_fd, follow_symlinks=False)

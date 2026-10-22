@@ -319,6 +319,20 @@ class TestStoreUpload:
         _put(store, "a.img", b"x", BOT)
         assert not stale.exists() and fresh.exists()
 
+    def test_stalled_upload_temp_not_removed_as_stale(self, store, images_dir):
+        stalled = store.begin_upload("a.img", 2, BOT, max_bytes=99)
+        try:
+            stalled.write(b"x")
+            old = time.time() - 2 * 24 * 3600
+            os.utime(images_dir / stalled.temp, (old, old))
+            _put(store, "b.img", b"y", BOT2)  # runs the stale-temp sweep
+            assert (images_dir / stalled.temp).exists()
+            stalled.write(b"z")
+            stalled.commit()
+        finally:
+            stalled.abort()
+        assert (images_dir / "a.img").read_bytes() == b"xz"
+
     def test_reader_of_old_image_keeps_reading_it(self, store, images_dir):
         _put(store, "a.img", b"old", BOT)
         fd = os.open(images_dir / "a.img", os.O_RDONLY)
@@ -366,6 +380,14 @@ class TestStoreListDelete:
         (image,) = store.list()
         assert image["uploaded_by"] == "bot"
         store.delete("a.img", BOT)
+
+    def test_unlistable_dir_is_image_error(self, store):
+        with patch(
+            "labctl.core.images.os.listdir", side_effect=PermissionError(13, "denied")
+        ):
+            with pytest.raises(ImageError) as e:
+                store.list()
+        assert e.value.code == "upload_dir_unavailable"
 
     def test_list_drops_record_of_file_replaced_another_way(self, store, images_dir):
         _put(store, "a.img", b"one", BOT)
@@ -602,14 +624,16 @@ class TestBareNames:
         finally:
             upload.abort()
 
-    def test_default_upload_security_matches_loopback(self):
+    def test_default_upload_security_checks_loopback(self):
         from labctl import mcp_server
-        from labctl.core.config import McpConfig
 
         assert mcp_server._http_security is mcp_server._UNSET
-        assert mcp_server._upload_security() == mcp_server._transport_security(
-            "127.0.0.1", McpConfig()
-        )
+        security = mcp_server._upload_security()
+        assert security is not None
+        assert security.enable_dns_rebinding_protection is True
+        assert "127.0.0.1:*" in security.allowed_hosts
+        assert not any(h.startswith("*") for h in security.allowed_hosts)
+        assert "https://127.0.0.1:*" in security.allowed_origins
 
     def test_tools_never_write_into_upload_dir(self, lab, images_dir):
         """boot_test's output_dir would truncate uploaded images in place."""
