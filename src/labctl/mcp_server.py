@@ -264,6 +264,15 @@ def _image_name_to_path(path: str) -> tuple[str | None, str | None]:
     return os.path.join(upload_dir, path), None
 
 
+def _in_upload_dir(resolved: str) -> bool:
+    """Whether resolved host path ``resolved`` is in mcp.upload_dir."""
+    upload_dir = _get_config().mcp.upload_dir
+    if not upload_dir:
+        return False
+    root = os.path.realpath(upload_dir)
+    return os.path.commonpath([resolved, root]) == root
+
+
 def _open_host_read(path: str) -> tuple[int | None, str | None]:
     """Check ``path`` against mcp.allowed_read_paths and open it, no symlinks.
 
@@ -282,6 +291,9 @@ def _open_host_read(path: str) -> tuple[int | None, str | None]:
     resolved, err = _resolve_host_path(path, "read")
     if err:
         return None, err
+    if _in_upload_dir(resolved) and os.path.basename(resolved).startswith("."):
+        # Uploads in progress (.upload-*): unfinished and unverified.
+        return None, f"Error: {path!r} is not an image (dot files in mcp.upload_dir)"
     try:
         # Refuses non-regular files (e.g. a planted FIFO) without blocking.
         fd = open_file_nofollow(resolved, os.O_RDONLY)
@@ -301,6 +313,13 @@ def _open_host_write_dir(path: str) -> tuple[int | None, str | None, str | None]
     resolved, err = _resolve_host_path(path, "write")
     if err:
         return None, None, err
+    if _in_upload_dir(resolved):
+        # Run files would overwrite (truncate) uploaded images in place.
+        return (
+            None,
+            None,
+            f"Error: {path!r} is inside mcp.upload_dir; tools don't write there",
+        )
     try:
         return open_dir_nofollow(resolved, create=True), resolved, None
     except OSError as e:
@@ -2741,6 +2760,17 @@ def delete_image(name: str) -> str:
             details={"error": e.code},
         )
         return f"Error: {e.message}"
+    except Exception as e:  # noqa: BLE001 - an error result and an audit row
+        logger.exception("Deleting image %r failed", name)
+        audit.emit(
+            store.db,
+            action="image_delete",
+            entity_type="image",
+            entity_name=name,
+            result="error",
+            details={"error": type(e).__name__},
+        )
+        return f"Error: could not delete image '{name}': {e}"
     audit.emit(store.db, action="image_delete", entity_type="image", entity_name=name)
     return f"Deleted image: {name}"
 
@@ -2813,22 +2843,29 @@ async def upload_image_route(request):
             "send 'Authorization: Bearer <api_key>'",
             **{"WWW-Authenticate": "Bearer"},
         )
-    store = await anyio.to_thread.run_sync(_image_store)
-    if store is None:
-        return refuse("uploads_disabled", 403, _UPLOADS_OFF[len("Error: ") :])
-    length = request.headers.get("content-length")
-    if length is None or not (length.isascii() and length.isdigit()):
+    try:
+        store = await anyio.to_thread.run_sync(_image_store)
+        if store is None:
+            return refuse("uploads_disabled", 403, _UPLOADS_OFF[len("Error: ") :])
+        length = request.headers.get("content-length")
+        if length is None or not (length.isascii() and length.isdigit()):
+            return refuse(
+                "length_required",
+                411,
+                "Content-Length is required (curl -T FILE sends it)",
+            )
+        name = request.path_params["name"]
+        query = request.query_params
+        overwrite = query.get("overwrite", "").strip().lower() in _TRUE_WORDS
+        caller = _image_caller()
+        actor = _get_session_id()
+        max_bytes = _get_config().mcp.max_upload_mb << 20
+    except Exception as e:  # noqa: BLE001 - JSON, as for every other error
+        # Before any audit context exists (e.g. the database won't open).
+        logger.exception("Image upload setup failed")
         return refuse(
-            "length_required",
-            411,
-            "Content-Length is required (curl -T FILE sends it)",
+            "upload_failed", 500, f"could not start the upload: {type(e).__name__}"
         )
-    name = request.path_params["name"]
-    query = request.query_params
-    overwrite = query.get("overwrite", "").strip().lower() in _TRUE_WORDS
-    caller = _image_caller()
-    actor = _get_session_id()
-    max_bytes = _get_config().mcp.max_upload_mb << 20
 
     def record(result: str, details: dict) -> None:
         audit.emit(

@@ -301,8 +301,18 @@ class ImageStore:
                         "not_a_file", 409, f"'{name}' exists and is not a file"
                     )
                 self._check_may_replace(name, existing, caller, "delete")
-                os.unlink(name, dir_fd=dir_fd)
-                self.db.execute_modify("DELETE FROM images WHERE name = ?", (name,))
+                # One step, as for uploads: a failed unlink rolls the
+                # record back.
+                with self.db.connect() as conn:
+                    conn.execute("DELETE FROM images WHERE name = ?", (name,))
+                    try:
+                        os.unlink(name, dir_fd=dir_fd)
+                    except OSError as e:
+                        raise ImageError(
+                            "delete_failed",
+                            500,
+                            f"could not delete image '{name}': {e.strerror or e}",
+                        ) from e
         finally:
             os.close(dir_fd)
 

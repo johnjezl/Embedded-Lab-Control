@@ -391,6 +391,17 @@ class TestStoreListDelete:
         store.delete("a.img", ALICE)
         assert not (images_dir / "a.img").exists()
 
+    def test_failed_unlink_keeps_record(self, store, images_dir):
+        _put(store, "a.img", b"x", BOT)
+        with patch(
+            "labctl.core.images.os.unlink", side_effect=PermissionError(13, "denied")
+        ):
+            with pytest.raises(ImageError) as e:
+                store.delete("a.img", BOT)
+        assert e.value.code == "delete_failed"
+        (image,) = store.list()
+        assert image["uploaded_by"] == "bot"
+
     def test_delete_missing(self, store):
         with pytest.raises(ImageError) as e:
             store.delete("nope.img", ALICE)
@@ -563,6 +574,32 @@ class TestBareNames:
         fd, err = mcp_server._open_host_read("a.img")
         assert fd is None and "outside mcp.allowed_read_paths" in err
 
+    def test_upload_in_progress_unreadable_by_path(self, lab, images_dir):
+        """Temp files are unfinished and unverified."""
+        from labctl import mcp_server
+
+        store = ImageStore(str(images_dir), lab[1].db)
+        upload = store.begin_upload("a.img", 9, BOT, max_bytes=99)
+        try:
+            upload.write(b"half")
+            fd, err = mcp_server._open_host_read(str(images_dir / upload.temp))
+            assert fd is None and "dot files in mcp.upload_dir" in err
+        finally:
+            upload.abort()
+
+    def test_tools_never_write_into_upload_dir(self, lab, images_dir):
+        """boot_test's output_dir would truncate uploaded images in place."""
+        from labctl import mcp_server
+
+        lab[0].mcp.allowed_write_paths = [str(images_dir.parent)]
+        for path in (images_dir, images_dir / "sub"):
+            fd, _, err = mcp_server._open_host_write_dir(str(path))
+            assert fd is None and "inside mcp.upload_dir" in err
+        assert os.listdir(images_dir) == []
+        fd, _, err = mcp_server._open_host_write_dir(str(images_dir.parent / "out"))
+        assert err is None
+        os.close(fd)
+
     def test_absolute_paths_unchanged(self, lab, images_dir):
         from labctl import mcp_server
 
@@ -636,6 +673,24 @@ class TestTools:
             "SELECT result FROM audit_log WHERE action = 'image_delete'"
         )
         assert row["result"] == "forbidden"
+
+    def test_delete_unexpected_error_reported_and_audited(
+        self, lab, images_dir, as_bot
+    ):
+        import sqlite3
+
+        from labctl import mcp_server
+
+        lab[0].mcp.confirm_destructive = False
+        with patch.object(
+            ImageStore, "delete", side_effect=sqlite3.OperationalError("locked")
+        ):
+            result = mcp_server.delete_image("a.img")
+        assert result.startswith("Error: could not delete image 'a.img'")
+        row = lab[1].db.execute_one(
+            "SELECT result, details FROM audit_log WHERE action = 'image_delete'"
+        )
+        assert row["result"] == "error" and "OperationalError" in row["details"]
 
     def test_annotations(self):
         from labctl.mcp_server import TOOL_ANNOTATIONS
@@ -899,6 +954,19 @@ class TestUploadRoute:
             "SELECT result, details FROM audit_log WHERE action = 'image_upload'"
         )
         assert row["result"] == "error" and "OperationalError" in row["details"]
+
+    def test_setup_failure_is_json_500(self, serve, images_dir):
+        from labctl import mcp_server
+
+        base = serve()
+        with patch.object(
+            mcp_server, "_image_store", side_effect=RuntimeError("db unavailable")
+        ):
+            status, body = _request(
+                f"{base}/images/a.img", data=b"x", headers=_bearer(BOT_KEY)
+            )
+        assert status == 500 and body["error"] == "upload_failed"
+        assert os.listdir(images_dir) == []
 
     def test_uploads_off(self, serve, lab, images_dir):
         base = serve()
