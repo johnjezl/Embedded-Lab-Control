@@ -313,15 +313,16 @@ def _open_host_write_dir(path: str) -> tuple[int | None, str | None, str | None]
     resolved, err = _resolve_host_path(path, "write")
     if err:
         return None, None, err
+    refused = (
+        None,
+        None,
+        f"Error: {path!r} is inside mcp.upload_dir; tools don't write there",
+    )
     if _in_upload_dir(resolved):
         # Run files would overwrite (truncate) uploaded images in place.
-        return (
-            None,
-            None,
-            f"Error: {path!r} is inside mcp.upload_dir; tools don't write there",
-        )
+        return refused
     try:
-        return open_dir_nofollow(resolved, create=True), resolved, None
+        fd = open_dir_nofollow(resolved, create=True)
     except OSError as e:
         if e.errno == errno.ENOTDIR:
             # Missing directories are created, so this is a file in the way
@@ -335,6 +336,25 @@ def _open_host_write_dir(path: str) -> tuple[int | None, str | None, str | None]
                 ),
             )
         return None, None, _host_open_error(path, e)
+    # The same directory under another name (a bind mount, letter case on
+    # a case-insensitive file system) passes the path check above.
+    if _is_upload_dir(fd):
+        os.close(fd)
+        return refused
+    return fd, resolved, None
+
+
+def _is_upload_dir(dir_fd: int) -> bool:
+    """Whether open directory ``dir_fd`` is mcp.upload_dir itself."""
+    upload_dir = _get_config().mcp.upload_dir
+    if not upload_dir:
+        return False
+    try:
+        upload = os.stat(upload_dir)
+    except OSError:
+        return False
+    opened = os.fstat(dir_fd)
+    return (opened.st_dev, opened.st_ino) == (upload.st_dev, upload.st_ino)
 
 
 def _open_copy_sources(

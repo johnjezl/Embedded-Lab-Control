@@ -600,6 +600,22 @@ class TestBareNames:
         assert err is None
         os.close(fd)
 
+    def test_upload_dir_under_another_name_refused(self, lab, images_dir, tmp_path):
+        """A bind mount or case alias passes the path check; the directory
+        itself is compared too. (A hard-to-make alias is simulated by
+        pointing upload_dir at a symlink whose target is the write path.)"""
+        from labctl import mcp_server
+
+        out = tmp_path / "out"
+        out.mkdir()
+        alias = tmp_path / "alias"
+        alias.symlink_to(out)
+        lab[0].mcp.upload_dir = str(alias)  # realpath -> out, but checked by inode
+        lab[0].mcp.allowed_write_paths = [str(out)]
+        with patch.object(mcp_server, "_in_upload_dir", return_value=False):
+            fd, _, err = mcp_server._open_host_write_dir(str(out))
+        assert fd is None and "inside mcp.upload_dir" in err
+
     def test_absolute_paths_unchanged(self, lab, images_dir):
         from labctl import mcp_server
 
