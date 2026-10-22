@@ -283,6 +283,20 @@ class TestStoreUpload:
             upload.abort()
         assert os.listdir(images_dir) == []
 
+    def test_disk_full_at_fsync_is_507(self, store, images_dir):
+        import errno
+
+        upload = store.begin_upload("a.img", 4, BOT, max_bytes=99)
+        upload.write(b"data")
+        with patch(
+            "labctl.core.images.os.fsync",
+            side_effect=OSError(errno.EDQUOT, "Disk quota exceeded"),
+        ):
+            with pytest.raises(ImageError) as e:
+                upload.commit()
+        assert e.value.code == "insufficient_space"
+        assert os.listdir(images_dir) == []
+
     def test_record_failure_stores_nothing(self, store, images_dir):
         """The record and the rename are one step: no record, no image."""
         import sqlite3
