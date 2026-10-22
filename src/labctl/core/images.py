@@ -275,7 +275,9 @@ class ImageStore:
                 fd = os.open(
                     temp,
                     os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                    0o664,
+                    # Only this process writes it: the bytes renamed into
+                    # place are the ones received and hashed.
+                    0o600,
                     dir_fd=dir_fd,
                 )
                 upload = Upload(
@@ -386,6 +388,8 @@ class Upload:
                     f"uploaded data has SHA-256 {digest}, not "
                     f"{self.expected_sha256}; nothing was stored",
                 )
+            # Readable by all, writable by the service only (not its group).
+            os.fchmod(self.fd, 0o644)
             with _full_disk_is_507():  # delayed allocation, quotas, NFS
                 os.fsync(self.fd)
             uploaded_id = file_id(os.fstat(self.fd))  # a rename keeps it

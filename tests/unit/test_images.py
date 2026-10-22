@@ -107,6 +107,17 @@ class TestStoreUpload:
         assert row["uploaded_by"] == "bot" and row["size"] == 5
         assert _temps(images_dir) == []
 
+    def test_only_the_service_can_write_uploads(self, store, images_dir):
+        upload = store.begin_upload("a.img", 1, BOT, max_bytes=9)
+        try:
+            mode = os.stat(images_dir / upload.temp).st_mode & 0o777
+            assert mode & 0o077 == 0  # temp file: owner only, whatever umask
+            upload.write(b"x")
+            upload.commit()
+        finally:
+            upload.abort()
+        assert os.stat(images_dir / "a.img").st_mode & 0o777 == 0o644
+
     def test_existing_refused_without_overwrite(self, store, images_dir):
         _put(store, "a.img", b"one", BOT)
         with pytest.raises(ImageError) as e:
