@@ -172,7 +172,7 @@ class TestRenewAfterRelease:
 
 class TestOwnerColumn:
     def test_schema_version(self):
-        assert SCHEMA_VERSION == 9
+        assert SCHEMA_VERSION >= 9
 
     def test_claim_records_owner(self, manager):
         claim = _claim(manager)

@@ -23,6 +23,17 @@ def _restore_labctl_config_env(monkeypatch):
     monkeypatch.setattr(config_mod, "_snapshot", None)
 
 
+@pytest.fixture(autouse=True)
+def _reset_mcp_upload_security():
+    """run_server() also records the HTTP Host/Origin settings for the
+    upload route (labctl.mcp_server._http_security); reset it after every
+    test, without importing the optional MCP SDK where it isn't used."""
+    yield
+    server = sys.modules.get("labctl.mcp_server")
+    if server is not None:
+        server._http_security = server._UNSET
+
+
 @pytest.fixture
 def sdwire_stub(monkeypatch):
     """Install a hardware-free stand-in for the optional ``sdwire`` package.

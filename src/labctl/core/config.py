@@ -101,6 +101,40 @@ def _path_list(section: dict, key: str) -> list[str]:
     return paths
 
 
+def _abs_path(section: dict, key: str) -> str:
+    """Read one absolute path from config ("" when unset). ``~`` and
+    ``$VARS`` are expanded; a relative or non-string value is ignored with
+    a warning, as in _path_list."""
+    raw = section.get(key)
+    if raw is None or raw == "":
+        return ""
+    if not isinstance(raw, str):
+        logger.warning("Config: %s must be a path, got %r; ignoring", key, raw)
+        return ""
+    path = _expand_path(raw)
+    if not path.is_absolute():
+        logger.warning("Config: %s %r is not absolute; ignoring", key, raw)
+        return ""
+    return str(path)
+
+
+def _positive_int(section: dict, key: str, default: int) -> int:
+    """Read a whole number above zero; anything else keeps the default,
+    with a warning."""
+    value = section.get(key)
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        logger.warning(
+            "Config: %s must be a whole number above 0, got %r; using %d",
+            key,
+            value,
+            default,
+        )
+        return default
+    return value
+
+
 def _safety_flag(section: dict, key: str, default: bool = True) -> bool:
     """Read an on/off safety switch: only an explicit boolean counts.
 
@@ -270,6 +304,10 @@ class KasaConfig:
     username: str = ""
     password: str = ""
 
+
+# One image upload over MCP HTTP (mcp.max_upload_mb): room for a full
+# SD-card image of a typical embedded Linux build.
+DEFAULT_MAX_UPLOAD_MB = 8192
 
 ROLE_OPERATOR = "operator"
 ROLE_AGENT = "agent"
@@ -443,6 +481,14 @@ class McpConfig:
     header values for the HTTP transport (DNS-rebinding protection), e.g. the
     public name a reverse proxy forwards. ``name:*`` matches any port. HTTP
     authentication itself follows ``auth.enabled`` and the users' API keys.
+
+    ``upload_dir`` is the directory ``PUT /images/<name>`` on the HTTP
+    transport writes to (empty, the default, disables uploads); it should
+    be inside ``allowed_read_paths`` so tools can use what's uploaded.
+    ``max_upload_mb`` caps one upload's size (D014).
+
+    ``cert_file`` / ``key_file`` serve the HTTP transport over TLS (both or
+    neither; ``labctl mcp --cert/--key`` take precedence).
     """
 
     allow_admin_actuator_ops: bool = False
@@ -452,6 +498,10 @@ class McpConfig:
     confirm_exempt: list[str] = field(default_factory=list)
     allowed_hosts: list[str] = field(default_factory=list)
     allowed_origins: list[str] = field(default_factory=list)
+    upload_dir: str = ""
+    max_upload_mb: int = DEFAULT_MAX_UPLOAD_MB
+    cert_file: str = ""
+    key_file: str = ""
 
 
 @dataclass
@@ -591,6 +641,12 @@ class Config:
             confirm_exempt=_name_list(mcp_data, "confirm_exempt"),
             allowed_hosts=_name_list(mcp_data, "allowed_hosts"),
             allowed_origins=_name_list(mcp_data, "allowed_origins"),
+            upload_dir=_abs_path(mcp_data, "upload_dir"),
+            max_upload_mb=_positive_int(
+                mcp_data, "max_upload_mb", DEFAULT_MAX_UPLOAD_MB
+            ),
+            cert_file=_abs_path(mcp_data, "cert_file"),
+            key_file=_abs_path(mcp_data, "key_file"),
         )
 
         database = DatabaseConfig(
@@ -690,6 +746,10 @@ class Config:
                 "confirm_exempt": list(self.mcp.confirm_exempt),
                 "allowed_hosts": list(self.mcp.allowed_hosts),
                 "allowed_origins": list(self.mcp.allowed_origins),
+                "upload_dir": self.mcp.upload_dir,
+                "max_upload_mb": self.mcp.max_upload_mb,
+                "cert_file": self.mcp.cert_file,
+                "key_file": self.mcp.key_file,
             },
             "database": {
                 "timeout_seconds": self.database.timeout_seconds,

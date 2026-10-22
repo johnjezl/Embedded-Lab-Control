@@ -71,10 +71,13 @@ JSON-RPC messages. All logging goes to stderr.
 ```bash
 labctl mcp --http 8080                  # binds 127.0.0.1:8080 (default)
 labctl mcp --http 8080 --host 0.0.0.0   # all interfaces — requires auth
+labctl mcp --http 8080 --host 0.0.0.0 --cert cert.pem --key key.pem  # HTTPS
 ```
 
 Uses the Streamable HTTP transport (endpoint `/mcp`) on the specified port.
 Useful for multi-client scenarios or accessing the lab from a different machine.
+The same port also takes image uploads (`PUT /images/<name>`, see
+[Uploading images](#uploading-images)).
 
 #### Authentication
 
@@ -156,9 +159,28 @@ therefore ignored); API keys are required there regardless.
 
 For remote access, either tunnel (`ssh -L 8080:127.0.0.1:8080 tarrasque`),
 put a TLS-terminating reverse proxy in front of the loopback server, or
-bind a reachable address with auth enabled. The server itself speaks plain
-HTTP, so keys cross the network in clear text unless a tunnel or proxy
-provides TLS.
+bind a reachable address with auth enabled and TLS on.
+
+#### TLS
+
+`--cert`/`--key` (or `mcp.cert_file`/`mcp.key_file` in the config; the
+flags take precedence) serve HTTPS. Both are needed; the server refuses to
+start with only one, or with a file it can't read. Without TLS the server
+speaks plain HTTP, so API keys and uploads cross the network in clear text,
+and a non-loopback bind without TLS logs a warning at startup. The web
+server's certificate (`web.cert_file`/`key_file`) can be reused; the
+service user (`labctl`) must be able to read both files.
+
+```yaml
+mcp:
+  cert_file: /etc/labctl/tls/cert.pem
+  key_file: /etc/labctl/tls/key.pem
+```
+
+Clients then use `https://` URLs. Node-based clients (Claude Code) reject
+a self-signed certificate unless they are told to trust it:
+`NODE_EXTRA_CA_CERTS=/path/to/cert.pem claude`. `labctl mcp --http PORT
+--check` prints the `tls:` and `uploads:` settings it would use.
 
 ### Running as a systemd service
 
@@ -369,6 +391,13 @@ Tools perform mutations — the AI assistant calls these to take action.
 | `sdwire_discover` | | Scan for connected SDWire devices |
 | `flash_image` | `sbc_name`, `image_path`, `reboot`, `post_flash_copies` | Flash raw disk image (.img/.img.xz/.img.gz) to SD card with safety checks. Host paths must be allowlisted (see [Host file access](#host-file-access-allowlist)) |
 
+### Images
+
+| Tool | Parameters | Description |
+|------|------------|-------------|
+| `list_images` | | Images in `mcp.upload_dir` (size, uploader, SHA-256) and how to upload one |
+| `delete_image` | `name` | Delete an uploaded image (its uploader or an operator) |
+
 ### Serial I/O
 
 | Tool | Parameters | Description |
@@ -380,7 +409,7 @@ Tools perform mutations — the AI assistant calls these to take action.
 
 | Tool | Parameters | Description |
 |------|------------|-------------|
-| `boot_test` | `sbc_name`, `expect_pattern`, `runs`, `timeout`, `image`, `dest`, `partition`, `output_dir` | Automated boot reliability testing with deploy and serial capture. `image` must be in `allowed_read_paths`, `output_dir` in `allowed_write_paths` |
+| `boot_test` | `sbc_name`, `expect_pattern`, `runs`, `timeout`, `image`, `dest`, `partition`, `output_dir` | Automated boot reliability testing with deploy and serial capture. `image` is an uploaded image's name or a path in `allowed_read_paths`; `output_dir` must be in `allowed_write_paths` |
 
 ### Claims (Exclusive Access Coordination)
 
@@ -505,15 +534,16 @@ and rewrite SD cards, type into serial consoles, drive actuators and edit
 the inventory. An AI agent connected to it should be treated like a
 colleague with a shell on the lab host, and the controls below exist to
 keep its mistakes (and anyone who reaches the endpoint) contained. Design
-decisions: D011, D012 in [`DECISIONS.md`](DECISIONS.md).
+decisions: D011, D012, D014 in [`DECISIONS.md`](DECISIONS.md).
 
 | Layer | What it does | Default | Configure |
 |---|---|---|---|
-| Transport | stdio: only the local user running the client. HTTP: loopback unless authenticated | stdio / `127.0.0.1` | `--http`, `--host` |
+| Transport | stdio: only the local user running the client. HTTP: loopback unless authenticated; [TLS](#tls) optional | stdio / `127.0.0.1`, plain HTTP | `--http`, `--host`, `--cert`/`--key` |
 | [Authentication](#authentication) | HTTP requests need a web user's API key as a bearer token; sessions, claims and confirm tokens are per user | off (`auth.enabled: false`) | `auth.enabled`, `auth.users[].api_key` |
 | [Host header checks](#host-header-checks) | Rejects unexpected `Host`/`Origin` (DNS rebinding) | loopback names | `mcp.allowed_hosts`, `mcp.allowed_origins` |
-| [Destructive confirmation](#confirmation-for-destructive-tools) | 23 destructive tools act only on a second call with a single-use token | on | `mcp.confirm_destructive`, `mcp.confirm_exempt` |
+| [Destructive confirmation](#confirmation-for-destructive-tools) | 24 destructive tools act only on a second call with a single-use token | on | `mcp.confirm_destructive`, `mcp.confirm_exempt` |
 | [Host file allowlist](#host-file-access-allowlist) | Tools may only read/write host files under listed directories, opened without following symlinks | deny all | `mcp.allowed_read_paths`, `mcp.allowed_write_paths` |
+| [Image uploads](#uploading-images) | `PUT /images/<name>` into one directory: bare names, size and free-space limits, atomic replace, only the uploader or an operator replaces or deletes | off | `mcp.upload_dir`, `mcp.max_upload_mb` |
 | Privileged actuator tools | `actuator_add/remove/set` (raw actuator access, bypassing bindings) | off | `mcp.allow_admin_actuator_ops` |
 | Claims | An agent's claim on a board blocks other agents' calls that operate or reconfigure it; only operators may force-release; optionally, changing a board requires claiming it | on (`require_claim` off) | `claims.*`, `auth.users[].role` |
 | Serialization | One tool call (and hardware-reading resource) at a time | always | — |
@@ -531,9 +561,10 @@ system-write / hardware / destructive) in
 - Without auth, all HTTP clients share one identity, so claims and confirm
   tokens don't tell them apart; anyone with local access to the port can
   call every tool.
-- The server speaks plain HTTP. Beyond the local host, use an SSH tunnel or
-  a TLS-terminating reverse proxy, and enable auth **before** adding a
-  proxy: a proxy that forwards `Host: 127.0.0.1` can't be detected.
+- Without `--cert`/`--key` the server speaks plain HTTP. Beyond the local
+  host, turn TLS on, or use an SSH tunnel or a TLS-terminating reverse
+  proxy, and enable auth **before** adding a proxy: a proxy that forwards
+  `Host: 127.0.0.1` can't be detected.
 - The CLI is not restricted by any of the `mcp.*` settings; it runs with
   the invoking user's permissions and asks for confirmation on a terminal
   (`--yes` to skip).
@@ -550,7 +581,8 @@ system-write / hardware / destructive) in
 2. For any shared or remote use, set `auth.enabled: true`, give each person
    or agent their own user and `api_key` (`labctl user generate-key`), and
    add the `Authorization: Bearer <api_key>` header to their MCP client
-   ([Connecting Claude Code agents](CLAUDE_CODE_AGENTS.md)).
+   ([Connecting Claude Code agents](CLAUDE_CODE_AGENTS.md)). Clients on
+   other machines should connect over [TLS](#tls) (or a tunnel).
 3. Behind a reverse proxy: terminate TLS there, keep the server on
    loopback, and list the public name in `mcp.allowed_hosts`.
 4. List the directories MCP tools may use in `mcp.allowed_read_paths`
@@ -640,6 +672,10 @@ mcp:
   The image format and the copied file's name follow the path you gave: a
   symlink `latest.img.xz` -> `build-4711` is still flashed as xz, and
   `Image` -> `Image-6.1.55` copied into a directory lands as `Image`.
+- A bare name with no `/` (`sdcard.img`, or `zImage:zImage` as a copy)
+  means that file in `mcp.upload_dir`; see
+  [Uploading images](#uploading-images). The allowlist still applies to
+  it, so `upload_dir` must be inside `allowed_read_paths`.
 - Paths on the SD card itself (`dest`, `renames`, `deletes`, and the
   `sdwire_ls`/`sdwire_cat` `path`) are not host paths and are not affected.
 - The CLI is not restricted: it already runs with the invoking user's
@@ -655,6 +691,51 @@ mcp:
   config files.
 - The systemd unit already confines the service: `ProtectSystem=strict`
   with `ReadWritePaths=/var/lib/labctl`, and `ProtectHome=yes`.
+
+### Uploading images
+
+A tool's arguments are text the model writes out, so an image can't be
+passed to a tool. Clients upload it over HTTP to the MCP server itself,
+with their own shell and the same API key, and then pass its bare name to
+`flash_image`, `sdwire_update` or `boot_test`. That lets an agent build on
+one machine and flash on the lab host with only the MCP connection
+between them.
+
+```yaml
+mcp:
+  upload_dir: /var/lib/labctl/images    # empty (default): uploads off
+  allowed_read_paths: [/var/lib/labctl/images]
+  # max_upload_mb: 8192                 # per upload
+```
+
+```bash
+curl --fail-with-body -T build/sdcard.img \
+  -H "Authorization: Bearer $LABCTL_API_KEY" \
+  "https://lab.example.com:8080/images/sdcard.img?sha256=$(sha256sum build/sdcard.img | cut -d' ' -f1)"
+```
+
+- `PUT /images/<name>` on the HTTP transport's port, next to `/mcp`. The
+  route checks the API key (when auth is on) and the `Host`/`Origin`
+  headers as `/mcp` does. stdio servers have no upload route.
+- Names are 1-128 letters, digits, `.`, `_`, `+` or `-`, starting with a
+  letter or digit: no paths.
+- `Content-Length` is required (`curl -T` sends it). Bodies over
+  `mcp.max_upload_mb`, or that would leave less than 1 GiB free on the
+  file system, are refused before anything is written.
+- The body goes to a temp file, renamed into place only when complete and,
+  with `?sha256=HEX`, only if the checksum matches. A failed upload stores
+  nothing, and a tool already reading the old image keeps reading it.
+- An existing image is replaced only with `?overwrite=1`, and only by the
+  user who uploaded it or an operator. Files put in the directory another
+  way (scp, the CLI) have no uploader, so only operators may replace them.
+  `delete_image` follows the same rule.
+- Uploads (accepted or refused) and deletions are in the activity log
+  (`image_upload`, `image_delete`). The `images` table (schema v10)
+  records each upload's user, size and SHA-256; `list_images` shows them.
+- Responses are JSON: `201` (new) or `200` (replaced) with `name`, `path`,
+  `size`, `sha256`; errors carry `error` and `message` (`401`, `403`
+  `not_owner`/`uploads_disabled`, `409` `exists`, `411`, `413`, `422`
+  `sha256_mismatch`, `507` `insufficient_space`).
 
 ## Troubleshooting
 

@@ -33,7 +33,7 @@ from typing import Generator, Optional
 logger = logging.getLogger(__name__)
 
 # Current schema version
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 # Default SQLite busy-timeout when the Database is constructed without an
 # explicit value (e.g. tests, direct callers). Matches Config.database
@@ -250,6 +250,16 @@ CREATE TABLE IF NOT EXISTS claim_requests (
     requested_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     acknowledged INTEGER NOT NULL DEFAULT 0,  -- SQLite boolean
     FOREIGN KEY (claim_id) REFERENCES claims(id) ON DELETE CASCADE
+);
+
+-- Images uploaded over MCP HTTP (mcp.upload_dir): who uploaded each one,
+-- so agents can replace or delete only their own (D014)
+CREATE TABLE IF NOT EXISTS images (
+    name TEXT PRIMARY KEY,
+    uploaded_by TEXT,
+    size INTEGER NOT NULL,
+    sha256 TEXT NOT NULL,
+    uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Indexes for common queries
@@ -664,6 +674,18 @@ class Database:
                     conn.execute(
                         "UPDATE claims SET owner = ? WHERE id = ?", (user, claim_id)
                     )
+
+        if from_version < 10:
+            # v10: images uploaded over MCP HTTP and who uploaded them.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS images (
+                    name TEXT PRIMARY KEY,
+                    uploaded_by TEXT,
+                    size INTEGER NOT NULL,
+                    sha256 TEXT NOT NULL,
+                    uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """)
 
         # OR IGNORE: tolerate a concurrent process that has already
         # bumped schema_version to the current value during a race.
