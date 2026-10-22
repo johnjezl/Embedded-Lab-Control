@@ -33,6 +33,7 @@ import secrets
 import stat
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Optional
 
@@ -364,17 +365,8 @@ class Upload:
         self._hash.update(chunk)
         view = memoryview(chunk)
         while view:
-            try:
+            with _full_disk_is_507():
                 written = os.write(self.fd, view[:_CHUNK])
-            except OSError as e:
-                if e.errno in (errno.ENOSPC, errno.EDQUOT):
-                    raise ImageError(
-                        "insufficient_space",
-                        507,
-                        "the upload file system filled up during the upload; "
-                        "nothing was stored",
-                    ) from e
-                raise
             view = view[written:]
 
     def commit(self) -> dict:
@@ -394,7 +386,8 @@ class Upload:
                     f"uploaded data has SHA-256 {digest}, not "
                     f"{self.expected_sha256}; nothing was stored",
                 )
-            os.fsync(self.fd)
+            with _full_disk_is_507():  # delayed allocation, quotas, NFS
+                os.fsync(self.fd)
             uploaded_id = file_id(os.fstat(self.fd))  # a rename keeps it
             os.close(self.fd)
             self.fd = -1
@@ -473,6 +466,21 @@ class Upload:
         if self.dir_fd >= 0:
             os.close(self.dir_fd)
             self.dir_fd = -1
+
+
+@contextmanager
+def _full_disk_is_507():
+    try:
+        yield
+    except OSError as e:
+        if e.errno in (errno.ENOSPC, errno.EDQUOT):
+            raise ImageError(
+                "insufficient_space",
+                507,
+                "the upload file system filled up during the upload; "
+                "nothing was stored",
+            ) from e
+        raise
 
 
 def _remove_stale_temps(dir_fd: int) -> None:
