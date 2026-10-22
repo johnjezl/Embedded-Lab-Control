@@ -675,7 +675,10 @@ mcp:
 - A bare name with no `/` (`sdcard.img`, or `zImage:zImage` as a copy)
   means that file in `mcp.upload_dir`; see
   [Uploading images](#uploading-images). The allowlist still applies to
-  it, so `upload_dir` must be inside `allowed_read_paths`.
+  it, so `upload_dir` must be inside `allowed_read_paths`. Dot files there
+  (uploads still in progress) can't be read, and tools never write into
+  `upload_dir` (a `boot_test` `output_dir` there is refused), even if it
+  is also in `allowed_write_paths`.
 - Paths on the SD card itself (`dest`, `renames`, `deletes`, and the
   `sdwire_ls`/`sdwire_cat` `path`) are not host paths and are not affected.
 - The CLI is not restricted: it already runs with the invoking user's
