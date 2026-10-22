@@ -256,6 +256,17 @@ This document records significant design decisions made during development.
 - **Follow-up (2026-10-15, part 3)**: web and REST callers are identified by user (`web:<user>`, owner = username) so one user is one claimant on every surface; without auth they share one operator identity, as unauthenticated MCP does. `require_claim` applies to REST but not the web UI, whose users are people (like the CLI's). The web UI's override is a confirmation page that repeats the refused form with `override_claim`, shown to operators only.
 - **Rationale**: claims are the mechanism that keeps agents apart, so every surface that can change a board has to honour them; roles make the override a privilege instead of an honour system, with defaults that keep existing single-user setups unchanged.
 
+## D014: Image uploads over MCP HTTP, and TLS for the MCP server
+
+- **Date**: 2026-10-21
+- **Context**: An agent working on SLM-OS couldn't deploy a fresh build: `sdwire_update`, `flash_image` and `boot_test` read host files only inside `mcp.allowed_read_paths` (D012), and nothing over MCP can put a file there. The user also wants to develop on a workstation and use the lab host's labctl remotely, which needs the MCP connection protected in transit.
+- **Constraint**: a tool's arguments are text the model writes token by token, so a disk image can't be a tool argument; the bytes have to travel over plain HTTP, sent by the agent's own shell.
+- **Decisions** (the user chose both recommendations):
+  1. **Upload route on the MCP HTTP server** (`PUT /images/<name>`, same port and API key as `/mcp`), into `mcp.upload_dir` (default empty: off). Tools take an uploaded image's bare name; `list_images` / `delete_image` tools. Rejected: a REST endpoint on `labctl web` (a remote agent would need two endpoints and credentials configured), and both (more surface for no gain).
+  2. **TLS in `labctl mcp`** (`--cert`/`--key`, or `mcp.cert_file`/`key_file`), in the same change. Rejected: SSH tunnel only, or TLS later.
+- **Rules**: bare names only (no paths, no leading dot); `Content-Length` required, `mcp.max_upload_mb` (8192) and 1 GiB left free checked before writing; temp file renamed into place only when complete (and matching `?sha256=`); replacing needs `?overwrite=1` and, like deleting, is allowed to the uploader or an operator only (files placed another way: operators only), recorded in a new `images` table (schema v10); every upload, accepted or refused, and every deletion in the activity log. The SDK serves custom routes without its auth or Host checks, so the route applies both itself.
+- **Rationale**: one remote endpoint and credential per agent; the allowlist stays the only way tools reach host files (an upload directory outside it is useless, and startup warns); agents can't clobber each other's builds, the same concern claims address for boards.
+
 ---
 
 _Template for new decisions:_

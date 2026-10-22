@@ -80,6 +80,15 @@ mcp:
     - /var/lib/labctl/images
   allowed_write_paths:
     - /var/lib/labctl/output
+  # HTTP transport: clients upload images with PUT /images/<name> (same
+  # port and API key as /mcp) into this directory; tools then take the bare
+  # name. Keep it inside allowed_read_paths. Empty = uploads off.
+  upload_dir: /var/lib/labctl/images
+  # max_upload_mb: 8192
+  # HTTPS for the HTTP transport (or labctl mcp --cert/--key); the web
+  # server's certificate can be reused.
+  # cert_file: /etc/labctl/tls/cert.pem
+  # key_file: /etc/labctl/tls/key.pem
   # Destructive tools (power off/cycle, flash, serial_send, ...) need a
   # second call with the confirm_token the first call returns.
   # confirm_destructive: true

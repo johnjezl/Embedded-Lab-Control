@@ -47,12 +47,14 @@ the tool and its exact arguments. Configure with `mcp.confirm_destructive`
 | `bindings_list` | read |  |  |
 | `boot_test` | destructive | yes |  |
 | `claim_sbc` | db-write |  |  |
+| `delete_image` | destructive | yes | Deletes a file in `mcp.upload_dir`; only its uploader or an operator |
 | `enter_recovery` | destructive | yes |  |
 | `exit_recovery` | destructive | yes |  |
 | `flash_image` | destructive | yes |  |
 | `force_release_sbc` | destructive | yes |  |
 | `get_claim` | read |  |  |
 | `list_claims` | read |  |  |
+| `list_images` | read |  | Uploading is not a tool: `PUT /images/<name>` on the HTTP port writes `mcp.upload_dir` (system-write; its uploader or an operator may replace an image) |
 | `power_cycle` | destructive | yes |  |
 | `power_off` | destructive | yes |  |
 | `power_on` | hardware |  |  |

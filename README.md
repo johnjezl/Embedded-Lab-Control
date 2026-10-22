@@ -236,6 +236,7 @@ people do not silently bypass the shared session.
 |---------|-------------|
 | `labctl mcp` | Start MCP server (stdio transport) |
 | `labctl mcp --http 8080` | Start MCP server (HTTP transport) |
+| `labctl mcp --http 8080 --cert C --key K` | HTTP transport over TLS |
 
 ### Aliases
 
@@ -432,7 +433,13 @@ pip install 'embedded-lab-control[mcp]'
 **Tools** (actions): `power_on`, `power_off`, `power_cycle`, `run_health_check`,
 `add_sbc`, `remove_sbc`, `update_sbc`, `assign_serial_port`, `assign_power_plug`,
 `set_network_address`, `sdwire_to_dut`, `sdwire_to_host`, `sdwire_update`,
-`flash_image`, `serial_capture`, `serial_send`, `boot_test`
+`flash_image`, `serial_capture`, `serial_send`, `boot_test`, `list_images`,
+`delete_image` (and more: see the docs)
+
+**Uploads**: clients upload builds over HTTP to the MCP server
+(`PUT /images/<name>`, same API key) and pass the bare name to
+`flash_image`, `sdwire_update` or `boot_test`, so an agent can build on
+another machine ([Uploading images](docs/MCP_SERVER.md#uploading-images)).
 
 **Prompts**: `debug-sbc` (guided SBC debugging), `lab-report` (comprehensive status)
 

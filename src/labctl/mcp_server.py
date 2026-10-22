@@ -8,6 +8,7 @@ Usage:
     labctl mcp                    # stdio transport (default)
     labctl mcp --http 8080        # streamable HTTP transport on 127.0.0.1:8080
     labctl mcp --http 8080 --host 0.0.0.0
+    labctl mcp --http 8080 --host 0.0.0.0 --cert cert.pem --key key.pem
 
     # Or directly:
     python -m labctl.mcp_server
@@ -45,7 +46,10 @@ mcp = MCPServer(
     instructions=(
         "Lab Controller MCP server. Provides access to embedded development "
         "lab resources including SBC management, power control, serial ports, "
-        "and health monitoring. Use resources to read state, tools to perform actions."
+        "and health monitoring. Use resources to read state, tools to perform actions. "
+        "Files for the SD card (images, kernels) are uploaded over HTTP, not "
+        "through tool arguments: list_images says how; tools then take the "
+        "uploaded file's bare name."
     ),
 )
 
@@ -126,6 +130,9 @@ _TOOL_ANNOTATION_TABLE: dict[str, tuple[str, bool, bool, bool, bool]] = {
     "release": ("Release latch binding", False, True, True, True),
     "press": ("Pulse momentary binding", False, True, False, True),
     "actuation_status": ("Binding actuation status", True, False, True, False),
+    # Uploaded images (mcp.upload_dir; uploads are PUT /images/<name>)
+    "list_images": ("List uploaded images", True, False, True, False),
+    "delete_image": ("Delete uploaded image", False, True, True, False),
     # Recovery composites (power transitions)
     "enter_recovery": ("Enter recovery mode", False, True, False, True),
     "exit_recovery": ("Exit recovery mode", False, True, False, True),
@@ -238,8 +245,29 @@ def _host_open_error(path: str, e: OSError) -> str:
     )
 
 
+def _image_name_to_path(path: str) -> tuple[str | None, str | None]:
+    """A bare name (no "/") is an image in mcp.upload_dir (D014): return
+    its path there. Other paths are returned unchanged."""
+    from labctl.core.images import name_error
+
+    if "/" in path:
+        return path, None
+    upload_dir = _get_config().mcp.upload_dir
+    if not upload_dir:
+        return None, (
+            f"Error: {path!r} is not an absolute path, and bare image names "
+            "need mcp.upload_dir to be set"
+        )
+    err = name_error(path)
+    if err:
+        return None, f"Error: {err}"
+    return os.path.join(upload_dir, path), None
+
+
 def _open_host_read(path: str) -> tuple[int | None, str | None]:
     """Check ``path`` against mcp.allowed_read_paths and open it, no symlinks.
+
+    A bare name (no "/") means that image in mcp.upload_dir.
 
     Returns ``(fd, None)`` or ``(None, "Error: ...")``. The file is opened
     at check time (``safe_open``: every component O_NOFOLLOW on the
@@ -248,6 +276,9 @@ def _open_host_read(path: str) -> tuple[int | None, str | None]:
     """
     from labctl.core.safe_open import open_file_nofollow
 
+    path, err = _image_name_to_path(path)
+    if err:
+        return None, err
     resolved, err = _resolve_host_path(path, "read")
     if err:
         return None, err
@@ -1877,7 +1908,8 @@ def sdwire_update(
         sbc_name: Name of the SBC with an assigned SDWire device
         partition: Partition number (e.g., 1 for the first partition)
         copies: List of "source:dest" pairs (dest is relative to partition root);
-            host sources must be absolute and inside mcp.allowed_read_paths
+            a source is an uploaded image's bare name (see list_images) or an
+            absolute host path inside mcp.allowed_read_paths
         renames: List of "oldname:newname" pairs (both relative to partition root)
         deletes: List of filenames to delete (relative to partition root)
         reboot: Whether to power cycle the SBC after updating
@@ -2211,11 +2243,12 @@ def flash_image(
 
     Args:
         sbc_name: Name of the SBC with an assigned SDWire device
-        image_path: Absolute host path to the image (.img, .img.xz, .img.gz);
-            must be inside mcp.allowed_read_paths
+        image_path: The image (.img, .img.xz, .img.gz): an uploaded image's
+            bare name (see list_images), or an absolute host path inside
+            mcp.allowed_read_paths
         reboot: Power on the SBC after flashing
         post_flash_copies: Optional "source:dest" pairs to copy to boot partition after flash;
-            sources must be inside mcp.allowed_read_paths
+            sources as for image_path
     """  # noqa: E501
     import time as time_mod
 
@@ -2481,7 +2514,8 @@ def boot_test(
         expect_pattern: Regex that indicates successful boot
         runs: Number of boot cycles (default: 10)
         timeout: Seconds to wait per boot (default: 30)
-        image: Host image file to deploy (None = skip deploy); must be inside
+        image: File to deploy (None = skip deploy): an uploaded image's bare
+            name (see list_images), or an absolute host path inside
             mcp.allowed_read_paths
         dest: Destination filename on SD card (required with image)
         partition: Partition number for deploy (default: 1)
@@ -2580,6 +2614,280 @@ def boot_test(
         for fd in (image_fd, output_dir_fd):
             if fd is not None:
                 os.close(fd)
+
+
+# ---------------------------------------------------------------------------
+# Uploaded images (D014)
+# ---------------------------------------------------------------------------
+#
+# A tool's arguments are text the model writes out, so a disk image can't
+# travel in one. Clients upload with their own shell to the MCP HTTP server
+# (PUT /images/<name>, the same API key) into mcp.upload_dir; tools then
+# take the bare name. labctl.core.images has the rules.
+
+
+def _image_store():
+    """The store for mcp.upload_dir, or None when uploads are off."""
+    from labctl.core.images import ImageStore
+
+    upload_dir = _get_config().mcp.upload_dir
+    if not upload_dir:
+        return None
+    return ImageStore(upload_dir, _get_manager().db)
+
+
+def _image_caller():
+    from labctl.core.images import Caller
+
+    return Caller(user=_authenticated_user(), operator=_caller_is_operator())
+
+
+_UPLOADS_OFF = "Error: image uploads are off on this server (mcp.upload_dir is not set)"
+
+
+def _upload_instructions() -> dict:
+    if _SESSION_KIND != "mcp-http":
+        return {
+            "available": False,
+            "message": "Uploads need the HTTP transport (labctl mcp --http "
+            "PORT); this session uses stdio.",
+        }
+    auth = (
+        ' -H "Authorization: Bearer $LABCTL_API_KEY"'
+        if mcp._token_verifier is not None
+        else ""
+    )
+    return {
+        "available": True,
+        "method": "PUT",
+        "url": "<your MCP URL without /mcp>/images/<name>",
+        "example": (
+            "curl --fail-with-body -T build/sdcard.img" + auth + " "
+            '"https://lab.example.com:8080/images/sdcard.img'
+            '?sha256=$(sha256sum build/sdcard.img | cut -d" " -f1)"'
+        ),
+        "notes": [
+            "Use the scheme, host and port of the MCP URL your client is "
+            "configured with, and the same API key.",
+            "sha256 is optional; when given, a mismatch stores nothing.",
+            "Add overwrite=1 to replace an image you uploaded (operators: "
+            "any image).",
+            "Then pass the bare name to flash_image, sdwire_update copies "
+            "or boot_test.",
+        ],
+    }
+
+
+@mcp.tool(annotations=TOOL_ANNOTATIONS["list_images"])
+@_with_mcp_activity
+def list_images() -> str:
+    """List the images uploaded to this server (mcp.upload_dir), and how to
+    upload one.
+
+    Files can't be sent in tool arguments: upload them with your shell to
+    this MCP server over HTTP (the response's ``upload`` section has the
+    URL and a curl example), then pass the bare name (e.g.
+    "sdcard.img") as flash_image's image_path, an sdwire_update copy
+    source ("zImage:zImage") or boot_test's image.
+    """
+    from labctl.core.images import ImageError
+
+    store = _image_store()
+    if store is None:
+        return _UPLOADS_OFF
+    try:
+        images = store.list()
+    except ImageError as e:
+        return f"Error: {e.message}"
+    max_mb = _get_config().mcp.max_upload_mb
+    return json.dumps(
+        {
+            "upload_dir": store.directory,
+            "max_upload_mb": max_mb,
+            "images": images,
+            "upload": _upload_instructions(),
+        },
+        indent=2,
+    )
+
+
+@mcp.tool(annotations=TOOL_ANNOTATIONS["delete_image"])
+@_with_mcp_activity
+def delete_image(name: str) -> str:
+    """Delete an uploaded image from mcp.upload_dir.
+
+    Only the user who uploaded it, or an operator, may delete it. A tool
+    already reading the image (a flash in progress) keeps reading it.
+
+    Args:
+        name: The image's bare name, as list_images shows it
+    """
+    from labctl.core import audit
+    from labctl.core.images import ImageError
+
+    store = _image_store()
+    if store is None:
+        return _UPLOADS_OFF
+    try:
+        store.delete(name, _image_caller())
+    except ImageError as e:
+        audit.emit(
+            store.db,
+            action="image_delete",
+            entity_type="image",
+            entity_name=name,
+            result="forbidden" if e.status == 403 else "error",
+            details={"error": e.code},
+        )
+        return f"Error: {e.message}"
+    audit.emit(store.db, action="image_delete", entity_type="image", entity_name=name)
+    return f"Deleted image: {name}"
+
+
+# Host/Origin checks for the upload route: the SDK applies
+# transport_security to /mcp only. run_server sets this to what /mcp gets;
+# _UNSET (a server built another way) checks as for a loopback bind.
+_UNSET = object()
+_http_security = _UNSET
+
+
+def _upload_security():
+    from mcp.server.transport_security import TransportSecuritySettings
+
+    if _http_security is _UNSET:
+        return TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*"],
+            allowed_origins=[
+                "http://127.0.0.1:*",
+                "http://localhost:*",
+                "http://[::1]:*",
+            ],
+        )
+    return _http_security
+
+
+_TRUE_WORDS = ("1", "true", "yes", "on")
+# Body bytes buffered before each write to disk (one thread hop per write).
+_UPLOAD_WRITE_BYTES = 4 << 20
+
+
+@mcp.custom_route("/images/{name}", methods=["PUT"])
+async def upload_image_route(request):
+    """PUT /images/<name>: store the body as an image in mcp.upload_dir.
+
+    The SDK serves custom routes without its auth check, so this checks
+    Host/Origin and the API key itself, as /mcp does. Query: overwrite=1
+    to replace an existing image (its uploader or an operator), sha256=HEX
+    to verify the data before it's stored. Content-Length is required.
+    """
+    import anyio
+    from mcp.server.transport_security import TransportSecurityMiddleware
+    from starlette.requests import ClientDisconnect
+    from starlette.responses import JSONResponse
+
+    from labctl.core import audit
+    from labctl.core.images import ImageError
+
+    def refuse(code: str, status: int, message: str, **headers) -> JSONResponse:
+        return JSONResponse(
+            {"error": code, "message": message}, status_code=status, headers=headers
+        )
+
+    security = _upload_security()
+    if security is not None:
+        refused = await TransportSecurityMiddleware(security).validate_request(
+            request, is_post=False
+        )
+        if refused is not None:
+            return refused
+    # The bearer middleware runs for every route when auth is on, but only
+    # /mcp requires a user; require one here too.
+    if mcp._token_verifier is not None and _authenticated_user() is None:
+        return refuse(
+            "unauthorized",
+            401,
+            "send 'Authorization: Bearer <api_key>'",
+            **{"WWW-Authenticate": "Bearer"},
+        )
+    store = await anyio.to_thread.run_sync(_image_store)
+    if store is None:
+        return refuse("uploads_disabled", 403, _UPLOADS_OFF[len("Error: ") :])
+    length = request.headers.get("content-length")
+    if length is None or not length.isdigit():
+        return refuse(
+            "length_required",
+            411,
+            "Content-Length is required (curl -T FILE sends it)",
+        )
+    name = request.path_params["name"]
+    query = request.query_params
+    overwrite = query.get("overwrite", "").strip().lower() in _TRUE_WORDS
+    caller = _image_caller()
+    actor = _get_session_id()
+    max_bytes = _get_config().mcp.max_upload_mb << 20
+
+    def record(result: str, details: dict) -> None:
+        audit.emit(
+            store.db,
+            action="image_upload",
+            entity_type="image",
+            entity_name=name,
+            result=result,
+            details=details,
+            actor=actor,
+            source="mcp",
+        )
+
+    upload = None
+    try:
+        upload = await anyio.to_thread.run_sync(
+            lambda: store.begin_upload(
+                name,
+                int(length),
+                caller,
+                overwrite=overwrite,
+                max_bytes=max_bytes,
+                expected_sha256=query.get("sha256"),
+            )
+        )
+        pending = bytearray()
+        async for chunk in request.stream():
+            pending += chunk
+            if len(pending) >= _UPLOAD_WRITE_BYTES:
+                data, pending = bytes(pending), bytearray()
+                await anyio.to_thread.run_sync(upload.write, data)
+        if pending:
+            await anyio.to_thread.run_sync(upload.write, bytes(pending))
+        result = await anyio.to_thread.run_sync(upload.commit)
+    except ImageError as e:
+        await anyio.to_thread.run_sync(
+            record,
+            "forbidden" if e.status == 403 else "error",
+            {"error": e.code, "size": int(length)},
+        )
+        return refuse(e.code, e.status, e.message)
+    except ClientDisconnect:
+        return refuse("disconnected", 400, "the client disconnected mid-upload")
+    except OSError as e:
+        logger.warning("Image upload %r failed: %s", name, e)
+        await anyio.to_thread.run_sync(
+            record, "error", {"error": "os_error", "size": int(length)}
+        )
+        return refuse("write_failed", 500, f"could not store the image: {e.strerror}")
+    finally:
+        if upload is not None:
+            await anyio.to_thread.run_sync(upload.abort)
+    await anyio.to_thread.run_sync(
+        record,
+        "ok",
+        {
+            "size": result["size"],
+            "sha256": result["sha256"],
+            "replaced": result["replaced"],
+        },
+    )
+    return JSONResponse(result, status_code=200 if result["replaced"] else 201)
 
 
 # ---------------------------------------------------------------------------
@@ -3987,7 +4295,53 @@ def check_stdio_startup(config) -> None:
         _warn_unknown_confirm_exemptions(config.mcp)
 
 
-def check_http_startup(host: str, config):
+def http_tls_files(config, cert: str | None = None, key: str | None = None):
+    """The ``(cert_file, key_file)`` to serve HTTP with TLS, or None.
+
+    ``--cert``/``--key`` take precedence over mcp.cert_file/key_file; both
+    or neither must be given, and both must be readable files. Raises
+    McpStartupError otherwise, before anything is served.
+    """
+    cert = cert or config.mcp.cert_file or None
+    key = key or config.mcp.key_file or None
+    if not cert and not key:
+        return None
+    if not (cert and key):
+        raise McpStartupError(
+            "TLS needs both a certificate and a key (--cert/--key or "
+            "mcp.cert_file/mcp.key_file); only one was given"
+        )
+    for label, path in (("certificate", cert), ("key", key)):
+        try:
+            with open(path, "rb"):
+                pass
+        except OSError as e:
+            raise McpStartupError(
+                f"TLS {label} {path} can't be read: {e.strerror or e}"
+            ) from e
+    return cert, key
+
+
+def _warn_upload_settings(mcp_cfg) -> None:
+    """Uploads that tools couldn't use, or that can't be stored."""
+    upload_dir = mcp_cfg.upload_dir
+    if not upload_dir:
+        return
+    resolved = os.path.realpath(upload_dir)
+    if not os.path.isdir(resolved):
+        logger.warning(
+            "mcp.upload_dir %s is not a directory: uploads will fail", upload_dir
+        )
+    roots = [os.path.realpath(r) for r in mcp_cfg.allowed_read_paths]
+    if not any(os.path.commonpath([resolved, r]) == r for r in roots):
+        logger.warning(
+            "mcp.upload_dir %s is outside mcp.allowed_read_paths: tools can't "
+            "read what is uploaded there",
+            upload_dir,
+        )
+
+
+def check_http_startup(host: str, config, tls=None):
     """The HTTP transport's startup checks, without serving anything.
 
     run_server(transport="http") runs exactly this before serving, and
@@ -4019,11 +4373,23 @@ def check_http_startup(host: str, config):
             )
         security = _transport_security(host, config.mcp)
         _warn_unknown_confirm_exemptions(config.mcp)
+        _warn_upload_settings(config.mcp)
+        if required and tls is None and not _is_loopback(host):
+            logger.warning(
+                "MCP HTTP on %s without TLS: API keys and uploads cross the "
+                "network unencrypted. Use --cert/--key (mcp.cert_file/key_file), "
+                "a TLS proxy, or an SSH tunnel",
+                host,
+            )
     return required, security
 
 
 def run_server(
-    transport: str = "stdio", http_port: int = 8080, host: str = "127.0.0.1"
+    transport: str = "stdio",
+    http_port: int = 8080,
+    host: str = "127.0.0.1",
+    cert: str | None = None,
+    key: str | None = None,
 ):
     """Start the MCP server.
 
@@ -4032,6 +4398,8 @@ def run_server(
         http_port: TCP port for the HTTP transport.
         host: Bind address for the HTTP transport. Defaults to loopback;
             any other address requires auth.enabled with API keys.
+        cert, key: TLS certificate and key files for the HTTP transport
+            (default: mcp.cert_file / mcp.key_file; none means plain HTTP).
 
     Raises:
         McpStartupError: the HTTP settings are unsafe or unusable.
@@ -4042,10 +4410,13 @@ def run_server(
         raise ValueError(f"Unknown transport: {transport}")
     _set_transport(transport)
 
-    security = None
+    global _http_security
+
+    security = tls = None
     config = _get_config()
     if transport == "http":
-        required, security = check_http_startup(host, config)
+        tls = http_tls_files(config, cert, key)
+        required, security = check_http_startup(host, config, tls)
         # On stdout (not the protocol channel over HTTP), whatever log_level
         # says: the service journal shows the auth mode of every start.
         # scripts/update.sh greps these exact strings; keep them in sync.
@@ -4057,8 +4428,11 @@ def run_server(
             ),
             flush=True,
         )
+        if tls:
+            print(f"MCP HTTP: TLS with certificate {tls[0]}", flush=True)
         if required:
             _enable_http_auth()
+        _http_security = security
     else:
         check_stdio_startup(config)
     # From here on, every load_config() in this process (tools, database,
@@ -4076,12 +4450,27 @@ def run_server(
     if transport == "stdio":
         mcp.run(transport="stdio")
     else:
-        mcp.run(
-            transport="streamable-http",
+        _serve_http(host, http_port, security, tls)
+
+
+def _serve_http(host: str, port: int, security, tls) -> None:
+    """Serve the streamable-HTTP app (with the upload route) under uvicorn,
+    with TLS when ``tls`` is ``(cert_file, key_file)``. The SDK's own
+    runner takes no TLS options; this is the same app and server config
+    otherwise."""
+    import uvicorn
+
+    app = mcp.streamable_http_app(transport_security=security, host=host)
+    ssl = {"ssl_certfile": tls[0], "ssl_keyfile": tls[1]} if tls else {}
+    uvicorn.Server(
+        uvicorn.Config(
+            app,
             host=host,
-            port=http_port,
-            transport_security=security,
+            port=port,
+            log_level=mcp.settings.log_level.lower(),
+            **ssl,
         )
+    ).run()
 
 
 if __name__ == "__main__":

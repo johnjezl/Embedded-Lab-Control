@@ -185,6 +185,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   from removing dead code flagged by flake8 (unused imports/variables).
 
 ### Added
+- **Image uploads over MCP HTTP** (D014): `PUT /images/<name>` on the MCP
+  HTTP port, with the same API key, stores a file in the new
+  `mcp.upload_dir` (default empty: off); `flash_image`, `sdwire_update`
+  copies and `boot_test` take an uploaded image's bare name. New tools
+  `list_images` (with upload instructions) and `delete_image`. Limits:
+  bare names, `mcp.max_upload_mb` (8192), 1 GiB kept free, optional
+  `?sha256=` check, atomic replace with `?overwrite=1`. Only the uploader
+  or an operator may replace or delete an image; uploads and deletions are
+  in the activity log. Schema v10 (`images` table).
+- **TLS for the MCP HTTP server**: `labctl mcp --http PORT --cert FILE
+  --key FILE`, or `mcp.cert_file`/`mcp.key_file`. A non-loopback bind
+  without TLS logs a warning. `labctl mcp --check` prints the `tls:` and
+  `uploads:` settings.
 - Claim enforcement, part 3 (D013): the web UI and REST API refuse to
   operate or reconfigure a board another user has claimed (REST: `409`
   `"sbc_claimed"`; web UI: a page naming the holder), including boards

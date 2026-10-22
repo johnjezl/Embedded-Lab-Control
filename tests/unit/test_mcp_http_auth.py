@@ -271,7 +271,7 @@ class TestRunServerRefuses:
                 mcp_server, "_get_config", return_value=_config(enabled=False)
             ),
             patch.object(mcp_server, "_start_expiry_thread") as expiry,
-            patch.object(mcp_server.mcp, "run") as run,
+            patch.object(mcp_server, "_serve_http") as run,
         ):
             with pytest.raises(mcp_server.McpStartupError):
                 mcp_server.run_server(transport="http", host="0.0.0.0")
@@ -285,7 +285,7 @@ class TestRunServerRefuses:
 
         cfg = tmp_path / "c.yaml"
         cfg.write_text(f"database_path: {tmp_path / 'x.db'}\n")
-        with patch("labctl.mcp_server.mcp.run") as run:
+        with patch("labctl.mcp_server._serve_http") as run:
             result = CliRunner().invoke(
                 main, ["-c", str(cfg), "mcp", "--http", "8080", "--host", "0.0.0.0"]
             )
@@ -325,7 +325,7 @@ class TestRunServerRefuses:
 
         cfg = tmp_path / "c.yaml"
         cfg.write_text(f"database_path: {tmp_path / 'x.db'}\n{body}")
-        with patch("labctl.mcp_server.mcp.run") as run:
+        with patch("labctl.mcp_server._serve_http") as run:
             result = CliRunner().invoke(main, ["-c", str(cfg), "mcp", *args, "--check"])
         assert result.exit_code == code, result.output
         assert expected in result.output
@@ -462,11 +462,11 @@ class TestRunServerRefuses:
                 "check_http_startup",
                 side_effect=mcp_server.McpStartupError("nope"),
             ) as check,
-            patch.object(mcp_server.mcp, "run") as run,
+            patch.object(mcp_server, "_serve_http") as run,
         ):
             with pytest.raises(mcp_server.McpStartupError):
                 mcp_server.run_server(transport="http", host="127.0.0.1")
-        check.assert_called_once_with("127.0.0.1", config)
+        check.assert_called_once_with("127.0.0.1", config, None)
         run.assert_not_called()
 
     def test_run_server_uses_check_stdio_startup(self):
@@ -490,13 +490,14 @@ class TestRunServerRefuses:
             patch.object(mcp_server, "_get_config", return_value=_config()),
             patch.object(mcp_server, "_start_expiry_thread"),
             patch("atexit.register"),
-            patch.object(mcp_server.mcp, "run") as run,
+            patch.object(mcp_server, "_serve_http") as run,
         ):
             mcp_server.run_server(transport="http", host="127.0.0.1", http_port=9)
         # The service journal shows the auth mode, whatever log_level says.
         assert "MCP HTTP: API keys required" in capsys.readouterr().out
-        kwargs = run.call_args.kwargs
-        assert kwargs["transport_security"].enable_dns_rebinding_protection
+        security = run.call_args.args[2]
+        assert security.enable_dns_rebinding_protection
+        assert mcp_server._http_security is security  # the upload route's too
         assert isinstance(mcp_server.mcp._token_verifier, mcp_server._ApiKeyVerifier)
 
 
@@ -898,6 +899,7 @@ class TestConfigPinning:
             patch.object(mcp_server, "_start_expiry_thread"),
             patch("atexit.register"),
             patch.object(mcp_server.mcp, "run"),
+            patch.object(mcp_server, "_serve_http"),
         ):
             mcp_server.run_server(transport=transport, **kwargs)
         assert config_mod._snapshot is config
@@ -953,7 +955,7 @@ class TestConfigPinning:
         with (
             patch.object(mcp_server, "_start_expiry_thread"),
             patch("atexit.register"),
-            patch.object(mcp_server.mcp, "run"),
+            patch.object(mcp_server, "_serve_http"),
         ):
             mcp_server.run_server(transport="http", host="127.0.0.1", http_port=9)
         from labctl.core import config as config_mod

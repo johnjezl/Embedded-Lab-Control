@@ -81,7 +81,8 @@ What keys do *not* do:
   `labctl` group (to run the check above).
 - Claude Code is installed on the machine the agent runs on. If that is
   not the lab host, forward the port first, e.g.
-  `ssh -N -L 8080:127.0.0.1:8080 labhost`.
+  `ssh -N -L 8080:127.0.0.1:8080 labhost`, or serve MCP over HTTPS (see
+  [Agents on another machine](#agents-on-another-machine)).
 
 ## Recommended settings
 
@@ -301,6 +302,58 @@ Notes:
   see it (`echo $LABCTL_API_KEY`). See the isolation note under
   [How it works](#how-it-works).
 
+## Agents on another machine
+
+An agent can build on your workstation and use the lab over the network:
+the MCP connection carries the tool calls, and builds are uploaded to the
+same server over HTTPS.
+
+On the lab host (as root), serve MCP on a reachable address with TLS.
+With a drop-in, so `update.sh` keeps it (`sudo systemctl edit labctl-mcp`):
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/opt/labctl/venv/bin/labctl -c /etc/labctl/config.yaml mcp --http 8080 --host 0.0.0.0
+```
+
+and in `/etc/labctl/config.yaml` (the web server's certificate works; the
+`labctl` user must be able to read both files; its name or IP must be one
+the agent connects with):
+
+```yaml
+mcp:
+  cert_file: /etc/labctl/tls/cert.pem
+  key_file: /etc/labctl/tls/key.pem
+  allowed_hosts: ["labhost", "labhost:*"]       # the name agents connect to
+  upload_dir: /var/lib/labctl/images
+  allowed_read_paths: [/var/lib/labctl/images]
+```
+
+`labctl -c /etc/labctl/config.yaml mcp --http 8080 --host 0.0.0.0 --check`
+should print `auth: required`, `tls: ...` and `uploads: ...`; then
+`sudo systemctl restart labctl-mcp`.
+
+On the workstation, use `https://labhost:8080/mcp` as the URL in Method A
+or B. A self-signed certificate must be trusted explicitly: start Claude
+Code with `NODE_EXTRA_CA_CERTS=/path/to/cert.pem` (a copy of the lab's
+certificate), and give curl `--cacert` with the same file.
+
+Uploading a build (the agent does this with its own shell; Method B puts
+the key in `$LABCTL_API_KEY`):
+
+```bash
+curl --fail-with-body --cacert lab-cert.pem -T build/sdcard.img \
+  -H "Authorization: Bearer $LABCTL_API_KEY" \
+  "https://labhost:8080/images/sdcard.img?overwrite=1&sha256=$(sha256sum build/sdcard.img | cut -d' ' -f1)"
+```
+
+Then `flash_image(sbc_name=..., image_path="sdcard.img")`, or
+`sdwire_update(..., copies=["zImage:zImage"])` after uploading `zImage`.
+`list_images` shows what is there and who uploaded it; an agent can
+replace or delete only its own uploads. Details:
+[Uploading images](MCP_SERVER.md#uploading-images).
+
 ## Agent instructions
 
 Identity only helps if agents claim boards. Put rules like these in the
@@ -320,6 +373,9 @@ agent's `CLAUDE.md`:
   then call again with the same arguments plus `confirm_token`. Never
   call one "to see what happens": if confirmation is turned off, the
   first call acts.
+- To put a build on a board, upload it as `list_images` describes (curl
+  with `sha256=`), then pass its bare name to `flash_image`,
+  `sdwire_update` or `boot_test`.
 ```
 
 ## Checking an agent's identity

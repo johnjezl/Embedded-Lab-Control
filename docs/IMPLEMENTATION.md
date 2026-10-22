@@ -843,3 +843,7 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
     claim; `--override-claim` (logged)
   - ✅ Part 3: web UI / REST — 409 `sbc_claimed`, REST roles and
     `require_claim`, owners on REST claims, #21
+- ✅ Image uploads over MCP HTTP + MCP TLS (D014): `PUT /images/<name>`
+  into `mcp.upload_dir`, bare image names in tools, `list_images` /
+  `delete_image`, uploader-or-operator replace/delete (schema v10),
+  `labctl mcp --cert/--key`

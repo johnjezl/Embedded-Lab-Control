@@ -56,6 +56,13 @@ class TestAllowlistCheck:
         assert _run(snippet, str(config), "allowed_read_paths").returncode == 0
         assert _run(snippet, str(config), "allowed_write_paths").returncode == 1
 
+    def test_upload_dir(self, write_config):
+        snippet = _snippet(self.SNIPPET_MARKER)
+        config = write_config("mcp:\n  upload_dir: /var/lib/labctl/images\n")
+        assert _run(snippet, str(config), "upload_dir").returncode == 0
+        config = write_config("mcp: {}\n", name="off.yaml")
+        assert _run(snippet, str(config), "upload_dir").returncode == 1
+
 
 # ---------------------------------------------------------------------------
 # Steps 5-6: restart, then report each service from its own journal

@@ -3038,10 +3038,10 @@ class TestMcpSdkRegistration:
         return anyio.run(coro_fn, *args)
 
     def test_counts_unchanged(self):
-        """52 tools, 14 resources (8 static + 6 templates), 2 prompts."""
+        """54 tools, 14 resources (8 static + 6 templates), 2 prompts."""
         from labctl.mcp_server import mcp
 
-        assert len(self._run(mcp.list_tools)) == 52
+        assert len(self._run(mcp.list_tools)) == 54
         resources = self._run(mcp.list_resources)
         templates = self._run(mcp.list_resource_templates)
         assert len(resources) + len(templates) == 14
@@ -3288,12 +3288,13 @@ class TestMcpRunServer:
     def test_http_passes_port_and_default_host(self, run_env):
         from labctl.mcp_server import run_server
 
-        run_server(transport="http", http_port=8080)
-        run_env.run.assert_called_once()
-        kwargs = run_env.run.call_args.kwargs
-        assert kwargs["transport"] == "streamable-http"
-        assert (kwargs["host"], kwargs["port"]) == ("127.0.0.1", 8080)
-        assert kwargs["transport_security"].enable_dns_rebinding_protection
+        with patch("labctl.mcp_server._serve_http") as serve:
+            run_server(transport="http", http_port=8080)
+        serve.assert_called_once()
+        host, port, security, tls = serve.call_args.args
+        assert (host, port, tls) == ("127.0.0.1", 8080, None)
+        assert security.enable_dns_rebinding_protection
+        run_env.run.assert_not_called()
 
     def test_http_passes_custom_host(self, run_env):
         """A non-loopback host needs auth (tests/unit/test_mcp_http_auth.py)."""
@@ -3303,10 +3304,12 @@ class TestMcpRunServer:
         config = Config()
         config.auth.enabled = True
         config.auth.users = [UserConfig(username="u", api_key="k" * 32)]
-        with patch("labctl.mcp_server._get_config", return_value=config):
+        with (
+            patch("labctl.mcp_server._get_config", return_value=config),
+            patch("labctl.mcp_server._serve_http") as serve,
+        ):
             run_server(transport="http", http_port=9123, host="0.0.0.0")
-        kwargs = run_env.run.call_args.kwargs
-        assert (kwargs["host"], kwargs["port"]) == ("0.0.0.0", 9123)
+        assert serve.call_args.args[:2] == ("0.0.0.0", 9123)
 
     def test_stdio(self, run_env):
         from labctl.mcp_server import run_server
@@ -3385,7 +3388,9 @@ class TestMcpCliCommand:
                 main, ["mcp", "--http", "8080", "--host", "0.0.0.0"]
             )
         assert result.exit_code == 0, result.output
-        run.assert_called_once_with(transport="http", http_port=8080, host="0.0.0.0")
+        run.assert_called_once_with(
+            transport="http", http_port=8080, host="0.0.0.0", cert=None, key=None
+        )
 
     def test_http_default_host_is_loopback(self):
         from click.testing import CliRunner
@@ -3395,7 +3400,9 @@ class TestMcpCliCommand:
         with patch("labctl.mcp_server.run_server") as run:
             result = CliRunner().invoke(main, ["mcp", "--http", "8080"])
         assert result.exit_code == 0, result.output
-        run.assert_called_once_with(transport="http", http_port=8080, host="127.0.0.1")
+        run.assert_called_once_with(
+            transport="http", http_port=8080, host="127.0.0.1", cert=None, key=None
+        )
         assert "127.0.0.1:8080" in result.output
 
     def test_stdio_default(self):

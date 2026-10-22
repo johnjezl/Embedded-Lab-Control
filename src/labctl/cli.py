@@ -5618,6 +5618,16 @@ def sessions_cmd(ctx: click.Context, sbc_name: str | None) -> None:
     "with user API keys (clients send 'Authorization: Bearer <api_key>').",
 )
 @click.option(
+    "--cert",
+    default=None,
+    help="TLS certificate file (PEM) for --http (default: mcp.cert_file).",
+)
+@click.option(
+    "--key",
+    default=None,
+    help="TLS private key file (PEM) for --http (default: mcp.key_file).",
+)
+@click.option(
     "--check",
     is_flag=True,
     help="Run the startup checks for these options and exit without serving: "
@@ -5625,7 +5635,14 @@ def sessions_cmd(ctx: click.Context, sbc_name: str | None) -> None:
     "refuse to start (exit status 1).",
 )
 @click.pass_context
-def mcp_cmd(ctx: click.Context, http_port: int | None, host: str, check: bool) -> None:
+def mcp_cmd(
+    ctx: click.Context,
+    http_port: int | None,
+    host: str,
+    cert: str | None,
+    key: str | None,
+    check: bool,
+) -> None:
     """Start the MCP (Model Context Protocol) server.
 
     By default uses stdio transport for local AI tool integration
@@ -5636,6 +5653,8 @@ def mcp_cmd(ctx: click.Context, http_port: int | None, host: str, check: bool) -
         and ctx.get_parameter_source("host") is not click.core.ParameterSource.DEFAULT
     ):
         raise click.UsageError("--host only applies with --http PORT")
+    if not http_port and (cert or key):
+        raise click.UsageError("--cert/--key only apply with --http PORT")
     # The MCP server (and code it calls, e.g. Kasa credential lookup) loads
     # config itself, with no path, so `labctl -c FILE mcp` used to ignore
     # FILE. Export it, exclusively: like an explicit path, never a fallback
@@ -5657,13 +5676,15 @@ def mcp_cmd(ctx: click.Context, http_port: int | None, host: str, check: bool) -
         ) from e
 
     if check:
-        _mcp_check(http_port, host)
+        _mcp_check(http_port, host, cert, key)
         return
 
     if http_port:
         click.echo(f"Starting MCP server (HTTP on {host}:{http_port})...")
         try:
-            run_server(transport="http", http_port=http_port, host=host)
+            run_server(
+                transport="http", http_port=http_port, host=host, cert=cert, key=key
+            )
         except McpStartupError as e:
             raise click.ClickException(str(e)) from e
     else:
@@ -5671,7 +5692,9 @@ def mcp_cmd(ctx: click.Context, http_port: int | None, host: str, check: bool) -
         run_server(transport="stdio")
 
 
-def _mcp_check(http_port: int | None, host: str) -> None:
+def _mcp_check(
+    http_port: int | None, host: str, cert: str | None = None, key: str | None = None
+) -> None:
     """`labctl mcp --check`: report what the server would require or refuse.
 
     Prints ``auth: required|none|n/a`` and the config file loaded, plus the
@@ -5685,6 +5708,7 @@ def _mcp_check(http_port: int | None, host: str) -> None:
         _get_config,
         check_http_startup,
         check_stdio_startup,
+        http_tls_files,
     )
 
     config = _get_config()
@@ -5715,9 +5739,11 @@ def _mcp_check(http_port: int | None, host: str) -> None:
                 else "."
             )
         )
+    tls = None
     if http_port:
         try:
-            required, _ = check_http_startup(host, config)
+            tls = http_tls_files(config, cert, key)
+            required, _ = check_http_startup(host, config, tls)
         except McpStartupError as e:
             raise click.ClickException(f"refused: {e}") from e
     else:
@@ -5735,6 +5761,14 @@ def _mcp_check(http_port: int | None, host: str) -> None:
         click.echo(
             f"auth: none (HTTP on {host}:{http_port}, loopback only; "
             "auth.enabled is false)"
+        )
+    if http_port:
+        click.echo(f"tls: {tls[0]}" if tls else "tls: off (plain HTTP)")
+        click.echo(
+            f"uploads: PUT /images/<name> into {config.mcp.upload_dir} "
+            f"(max {config.mcp.max_upload_mb} MiB)"
+            if config.mcp.upload_dir
+            else "uploads: off (mcp.upload_dir is not set)"
         )
     click.echo(f"config: {source}")
 

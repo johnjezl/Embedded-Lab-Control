@@ -199,9 +199,10 @@ done
 # loader (installed in step 1), so YAML flow style, empty lists and keys
 # under the wrong section are judged exactly as the server will.
 MISSING_ALLOWLIST=""
+MISSING_UPLOAD=""
 for cfg in "$SYSTEM_CONFIG_FILE" "$SERVICE_CONFIG_FILE"; do
     [ -f "$cfg" ] || continue
-    for key in allowed_read_paths allowed_write_paths; do
+    for key in allowed_read_paths allowed_write_paths upload_dir; do
         if ! "$LABCTL_VENV/bin/python" -I - "$cfg" "$key" 2>/dev/null <<'PY'
 import sys
 from pathlib import Path
@@ -212,7 +213,11 @@ config = load_config(Path(sys.argv[1]))
 sys.exit(0 if getattr(config.mcp, sys.argv[2]) else 1)
 PY
         then
-            MISSING_ALLOWLIST="$MISSING_ALLOWLIST $cfg:$key"
+            if [ "$key" = upload_dir ]; then
+                MISSING_UPLOAD="$MISSING_UPLOAD $cfg"
+            else
+                MISSING_ALLOWLIST="$MISSING_ALLOWLIST $cfg:$key"
+            fi
         fi
     done
 done
@@ -225,6 +230,15 @@ if [ -n "$MISSING_ALLOWLIST" ]; then
     echo "       mcp:"
     echo "         allowed_read_paths: [/var/lib/labctl/images]"
     echo "         allowed_write_paths: [/var/lib/labctl/output]"
+fi
+if [ -n "$MISSING_UPLOAD" ]; then
+    echo "[--] MCP image uploads (PUT /images/<name>) are off in:"
+    for item in $MISSING_UPLOAD; do echo "       $item"; done
+    echo "     To let MCP clients upload builds for flash_image /"
+    echo "     sdwire_update / boot_test, add to both config files (inside"
+    echo "     allowed_read_paths):"
+    echo "       mcp:"
+    echo "         upload_dir: /var/lib/labctl/images"
 fi
 
 # 4. Verify install
