@@ -677,8 +677,13 @@ class Database:
                         "UPDATE claims SET owner = ? WHERE id = ?", (user, claim_id)
                     )
 
-        if from_version < 10:
+        if from_version < 11:
             # v10: images uploaded over MCP HTTP and who uploaded them.
+            # v11: a pre-release v10, created by test runs that reached a
+            # lab host's real database, had an images table without
+            # file_id (uploads then failed with 500): add it. Rows recorded
+            # without one count as unverified (operator-only), as a
+            # mismatch would. Both steps are no-ops on a released v10.
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS images (
                     name TEXT PRIMARY KEY,
@@ -689,16 +694,9 @@ class Database:
                     uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """)
-
-        if from_version < 11:
-            # v11: a pre-release v10, created by test runs that reached a
-            # lab host's real database, had an images table without
-            # file_id (uploads then failed with 500). Rows recorded without
-            # one count as unverified (operator-only), as a mismatch would.
             try:
                 conn.execute("ALTER TABLE images ADD COLUMN file_id TEXT")
             except sqlite3.OperationalError as e:
-                # The usual v10 table already has it.
                 if "duplicate column" not in str(e):
                     raise
 
