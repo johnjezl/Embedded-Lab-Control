@@ -536,6 +536,20 @@ log_level: WARNING
         assert config.database_path == home / ".config" / "labctl" / "override.db"
 
 
+class TestTestsNeverSeeTheRealConfig:
+    """conftest._no_real_config: on a lab host, a test that loads config
+    without naming a file must not reach /etc/labctl/config.yaml (whose
+    database is production) or the developer's own config."""
+
+    def test_search_finds_nothing_and_paths_are_private(self, _isolated_home):
+        config = load_config(fresh=True)
+        assert config.source_path is None
+        assert config_module.SYSTEM_CONFIG_FILE != Path("/etc/labctl/config.yaml")
+        assert not config_module.SYSTEM_CONFIG_FILE.exists()
+        for path in (config.database_path, config.health.alert_log_path):
+            assert Path(path).is_relative_to(_isolated_home)
+
+
 class TestSaveConfig:
     """Tests for save_config function."""
 
