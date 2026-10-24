@@ -624,6 +624,58 @@ class TestDatabase:
         assert row["v"] == SCHEMA_VERSION
 
 
+class TestSchemaRepair:
+    """A pre-release v10 (from test runs that reached a lab host's real
+    database) had an images table without file_id; initialize() adds it."""
+
+    def _pre_release_v10(self, path):
+        Database(path).initialize()
+        conn = sqlite3.connect(path)
+        conn.executescript("""
+            DROP TABLE images;
+            CREATE TABLE images (
+                name TEXT PRIMARY KEY,
+                uploaded_by TEXT,
+                size INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO images (name, uploaded_by, size, sha256)
+                VALUES ('old.img', 'bot', 3, 'abc');
+            """)
+        conn.commit()
+        conn.close()
+
+    def test_missing_file_id_added_rows_kept(self, tmp_path):
+        path = tmp_path / "labctl.db"
+        self._pre_release_v10(path)
+        assert SCHEMA_VERSION == 10  # the repair targets this version's table
+
+        db = Database(path)
+        db.initialize()
+        with db.connect() as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(images)")}
+            rows = conn.execute("SELECT name, uploaded_by, file_id FROM images")
+            assert "file_id" in columns
+            assert [tuple(r) for r in rows] == [("old.img", "bot", None)]
+
+    def test_current_schema_untouched(self, tmp_path):
+        path = tmp_path / "labctl.db"
+        Database(path).initialize()
+        before = (
+            sqlite3.connect(path)
+            .execute("SELECT sql FROM sqlite_master WHERE name = 'images'")
+            .fetchone()
+        )
+        Database(path).initialize()
+        after = (
+            sqlite3.connect(path)
+            .execute("SELECT sql FROM sqlite_master WHERE name = 'images'")
+            .fetchone()
+        )
+        assert before == after
+
+
 class TestConcurrency:
     """Concurrency settings — WAL mode, busy_timeout, initialize caching.
 
