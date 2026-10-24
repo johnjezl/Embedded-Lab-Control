@@ -33,21 +33,25 @@ ser2net:
 #     - username: admin
 #       password_hash: "generate with: labctl user hash-password"
 #       api_key: "generate with: labctl user generate-key"
-#       # role: operator (default) may force-release other users' claims
-#       # (force_release_sbc); give AI agents role: agent (they can only
-#       # ask, with request_sbc_release). MCP only for now: the REST API
-#       # doesn't check roles yet.
+#       # role: operator (default) may override or force-release other
+#       # users' claims (MCP, REST and the web UI); give AI agents
+#       # role: agent (they can only ask for a board, e.g. with
+#       # request_sbc_release).
 #     - username: "fw-dev"
 #       api_key: "generate with: labctl user generate-key"
 #       role: agent
 
-# Claims (exclusive access to a board). MCP tools refuse to change a board
-# someone else has claimed. (The CLI, web UI and REST API don't check
-# claims yet, except `labctl remove`; that follows in a later release.)
+# Claims (exclusive access to a board). MCP tools, the REST API, the web UI
+# and the CLI refuse to change a board someone else has claimed, or one
+# that shares its plug outlet, SDWire, console adapter or relay channel.
+# Operators (and CLI users, with --override-claim) may override; each
+# override is recorded in the activity log.
+# See docs/OPERATIONS.md for what is and isn't checked.
 # claims:
-#   # Refuse MCP calls that change a board unless the caller has claimed
-#   # it first. Recommended when several agents share the lab. Needs
-#   # claims enabled (the default).
+#   # Refuse MCP and REST calls that change a board unless the caller has
+#   # claimed it first (not the CLI or web UI, whose users are people).
+#   # Recommended when several agents share the lab. Needs claims
+#   # enabled (the default).
 #   require_claim: false
 
 # Web server SSL/TLS (disabled by default, serves HTTP)
