@@ -102,10 +102,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   seen once when the old server's port was still briefly in use. It now
   waits, for every service, while a unit is `deactivating` or `activating`
   (within `MCP_START_TIMEOUT`, now measured in seconds); takes `labctl-web`
-  and `labctl-monitor` as up only after three checks in a row a second
-  apart, so a start that fails a moment later isn't missed; says when a
-  service is up only because systemd restarted it; and stops waiting when
-  a unit's second start fails.
+  and `labctl-monitor` as up only after five checks in a row a second
+  apart, so a start that fails within a few seconds isn't missed; says
+  when a service is up only because systemd restarted it; and stops
+  waiting once systemd has restarted a unit twice.
 - The test suite no longer loads the machine's real config. About 115
   tests loaded config without naming a file, so on a lab host whose user
   can read `/etc/labctl` they used the production config and database; a

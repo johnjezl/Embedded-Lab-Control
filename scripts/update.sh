@@ -266,26 +266,19 @@ if [ -n "$SERVICES" ]; then
             journalctl -u "$1" --since "$RESTART_SINCE" --no-pager -o cat 2>/dev/null || true
         fi
     }
-    unit_state() { systemctl show -p ActiveState --value "$1" 2>/dev/null || true; }
-    # How many times systemd has restarted the unit after a failed start
-    # (Restart=on-failure) since `systemctl restart`, which resets the count.
-    unit_restarts() {
-        local n
-        n=$(systemctl show -p NRestarts --value "$1" 2>/dev/null || true)
-        case "$n" in '' | *[!0-9]*) echo 0 ;; *) echo "$n" ;; esac
-    }
-    # Failed starts since `systemctl restart`: NRestarts counts the restarts
-    # systemd has done (it grows as the restarted unit starts again); one
-    # more start has failed while the unit is stopping or waiting RestartSec
-    # (SubState auto-restart; not auto-restart-queued, already counted).
-    unit_failures() {
-        local n
-        n=$(unit_restarts "$1")
-        if [ "$(unit_state "$1")" = deactivating ] ||
-            [ "$(systemctl show -p SubState --value "$1" 2>/dev/null || true)" = auto-restart ]; then
-            n=$((n + 1))
-        fi
-        echo "$n"
+    # unit_info SVC: sets UNIT_STATE (ActiveState) and UNIT_RESTARTS (how
+    # many times systemd has restarted it after a failed start, under
+    # Restart=on-failure, since `systemctl restart`, which resets the count).
+    unit_info() {
+        local key value
+        UNIT_STATE=""
+        UNIT_RESTARTS=0
+        while IFS='=' read -r key value; do
+            case "$key" in
+                ActiveState) UNIT_STATE=$value ;;
+                NRestarts) case "$value" in '' | *[!0-9]*) ;; *) UNIT_RESTARTS=$value ;; esac ;;
+            esac
+        done < <(systemctl show -p ActiveState -p NRestarts "$1" 2>/dev/null || true)
     }
     systemctl restart $SERVICES
     sleep 3
@@ -324,16 +317,18 @@ if [ -n "$SERVICES" ]; then
     # A unit whose start failed is "deactivating" while its last processes
     # exit, then "activating" while systemd waits RestartSec to restart it
     # (seen once: the old MCP server's port was still briefly in use). Wait
-    # until every service has settled, or a unit has failed two starts (not
-    # transient), or the timeout. labctl-mcp has settled once it listens;
-    # the others (Type=simple: "active" as soon as the process starts) once
-    # they have been active on STABLE_CHECKS checks in a row, a second
-    # apart, so a start that fails a moment later isn't taken as up.
-    STABLE_CHECKS=3
+    # until every service has settled, or systemd has restarted a unit
+    # twice (not transient), or the timeout. labctl-mcp has settled once it
+    # listens; the others (Type=simple: "active" as soon as the process
+    # starts) once they have been active on STABLE_CHECKS checks in a row,
+    # a second apart, so a start that fails within a few seconds isn't
+    # taken as up.
+    STABLE_CHECKS=5
     declare -A ACTIVE_CHECKS
     # settling SVC: 0 while still worth waiting for.
     settling() {
-        case "$(unit_state "$1")" in
+        unit_info "$1"
+        case "$UNIT_STATE" in
             active)
                 if [ "$1" = labctl-mcp ]; then
                     MCP_LISTEN=0
@@ -345,7 +340,7 @@ if [ -n "$SERVICES" ]; then
                 [ "${ACTIVE_CHECKS[$1]}" -lt "$STABLE_CHECKS" ] ;;
             activating | deactivating | reloading)
                 ACTIVE_CHECKS[$1]=0
-                [ "$(unit_failures "$1")" -lt 2 ] ;;
+                [ "$UNIT_RESTARTS" -lt 2 ] ;;
             *) return 1 ;;
         esac
     }
@@ -353,12 +348,12 @@ if [ -n "$SERVICES" ]; then
     # keeps a stubbed `sleep` finite).
     WAIT_UNTIL=$((SECONDS + MCP_START_TIMEOUT - 3))
     for _ in $(seq 4 "$MCP_START_TIMEOUT"); do
-        [ "$SECONDS" -lt "$WAIT_UNTIL" ] || break
         PENDING=""
         for svc in $SERVICES; do
             if settling "$svc"; then PENDING="$PENDING $svc"; fi
         done
         [ -n "$PENDING" ] || break
+        [ "$SECONDS" -lt "$WAIT_UNTIL" ] || break
         sleep 1
     done
     if [[ " $SERVICES " == *" labctl-mcp "* ]]; then
@@ -392,10 +387,10 @@ if [ -n "$SERVICES" ]; then
                 echo "[!!] $svc only just (re)started and may still fail; check it with:"
                 echo "     systemctl status $svc"
             fi
-            SVC_RESTARTS=$(unit_restarts "$svc")
-            if [ "$SVC_RESTARTS" -gt 0 ]; then
-                echo "[!!] $svc is up only after $SVC_RESTARTS failed start(s): systemd"
-                echo "     restarted it (log below)"
+            unit_info "$svc"
+            if [ "$UNIT_RESTARTS" -gt 0 ]; then
+                echo "[!!] $svc is up only after a failed start: systemd restarted it"
+                echo "     $UNIT_RESTARTS time(s) (log below)"
                 if [ "$svc" != labctl-mcp ]; then
                     svc_log "$svc" | tail -n 15 | sed 's/^/     /'
                 fi
@@ -414,16 +409,15 @@ if [ -n "$SERVICES" ]; then
                 fi
             fi
         else
-            SVC_STATE=$(unit_state "$svc")
-            SVC_FAILURES=$(unit_failures "$svc")
-            if [ "$svc" = labctl-mcp ] && systemctl is-active --quiet "$svc"; then
+            unit_info "$svc"
+            if [ "$UNIT_RESTARTS" -ge 2 ]; then
+                echo "[!!] $svc FAILED: systemd has restarted it $UNIT_RESTARTS times and it"
+                echo "     still isn't up; log since restart:"
+            elif [ "$svc" = labctl-mcp ] && systemctl is-active --quiet "$svc"; then
                 echo "[!!] $svc FAILED: running but not listening after ${MCP_START_TIMEOUT}s"
                 echo "     (still starting on a slow host? rerun with MCP_START_TIMEOUT=120);"
                 echo "     log since restart:"
-            elif [ "$SVC_FAILURES" -ge 2 ]; then
-                echo "[!!] $svc FAILED: $SVC_FAILURES starts failed (systemd keeps"
-                echo "     restarting it); log since restart:"
-            elif [[ "$SVC_STATE" == activating || "$SVC_STATE" == deactivating ]]; then
+            elif [[ "$UNIT_STATE" == activating || "$UNIT_STATE" == deactivating ]]; then
                 echo "[!!] $svc FAILED: still restarting after ${MCP_START_TIMEOUT}s (systemd"
                 echo "     restarts a failed start; slow host? rerun with MCP_START_TIMEOUT=120);"
                 echo "     log since restart:"
