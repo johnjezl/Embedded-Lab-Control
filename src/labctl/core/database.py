@@ -33,7 +33,7 @@ from typing import Generator, Optional
 logger = logging.getLogger(__name__)
 
 # Current schema version
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 # Default SQLite busy-timeout when the Database is constructed without an
 # explicit value (e.g. tests, direct callers). Matches Config.database
@@ -373,7 +373,6 @@ class Database:
                     current_version = cursor.fetchone()[0] or 0
                     if current_version < SCHEMA_VERSION:
                         self._apply_migrations(conn, current_version)
-                    self._repair_schema(conn)
 
             self._initialized = True
 
@@ -406,37 +405,6 @@ class Database:
         """Test-only: force the next initialize() to re-run."""
         with self._init_lock:
             self._initialized = False
-
-    def _repair_schema(self, conn: sqlite3.Connection) -> None:
-        """Fix databases a pre-release build left at the current version
-        with an older shape (migrations only run on a version change).
-
-        A pre-release v10, created by test runs that reached a lab host's
-        real database, had an images table without file_id; uploads then
-        failed with 500. Images recorded without one count as unverified
-        (operator-only), as a mismatch would.
-        """
-        columns = {row[1] for row in conn.execute("PRAGMA table_info(images)")}
-        if not columns or "file_id" in columns:
-            return
-        try:
-            conn.execute("ALTER TABLE images ADD COLUMN file_id TEXT")
-        except sqlite3.OperationalError as e:
-            if "duplicate column" in str(e):
-                return  # another process starting at the same time added it
-            if "readonly" not in str(e):
-                raise  # e.g. locked: initialize() fails and is retried
-            # A user who may only read: keep going; a process that can
-            # write (the services) repairs it.
-            logger.warning(
-                "DB %s: images.file_id is missing and could not be added "
-                "(%s); image uploads fail until labctl opens the database "
-                "with write access",
-                self.db_path,
-                e,
-            )
-            return
-        logger.warning("DB %s: added the missing images.file_id column", self.db_path)
 
     def _apply_migrations(self, conn: sqlite3.Connection, from_version: int) -> None:
         """Apply database migrations."""
@@ -721,6 +689,18 @@ class Database:
                     uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """)
+
+        if from_version < 11:
+            # v11: a pre-release v10, created by test runs that reached a
+            # lab host's real database, had an images table without
+            # file_id (uploads then failed with 500). Rows recorded without
+            # one count as unverified (operator-only), as a mismatch would.
+            try:
+                conn.execute("ALTER TABLE images ADD COLUMN file_id TEXT")
+            except sqlite3.OperationalError as e:
+                # The usual v10 table already has it.
+                if "duplicate column" not in str(e):
+                    raise
 
         # OR IGNORE: tolerate a concurrent process that has already
         # bumped schema_version to the current value during a race.
