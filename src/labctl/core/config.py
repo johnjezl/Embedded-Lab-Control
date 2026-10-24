@@ -29,7 +29,12 @@ class _QuietFilter(logging.Filter):
 
 logger.addFilter(_QuietFilter())
 
-SYSTEM_CONFIG_FILE = Path("/etc/labctl/config.yaml")
+# LABCTL_SYSTEM_CONFIG replaces the system-wide fallback (read at import,
+# so child processes inherit it); the test suite points it at a file that
+# doesn't exist, so tests never load a lab host's real config.
+SYSTEM_CONFIG_FILE = Path(
+    os.environ.get("LABCTL_SYSTEM_CONFIG") or "/etc/labctl/config.yaml"
+)
 
 
 def _default_config_dir() -> Path:
@@ -812,6 +817,8 @@ def load_config(
     - LABCTL_DATABASE_PATH: Override database_path
     - LABCTL_DATABASE_TIMEOUT: Override database.timeout_seconds (float)
     - LABCTL_LOG_LEVEL: Override log_level
+    - LABCTL_SYSTEM_CONFIG: Replace /etc/labctl/config.yaml in the search
+      order (read when labctl.core.config is imported)
 
     Args:
         config_path: Optional explicit path to config file

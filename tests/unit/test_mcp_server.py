@@ -3352,11 +3352,6 @@ class TestMcpCliCommand:
         )
         monkeypatch.setenv("HOME", str(home))
         monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
-        # mcp_cmd writes os.environ["LABCTL_CONFIG"] directly; setenv first so
-        # monkeypatch records the variable and restores it after the test.
-        for var in ("LABCTL_CONFIG", "LABCTL_CONFIG_EXCLUSIVE"):
-            monkeypatch.setenv(var, "placeholder")
-            monkeypatch.delenv(var)
         seen = {}
 
         def fake_run_server(**kwargs):
