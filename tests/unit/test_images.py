@@ -476,7 +476,7 @@ class TestSchema:
             conn.execute("INSERT INTO schema_version (version) VALUES (9)")
         upgraded = Database(path)
         upgraded.initialize()
-        assert SCHEMA_VERSION == 10
+        assert SCHEMA_VERSION == 11
         upgraded.execute_insert(
             "INSERT INTO images (name, uploaded_by, size, sha256) VALUES (?,?,?,?)",
             ("a.img", "bot", 1, "0" * 64),

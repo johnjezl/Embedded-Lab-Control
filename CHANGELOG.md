@@ -102,9 +102,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   can read `/etc/labctl` they used the production config and database; a
   run during the image-upload work migrated a production database to a
   pre-release schema v10 (an `images` table without `file_id`, so uploads
-  failed with 500). Such a database now gets the missing column when
-  labctl next opens it, so a backup taken in between can be restored
-  safely. Every test, and every process it starts, now gets its own home
+  failed with 500). Schema v11 adds the missing column to such a
+  database, so a backup taken in between can be restored safely. Every test, and every process it starts, now gets its own home
   and no system config. New `LABCTL_SYSTEM_CONFIG` environment variable:
   replaces `/etc/labctl/config.yaml` in the config search order.
 - REST `DELETE /api/sbcs/<name>` on a claimed board answered `500`; it is
