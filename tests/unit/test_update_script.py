@@ -81,11 +81,13 @@ def run_restart(tmp_path):
     ``listening`` says whether labctl-mcp's main process (pid 4242) has a
     listening socket.
 
-    A failed start that systemd restarts, per service, counted in the
-    script's ``sleep`` calls: "deactivating" until ``deactivating_until``,
-    then "activating" (no MainPID, not listening) until ``up_after``, then
-    active. ``restarts`` is how far NRestarts has grown since
-    ``systemctl restart`` (from ``restarts_before``)."""
+    ``timeline`` maps a service to ``(from_sleep, ActiveState, NRestarts)``
+    steps, counted in the script's ``sleep`` calls, as systemd reports a
+    failed start it restarts: e.g. "deactivating", then "activating" (no
+    MainPID, not listening) for RestartSec, then "active" with NRestarts 1.
+    Without one, a running service is active with NRestarts 0. As in
+    systemd, `systemctl restart` resets NRestarts (``restarts_before``
+    until then)."""
     stubs = tmp_path / "stubs"
     stubs.mkdir()
     calls = tmp_path / "journalctl.calls"
@@ -101,30 +103,28 @@ def run_restart(tmp_path):
         root_cgroup_pids=(),
         cgroup_v1: bool = False,
         extra_env=None,
-        up_after=None,
-        deactivating_until=None,
-        restarts=None,
+        timeline=None,
         restarts_before: int = 0,
     ):
         sleeps, restarted = tmp_path / "sleeps", tmp_path / "restarted"
-
-        def table(name, values):
-            items = " ".join(f"[{k}]={v}" for k, v in (values or {}).items())
-            return f"declare -A {name}=({items})"
-
+        steps = []
+        for name, up in active.items():
+            for start, state, count in (timeline or {}).get(
+                name, [(0, "active" if up else "failed", 0)]
+            ):
+                steps.append(
+                    f'  [ "$1" = {name} ] && [ "$n" -ge {start} ]'
+                    f' && r="{state} {count}"'
+                )
         systemctl = [
             "#!/bin/bash",
-            table("CONFIGURED", {k: int(v) for k, v in active.items()}),
-            table("DEACT", deactivating_until),
-            table("UP", up_after),
-            table("GROWN", restarts),
-            "state() {",
-            f"  local n; n=$(cat {sleeps} 2>/dev/null | wc -l)",
-            '  if [ "${CONFIGURED[$1]:-0}" != 1 ]; then echo failed',
-            '  elif [ "$n" -lt "${DEACT[$1]:-0}" ]; then echo deactivating',
-            '  elif [ "$n" -lt "${UP[$1]:-0}" ]; then echo activating',
-            "  else echo active; fi",
+            "# info SVC: its ActiveState and NRestarts now",
+            "info() {",
+            f"  local n r='failed 0'; n=$(cat {sleeps} 2>/dev/null | wc -l)",
+            *steps,
+            '  echo "$r"',
             "}",
+            'state() { set -- $(info "$1"); echo "$1"; }',
             'case "$1" in',
             "  is-enabled) exit 0 ;;",
             f"  restart) touch {restarted}; exit 0 ;;",
@@ -132,8 +132,8 @@ def run_restart(tmp_path):
             '    MainPID) [ "$(state labctl-mcp)" = active ] && echo 4242 || echo 0 ;;',
             f"    ControlGroup) echo {cgroup_path} ;;",
             '    ActiveState) state "$5" ;;',
-            f"    NRestarts) if [ -e {restarted} ]; then"
-            f" echo $(({restarts_before} + ${{GROWN[$5]:-0}}));"
+            f"    NRestarts) if [ -e {restarted} ];"
+            ' then set -- $(info "$5"); echo "$2";'
             f" else echo {restarts_before}; fi ;;",
             "  esac ;;",
             '  is-active) [ "$(state "$3")" = active ] && exit 0; exit 3 ;;',
@@ -268,35 +268,47 @@ class TestRestartReport:
         result, _ = run_restart(
             ALL_UP,
             {"labctl-mcp": "MCP HTTP: API keys required"},
-            deactivating_until={"labctl-mcp": 2},
-            up_after={"labctl-mcp": 12},
-            restarts={"labctl-mcp": 1},
+            timeline={
+                "labctl-mcp": [
+                    (0, "deactivating", 0),  # longer than the others' checks
+                    (6, "activating", 0),
+                    (16, "active", 1),
+                ]
+            },
             restarts_before=3,
         )
         assert result.returncode == 0, result.stdout
         assert "[ok] labctl-mcp running" in result.stdout
-        assert "labctl-mcp's first start failed; systemd restarted it" in result.stdout
+        assert "labctl-mcp is up only after 1 failed start(s)" in result.stdout
 
     def test_restarts_before_this_update_not_reported(self, run_restart):
         result, _ = run_restart(
             ALL_UP, {"labctl-mcp": "MCP HTTP: API keys required"}, restarts_before=5
         )
         assert result.returncode == 0, result.stdout
-        assert "first start failed" not in result.stdout
+        assert "failed start" not in result.stdout
 
-    def test_other_services_auto_restart_waited_for(self, run_restart):
+    def test_other_service_failing_after_a_moment_waited_for(self, run_restart):
+        """Type=simple: active as soon as it starts, then the start fails
+        (e.g. its port still in use) and systemd restarts it."""
         result, _ = run_restart(
             ALL_UP,
             {
                 "labctl-mcp": "MCP HTTP: API keys required",
                 "labctl-web": "OSError: [Errno 98] Address already in use",
             },
-            up_after={"labctl-web": 12},
-            restarts={"labctl-web": 1},
+            timeline={
+                "labctl-web": [
+                    (0, "active", 0),
+                    (2, "deactivating", 0),
+                    (3, "activating", 0),
+                    (13, "active", 1),
+                ]
+            },
         )
         assert result.returncode == 0, result.stdout
         assert "[ok] labctl-web running" in result.stdout
-        assert "labctl-web's first start failed" in result.stdout
+        assert "labctl-web is up only after 1 failed start(s)" in result.stdout
         assert "Address already in use" in result.stdout
 
     def test_auto_restart_without_ss(self, run_restart):
@@ -305,8 +317,7 @@ class TestRestartReport:
             ALL_UP,
             {"labctl-mcp": "MCP HTTP: API keys required"},
             ss_present=False,
-            up_after={"labctl-mcp": 12},
-            restarts={"labctl-mcp": 1},
+            timeline={"labctl-mcp": [(0, "activating", 0), (12, "active", 1)]},
         )
         assert result.returncode == 0, result.stdout
         assert "[ok] labctl-mcp running" in result.stdout
@@ -316,24 +327,31 @@ class TestRestartReport:
         result, _ = run_restart(
             ALL_UP,
             {"labctl-mcp": "MCP HTTP: API keys required"},
-            up_after={"labctl-mcp": 1000},
+            timeline={"labctl-mcp": [(0, "activating", 0)]},
             extra_env={"MCP_START_TIMEOUT": "8"},
         )
         assert result.returncode == 1
         assert "[!!] labctl-mcp FAILED: still restarting after 8s" in result.stdout
 
-    def test_repeated_failures_stop_waiting(self, run_restart, tmp_path):
-        """Failing every start isn't transient: report it without waiting
-        out the timeout."""
+    def test_second_failed_start_stops_waiting(self, run_restart, tmp_path):
+        """Failing again after systemd's restart isn't transient: report
+        it then, without waiting out the timeout."""
         result, _ = run_restart(
             ALL_UP,
             {"labctl-mcp": "ModuleNotFoundError: No module named 'mcp'"},
-            up_after={"labctl-mcp": 1000},
-            restarts={"labctl-mcp": 2},
+            listening=False,
+            timeline={
+                "labctl-mcp": [
+                    (0, "activating", 0),
+                    (10, "active", 1),
+                    (11, "activating", 1),
+                    (21, "active", 2),
+                ]
+            },
         )
         assert result.returncode == 1
-        assert "[!!] labctl-mcp FAILED: 3 starts failed" in result.stdout
-        assert len((tmp_path / "sleeps").read_text().splitlines()) < 5
+        assert "[!!] labctl-mcp FAILED: 2 starts failed" in result.stdout
+        assert len((tmp_path / "sleeps").read_text().splitlines()) < 15
 
     def test_other_process_listening_does_not_count(self, run_restart):
         """Only labctl-mcp's own main process counts (pid 4242 vs 42420)."""
