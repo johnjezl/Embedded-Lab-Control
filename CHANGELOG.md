@@ -97,6 +97,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   follow-up read doesn't misjudge the mux position.
 
 ### Fixed
+- The test suite no longer loads the machine's real config. About 115
+  tests loaded config without naming a file, so on a lab host whose user
+  can read `/etc/labctl` they used the production config and database; a
+  run during the image-upload work migrated a production database to a
+  pre-release schema v10 (an `images` table without `file_id`, so uploads
+  failed with 500; repair with `ALTER TABLE images ADD COLUMN file_id
+  TEXT`). Every test, and every process it starts, now gets its own home
+  and no system config. New `LABCTL_SYSTEM_CONFIG` environment variable:
+  replaces `/etc/labctl/config.yaml` in the config search order.
 - REST `DELETE /api/sbcs/<name>` on a claimed board answered `500`; it is
   now `409 "sbc_claimed"` (#21). A non-numeric `duration_minutes` on
   claim or renew answered `500`, now `400`; renew durations are now

@@ -3,55 +3,60 @@ Shared pytest fixtures for labctl tests.
 """
 
 import os
+import site
 import sys
 import types
 
 import pytest
 
+# Where packages installed with `pip install --user` live, computed from
+# the real HOME before any test replaces it.
+_USER_BASE = site.getuserbase()
+
 
 @pytest.fixture
-def _isolated_home(tmp_path_factory):
-    """An empty home directory for this test alone."""
-    return tmp_path_factory.mktemp("home")
+def _isolated_home(tmp_path):
+    """This test's home directory (empty; created when something writes
+    there)."""
+    return tmp_path / "home"
 
 
 @pytest.fixture(autouse=True)
 def _no_real_config(_isolated_home, monkeypatch):
-    """Keep every test away from the machine's real labctl files.
+    """Keep every test, and the processes it starts, away from the
+    machine's real labctl files and from other tests' state.
 
     load_config() falls back to ~/.config/labctl/config.yaml and then
     /etc/labctl/config.yaml, whose database_path is the live database: on
     a lab host, a test that loads config without naming a file would
-    open, and migrate, production. Point HOME and the XDG dirs at an empty
-    directory, the system config at a file that doesn't exist, and drop
-    LABCTL_* overrides from the developer's environment. Tests that need
-    a config write one and name it."""
+    open, and migrate, production. Point HOME and the XDG dirs at this
+    test's own home and the system config at a file that doesn't exist
+    (in this process and, via LABCTL_SYSTEM_CONFIG, in child processes),
+    and drop LABCTL_* overrides from the developer's environment. Tests
+    that need a config write one and name it.
+
+    `labctl -c FILE mcp` writes LABCTL_CONFIG / _EXCLUSIVE straight into
+    os.environ, and run_server() snapshots its config in
+    labctl.core.config: both are registered with monkeypatch (set, then
+    deleted) so they are undone after the test, as is the snapshot.
+    """
     from labctl.core import config as config_mod
 
     for name in list(os.environ):
         if name.startswith("LABCTL_"):
             monkeypatch.delenv(name)
-    monkeypatch.setenv("HOME", str(_isolated_home))
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(_isolated_home / ".config"))
-    monkeypatch.setenv("XDG_DATA_HOME", str(_isolated_home / ".local" / "share"))
-    monkeypatch.setattr(
-        config_mod, "SYSTEM_CONFIG_FILE", _isolated_home / "etc-labctl-config.yaml"
-    )
-
-
-@pytest.fixture(autouse=True)
-def _restore_labctl_config_env(monkeypatch):
-    """`labctl -c FILE mcp` writes LABCTL_CONFIG / _EXCLUSIVE straight into
-    os.environ, and the MCP server's run_server() snapshots its config in
-    labctl.core.config. Reset both around every test; otherwise one test
-    would decide every later load_config() (a deleted temp file, or a
-    stale snapshot)."""
     for name in ("LABCTL_CONFIG", "LABCTL_CONFIG_EXCLUSIVE"):
         monkeypatch.setenv(name, "")
         monkeypatch.delenv(name)
-    from labctl.core import config as config_mod
-
+    system = _isolated_home / "etc-labctl-config.yaml"
+    monkeypatch.setenv("LABCTL_SYSTEM_CONFIG", str(system))
+    monkeypatch.setattr(config_mod, "SYSTEM_CONFIG_FILE", system)
     monkeypatch.setattr(config_mod, "_snapshot", None)
+    monkeypatch.setenv("HOME", str(_isolated_home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(_isolated_home / ".config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(_isolated_home / ".local" / "share"))
+    # Child Pythons would look for user site-packages under the new HOME.
+    monkeypatch.setenv("PYTHONUSERBASE", _USER_BASE)
 
 
 @pytest.fixture(autouse=True)

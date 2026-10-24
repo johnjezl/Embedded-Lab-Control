@@ -1,6 +1,8 @@
 """Unit tests for configuration management."""
 
 import logging
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -546,8 +548,28 @@ class TestTestsNeverSeeTheRealConfig:
         assert config.source_path is None
         assert config_module.SYSTEM_CONFIG_FILE != Path("/etc/labctl/config.yaml")
         assert not config_module.SYSTEM_CONFIG_FILE.exists()
-        for path in (config.database_path, config.health.alert_log_path):
+        for path in (
+            config.database_path,
+            config.health.alert_log_path,
+            config.proxy.log_dir,
+        ):
             assert Path(path).is_relative_to(_isolated_home)
+
+    def test_child_processes_are_isolated_too(self, _isolated_home):
+        # A child doesn't inherit monkeypatch, only the environment.
+        script = (
+            "from labctl.core.config import load_config, SYSTEM_CONFIG_FILE\n"
+            "c = load_config()\n"
+            "print(c.source_path, SYSTEM_CONFIG_FILE, c.database_path, sep='\\n')"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script], capture_output=True, text=True, timeout=60
+        )
+        assert result.returncode == 0, result.stderr
+        source, system, database = result.stdout.splitlines()
+        assert source == "None"
+        assert Path(system).is_relative_to(_isolated_home)
+        assert Path(database).is_relative_to(_isolated_home)
 
 
 class TestSaveConfig:
