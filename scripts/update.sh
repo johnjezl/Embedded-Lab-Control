@@ -266,6 +266,17 @@ if [ -n "$SERVICES" ]; then
             journalctl -u "$1" --since "$RESTART_SINCE" --no-pager -o cat 2>/dev/null || true
         fi
     }
+    # systemd's restart count before this restart: one that grows means a
+    # start failed and systemd restarted the unit (Restart=on-failure).
+    unit_restarts() {
+        local n
+        n=$(systemctl show -p NRestarts --value "$1" 2>/dev/null || true)
+        case "$n" in '' | *[!0-9]*) echo 0 ;; *) echo "$n" ;; esac
+    }
+    declare -A RESTARTS_BEFORE
+    for svc in $SERVICES; do RESTARTS_BEFORE[$svc]=$(unit_restarts "$svc"); done
+    restarts_since() { echo $(($(unit_restarts "$1") - ${RESTARTS_BEFORE[$1]})); }
+    unit_state() { systemctl show -p ActiveState --value "$1" 2>/dev/null || true; }
     systemctl restart $SERVICES
     sleep 3
     # labctl-mcp is only up once one of its processes has a listening TCP
@@ -290,7 +301,9 @@ if [ -n "$SERVICES" ]; then
         "${SS_CMD:-ss}" -ltnpH 2>/dev/null | grep -qE "$pattern"
     }
     # Slow hosts (cold cache after the reinstall, SBC-class CPUs) can take a
-    # while to import the SDK and bind: MCP_START_TIMEOUT (seconds) to wait.
+    # while to import the SDK and bind: MCP_START_TIMEOUT (seconds) to wait
+    # for the services to settle (through a systemd restart after a failed
+    # start, RestartSec=10) and for labctl-mcp to listen.
     MCP_START_TIMEOUT=${MCP_START_TIMEOUT:-60}
     case "$MCP_START_TIMEOUT" in
         ''|*[!0-9]*)
@@ -298,24 +311,37 @@ if [ -n "$SERVICES" ]; then
             MCP_START_TIMEOUT=60 ;;
     esac
     if [ "$MCP_START_TIMEOUT" -lt 4 ]; then MCP_START_TIMEOUT=4; fi
-    MCP_LISTEN=1
-    if [[ " $SERVICES " == *" labctl-mcp "* ]]; then
-        for _ in $(seq 4 "$MCP_START_TIMEOUT"); do
-            MCP_LISTEN=0
-            mcp_listening || MCP_LISTEN=$?
-            MCP_STATE=$(systemctl show -p ActiveState --value labctl-mcp 2>/dev/null || true)
-            if [ "$MCP_LISTEN" -eq 0 ]; then break; fi
-            if [ "$MCP_LISTEN" -eq 2 ] && [ "$MCP_STATE" = active ]; then break; fi
-            # Not listening yet: keep waiting while it starts, and while
-            # systemd restarts it after a failed start (Restart=on-failure:
-            # "activating" for RestartSec), e.g. when the old server's port
-            # was still briefly in use.
-            case "$MCP_STATE" in
-                active | activating) ;;
-                *) break ;;
-            esac
-            sleep 1
+    # A unit whose start failed is "deactivating" while its last processes
+    # exit, then "activating" while systemd waits RestartSec to restart it
+    # (seen once: the old MCP server's port was still briefly in use). Wait
+    # until every service has settled, and labctl-mcp listens, or a unit has
+    # failed twice since this restart (not transient), or the timeout.
+    # settling SVC: 0 while still worth waiting for.
+    settling() {
+        case "$(unit_state "$1")" in
+            active)
+                [ "$1" = labctl-mcp ] || return 1
+                MCP_LISTEN=0
+                mcp_listening || MCP_LISTEN=$?
+                [ "$MCP_LISTEN" -eq 1 ] ;; # listening, or can't tell: done
+            activating | deactivating | reloading)
+                [ "$(restarts_since "$1")" -lt 2 ] ;;
+            *) return 1 ;;
+        esac
+    }
+    # Seconds, however long each round of checks takes (the bound on rounds
+    # keeps a stubbed `sleep` finite).
+    WAIT_UNTIL=$((SECONDS + MCP_START_TIMEOUT - 3))
+    for _ in $(seq 4 "$MCP_START_TIMEOUT"); do
+        [ "$SECONDS" -lt "$WAIT_UNTIL" ] || break
+        PENDING=""
+        for svc in $SERVICES; do
+            if settling "$svc"; then PENDING="$PENDING $svc"; fi
         done
+        [ -n "$PENDING" ] || break
+        sleep 1
+    done
+    if [[ " $SERVICES " == *" labctl-mcp "* ]]; then
         # journald stores stdout asynchronously: give the auth-mode line,
         # printed before the bind, a moment to arrive (if it's still up).
         for _ in 1 2 3 4 5; do
@@ -342,6 +368,12 @@ if [ -n "$SERVICES" ]; then
         fi
         if [ "$SVC_ACTIVE" = yes ]; then
             echo "[ok] $svc running"
+            if [ "$(restarts_since "$svc")" -gt 0 ]; then
+                echo "[!!] $svc's first start failed; systemd restarted it (log below)"
+                if [ "$svc" != labctl-mcp ]; then
+                    svc_log "$svc" | tail -n 15 | sed 's/^/     /'
+                fi
+            fi
             if [ "$svc" = labctl-mcp ]; then
                 # Auth mode (0.2.0+: API keys when auth.enabled) and startup
                 # warnings. Search the whole log, show only its tail.
@@ -356,9 +388,18 @@ if [ -n "$SERVICES" ]; then
                 fi
             fi
         else
+            SVC_STATE=$(unit_state "$svc")
+            SVC_RESTARTS=$(restarts_since "$svc")
             if [ "$svc" = labctl-mcp ] && systemctl is-active --quiet "$svc"; then
                 echo "[!!] $svc FAILED: running but not listening after ${MCP_START_TIMEOUT}s"
                 echo "     (still starting on a slow host? rerun with MCP_START_TIMEOUT=120);"
+                echo "     log since restart:"
+            elif [ "$SVC_RESTARTS" -ge 2 ]; then
+                echo "[!!] $svc FAILED: $((SVC_RESTARTS + 1)) starts failed (systemd keeps"
+                echo "     restarting it); log since restart:"
+            elif [[ "$SVC_STATE" == activating || "$SVC_STATE" == deactivating ]]; then
+                echo "[!!] $svc FAILED: still restarting after ${MCP_START_TIMEOUT}s (systemd"
+                echo "     restarts a failed start; slow host? rerun with MCP_START_TIMEOUT=120);"
                 echo "     log since restart:"
             else
                 echo "[!!] $svc FAILED; log since restart:"
