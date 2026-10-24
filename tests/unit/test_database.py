@@ -659,6 +659,35 @@ class TestSchemaRepair:
             assert "file_id" in columns
             assert [tuple(r) for r in rows] == [("old.img", "bot", None)]
 
+    class _Conn:
+        """A connection whose PRAGMA answer is stale, or whose ALTER fails."""
+
+        def __init__(self, conn, alter_error=None):
+            self.conn, self.alter_error = conn, alter_error
+
+        def execute(self, sql, *args):
+            if sql.startswith("PRAGMA table_info(images)"):
+                return [(0, "name"), (1, "uploaded_by"), (2, "size")]
+            if sql.startswith("ALTER") and self.alter_error:
+                raise sqlite3.OperationalError(self.alter_error)
+            return self.conn.execute(sql, *args)
+
+    def test_concurrent_repair_tolerated(self, tmp_path):
+        # Another process added the column between our check and our ALTER.
+        path = tmp_path / "labctl.db"
+        db = Database(path)
+        db.initialize()
+        with db.connect() as conn:
+            db._repair_schema(self._Conn(conn))  # duplicate column: ignored
+
+    def test_read_only_access_keeps_working(self, tmp_path, caplog):
+        path = tmp_path / "labctl.db"
+        self._pre_release_v10(path)
+        db = Database(path)
+        with db.connect() as conn:
+            db._repair_schema(self._Conn(conn, "attempt to write a readonly database"))
+        assert "could not be added" in caplog.text
+
     def test_current_schema_untouched(self, tmp_path):
         path = tmp_path / "labctl.db"
         Database(path).initialize()
