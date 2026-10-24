@@ -373,6 +373,7 @@ class Database:
                     current_version = cursor.fetchone()[0] or 0
                     if current_version < SCHEMA_VERSION:
                         self._apply_migrations(conn, current_version)
+                    self._repair_schema(conn)
 
             self._initialized = True
 
@@ -405,6 +406,22 @@ class Database:
         """Test-only: force the next initialize() to re-run."""
         with self._init_lock:
             self._initialized = False
+
+    def _repair_schema(self, conn: sqlite3.Connection) -> None:
+        """Fix databases a pre-release build left at the current version
+        with an older shape (migrations only run on a version change).
+
+        A pre-release v10, created by test runs that reached a lab host's
+        real database, had an images table without file_id; uploads then
+        failed with 500. Images recorded without one count as unverified
+        (operator-only), as a mismatch would.
+        """
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(images)")}
+        if columns and "file_id" not in columns:
+            conn.execute("ALTER TABLE images ADD COLUMN file_id TEXT")
+            logger.warning(
+                "DB %s: added the missing images.file_id column", self.db_path
+            )
 
     def _apply_migrations(self, conn: sqlite3.Connection, from_version: int) -> None:
         """Apply database migrations."""

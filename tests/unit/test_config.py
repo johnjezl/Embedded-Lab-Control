@@ -1,6 +1,7 @@
 """Unit tests for configuration management."""
 
 import logging
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -570,6 +571,27 @@ class TestTestsNeverSeeTheRealConfig:
         assert source == "None"
         assert Path(system).is_relative_to(_isolated_home)
         assert Path(database).is_relative_to(_isolated_home)
+
+    @pytest.mark.parametrize("value", [None, ""])
+    def test_system_config_default_without_override(self, value):
+        # The fixture always sets LABCTL_SYSTEM_CONFIG; check the default a
+        # real install gets (without loading that file).
+        env = {k: v for k, v in os.environ.items() if k != "LABCTL_SYSTEM_CONFIG"}
+        if value is not None:
+            env["LABCTL_SYSTEM_CONFIG"] = value
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from labctl.core.config import SYSTEM_CONFIG_FILE as f; print(f)",
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == "/etc/labctl/config.yaml"
 
 
 class TestSaveConfig:
