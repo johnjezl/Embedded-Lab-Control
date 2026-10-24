@@ -520,6 +520,7 @@ class TestSchema:
 
         (entry,) = store.list()
         assert entry["uploaded_by"] is None
+        assert entry["sha256"] is None  # never checked against the file
         for attempt in (
             lambda: _put(store, "a.img", b"new", BOT, overwrite=True),
             lambda: store.delete("a.img", BOT),

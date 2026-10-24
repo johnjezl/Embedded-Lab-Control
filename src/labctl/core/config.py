@@ -29,13 +29,6 @@ class _QuietFilter(logging.Filter):
 
 logger.addFilter(_QuietFilter())
 
-# LABCTL_SYSTEM_CONFIG replaces the system-wide fallback (read at import,
-# so child processes inherit it); the test suite points it at a file that
-# doesn't exist, so tests never load a lab host's real config.
-SYSTEM_CONFIG_FILE = Path(
-    os.environ.get("LABCTL_SYSTEM_CONFIG") or "/etc/labctl/config.yaml"
-)
-
 
 def _default_config_dir() -> Path:
     """Return the user config dir, honoring XDG_CONFIG_HOME when set."""
@@ -61,6 +54,15 @@ def _default_data_dir() -> Path:
 def _expand_path(value: str | Path) -> Path:
     """Expand env vars and ~ in config-provided path values."""
     return Path(os.path.expandvars(str(value))).expanduser()
+
+
+# LABCTL_SYSTEM_CONFIG replaces the system-wide fallback (read at import,
+# so child processes inherit it; ~ and $VARS expanded, as for
+# LABCTL_CONFIG); the test suite points it at a file that doesn't exist,
+# so tests never load a lab host's real config.
+SYSTEM_CONFIG_FILE = _expand_path(
+    os.environ.get("LABCTL_SYSTEM_CONFIG") or "/etc/labctl/config.yaml"
+)
 
 
 def _section(data: dict, key: str) -> dict:
