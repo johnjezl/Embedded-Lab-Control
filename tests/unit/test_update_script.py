@@ -82,9 +82,10 @@ def run_restart(tmp_path):
     listening socket.
 
     ``timeline`` maps a service to ``(from_sleep, ActiveState, NRestarts)``
-    steps, counted in the script's ``sleep`` calls, as systemd reports a
-    failed start it restarts: e.g. "deactivating", then "activating" (no
-    MainPID, not listening) for RestartSec, then "active" with NRestarts 1.
+    steps, optionally with a SubState ("auto-restart" while activating),
+    counted in the script's ``sleep`` calls, as systemd reports a failed
+    start it restarts: e.g. "deactivating", then "activating" (no MainPID,
+    not listening) for RestartSec, then "active" with NRestarts 1.
     Without one, a running service is active with NRestarts 0. As in
     systemd, `systemctl restart` resets NRestarts (``restarts_before``
     until then)."""
@@ -108,19 +109,22 @@ def run_restart(tmp_path):
     ):
         sleeps, restarted = tmp_path / "sleeps", tmp_path / "restarted"
         steps = []
+        default_sub = {"activating": "auto-restart", "active": "running"}
         for name, up in active.items():
-            for start, state, count in (timeline or {}).get(
+            for step in (timeline or {}).get(
                 name, [(0, "active" if up else "failed", 0)]
             ):
+                start, state, count = step[:3]
+                sub = step[3] if len(step) > 3 else default_sub.get(state, state)
                 steps.append(
                     f'  [ "$1" = {name} ] && [ "$n" -ge {start} ]'
-                    f' && r="{state} {count}"'
+                    f' && r="{state} {count} {sub}"'
                 )
         systemctl = [
             "#!/bin/bash",
-            "# info SVC: its ActiveState and NRestarts now",
+            "# info SVC: its ActiveState, NRestarts and SubState now",
             "info() {",
-            f"  local n r='failed 0'; n=$(cat {sleeps} 2>/dev/null | wc -l)",
+            f"  local n r='failed 0 failed'; n=$(cat {sleeps} 2>/dev/null | wc -l)",
             *steps,
             '  echo "$r"',
             "}",
@@ -132,6 +136,7 @@ def run_restart(tmp_path):
             '    MainPID) [ "$(state labctl-mcp)" = active ] && echo 4242 || echo 0 ;;',
             f"    ControlGroup) echo {cgroup_path} ;;",
             '    ActiveState) state "$5" ;;',
+            '    SubState) set -- $(info "$5"); echo "$3" ;;',
             f"    NRestarts) if [ -e {restarted} ];"
             ' then set -- $(info "$5"); echo "$2";'
             f" else echo {restarts_before}; fi ;;",
@@ -272,7 +277,9 @@ class TestRestartReport:
                 "labctl-mcp": [
                     (0, "deactivating", 0),  # longer than the others' checks
                     (6, "activating", 0),
-                    (16, "active", 1),
+                    # restart queued: NRestarts already counts it
+                    (16, "activating", 1, "auto-restart-queued"),
+                    (17, "active", 1),
                 ]
             },
             restarts_before=3,
@@ -299,10 +306,10 @@ class TestRestartReport:
             },
             timeline={
                 "labctl-web": [
-                    (0, "active", 0),
-                    (2, "deactivating", 0),
-                    (3, "activating", 0),
-                    (13, "active", 1),
+                    (0, "active", 0),  # active on the 1st and 2nd check
+                    (3, "deactivating", 0),
+                    (4, "activating", 0),
+                    (14, "active", 1),
                 ]
             },
         )

@@ -275,14 +275,16 @@ if [ -n "$SERVICES" ]; then
         case "$n" in '' | *[!0-9]*) echo 0 ;; *) echo "$n" ;; esac
     }
     # Failed starts since `systemctl restart`: NRestarts counts the restarts
-    # systemd has done; one more start has failed while the unit is
-    # stopping or waiting RestartSec to be restarted.
+    # systemd has done (it grows as the restarted unit starts again); one
+    # more start has failed while the unit is stopping or waiting RestartSec
+    # (SubState auto-restart; not auto-restart-queued, already counted).
     unit_failures() {
         local n
         n=$(unit_restarts "$1")
-        case "$(unit_state "$1")" in
-            activating | deactivating) n=$((n + 1)) ;;
-        esac
+        if [ "$(unit_state "$1")" = deactivating ] ||
+            [ "$(systemctl show -p SubState --value "$1" 2>/dev/null || true)" = auto-restart ]; then
+            n=$((n + 1))
+        fi
         echo "$n"
     }
     systemctl restart $SERVICES
@@ -386,6 +388,10 @@ if [ -n "$SERVICES" ]; then
         fi
         if [ "$SVC_ACTIVE" = yes ]; then
             echo "[ok] $svc running"
+            if [ "$svc" != labctl-mcp ] && [ "${ACTIVE_CHECKS[$svc]:-0}" -lt "$STABLE_CHECKS" ]; then
+                echo "[!!] $svc only just (re)started and may still fail; check it with:"
+                echo "     systemctl status $svc"
+            fi
             SVC_RESTARTS=$(unit_restarts "$svc")
             if [ "$SVC_RESTARTS" -gt 0 ]; then
                 echo "[!!] $svc is up only after $SVC_RESTARTS failed start(s): systemd"
