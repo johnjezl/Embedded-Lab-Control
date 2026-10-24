@@ -34,9 +34,9 @@ ser2net:
 #       password_hash: "generate with: labctl user hash-password"
 #       api_key: "generate with: labctl user generate-key"
 #       # role: operator (default) may override or force-release other
-#       # users' claims (MCP, REST and the web UI); give AI agents
-#       # role: agent (they can only ask for a board, e.g. with
-#       # request_sbc_release).
+#       # users' claims (MCP, REST and the web UI). Give AI agents
+#       # role: agent: they can claim and use free boards, but a board
+#       # someone else holds they can only ask for (request_sbc_release).
 #     - username: "fw-dev"
 #       api_key: "generate with: labctl user generate-key"
 #       role: agent
@@ -48,10 +48,13 @@ ser2net:
 # override is recorded in the activity log.
 # See docs/OPERATIONS.md for what is and isn't checked.
 # claims:
+#   # false: changes are no longer checked against claims, on any
+#   # interface (docs/OPERATIONS.md lists the few exceptions).
+#   enabled: true
 #   # Refuse MCP and REST calls that change a board unless the caller has
 #   # claimed it first (not the CLI or web UI, whose users are people).
 #   # Recommended when several agents share the lab. Needs claims
-#   # enabled (the default).
+#   # enabled.
 #   require_claim: false
 
 # Web server SSL/TLS (disabled by default, serves HTTP)
