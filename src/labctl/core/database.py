@@ -417,11 +417,24 @@ class Database:
         (operator-only), as a mismatch would.
         """
         columns = {row[1] for row in conn.execute("PRAGMA table_info(images)")}
-        if columns and "file_id" not in columns:
+        if not columns or "file_id" in columns:
+            return
+        try:
             conn.execute("ALTER TABLE images ADD COLUMN file_id TEXT")
+        except sqlite3.OperationalError as e:
+            if "duplicate column" in str(e):
+                return  # another process starting at the same time added it
+            # e.g. a user who may only read: keep going; a process that can
+            # write (the services) repairs it.
             logger.warning(
-                "DB %s: added the missing images.file_id column", self.db_path
+                "DB %s: images.file_id is missing and could not be added "
+                "(%s); image uploads fail until labctl opens the database "
+                "with write access",
+                self.db_path,
+                e,
             )
+            return
+        logger.warning("DB %s: added the missing images.file_id column", self.db_path)
 
     def _apply_migrations(self, conn: sqlite3.Connection, from_version: int) -> None:
         """Apply database migrations."""
