@@ -97,6 +97,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   follow-up read doesn't misjudge the mux position.
 
 ### Fixed
+- `update.sh` reported `labctl-mcp` as failed when its first start after
+  the restart failed and systemd restarted it 10 s later (`Restart=on-failure`):
+  seen once when the old server's port was still briefly in use. It now
+  keeps waiting while the unit is `activating`, within `MCP_START_TIMEOUT`.
 - The test suite no longer loads the machine's real config. About 115
   tests loaded config without naming a file, so on a lab host whose user
   can read `/etc/labctl` they used the production config and database; a

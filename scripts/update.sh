@@ -303,9 +303,17 @@ if [ -n "$SERVICES" ]; then
         for _ in $(seq 4 "$MCP_START_TIMEOUT"); do
             MCP_LISTEN=0
             mcp_listening || MCP_LISTEN=$?
-            if [ "$MCP_LISTEN" -ne 1 ] || ! systemctl is-active --quiet labctl-mcp; then
-                break
-            fi
+            MCP_STATE=$(systemctl show -p ActiveState --value labctl-mcp 2>/dev/null || true)
+            if [ "$MCP_LISTEN" -eq 0 ]; then break; fi
+            if [ "$MCP_LISTEN" -eq 2 ] && [ "$MCP_STATE" = active ]; then break; fi
+            # Not listening yet: keep waiting while it starts, and while
+            # systemd restarts it after a failed start (Restart=on-failure:
+            # "activating" for RestartSec), e.g. when the old server's port
+            # was still briefly in use.
+            case "$MCP_STATE" in
+                active | activating) ;;
+                *) break ;;
+            esac
             sleep 1
         done
         # journald stores stdout asynchronously: give the auth-mode line,
