@@ -33,10 +33,12 @@ ser2net:
 #     - username: admin
 #       password_hash: "generate with: labctl user hash-password"
 #       api_key: "generate with: labctl user generate-key"
-#       # role: operator (default) may override or force-release other
-#       # users' claims (MCP, REST and the web UI). Give AI agents
-#       # role: agent: they can claim and use free boards, but a board
-#       # someone else holds they can only ask for (request_sbc_release).
+#       # role: operator (default) may act on boards other users have
+#       # claimed (override_claim on REST, the web UI's override button)
+#       # and force-release their claims (also over MCP, with
+#       # force_release_sbc). Give AI agents role: agent: they can claim
+#       # and use free boards, but a board someone else holds they can
+#       # only ask for (request_sbc_release).
 #     - username: "fw-dev"
 #       api_key: "generate with: labctl user generate-key"
 #       role: agent
@@ -44,8 +46,9 @@ ser2net:
 # Claims (exclusive access to a board). MCP tools, the REST API, the web UI
 # and the CLI refuse to change a board someone else has claimed, or one
 # that shares its plug outlet, SDWire, console adapter or relay channel.
-# Operators (and CLI users, with --override-claim) may override; each
-# override is recorded in the activity log.
+# Operators may override on REST and the web UI, and anyone may with the
+# CLI's --override-claim; each override is recorded in the activity log.
+# Over MCP there is no override: an operator force-releases the claim.
 # See docs/OPERATIONS.md for what is and isn't checked.
 # claims:
 #   # false: changes are no longer checked against claims, on any
