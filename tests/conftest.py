@@ -2,10 +2,41 @@
 Shared pytest fixtures for labctl tests.
 """
 
+import os
 import sys
 import types
 
 import pytest
+
+
+@pytest.fixture
+def _isolated_home(tmp_path_factory):
+    """An empty home directory for this test alone."""
+    return tmp_path_factory.mktemp("home")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_config(_isolated_home, monkeypatch):
+    """Keep every test away from the machine's real labctl files.
+
+    load_config() falls back to ~/.config/labctl/config.yaml and then
+    /etc/labctl/config.yaml, whose database_path is the live database: on
+    a lab host, a test that loads config without naming a file would
+    open, and migrate, production. Point HOME and the XDG dirs at an empty
+    directory, the system config at a file that doesn't exist, and drop
+    LABCTL_* overrides from the developer's environment. Tests that need
+    a config write one and name it."""
+    from labctl.core import config as config_mod
+
+    for name in list(os.environ):
+        if name.startswith("LABCTL_"):
+            monkeypatch.delenv(name)
+    monkeypatch.setenv("HOME", str(_isolated_home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(_isolated_home / ".config"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(_isolated_home / ".local" / "share"))
+    monkeypatch.setattr(
+        config_mod, "SYSTEM_CONFIG_FILE", _isolated_home / "etc-labctl-config.yaml"
+    )
 
 
 @pytest.fixture(autouse=True)
