@@ -593,6 +593,22 @@ class TestTestsNeverSeeTheRealConfig:
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "/etc/labctl/config.yaml"
 
+    def test_system_config_override_expanded(self, _isolated_home):
+        env = dict(os.environ, LABCTL_SYSTEM_CONFIG="~/lab/config.yaml")
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from labctl.core.config import SYSTEM_CONFIG_FILE as f; print(f)",
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == str(_isolated_home / "lab" / "config.yaml")
+
 
 class TestSaveConfig:
     """Tests for save_config function."""
