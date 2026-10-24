@@ -670,6 +670,18 @@ class TestMigrationV11:
         assert rows == [("old.img", "bot", None)]
         assert version == SCHEMA_VERSION == 11
 
+    def test_v10_without_images_table_gets_one(self, tmp_path):
+        path = tmp_path / "labctl.db"
+        self._at_v10(path, pre_release=False)
+        conn = sqlite3.connect(path)
+        conn.execute("DROP TABLE images")
+        conn.commit()
+        conn.close()
+        columns, rows, version = self._upgrade(path)
+        assert "file_id" in columns
+        assert rows == []
+        assert version == 11
+
     def test_released_v10_unchanged(self, tmp_path):
         # Also the path a second process starting at the same time takes:
         # the column is already there.
