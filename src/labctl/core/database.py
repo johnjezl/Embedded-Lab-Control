@@ -424,7 +424,9 @@ class Database:
         except sqlite3.OperationalError as e:
             if "duplicate column" in str(e):
                 return  # another process starting at the same time added it
-            # e.g. a user who may only read: keep going; a process that can
+            if "readonly" not in str(e):
+                raise  # e.g. locked: initialize() fails and is retried
+            # A user who may only read: keep going; a process that can
             # write (the services) repairs it.
             logger.warning(
                 "DB %s: images.file_id is missing and could not be added "

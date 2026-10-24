@@ -1,5 +1,6 @@
 """Unit tests for database module."""
 
+import os
 import sqlite3
 import threading
 
@@ -672,21 +673,56 @@ class TestSchemaRepair:
                 raise sqlite3.OperationalError(self.alter_error)
             return self.conn.execute(sql, *args)
 
-    def test_concurrent_repair_tolerated(self, tmp_path):
+    def test_concurrent_repair_tolerated(self, tmp_path, caplog):
         # Another process added the column between our check and our ALTER.
         path = tmp_path / "labctl.db"
         db = Database(path)
         db.initialize()
         with db.connect() as conn:
-            db._repair_schema(self._Conn(conn))  # duplicate column: ignored
+            db._repair_schema(self._Conn(conn))  # duplicate column
+        assert "file_id" not in caplog.text  # quietly ignored
 
+    @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file modes")
     def test_read_only_access_keeps_working(self, tmp_path, caplog):
         path = tmp_path / "labctl.db"
         self._pre_release_v10(path)
-        db = Database(path)
-        with db.connect() as conn:
-            db._repair_schema(self._Conn(conn, "attempt to write a readonly database"))
+        path.chmod(0o444)
+        try:
+            db = Database(path)
+            db.initialize()  # doesn't raise
+            with db.connect() as conn:
+                assert conn.execute("SELECT name FROM images").fetchall()
+        finally:
+            path.chmod(0o644)
+            # SQLite gave the -shm/-wal it made meanwhile the DB's 0444 (a
+            # real reader can't create files in the labctl home at all);
+            # nothing was written, so they can go.
+            for side in ("-shm", "-wal"):
+                path.with_name(path.name + side).unlink(missing_ok=True)
         assert "could not be added" in caplog.text
+
+        db = Database(path)  # a process that can write repairs it
+        db.initialize()
+        with db.connect() as conn:
+            columns = {r[1] for r in conn.execute("PRAGMA table_info(images)")}
+        assert "file_id" in columns
+
+    def test_locked_database_fails_and_is_retried(self, tmp_path):
+        path = tmp_path / "labctl.db"
+        self._pre_release_v10(path)
+        holder = sqlite3.connect(path, isolation_level=None)
+        holder.execute("BEGIN IMMEDIATE")  # another writer holds the lock
+        db = Database(path, timeout_seconds=0.1)
+        try:
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                db.initialize()
+        finally:
+            holder.execute("ROLLBACK")
+            holder.close()
+        db.initialize()  # not cached as done: retried, and repaired
+        with db.connect() as conn:
+            columns = {r[1] for r in conn.execute("PRAGMA table_info(images)")}
+        assert "file_id" in columns
 
     def test_current_schema_untouched(self, tmp_path):
         path = tmp_path / "labctl.db"
