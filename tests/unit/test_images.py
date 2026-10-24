@@ -487,6 +487,49 @@ class TestSchema:
                 ("a.img", 1, "0" * 64),
             )
 
+    def test_row_migrated_without_file_id_is_operator_only(self, tmp_path, images_dir):
+        """A pre-release v10 row gets file_id NULL at v11: its uploader
+        loses replace/delete, as for a file placed another way."""
+        import sqlite3
+
+        from labctl.core.database import Database
+
+        path = tmp_path / "old.db"
+        get_database(path)
+        conn = sqlite3.connect(path)
+        conn.executescript("""
+            DROP TABLE images;
+            CREATE TABLE images (
+                name TEXT PRIMARY KEY,
+                uploaded_by TEXT,
+                size INTEGER NOT NULL,
+                sha256 TEXT NOT NULL,
+                uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+            INSERT INTO images (name, uploaded_by, size, sha256)
+                VALUES ('a.img', 'bot', 3, 'abc');
+            DELETE FROM schema_version;
+            INSERT INTO schema_version (version) VALUES (10);
+            """)
+        conn.commit()
+        conn.close()
+        (images_dir / "a.img").write_bytes(b"old")
+        db = Database(path)
+        db.initialize()
+        store = ImageStore(str(images_dir), db)
+
+        (entry,) = store.list()
+        assert entry["uploaded_by"] is None
+        for attempt in (
+            lambda: _put(store, "a.img", b"new", BOT, overwrite=True),
+            lambda: store.delete("a.img", BOT),
+        ):
+            with pytest.raises(ImageError) as e:
+                attempt()
+            assert e.value.code == "not_owner"
+        store.delete("a.img", ALICE)
+        assert not (images_dir / "a.img").exists()
+
 
 class TestConfig:
     def test_defaults(self):

@@ -645,7 +645,8 @@ class TestMigrationV11:
         conn.executescript("""
             INSERT INTO images (name, uploaded_by, size, sha256)
                 VALUES ('old.img', 'bot', 3, 'abc');
-            DELETE FROM schema_version WHERE version > 10;
+            DELETE FROM schema_version;
+            INSERT INTO schema_version (version) VALUES (10);
             """)
         conn.commit()
         conn.close()
