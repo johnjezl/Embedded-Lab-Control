@@ -44,10 +44,10 @@ ser2net:
 #       role: agent
 
 # Claims (exclusive access to a board). MCP tools, the REST API, the web UI
-# and the CLI refuse to change a board someone else has claimed. Operating
-# a board (power, SD card, relays) is also refused when it shares a plug
-# outlet, SDWire, console adapter or relay channel with a claimed board;
-# editing its own records is not.
+# and the CLI refuse to change a board someone else has claimed. Hardware
+# boards share (a plug outlet, SDWire, console adapter, relay board) is
+# covered too: using it through another board, or wiring it to one, is
+# refused while one of its boards is claimed.
 # Operators may override on REST and the web UI, and anyone may with the
 # CLI's --override-claim; each override is recorded in the activity log.
 # Over MCP there is no override: an operator force-releases the claim.
