@@ -102,10 +102,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   the old server had exited, cause unknown; the new server's start failed
   and systemd restarted it 10 s later). It probes the addresses uvicorn
   will bind, then lets uvicorn bind as before. `update.sh` also waits,
-  for every service, while a unit is `deactivating` or `activating`
-  (systemd restarting a failed start), within `MCP_START_TIMEOUT` (now
-  measured in seconds), and says when systemd had to restart one; it had
-  reported `labctl-mcp` as failed.
+  for every service, while a unit is `deactivating`, `activating` (as
+  while systemd restarts a failed start) or `reloading`, within
+  `MCP_START_TIMEOUT` (now measured in seconds), and says when systemd
+  had to restart one; it had reported `labctl-mcp` as failed.
 - The test suite no longer loads the machine's real config. About 115
   tests loaded config without naming a file, so on a lab host whose user
   can read `/etc/labctl` they used the production config and database; a

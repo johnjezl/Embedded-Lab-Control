@@ -4581,7 +4581,9 @@ def _bind_sockets(
     create_server (what uvicorn uses for a host and port) makes them: one
     per getaddrinfo address ("" for all interfaces), SO_REUSEADDR,
     IPV6_V6ONLY on IPv6, skipping an address whose family this host can't
-    create or bind (EADDRNOTAVAIL, e.g. IPv6 disabled). While an address is
+    create or bind (EADDRNOTAVAIL, e.g. IPv6 disabled; Python 3.12's
+    asyncio skips it too, 3.10's doesn't, and uvicorn then reports that
+    error itself). While an address is
     in use, closes them and tries again, for up to ``retry_seconds``; other
     errors, an address still in use at the end, or no address at all, are
     raised."""
