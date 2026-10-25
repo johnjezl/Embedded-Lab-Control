@@ -4566,6 +4566,8 @@ def _http_server(host: str, port: int, security, tls):
 # (seen once on a deploy, ~1 s), and systemd would otherwise mark the
 # start failed and restart it only after RestartSec.
 BIND_RETRY_SECONDS = 15.0
+# uvicorn's default listen backlog.
+HTTP_BACKLOG = 2048
 
 
 def _bind_sockets(
@@ -4576,12 +4578,14 @@ def _bind_sockets(
     sleep=_time_mod.sleep,
     clock=_time_mod.monotonic,
 ) -> list:
-    """Sockets bound to ``host``:``port`` as asyncio's create_server (what
-    uvicorn uses for a host and port) binds them: one per getaddrinfo
-    address ("" for all interfaces), SO_REUSEADDR, IPV6_V6ONLY on IPv6.
-    While an address is in use, closes them and tries again, for up to
-    ``retry_seconds``; other errors, and an address still in use at the
-    end, are raised."""
+    """Listening sockets for ``host``:``port``, made as asyncio's
+    create_server (what uvicorn uses for a host and port) makes them: one
+    per getaddrinfo address ("" for all interfaces), SO_REUSEADDR,
+    IPV6_V6ONLY on IPv6, skipping an address whose family this host can't
+    create or bind (EADDRNOTAVAIL, e.g. IPv6 disabled). While an address is
+    in use, closes them and tries again, for up to ``retry_seconds``; other
+    errors, an address still in use at the end, or no address at all, are
+    raised."""
     import socket
 
     infos = {
@@ -4596,12 +4600,26 @@ def _bind_sockets(
         sockets = []
         try:
             for family, socktype, proto, addr in sorted(infos, key=repr):
-                sock = socket.socket(family, socktype, proto)
+                try:
+                    sock = socket.socket(family, socktype, proto)
+                except OSError:
+                    continue  # a family/type this host doesn't support
+                try:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    if family == socket.AF_INET6:
+                        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                    sock.bind(addr)
+                except OSError as e:
+                    sock.close()
+                    if e.errno == errno.EADDRNOTAVAIL:
+                        continue  # the family isn't enabled here
+                    raise
                 sockets.append(sock)
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                if family == socket.AF_INET6:
-                    sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
-                sock.bind(addr)
+                # Listening here too: on Linux, a conflict can surface at
+                # listen() rather than bind().
+                sock.listen(HTTP_BACKLOG)
+            if not sockets:
+                raise OSError(f"could not bind on any address of {host or '*'}:{port}")
             return sockets
         except OSError as e:
             for sock in sockets:

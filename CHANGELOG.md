@@ -102,7 +102,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   moment after it exits (seen once on a deploy: the new server's start
   failed and systemd restarted it 10 s later). It now binds its sockets
   itself, the way uvicorn's own host/port startup did (every address a
-  name resolves to, IPv6 sockets IPv6-only, `""` for all interfaces). `update.sh` also waits,
+  name resolves to, skipping a family the host can't use; IPv6 sockets
+  IPv6-only; `""` for all interfaces). `update.sh` also waits,
   for every service, while a unit is `deactivating` or `activating`
   (systemd restarting a failed start), within `MCP_START_TIMEOUT` (now
   measured in seconds), and says when systemd had to restart one; it had
