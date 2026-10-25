@@ -1265,6 +1265,7 @@ class TestTls:
             patch.object(mcp_server, "_get_config", return_value=config),
             patch.object(mcp_server, "_start_expiry_thread"),
             patch("atexit.register"),
+            patch.object(mcp_server, "_bind_socket"),
             patch("uvicorn.Server") as server,
         ):
             mcp_server.run_server(transport="http", host="127.0.0.1", http_port=9)

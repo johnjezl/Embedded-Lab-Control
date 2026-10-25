@@ -4561,8 +4561,57 @@ def _http_server(host: str, port: int, security, tls):
     )
 
 
+# How long the HTTP server keeps trying to bind a port that is in use: a
+# restarted server's predecessor can hold it for a moment after it exits
+# (seen once on a deploy, ~1 s), and systemd would otherwise mark the
+# start failed and restart it only after RestartSec.
+BIND_RETRY_SECONDS = 15.0
+
+
+def _bind_socket(
+    host: str,
+    port: int,
+    *,
+    retry_seconds: float = BIND_RETRY_SECONDS,
+    sleep=_time_mod.sleep,
+    clock=_time_mod.monotonic,
+):
+    """A socket bound to ``host``:``port`` as uvicorn binds one
+    (SO_REUSEADDR; IPv6 when ``host`` has a colon), retrying for up to
+    ``retry_seconds`` while the address is in use. Other errors, and an
+    address still in use at the end, are raised."""
+    import socket
+
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    deadline = clock() + retry_seconds
+    announced = False
+    while True:
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+            return sock
+        except OSError as e:
+            sock.close()
+            if e.errno != errno.EADDRINUSE or clock() >= deadline:
+                raise
+            if not announced:
+                print(
+                    f"MCP HTTP: {host}:{port} is in use; retrying for up to "
+                    f"{retry_seconds:g}s",
+                    flush=True,
+                )
+                announced = True
+            sleep(0.5)
+
+
 def _serve_http(host: str, port: int, security, tls) -> None:
-    _http_server(host, port, security, tls).run()
+    try:
+        sock = _bind_socket(host, port)
+    except OSError as e:
+        print(f"MCP HTTP: can't listen on {host}:{port}: {e}", file=sys.stderr)
+        sys.exit(1)
+    _http_server(host, port, security, tls).run(sockets=[sock])
 
 
 if __name__ == "__main__":
