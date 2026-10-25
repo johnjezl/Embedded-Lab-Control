@@ -360,10 +360,64 @@ class TestRestartReport:
             },
         )
         assert result.returncode == 1
-        assert (
-            "[!!] labctl-mcp FAILED: systemd has restarted it 2 times" in result.stdout
-        )
+        assert "[!!] labctl-mcp FAILED: its starts keep failing" in result.stdout
         assert len((tmp_path / "sleeps").read_text().splitlines()) < 30
+
+    def test_restart_loop_caught_while_active(self, run_restart, tmp_path):
+        """labctl-web loops (up a few seconds, then restarted): FAILED even
+        when it happens to be active when checked, without waiting out the
+        timeout."""
+        result, _ = run_restart(
+            ALL_UP,
+            {
+                "labctl-mcp": "MCP HTTP: API keys required",
+                "labctl-web": "KeyError: 'secret_key'",
+            },
+            timeline={
+                "labctl-web": [
+                    (0, "active", 0),
+                    (2, "activating", 0),
+                    (5, "active", 1),
+                    (7, "activating", 1),
+                    (10, "active", 2),
+                ]
+            },
+        )
+        assert result.returncode == 1
+        assert "[!!] labctl-web FAILED: its starts keep failing" in result.stdout
+        assert "KeyError" in result.stdout
+        assert len((tmp_path / "sleeps").read_text().splitlines()) < 20
+
+    def test_without_ss_mcp_needs_stable_checks(self, run_restart):
+        """No `ss`: active alone doesn't show the bind worked, so labctl-mcp
+        settles as the others do, through a failed first start."""
+        result, _ = run_restart(
+            ALL_UP,
+            {"labctl-mcp": "MCP HTTP: API keys required"},
+            ss_present=False,
+            timeline={
+                "labctl-mcp": [
+                    (0, "active", 0),
+                    (2, "deactivating", 0),
+                    (3, "activating", 0),
+                    (13, "active", 1),
+                ]
+            },
+        )
+        assert result.returncode == 0, result.stdout
+        assert "[ok] labctl-mcp running" in result.stdout
+        assert "labctl-mcp is up only after a failed start" in result.stdout
+        assert "labctl-mcp only just" not in result.stdout
+
+    def test_still_stopping_not_blamed_on_restart(self, run_restart):
+        result, _ = run_restart(
+            ALL_UP,
+            {"labctl-mcp": "MCP HTTP: API keys required"},
+            timeline={"labctl-monitor": [(0, "deactivating", 0)]},
+            extra_env={"MCP_START_TIMEOUT": "8"},
+        )
+        assert result.returncode == 1
+        assert "[!!] labctl-monitor FAILED: still stopping after 8s" in result.stdout
 
     def test_service_not_yet_stable_is_flagged(self, run_restart):
         """The wait ended before labctl-web had been active long enough to

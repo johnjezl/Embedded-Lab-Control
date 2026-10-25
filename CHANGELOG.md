@@ -104,8 +104,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   (within `MCP_START_TIMEOUT`, now measured in seconds); takes `labctl-web`
   and `labctl-monitor` as up only after five checks in a row a second
   apart, so a start that fails within a few seconds isn't missed; says
-  when a service is up only because systemd restarted it; and stops
-  waiting once systemd has restarted a unit twice.
+  when a service is up only because systemd restarted it; and reports a
+  unit systemd has restarted twice as failed (its starts keep failing),
+  without waiting further.
 - The test suite no longer loads the machine's real config. About 115
   tests loaded config without naming a file, so on a lab host whose user
   can read `/etc/labctl` they used the production config and database; a
