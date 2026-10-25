@@ -4344,9 +4344,10 @@ class TestMcpTransportLabels:
         assert srv._SESSION_ID.startswith("mcp-stdio:")
 
 
-class TestHttpBindRetry:
-    """The HTTP server retries a port that is in use for a while: a
-    restarted server's predecessor can hold it for a moment after exiting."""
+class TestHttpBind:
+    """The HTTP server binds its sockets itself (as asyncio's create_server
+    would for uvicorn) so it can retry a port that is in use: a restarted
+    server's predecessor can hold it for a moment after exiting."""
 
     @staticmethod
     def _held_port():
@@ -4357,8 +4358,13 @@ class TestHttpBindRetry:
         holder.listen()
         return holder, holder.getsockname()[1]
 
+    @staticmethod
+    def _close(sockets):
+        for sock in sockets:
+            sock.close()
+
     def test_binds_once_the_port_is_free(self, capsys):
-        from labctl.mcp_server import _bind_socket
+        from labctl.mcp_server import _bind_sockets
 
         holder, port = self._held_port()
         sleeps = []
@@ -4367,18 +4373,18 @@ class TestHttpBindRetry:
             sleeps.append(seconds)
             holder.close()  # the old server finishes exiting
 
-        sock = _bind_socket("127.0.0.1", port, sleep=sleep)
+        sockets = _bind_sockets("127.0.0.1", port, sleep=sleep)
         try:
-            assert sock.getsockname() == ("127.0.0.1", port)
+            assert [s.getsockname() for s in sockets] == [("127.0.0.1", port)]
         finally:
-            sock.close()
+            self._close(sockets)
         assert sleeps == [0.5]
         assert f"127.0.0.1:{port} is in use; retrying" in capsys.readouterr().out
 
     def test_still_in_use_at_the_deadline_raises(self):
         import errno
 
-        from labctl.mcp_server import _bind_socket
+        from labctl.mcp_server import _bind_sockets
 
         holder, port = self._held_port()
         now = [0.0]
@@ -4388,7 +4394,7 @@ class TestHttpBindRetry:
 
         try:
             with pytest.raises(OSError) as e:
-                _bind_socket(
+                _bind_sockets(
                     "127.0.0.1",
                     port,
                     retry_seconds=3,
@@ -4401,32 +4407,108 @@ class TestHttpBindRetry:
         assert now[0] == 3.0
 
     def test_other_errors_are_not_retried(self):
-        from labctl.mcp_server import _bind_socket
+        from labctl.mcp_server import _bind_sockets
 
         sleeps = []
         with pytest.raises(OSError):
             # TEST-NET-1: not an address of this host
-            _bind_socket("192.0.2.1", 8080, sleep=sleeps.append)
+            _bind_sockets("192.0.2.1", 8080, sleep=sleeps.append)
         assert sleeps == []
 
-    def test_serve_http_runs_on_the_bound_socket(self):
+    def test_a_name_binds_every_address_it_resolves_to(self):
+        import socket
+
+        from labctl.mcp_server import _bind_sockets
+
+        holder, port = self._held_port()
+        holder.close()
+        expected = {
+            info[4][:2]
+            for info in socket.getaddrinfo(
+                "localhost", port, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE
+            )
+        }
+        try:
+            sockets = _bind_sockets("localhost", port)
+        except OSError as e:  # e.g. ::1 resolved but IPv6 disabled
+            pytest.skip(f"can't bind every localhost address here: {e}")
+        try:
+            assert {s.getsockname()[:2] for s in sockets} == expected
+        finally:
+            self._close(sockets)
+
+    def test_ipv6_sockets_are_v6_only(self):
+        """ "::" serves IPv6 only, as with asyncio (a specific address such
+        as ::1 is v6-only anyway)."""
+        import socket
+
+        from labctl.mcp_server import _bind_sockets
+
+        try:
+            sockets = _bind_sockets("::", 0)
+        except OSError as e:
+            pytest.skip(f"no IPv6 here: {e}")
+        try:
+            (sock,) = sockets
+            assert sock.getsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY) == 1
+        finally:
+            self._close(sockets)
+
+    def test_empty_host_is_every_interface(self):
+        import socket
+
+        from labctl.mcp_server import _bind_sockets
+
+        holder, port = self._held_port()
+        holder.close()
+        try:
+            sockets = _bind_sockets("", port)
+        except OSError as e:
+            pytest.skip(f"can't bind the wildcard addresses here: {e}")
+        expected = {
+            info[4][:2]
+            for info in socket.getaddrinfo(
+                None, port, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE
+            )
+        }
+        try:
+            assert {s.getsockname()[:2] for s in sockets} == expected
+            assert ("0.0.0.0", port) in expected
+        finally:
+            self._close(sockets)
+
+    def test_serve_http_runs_on_the_bound_sockets(self):
         from labctl import mcp_server
 
-        sock = MagicMock()
+        sockets = [MagicMock()]
         with (
-            patch.object(mcp_server, "_bind_socket", return_value=sock) as bind,
+            patch.object(mcp_server, "_bind_sockets", return_value=sockets) as bind,
             patch.object(mcp_server, "_http_server") as server,
         ):
             mcp_server._serve_http("127.0.0.1", 8080, "security", None)
         bind.assert_called_once_with("127.0.0.1", 8080)
         server.assert_called_once_with("127.0.0.1", 8080, "security", None)
-        server.return_value.run.assert_called_once_with(sockets=[sock])
+        server.return_value.run.assert_called_once_with(sockets=sockets)
+
+    def test_serve_http_closes_the_sockets_if_the_app_fails(self):
+        from labctl import mcp_server
+
+        sock = MagicMock()
+        with (
+            patch.object(mcp_server, "_bind_sockets", return_value=[sock]),
+            patch.object(mcp_server, "_http_server", side_effect=ValueError("bad")),
+            pytest.raises(ValueError),
+        ):
+            mcp_server._serve_http("127.0.0.1", 8080, "security", None)
+        sock.close.assert_called_once()
 
     def test_serve_http_exits_when_it_cannot_bind(self, capsys):
         from labctl import mcp_server
 
         with (
-            patch.object(mcp_server, "_bind_socket", side_effect=OSError(98, "in use")),
+            patch.object(
+                mcp_server, "_bind_sockets", side_effect=OSError(98, "in use")
+            ),
             patch.object(mcp_server, "_http_server") as server,
             pytest.raises(SystemExit) as e,
         ):

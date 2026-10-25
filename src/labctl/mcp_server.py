@@ -4568,31 +4568,44 @@ def _http_server(host: str, port: int, security, tls):
 BIND_RETRY_SECONDS = 15.0
 
 
-def _bind_socket(
+def _bind_sockets(
     host: str,
     port: int,
     *,
     retry_seconds: float = BIND_RETRY_SECONDS,
     sleep=_time_mod.sleep,
     clock=_time_mod.monotonic,
-):
-    """A socket bound to ``host``:``port`` as uvicorn binds one
-    (SO_REUSEADDR; IPv6 when ``host`` has a colon), retrying for up to
-    ``retry_seconds`` while the address is in use. Other errors, and an
-    address still in use at the end, are raised."""
+) -> list:
+    """Sockets bound to ``host``:``port`` as asyncio's create_server (what
+    uvicorn uses for a host and port) binds them: one per getaddrinfo
+    address ("" for all interfaces), SO_REUSEADDR, IPV6_V6ONLY on IPv6.
+    While an address is in use, closes them and tries again, for up to
+    ``retry_seconds``; other errors, and an address still in use at the
+    end, are raised."""
     import socket
 
-    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    infos = {
+        (family, socktype, proto, addr)
+        for family, socktype, proto, _, addr in socket.getaddrinfo(
+            host or None, port, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE
+        )
+    }
     deadline = clock() + retry_seconds
     announced = False
     while True:
-        sock = socket.socket(family, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sockets = []
         try:
-            sock.bind((host, port))
-            return sock
+            for family, socktype, proto, addr in sorted(infos, key=repr):
+                sock = socket.socket(family, socktype, proto)
+                sockets.append(sock)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                if family == socket.AF_INET6:
+                    sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                sock.bind(addr)
+            return sockets
         except OSError as e:
-            sock.close()
+            for sock in sockets:
+                sock.close()
             if e.errno != errno.EADDRINUSE or clock() >= deadline:
                 raise
             if not announced:
@@ -4607,11 +4620,17 @@ def _bind_socket(
 
 def _serve_http(host: str, port: int, security, tls) -> None:
     try:
-        sock = _bind_socket(host, port)
+        sockets = _bind_sockets(host, port)
     except OSError as e:
         print(f"MCP HTTP: can't listen on {host}:{port}: {e}", file=sys.stderr)
         sys.exit(1)
-    _http_server(host, port, security, tls).run(sockets=[sock])
+    try:
+        server = _http_server(host, port, security, tls)
+    except BaseException:
+        for sock in sockets:
+            sock.close()
+        raise
+    server.run(sockets=sockets)
 
 
 if __name__ == "__main__":
