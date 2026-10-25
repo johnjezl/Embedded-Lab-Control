@@ -4342,3 +4342,95 @@ class TestMcpTransportLabels:
         assert srv._SESSION_ID.startswith("mcp-http:")
         srv._set_transport("stdio")
         assert srv._SESSION_ID.startswith("mcp-stdio:")
+
+
+class TestHttpBindRetry:
+    """The HTTP server retries a port that is in use for a while: a
+    restarted server's predecessor can hold it for a moment after exiting."""
+
+    @staticmethod
+    def _held_port():
+        import socket
+
+        holder = socket.socket()
+        holder.bind(("127.0.0.1", 0))
+        holder.listen()
+        return holder, holder.getsockname()[1]
+
+    def test_binds_once_the_port_is_free(self, capsys):
+        from labctl.mcp_server import _bind_socket
+
+        holder, port = self._held_port()
+        sleeps = []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            holder.close()  # the old server finishes exiting
+
+        sock = _bind_socket("127.0.0.1", port, sleep=sleep)
+        try:
+            assert sock.getsockname() == ("127.0.0.1", port)
+        finally:
+            sock.close()
+        assert sleeps == [0.5]
+        assert f"127.0.0.1:{port} is in use; retrying" in capsys.readouterr().out
+
+    def test_still_in_use_at_the_deadline_raises(self):
+        import errno
+
+        from labctl.mcp_server import _bind_socket
+
+        holder, port = self._held_port()
+        now = [0.0]
+
+        def sleep(seconds):
+            now[0] += seconds
+
+        try:
+            with pytest.raises(OSError) as e:
+                _bind_socket(
+                    "127.0.0.1",
+                    port,
+                    retry_seconds=3,
+                    sleep=sleep,
+                    clock=lambda: now[0],
+                )
+        finally:
+            holder.close()
+        assert e.value.errno == errno.EADDRINUSE
+        assert now[0] == 3.0
+
+    def test_other_errors_are_not_retried(self):
+        from labctl.mcp_server import _bind_socket
+
+        sleeps = []
+        with pytest.raises(OSError):
+            # TEST-NET-1: not an address of this host
+            _bind_socket("192.0.2.1", 8080, sleep=sleeps.append)
+        assert sleeps == []
+
+    def test_serve_http_runs_on_the_bound_socket(self):
+        from labctl import mcp_server
+
+        sock = MagicMock()
+        with (
+            patch.object(mcp_server, "_bind_socket", return_value=sock) as bind,
+            patch.object(mcp_server, "_http_server") as server,
+        ):
+            mcp_server._serve_http("127.0.0.1", 8080, "security", None)
+        bind.assert_called_once_with("127.0.0.1", 8080)
+        server.assert_called_once_with("127.0.0.1", 8080, "security", None)
+        server.return_value.run.assert_called_once_with(sockets=[sock])
+
+    def test_serve_http_exits_when_it_cannot_bind(self, capsys):
+        from labctl import mcp_server
+
+        with (
+            patch.object(mcp_server, "_bind_socket", side_effect=OSError(98, "in use")),
+            patch.object(mcp_server, "_http_server") as server,
+            pytest.raises(SystemExit) as e,
+        ):
+            mcp_server._serve_http("127.0.0.1", 8080, "security", None)
+        assert e.value.code == 1
+        assert "can't listen on 127.0.0.1:8080" in capsys.readouterr().err
+        server.assert_not_called()

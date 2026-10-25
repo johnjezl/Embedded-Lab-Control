@@ -97,16 +97,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   follow-up read doesn't misjudge the mux position.
 
 ### Fixed
-- `update.sh` reported `labctl-mcp` as failed when its first start after
-  the restart failed and systemd restarted it 10 s later (`Restart=on-failure`):
-  seen once when the old server's port was still briefly in use. It now
-  waits, for every service, while a unit is `deactivating` or `activating`
-  (within `MCP_START_TIMEOUT`, now measured in seconds); takes `labctl-web`
-  and `labctl-monitor` as up only after five checks in a row a second
-  apart, so a start that fails within a few seconds isn't missed; says
-  when a service is up only because systemd restarted it; and reports a
-  unit systemd has restarted twice as failed (its starts keep failing),
-  without waiting further.
+- `labctl mcp --http` retries a port that is in use for up to 15 s
+  before giving up: on a restart, the previous server can hold it for a
+  moment after it exits (seen once on a deploy: the new server's start
+  failed and systemd restarted it 10 s later). `update.sh` also waits,
+  for every service, while a unit is `deactivating` or `activating`
+  (systemd restarting a failed start), within `MCP_START_TIMEOUT` (now
+  measured in seconds), and says when systemd had to restart one; it had
+  reported `labctl-mcp` as failed.
 - The test suite no longer loads the machine's real config. About 115
   tests loaded config without naming a file, so on a lab host whose user
   can read `/etc/labctl` they used the production config and database; a
