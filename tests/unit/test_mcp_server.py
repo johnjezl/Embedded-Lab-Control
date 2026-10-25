@@ -4465,19 +4465,6 @@ class TestHttpBind:
         finally:
             self._close(sockets)
 
-    def test_sockets_are_listening(self):
-        import socket
-
-        from labctl.mcp_server import _bind_sockets
-
-        sockets = _bind_sockets("127.0.0.1", 0)
-        try:
-            assert [
-                s.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN) for s in sockets
-            ] == [1]
-        finally:
-            self._close(sockets)
-
     def test_addresses_this_host_cannot_use_are_skipped(self):
         """As asyncio does: a family it can't create a socket for, or an
         address it can't bind (EADDRNOTAVAIL: e.g. IPv6 disabled)."""
@@ -4589,34 +4576,9 @@ class TestHttpBind:
             self._close(sockets)
         assert sleeps == [0.5]
 
-    def test_conflict_at_listen_is_retried(self):
-        import errno
-        import socket
-
-        from labctl.mcp_server import _bind_sockets
-
-        real = socket.socket.listen
-        calls = []
-
-        def listen(self, *args):
-            calls.append(self)
-            if len(calls) == 1:
-                raise OSError(errno.EADDRINUSE, "Address already in use")
-            return real(self, *args)
-
-        sleeps = []
-        with patch("socket.socket.listen", listen):
-            sockets = _bind_sockets("127.0.0.1", 0, sleep=sleeps.append)
-        try:
-            assert len(sockets) == 1
-        finally:
-            self._close(sockets)
-        assert sleeps == [0.5]
-        assert calls[0].fileno() == -1  # the failed attempt's socket closed
-
     def test_serve_http_waits_then_lets_uvicorn_bind(self):
-        """uvicorn binds as before (after the app's startup, with its own
-        log line); the wait only gates it."""
+        """The app is built first, then the wait, then uvicorn binds as
+        before (after the app's startup, with its own log line)."""
         from labctl import mcp_server
 
         order = []
@@ -4626,11 +4588,26 @@ class TestHttpBind:
             ),
             patch.object(mcp_server, "_http_server") as server,
         ):
+            server.side_effect = lambda *a: order.append("app") or server.return_value
             server.return_value.run.side_effect = lambda: order.append("run")
             mcp_server._serve_http("127.0.0.1", 8080, "security", None)
-        assert order == [("127.0.0.1", 8080), "run"]
+        assert order == ["app", ("127.0.0.1", 8080), "run"]
         server.assert_called_once_with("127.0.0.1", 8080, "security", None)
         server.return_value.run.assert_called_once_with()
+
+    def test_probe_sockets_are_not_listening(self):
+        """update.sh takes a listening socket of the unit as the server."""
+        import socket
+
+        from labctl.mcp_server import _bind_sockets
+
+        sockets = _bind_sockets("127.0.0.1", 0)
+        try:
+            assert [
+                s.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN) for s in sockets
+            ] == [0]
+        finally:
+            self._close(sockets)
 
     def test_wait_for_port_closes_its_probe(self):
         from labctl import mcp_server
@@ -4652,24 +4629,3 @@ class TestHttpBind:
             mcp_server._wait_for_port("127.0.0.1", 8080)
         assert e.value.code == 1
         assert "can't listen on 127.0.0.1:8080" in capsys.readouterr().err
-
-    def test_sigterm_while_waiting_exits_cleanly(self):
-        """systemctl stop during the wait: SystemExit (atexit runs), and the
-        previous SIGTERM handler is back afterwards."""
-        import signal
-
-        from labctl import mcp_server
-
-        before = signal.getsignal(signal.SIGTERM)
-
-        def bind(*args, **kwargs):
-            os.kill(os.getpid(), signal.SIGTERM)
-            return []
-
-        with (
-            patch.object(mcp_server, "_bind_sockets", side_effect=bind),
-            pytest.raises(SystemExit) as e,
-        ):
-            mcp_server._wait_for_port("127.0.0.1", 8080)
-        assert e.value.code == 128 + signal.SIGTERM
-        assert signal.getsignal(signal.SIGTERM) == before

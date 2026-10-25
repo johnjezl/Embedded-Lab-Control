@@ -4576,7 +4576,7 @@ def _bind_sockets(
     sleep=_time_mod.sleep,
     clock=_time_mod.monotonic,
 ) -> list:
-    """Listening sockets for ``host``:``port``, made as asyncio's
+    """Sockets bound to ``host``:``port``, made as asyncio's
     create_server (what uvicorn uses for a host and port) makes them: one
     per getaddrinfo address ("" for all interfaces), SO_REUSEADDR,
     IPV6_V6ONLY on IPv6, skipping an address whose family this host can't
@@ -4613,9 +4613,6 @@ def _bind_sockets(
                         continue  # the family isn't enabled here
                     raise
                 sockets.append(sock)
-                # On Linux a conflict can surface at listen() rather than
-                # bind().
-                sock.listen()
             if not sockets:
                 raise OSError(f"could not bind on any address of {host or '*'}:{port}")
             return sockets
@@ -4635,35 +4632,24 @@ def _bind_sockets(
 
 
 def _wait_for_port(host: str, port: int) -> None:
-    """Return once ``host``:``port`` can be listened on, as uvicorn will
+    """Return once ``host``:``port`` can be bound, as uvicorn will bind it
     (waiting up to BIND_RETRY_SECONDS while it is in use); exit 1 if it
-    can't. The probe sockets are closed again: uvicorn binds its own, after
-    the app's startup, as before. SIGTERM (systemctl stop) while waiting
-    exits cleanly, with the atexit cleanup."""
-    import signal
-
-    def stop(signum, frame):
-        sys.exit(128 + signum)
-
-    try:
-        previous = signal.signal(signal.SIGTERM, stop)
-    except ValueError:  # not the main thread (tests): leave it be
-        previous = None
+    can't. The probe sockets are closed again (never listening, so nothing
+    mistakes them for the server): uvicorn binds its own."""
     try:
         sockets = _bind_sockets(host, port)
     except OSError as e:
         print(f"MCP HTTP: can't listen on {host}:{port}: {e}", file=sys.stderr)
         sys.exit(1)
-    finally:
-        if previous is not None:
-            signal.signal(signal.SIGTERM, previous)
     for sock in sockets:
         sock.close()
 
 
 def _serve_http(host: str, port: int, security, tls) -> None:
+    # The app first, so uvicorn binds right after the wait.
+    server = _http_server(host, port, security, tls)
     _wait_for_port(host, port)
-    _http_server(host, port, security, tls).run()
+    server.run()
 
 
 if __name__ == "__main__":
