@@ -328,19 +328,23 @@ if [ -n "$SERVICES" ]; then
     # settling SVC: 0 while still worth waiting for.
     settling() {
         unit_info "$1"
+        # Restarted twice: a restart loop, whatever this moment's state.
+        [ "$UNIT_RESTARTS" -lt 2 ] || return 1
         case "$UNIT_STATE" in
             active)
                 if [ "$1" = labctl-mcp ]; then
                     MCP_LISTEN=0
                     mcp_listening || MCP_LISTEN=$?
-                    [ "$MCP_LISTEN" -eq 1 ] # listening, or can't tell: done
-                    return
+                    case "$MCP_LISTEN" in
+                        0) return 1 ;; # listening: done
+                        1) return 0 ;;
+                    esac
+                    # No `ss` to tell: settle as the others do.
                 fi
                 ACTIVE_CHECKS[$1]=$((${ACTIVE_CHECKS[$1]:-0} + 1))
                 [ "${ACTIVE_CHECKS[$1]}" -lt "$STABLE_CHECKS" ] ;;
             activating | deactivating | reloading)
-                ACTIVE_CHECKS[$1]=0
-                [ "$UNIT_RESTARTS" -lt 2 ] ;;
+                ACTIVE_CHECKS[$1]=0 ;;
             *) return 1 ;;
         esac
     }
@@ -371,6 +375,10 @@ if [ -n "$SERVICES" ]; then
     for svc in $SERVICES; do
         SVC_ACTIVE=yes
         systemctl is-active --quiet "$svc" || SVC_ACTIVE=no
+        unit_info "$svc"
+        # Restarted twice: its starts keep failing, even if it's up now.
+        if [ "$UNIT_RESTARTS" -ge 2 ]; then SVC_ACTIVE=no; fi
+        MCP_LISTEN=0
         # Running but not listening (e.g. still exiting after a failed bind).
         if [ "$svc" = labctl-mcp ] && [ "$SVC_ACTIVE" = yes ]; then
             MCP_LISTEN=0
@@ -383,11 +391,12 @@ if [ -n "$SERVICES" ]; then
         fi
         if [ "$SVC_ACTIVE" = yes ]; then
             echo "[ok] $svc running"
-            if [ "$svc" != labctl-mcp ] && [ "${ACTIVE_CHECKS[$svc]:-0}" -lt "$STABLE_CHECKS" ]; then
+            # Not seen active long enough (labctl-mcp: unless it listens).
+            if { [ "$svc" != labctl-mcp ] || [ "$MCP_LISTEN" -eq 2 ]; } &&
+                [ "${ACTIVE_CHECKS[$svc]:-0}" -lt "$STABLE_CHECKS" ]; then
                 echo "[!!] $svc only just (re)started and may still fail; check it with:"
                 echo "     systemctl status $svc"
             fi
-            unit_info "$svc"
             if [ "$UNIT_RESTARTS" -gt 0 ]; then
                 echo "[!!] $svc is up only after a failed start: systemd restarted it"
                 echo "     $UNIT_RESTARTS time(s) (log below)"
@@ -409,18 +418,20 @@ if [ -n "$SERVICES" ]; then
                 fi
             fi
         else
-            unit_info "$svc"
             if [ "$UNIT_RESTARTS" -ge 2 ]; then
-                echo "[!!] $svc FAILED: systemd has restarted it $UNIT_RESTARTS times and it"
-                echo "     still isn't up; log since restart:"
+                echo "[!!] $svc FAILED: its starts keep failing (systemd has restarted it"
+                echo "     $UNIT_RESTARTS times; it may be up for the moment); log since restart:"
             elif [ "$svc" = labctl-mcp ] && systemctl is-active --quiet "$svc"; then
                 echo "[!!] $svc FAILED: running but not listening after ${MCP_START_TIMEOUT}s"
                 echo "     (still starting on a slow host? rerun with MCP_START_TIMEOUT=120);"
                 echo "     log since restart:"
-            elif [[ "$UNIT_STATE" == activating || "$UNIT_STATE" == deactivating ]]; then
+            elif [ "$UNIT_STATE" = activating ]; then
                 echo "[!!] $svc FAILED: still restarting after ${MCP_START_TIMEOUT}s (systemd"
                 echo "     restarts a failed start; slow host? rerun with MCP_START_TIMEOUT=120);"
                 echo "     log since restart:"
+            elif [ "$UNIT_STATE" = deactivating ]; then
+                echo "[!!] $svc FAILED: still stopping after ${MCP_START_TIMEOUT}s; check it with"
+                echo "     systemctl status $svc; log since restart:"
             else
                 echo "[!!] $svc FAILED; log since restart:"
             fi
