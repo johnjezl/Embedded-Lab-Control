@@ -4407,35 +4407,92 @@ class TestHttpBind:
         assert now[0] == 3.0
 
     def test_other_errors_are_not_retried(self):
+        import errno
+
         from labctl.mcp_server import _bind_sockets
 
         sleeps = []
-        with pytest.raises(OSError):
-            # TEST-NET-1: not an address of this host
-            _bind_sockets("192.0.2.1", 8080, sleep=sleeps.append)
+        with (
+            patch("socket.socket.bind", side_effect=OSError(errno.EACCES, "no")),
+            pytest.raises(PermissionError),
+        ):
+            _bind_sockets("127.0.0.1", 80, sleep=sleeps.append)
         assert sleeps == []
 
-    def test_a_name_binds_every_address_it_resolves_to(self):
+    @staticmethod
+    def _asyncio_addresses(host, port):
+        """What asyncio's create_server (uvicorn's own host/port path)
+        listens on for ``host``:``port``."""
+        import asyncio
+
+        async def bound():
+            server = await asyncio.get_running_loop().create_server(
+                asyncio.Protocol, host=host or None, port=port
+            )
+            names = {sock.getsockname()[:2] for sock in server.sockets}
+            server.close()
+            await server.wait_closed()
+            return names
+
+        return asyncio.run(bound())
+
+    @pytest.mark.parametrize("host", ["localhost", "", "127.0.0.1"])
+    def test_binds_what_asyncio_would(self, host):
+        from labctl.mcp_server import _bind_sockets
+
+        holder, port = self._held_port()
+        holder.close()
+        expected = self._asyncio_addresses(host, port)
+        sockets = _bind_sockets(host, port)
+        try:
+            assert {s.getsockname()[:2] for s in sockets} == expected
+        finally:
+            self._close(sockets)
+
+    def test_sockets_are_listening(self):
+        import socket
+
+        from labctl.mcp_server import _bind_sockets
+
+        sockets = _bind_sockets("127.0.0.1", 0)
+        try:
+            assert [
+                s.getsockopt(socket.SOL_SOCKET, socket.SO_ACCEPTCONN) for s in sockets
+            ] == [1]
+        finally:
+            self._close(sockets)
+
+    def test_addresses_this_host_cannot_use_are_skipped(self):
+        """As asyncio does: a family it can't create a socket for, or an
+        address it can't bind (EADDRNOTAVAIL: e.g. IPv6 disabled)."""
         import socket
 
         from labctl.mcp_server import _bind_sockets
 
         holder, port = self._held_port()
         holder.close()
-        expected = {
-            info[4][:2]
-            for info in socket.getaddrinfo(
-                "localhost", port, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE
-            )
-        }
+        real = socket.getaddrinfo
+        unusable = [
+            # not an address of this host: EADDRNOTAVAIL
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.0.2.1", port)),
+            # no stream sockets in this family
+            (socket.AF_PACKET, socket.SOCK_STREAM, 0, "", ("lo", 0)),
+        ]
+        with patch(
+            "socket.getaddrinfo",
+            side_effect=lambda *a, **k: real(*a, **k) + unusable,
+        ):
+            sockets = _bind_sockets("127.0.0.1", port)
         try:
-            sockets = _bind_sockets("localhost", port)
-        except OSError as e:  # e.g. ::1 resolved but IPv6 disabled
-            pytest.skip(f"can't bind every localhost address here: {e}")
-        try:
-            assert {s.getsockname()[:2] for s in sockets} == expected
+            assert [s.getsockname() for s in sockets] == [("127.0.0.1", port)]
         finally:
             self._close(sockets)
+
+    def test_no_usable_address_raises(self):
+        from labctl.mcp_server import _bind_sockets
+
+        with pytest.raises(OSError, match="could not bind on any address"):
+            _bind_sockets("192.0.2.1", 8080)  # TEST-NET-1
 
     def test_ipv6_sockets_are_v6_only(self):
         """ "::" serves IPv6 only, as with asyncio (a specific address such
