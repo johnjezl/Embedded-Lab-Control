@@ -4345,9 +4345,25 @@ class TestMcpTransportLabels:
 
 
 class TestHttpBind:
-    """The HTTP server binds its sockets itself (as asyncio's create_server
-    would for uvicorn) so it can retry a port that is in use: a restarted
+    """Before uvicorn binds, the HTTP server waits for a port that is in use
+    (binding it as asyncio's create_server would for uvicorn): a restarted
     server's predecessor can hold it for a moment after exiting."""
+
+    @staticmethod
+    def _unavailable(*hosts):
+        """socket.bind failing with EADDRNOTAVAIL for ``hosts`` (whatever
+        net.ipv4.ip_nonlocal_bind says)."""
+        import errno
+        import socket
+
+        real = socket.socket.bind
+
+        def bind(self, addr):
+            if addr[0] in hosts:
+                raise OSError(errno.EADDRNOTAVAIL, "Cannot assign address")
+            return real(self, addr)
+
+        return patch("socket.socket.bind", bind)
 
     @staticmethod
     def _held_port():
@@ -4478,9 +4494,12 @@ class TestHttpBind:
             # no stream sockets in this family
             (socket.AF_PACKET, socket.SOCK_STREAM, 0, "", ("lo", 0)),
         ]
-        with patch(
-            "socket.getaddrinfo",
-            side_effect=lambda *a, **k: real(*a, **k) + unusable,
+        with (
+            patch(
+                "socket.getaddrinfo",
+                side_effect=lambda *a, **k: real(*a, **k) + unusable,
+            ),
+            self._unavailable("192.0.2.1"),
         ):
             sockets = _bind_sockets("127.0.0.1", port)
         try:
@@ -4491,7 +4510,10 @@ class TestHttpBind:
     def test_no_usable_address_raises(self):
         from labctl.mcp_server import _bind_sockets
 
-        with pytest.raises(OSError, match="could not bind on any address"):
+        with (
+            self._unavailable("192.0.2.1"),
+            pytest.raises(OSError, match="could not bind on any address"),
+        ):
             _bind_sockets("192.0.2.1", 8080)  # TEST-NET-1
 
     def test_ipv6_sockets_are_v6_only(self):
@@ -4534,42 +4556,120 @@ class TestHttpBind:
         finally:
             self._close(sockets)
 
-    def test_serve_http_runs_on_the_bound_sockets(self):
+    def test_partly_bound_set_is_closed_before_retrying(self):
+        """The second address is in use: the first one's socket is closed
+        before the retry (else it would keep its own port busy)."""
+        import socket
+
+        from labctl.mcp_server import _bind_sockets
+
+        holder, port = self._held_port()
+        holder.close()
+        holder = socket.socket()
+        holder.bind(("127.0.0.2", port))
+        holder.listen()
+        two = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", port)),
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.2", port)),
+        ]
+        sleeps = []
+
+        def sleep(seconds):
+            sleeps.append(seconds)
+            holder.close()
+
+        with patch("socket.getaddrinfo", return_value=two):
+            sockets = _bind_sockets("lab", port, sleep=sleep)
+        try:
+            assert sorted(s.getsockname() for s in sockets) == [
+                ("127.0.0.1", port),
+                ("127.0.0.2", port),
+            ]
+        finally:
+            self._close(sockets)
+        assert sleeps == [0.5]
+
+    def test_conflict_at_listen_is_retried(self):
+        import errno
+        import socket
+
+        from labctl.mcp_server import _bind_sockets
+
+        real = socket.socket.listen
+        calls = []
+
+        def listen(self, *args):
+            calls.append(self)
+            if len(calls) == 1:
+                raise OSError(errno.EADDRINUSE, "Address already in use")
+            return real(self, *args)
+
+        sleeps = []
+        with patch("socket.socket.listen", listen):
+            sockets = _bind_sockets("127.0.0.1", 0, sleep=sleeps.append)
+        try:
+            assert len(sockets) == 1
+        finally:
+            self._close(sockets)
+        assert sleeps == [0.5]
+        assert calls[0].fileno() == -1  # the failed attempt's socket closed
+
+    def test_serve_http_waits_then_lets_uvicorn_bind(self):
+        """uvicorn binds as before (after the app's startup, with its own
+        log line); the wait only gates it."""
         from labctl import mcp_server
 
-        sockets = [MagicMock()]
+        order = []
         with (
-            patch.object(mcp_server, "_bind_sockets", return_value=sockets) as bind,
+            patch.object(
+                mcp_server, "_wait_for_port", side_effect=lambda *a: order.append(a)
+            ),
             patch.object(mcp_server, "_http_server") as server,
         ):
+            server.return_value.run.side_effect = lambda: order.append("run")
             mcp_server._serve_http("127.0.0.1", 8080, "security", None)
-        bind.assert_called_once_with("127.0.0.1", 8080)
+        assert order == [("127.0.0.1", 8080), "run"]
         server.assert_called_once_with("127.0.0.1", 8080, "security", None)
-        server.return_value.run.assert_called_once_with(sockets=sockets)
+        server.return_value.run.assert_called_once_with()
 
-    def test_serve_http_closes_the_sockets_if_the_app_fails(self):
+    def test_wait_for_port_closes_its_probe(self):
         from labctl import mcp_server
 
-        sock = MagicMock()
-        with (
-            patch.object(mcp_server, "_bind_sockets", return_value=[sock]),
-            patch.object(mcp_server, "_http_server", side_effect=ValueError("bad")),
-            pytest.raises(ValueError),
-        ):
-            mcp_server._serve_http("127.0.0.1", 8080, "security", None)
-        sock.close.assert_called_once()
+        probe = MagicMock()
+        with patch.object(mcp_server, "_bind_sockets", return_value=[probe]):
+            mcp_server._wait_for_port("127.0.0.1", 8080)
+        probe.close.assert_called_once()
 
-    def test_serve_http_exits_when_it_cannot_bind(self, capsys):
+    def test_wait_for_port_exits_when_it_cannot_bind(self, capsys):
         from labctl import mcp_server
 
         with (
             patch.object(
                 mcp_server, "_bind_sockets", side_effect=OSError(98, "in use")
             ),
-            patch.object(mcp_server, "_http_server") as server,
             pytest.raises(SystemExit) as e,
         ):
-            mcp_server._serve_http("127.0.0.1", 8080, "security", None)
+            mcp_server._wait_for_port("127.0.0.1", 8080)
         assert e.value.code == 1
         assert "can't listen on 127.0.0.1:8080" in capsys.readouterr().err
-        server.assert_not_called()
+
+    def test_sigterm_while_waiting_exits_cleanly(self):
+        """systemctl stop during the wait: SystemExit (atexit runs), and the
+        previous SIGTERM handler is back afterwards."""
+        import signal
+
+        from labctl import mcp_server
+
+        before = signal.getsignal(signal.SIGTERM)
+
+        def bind(*args, **kwargs):
+            os.kill(os.getpid(), signal.SIGTERM)
+            return []
+
+        with (
+            patch.object(mcp_server, "_bind_sockets", side_effect=bind),
+            pytest.raises(SystemExit) as e,
+        ):
+            mcp_server._wait_for_port("127.0.0.1", 8080)
+        assert e.value.code == 128 + signal.SIGTERM
+        assert signal.getsignal(signal.SIGTERM) == before

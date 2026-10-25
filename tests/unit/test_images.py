@@ -860,8 +860,7 @@ def _free_port():
 @pytest.fixture
 def serve(lab, http_restore):
     """Start the server as `labctl mcp --http` does (run_server, then the
-    uvicorn server _serve_http would run, on the sockets it would bind) on
-    a loopback port; returns a
+    uvicorn server _serve_http would run) on a loopback port; returns a
     function taking ``auth``, ``tls`` and ``allowed_hosts`` and giving
     the base URL."""
     from labctl import mcp_server
@@ -883,10 +882,7 @@ def serve(lab, http_restore):
         ):
             mcp_server.run_server(transport="http", http_port=port, host="127.0.0.1")
         server = mcp_server._http_server(*serve_http.call_args.args)
-        sockets = mcp_server._bind_sockets("127.0.0.1", port)
-        thread = threading.Thread(
-            target=server.run, kwargs={"sockets": sockets}, daemon=True
-        )
+        thread = threading.Thread(target=server.run, daemon=True)
         thread.start()
         servers.append((server, thread))
         deadline = time.monotonic() + 10
@@ -1269,7 +1265,7 @@ class TestTls:
             patch.object(mcp_server, "_get_config", return_value=config),
             patch.object(mcp_server, "_start_expiry_thread"),
             patch("atexit.register"),
-            patch.object(mcp_server, "_bind_sockets"),
+            patch.object(mcp_server, "_wait_for_port"),
             patch("uvicorn.Server") as server,
         ):
             mcp_server.run_server(transport="http", host="127.0.0.1", http_port=9)
