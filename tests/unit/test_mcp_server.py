@@ -4346,8 +4346,8 @@ class TestMcpTransportLabels:
 
 class TestHttpBind:
     """Before uvicorn binds, the HTTP server waits for a port that is in use
-    (binding it as asyncio's create_server would for uvicorn): a restarted
-    server's predecessor can hold it for a moment after exiting."""
+    (binding it as asyncio's create_server would for uvicorn): seen once on
+    a deploy, still in use ~1 s after the old server had exited."""
 
     @staticmethod
     def _unavailable(*hosts):
@@ -4395,7 +4395,9 @@ class TestHttpBind:
         finally:
             self._close(sockets)
         assert sleeps == [0.5]
-        assert f"127.0.0.1:{port} is in use; retrying" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert f"MCP server: 127.0.0.1:{port} is in use; retrying" in out
+        assert "MCP HTTP:" not in out  # update.sh's auth-mode lines
 
     def test_still_in_use_at_the_deadline_raises(self):
         import errno

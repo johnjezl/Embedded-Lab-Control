@@ -4561,10 +4561,11 @@ def _http_server(host: str, port: int, security, tls):
     )
 
 
-# How long the HTTP server keeps trying to bind a port that is in use: a
-# restarted server's predecessor can hold it for a moment after it exits
-# (seen once on a deploy, ~1 s), and systemd would otherwise mark the
-# start failed and restart it only after RestartSec.
+# How long the HTTP server waits for a port that is in use before giving
+# up. Seen once on a deploy: the new server's bind failed ~1 s after the
+# old one had exited (what held the port is unknown), and systemd only
+# restarted it after RestartSec. ("MCP server:" messages: update.sh reads
+# "MCP HTTP:" lines as the auth mode.)
 BIND_RETRY_SECONDS = 15.0
 
 
@@ -4623,7 +4624,7 @@ def _bind_sockets(
                 raise
             if not announced:
                 print(
-                    f"MCP HTTP: {host}:{port} is in use; retrying for up to "
+                    f"MCP server: {host}:{port} is in use; retrying for up to "
                     f"{retry_seconds:g}s",
                     flush=True,
                 )
@@ -4639,7 +4640,7 @@ def _wait_for_port(host: str, port: int) -> None:
     try:
         sockets = _bind_sockets(host, port)
     except OSError as e:
-        print(f"MCP HTTP: can't listen on {host}:{port}: {e}", file=sys.stderr)
+        print(f"MCP server: can't listen on {host}:{port}: {e}", file=sys.stderr)
         sys.exit(1)
     for sock in sockets:
         sock.close()

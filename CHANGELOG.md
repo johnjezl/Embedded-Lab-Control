@@ -98,8 +98,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 - `labctl mcp --http` waits up to 15 s for a port that is in use before
-  starting: on a restart, the previous server can hold it for a moment
-  after it exits (seen once on a deploy: the new server's start failed
+  starting (seen once on a deploy: the port was still in use ~1 s after
+  the old server had exited, cause unknown; the new server's start failed
   and systemd restarted it 10 s later). It probes the addresses uvicorn
   will bind, then lets uvicorn bind as before. `update.sh` also waits,
   for every service, while a unit is `deactivating` or `activating`
