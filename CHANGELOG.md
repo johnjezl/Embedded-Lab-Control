@@ -97,13 +97,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   follow-up read doesn't misjudge the mux position.
 
 ### Fixed
-- `labctl mcp --http` retries a port that is in use for up to 15 s
-  before giving up: on a restart, the previous server can hold it for a
-  moment after it exits (seen once on a deploy: the new server's start
-  failed and systemd restarted it 10 s later). It now binds its sockets
-  itself, the way uvicorn's own host/port startup did (every address a
-  name resolves to, skipping a family the host can't use; IPv6 sockets
-  IPv6-only; `""` for all interfaces). `update.sh` also waits,
+- `labctl mcp --http` waits up to 15 s for a port that is in use before
+  starting: on a restart, the previous server can hold it for a moment
+  after it exits (seen once on a deploy: the new server's start failed
+  and systemd restarted it 10 s later). It probes the addresses uvicorn
+  will bind, then lets uvicorn bind as before. `update.sh` also waits,
   for every service, while a unit is `deactivating` or `activating`
   (systemd restarting a failed start), within `MCP_START_TIMEOUT` (now
   measured in seconds), and says when systemd had to restart one; it had

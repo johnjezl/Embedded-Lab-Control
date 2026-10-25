@@ -4566,8 +4566,6 @@ def _http_server(host: str, port: int, security, tls):
 # (seen once on a deploy, ~1 s), and systemd would otherwise mark the
 # start failed and restart it only after RestartSec.
 BIND_RETRY_SECONDS = 15.0
-# uvicorn's default listen backlog.
-HTTP_BACKLOG = 2048
 
 
 def _bind_sockets(
@@ -4615,9 +4613,9 @@ def _bind_sockets(
                         continue  # the family isn't enabled here
                     raise
                 sockets.append(sock)
-                # Listening here too: on Linux, a conflict can surface at
-                # listen() rather than bind().
-                sock.listen(HTTP_BACKLOG)
+                # On Linux a conflict can surface at listen() rather than
+                # bind().
+                sock.listen()
             if not sockets:
                 raise OSError(f"could not bind on any address of {host or '*'}:{port}")
             return sockets
@@ -4636,19 +4634,36 @@ def _bind_sockets(
             sleep(0.5)
 
 
-def _serve_http(host: str, port: int, security, tls) -> None:
+def _wait_for_port(host: str, port: int) -> None:
+    """Return once ``host``:``port`` can be listened on, as uvicorn will
+    (waiting up to BIND_RETRY_SECONDS while it is in use); exit 1 if it
+    can't. The probe sockets are closed again: uvicorn binds its own, after
+    the app's startup, as before. SIGTERM (systemctl stop) while waiting
+    exits cleanly, with the atexit cleanup."""
+    import signal
+
+    def stop(signum, frame):
+        sys.exit(128 + signum)
+
+    try:
+        previous = signal.signal(signal.SIGTERM, stop)
+    except ValueError:  # not the main thread (tests): leave it be
+        previous = None
     try:
         sockets = _bind_sockets(host, port)
     except OSError as e:
         print(f"MCP HTTP: can't listen on {host}:{port}: {e}", file=sys.stderr)
         sys.exit(1)
-    try:
-        server = _http_server(host, port, security, tls)
-    except BaseException:
-        for sock in sockets:
-            sock.close()
-        raise
-    server.run(sockets=sockets)
+    finally:
+        if previous is not None:
+            signal.signal(signal.SIGTERM, previous)
+    for sock in sockets:
+        sock.close()
+
+
+def _serve_http(host: str, port: int, security, tls) -> None:
+    _wait_for_port(host, port)
+    _http_server(host, port, security, tls).run()
 
 
 if __name__ == "__main__":
