@@ -514,6 +514,89 @@ class TestKasaKlapV2Hint:
             assert _klap_v2_hint() == ""
 
 
+class TestKasaStripDiscoveredAsPlug:
+    """KLAP discovery types an HS300 as IotPlug; its outlets must survive."""
+
+    @staticmethod
+    def _discovered(sys_info):
+        from unittest.mock import AsyncMock
+
+        from kasa.iot import IotPlug
+
+        device = Mock(spec=IotPlug)
+        device.host = "192.168.1.100"
+        device.alias = "strip"
+        device.protocol = Mock(name="protocol")
+        device.sys_info = sys_info
+        device.children = []
+        device.update = AsyncMock()
+        device.disconnect = AsyncMock()
+        return device
+
+    @staticmethod
+    def _discover(device, strip_update=None):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from kasa.iot import IotStrip
+
+        from labctl.power.kasa import KasaController
+
+        controller = KasaController("192.168.1.100", plug_index=2)
+        with (
+            patch(
+                "kasa.Discover.discover_single",
+                new_callable=AsyncMock,
+                return_value=device,
+            ) as discover,
+            patch.object(controller, "_load_credentials", return_value=None),
+            patch.object(
+                IotStrip, "update", new_callable=AsyncMock, side_effect=strip_update
+            ) as update,
+        ):
+            result = asyncio.run(controller._discover_and_update())
+        return result, discover, update
+
+    def test_plug_with_children_in_sysinfo_becomes_strip(self):
+        from kasa.iot import IotStrip
+
+        device = self._discovered({"children": [{"id": "00"}, {"id": "01"}]})
+        result, discover, update = self._discover(device)
+
+        assert isinstance(result, IotStrip)
+        # Same KLAP session: the strip reuses the discovered protocol.
+        assert result.protocol is device.protocol
+        assert discover.await_count == 1
+        device.update.assert_awaited_once()
+        update.assert_awaited_once()
+        device.disconnect.assert_not_awaited()
+
+    def test_plug_without_children_is_left_alone(self):
+        device = self._discovered({"relay_state": 1})
+        result, _, update = self._discover(device)
+
+        assert result is device
+        update.assert_not_awaited()
+
+    def test_non_iot_device_is_left_alone(self):
+        from unittest.mock import AsyncMock
+
+        device = Mock()  # e.g. a SMART-protocol device: not an IotDevice
+        device.children = []
+        device.update = AsyncMock()
+        device.disconnect = AsyncMock()
+        result, _, update = self._discover(device)
+
+        assert result is device
+        update.assert_not_awaited()
+
+    def test_strip_update_failure_disconnects(self):
+        device = self._discovered({"children": [{"id": "00"}]})
+        with pytest.raises(OSError, match="boom"):
+            self._discover(device, strip_update=OSError("boom"))
+        device.disconnect.assert_awaited_once()
+
+
 class TestKasaRunningLoopErrors:
     def test_kasa_error_survives_running_event_loop(self):
         """Inside a running loop (the MCP server) the driver's own error
