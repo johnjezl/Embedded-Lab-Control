@@ -88,6 +88,30 @@ def _clear_kasa_caches() -> None:
         _kasa_host_locks.clear()
 
 
+# First python-kasa release that uses KLAP v2 for IOT devices whose
+# discovery reports login version 2 (e.g. HS300 firmware 1.1.2); older
+# releases always use KLAP v1 and fail those devices' handshake.
+KASA_KLAP_V2_VERSION = (0, 12)
+
+
+def _klap_v2_hint() -> str:
+    """Hint appended to an AuthenticationError from python-kasa < 0.12."""
+    try:
+        from importlib.metadata import version
+
+        installed = version("python-kasa")
+        major_minor = tuple(int(p) for p in installed.split(".")[:2])
+    except Exception:
+        return ""
+    if major_minor >= KASA_KLAP_V2_VERSION:
+        return ""
+    return (
+        f" (python-kasa {installed} can't authenticate to devices on KLAP "
+        "login version 2, e.g. HS300 firmware 1.1.2; if the credentials are "
+        "correct, upgrade to python-kasa >= 0.12, which needs Python >= 3.11)"
+    )
+
+
 @lru_cache(maxsize=1)
 def _get_cached_kasa_credentials():
     """Load Kasa credentials once per process."""
@@ -179,13 +203,15 @@ class KasaController(PowerController):
         ensures each retry attempt creates a fresh awaitable — async
         coros are single-shot.
 
-        Retries on authentication / transient errors, which occur
-        intermittently with HS300 firmware using the KLAP protocol.
+        Retries on authentication / transient errors (e.g. a strip
+        refusing a burst of concurrent handshakes). An authentication
+        error that persists with python-kasa < 0.12 is usually the
+        device needing KLAP v2, which no retry fixes; the final error
+        says so (see _klap_v2_hint).
 
         Logging policy:
           - Retry attempts log at WARNING so they show in default
-            (INFO) logs — evidence of intermittent KLAP issues we want
-            visible without enabling debug.
+            (INFO) logs without enabling debug.
           - A successful retry logs at INFO so the recovery is visible.
           - Final failure logs at ERROR (in addition to raising), so
             the full attempt history is captured even when the caller
@@ -252,6 +278,8 @@ class KasaController(PowerController):
             f"[{self.plug_index}] after {total_attempts} attempts: "
             f"{error_type}: {last_error}"
         )
+        if error_type == "AuthenticationError":
+            msg += _klap_v2_hint()
         logger.error(msg)
         raise RuntimeError(msg) from last_error
 
