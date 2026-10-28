@@ -178,7 +178,11 @@ class KasaController(PowerController):
         device = await Discover.discover_single(**kwargs)
 
         try:
-            if isinstance(device, IotDevice):
+            # Legacy discovery (port 9999) already returns the sysinfo and
+            # picks the class from it; only KLAP discovery needs the query.
+            discovery_info = getattr(device, "_discovery_info", None) or {}
+            from_sysinfo = bool(discovery_info.get("system", {}).get("get_sysinfo"))
+            if isinstance(device, IotDevice) and not from_sysinfo:
                 info = await device.protocol.query(GET_SYSINFO_QUERY)
                 device_class = get_device_class_from_sys_info(info)
                 if type(device) is not device_class:
