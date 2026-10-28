@@ -639,11 +639,49 @@ class TestKasaStripDiscoveredAsPlug:
         assert writes[0]["system"]["set_relay_state"] == {"state": 1}
 
     def test_reads_every_outlet_state(self):
-        controller, _ = self._controller(plug_index=1)
+        controller, protocol = self._controller(plug_index=1)
+        # Outlet 3 on, the rest as recorded (off): catches a shifted or
+        # root-only read.
+        children = protocol.fixture["root"]["system"]["get_sysinfo"]["children"]
+        assert children[2]["id"].endswith("02")
+        children[2]["state"] = 1
 
         states = controller._fetch_all_outlet_states()
 
-        assert states == {i: False for i in range(1, 7)}
+        assert states == {i: i == 3 for i in range(1, 7)}
+
+    def test_legacy_discovery_skips_the_sysinfo_query(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from kasa.iot import IotStrip
+
+        from labctl.power.kasa import KasaController
+
+        protocol = _FakeKasaIotProtocol(self._fixture())
+        sysinfo = {"system": protocol.fixture["root"]["system"]}
+        # As legacy discovery returns it: class picked from the sysinfo.
+        discovered = IotStrip("192.168.1.100", protocol=protocol)
+        discovered.update_from_discover_info(sysinfo)
+        controller = KasaController("192.168.1.100", plug_index=2)
+        with (
+            patch(
+                "kasa.Discover.discover_single",
+                new_callable=AsyncMock,
+                return_value=discovered,
+            ),
+            patch.object(controller, "_load_credentials", return_value=None),
+        ):
+            device = asyncio.run(self._discover(controller))
+
+        assert device is discovered
+        assert {"system": {"get_sysinfo": {}}} not in protocol.requests
+
+    @staticmethod
+    async def _discover(controller):
+        device = await controller._discover_and_update()
+        await device.disconnect()
+        return device
 
     def test_no_outlets_refuses_an_outlet_index(self):
         import asyncio
