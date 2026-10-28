@@ -79,10 +79,10 @@
 
 ## Blockers
 
-- TP-Link HS300 HW v2.0 firmware 1.1.2+ has intermittent KLAP authentication failures
-  - Workaround: retry logic (up to 2 retries) handles most cases
-  - Workaround: enable "Third Party Compatibility" in Tapo app
-  - Upstream python-kasa issues: #1604, #1603
+- None. (TP-Link HS300 HW v2.0 firmware 1.1.2 KLAP authentication failures,
+  intermittent at first and total from Sep 2026, were python-kasa using
+  KLAP v1 for a device on login version 2; fixed by python-kasa 0.12, now
+  required on Python 3.11+. Upstream: python-kasa #1604, #1648, PR #1731.)
 
 ## Notes
 
