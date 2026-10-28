@@ -147,17 +147,22 @@ class KasaController(PowerController):
         """Load Kasa credentials from config, returning Credentials or None."""
         return _get_cached_kasa_credentials()
 
-    async def _get_device(self):
-        """
-        Connect to device and return (root_device, target) tuple.
+    async def _discover_and_update(self):
+        """Discover the device at self.address and fetch its state.
 
-        root_device is the top-level device (needed for disconnect cleanup).
-        target is the specific outlet to control — either the root device
-        itself (for single plugs) or a child device (for strip outlets).
+        Discovery over KLAP (UDP 20002) types an IOT device by its family
+        alone: ``IOT.SMARTPLUGSWITCH`` becomes ``IotPlug``, so a strip
+        that no longer answers legacy discovery (HS300 firmware 1.1.2
+        closed port 9999) comes back as a plug without children, whose
+        ``is_on`` raises ``KeyError: 'relay_state'``. When the sysinfo
+        lists children, re-type it as ``IotStrip`` on the same protocol
+        (same KLAP session, no new handshake).
 
-        On failure, ensures the device is disconnected before raising.
+        The caller must disconnect the returned device; on failure it is
+        disconnected here.
         """
         from kasa import Discover
+        from kasa.iot import IotDevice, IotStrip
 
         credentials = self._load_credentials()
         kwargs = {"host": self.address}
@@ -172,9 +177,34 @@ class KasaController(PowerController):
                 "Updating device state for %s (%s)", self.address, device.alias
             )
             await device.update()
+            if (
+                isinstance(device, IotDevice)
+                and not isinstance(device, IotStrip)
+                and device.sys_info.get("children")
+            ):
+                logger.debug(
+                    "Kasa device at %s reports outlets; using IotStrip",
+                    self.address,
+                )
+                strip = IotStrip(device.host, protocol=device.protocol)
+                await strip.update()
+                device = strip
         except Exception:
             await device.disconnect()
             raise
+        return device
+
+    async def _get_device(self):
+        """
+        Connect to device and return (root_device, target) tuple.
+
+        root_device is the top-level device (needed for disconnect cleanup).
+        target is the specific outlet to control — either the root device
+        itself (for single plugs) or a child device (for strip outlets).
+
+        On failure, ensures the device is disconnected before raising.
+        """
+        device = await self._discover_and_update()
 
         if device.children:
             idx = self.plug_index - 1  # Convert 1-based to 0-based
@@ -308,16 +338,8 @@ class KasaController(PowerController):
 
         def factory():
             async def go():
-                from kasa import Discover
-
-                credentials = self._load_credentials()
-                kwargs = {"host": self.address}
-                if credentials:
-                    kwargs["credentials"] = credentials
-                logger.debug("Discovering Kasa device at %s", self.address)
-                device = await Discover.discover_single(**kwargs)
+                device = await self._discover_and_update()
                 try:
-                    await device.update()
                     states: dict[int, bool] = {}
                     if device.children:
                         for i, child in enumerate(device.children, start=1):
