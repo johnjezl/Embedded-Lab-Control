@@ -97,6 +97,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   follow-up read doesn't misjudge the mux position.
 
 ### Fixed
+- Kasa power control works again with IOT devices whose firmware moved to
+  KLAP login version 2 (e.g. HS300 hardware 2.0, firmware 1.1.2): every
+  command failed with `AuthenticationError: Device response did not match
+  our challenge` even with correct credentials, because python-kasa before
+  0.12 always used KLAP v1 for IOT devices. The `kasa` extra now requires
+  `python-kasa>=0.12` on Python 3.11+ (0.12 dropped 3.10); on 3.10 the
+  older releases remain and can't authenticate to these devices.
 - `labctl mcp --http` waits up to 15 s for a port that is in use before
   starting (seen once on a deploy: the port was still in use ~1 s after
   the old server had exited, cause unknown; the new server's start failed

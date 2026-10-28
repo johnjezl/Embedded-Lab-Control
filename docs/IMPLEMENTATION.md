@@ -601,7 +601,7 @@ click>=8.0
 pyyaml>=6.0
 flask>=3.0
 flask-socketio>=5.0
-python-kasa>=0.5 (optional)
+python-kasa>=0.12 (optional; >=0.5 on Python 3.10)
 requests>=2.28
 ```
 
