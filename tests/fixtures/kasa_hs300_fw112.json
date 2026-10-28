@@ -1,0 +1,937 @@
+{
+ "_comment": "Read-only responses recorded from a TP-Link HS300(US) HW 2.0, firmware 1.1.2 Build 241220, over KLAP v2 with python-kasa 0.12.0 (2026-10-28). Identifiers, location and cloud username replaced.",
+ "children": {
+  "800600000000000000000000000000000000000000": {
+   "anti_theft": {
+    "get_next_action": {
+     "err_code": -2,
+     "err_msg": "member not support"
+    },
+    "get_rules": {
+     "enable": 0,
+     "err_code": 0,
+     "rule_list": [],
+     "version": 2
+    }
+   },
+   "emeter": {
+    "get_daystat": {
+     "day_list": [
+      {
+       "day": 28,
+       "energy_wh": 0,
+       "month": 10,
+       "year": 2026
+      }
+     ],
+     "err_code": 0
+    },
+    "get_monthstat": {
+     "err_code": 0,
+     "month_list": [
+      {
+       "energy_wh": 73,
+       "month": 3,
+       "year": 2026
+      },
+      {
+       "energy_wh": 3114,
+       "month": 4,
+       "year": 2026
+      },
+      {
+       "energy_wh": 4597,
+       "month": 5,
+       "year": 2026
+      },
+      {
+       "energy_wh": 6187,
+       "month": 6,
+       "year": 2026
+      },
+      {
+       "energy_wh": 6409,
+       "month": 7,
+       "year": 2026
+      },
+      {
+       "energy_wh": 6272,
+       "month": 8,
+       "year": 2026
+      },
+      {
+       "energy_wh": 0,
+       "month": 10,
+       "year": 2026
+      }
+     ]
+    },
+    "get_realtime": {
+     "current_ma": 0,
+     "err_code": 0,
+     "power_mw": 0,
+     "slot_id": 0,
+     "total_wh": 0,
+     "voltage_mv": 120274
+    }
+   },
+   "schedule": {
+    "get_daystat": {
+     "day_list": [
+      {
+       "day": 28,
+       "month": 10,
+       "time": 0,
+       "year": 2026
+      }
+     ],
+     "err_code": 0
+    },
+    "get_monthstat": {
+     "err_code": 0,
+     "month_list": [
+      {
+       "month": 3,
+       "time": 462,
+       "year": 2026
+      },
+      {
+       "month": 4,
+       "time": 29073,
+       "year": 2026
+      },
+      {
+       "month": 5,
+       "time": 33808,
+       "year": 2026
+      },
+      {
+       "month": 6,
+       "time": 42949,
+       "year": 2026
+      },
+      {
+       "month": 7,
+       "time": 44381,
+       "year": 2026
+      },
+      {
+       "month": 8,
+       "time": 43994,
+       "year": 2026
+      },
+      {
+       "month": 10,
+       "time": 0,
+       "year": 2026
+      }
+     ]
+    },
+    "get_next_action": {
+     "err_code": 0,
+     "type": -1
+    },
+    "get_realtime": {
+     "err_code": -2,
+     "err_msg": "member not support"
+    },
+    "get_rules": {
+     "enable": 1,
+     "err_code": 0,
+     "rule_list": [],
+     "version": 2
+    }
+   }
+  },
+  "800600000000000000000000000000000000000001": {
+   "anti_theft": {
+    "get_next_action": {
+     "err_code": -2,
+     "err_msg": "member not support"
+    },
+    "get_rules": {
+     "enable": 0,
+     "err_code": 0,
+     "rule_list": [],
+     "version": 2
+    }
+   },
+   "emeter": {
+    "get_daystat": {
+     "day_list": [
+      {
+       "day": 28,
+       "energy_wh": 0,
+       "month": 10,
+       "year": 2026
+      }
+     ],
+     "err_code": 0
+    },
+    "get_monthstat": {
+     "err_code": 0,
+     "month_list": [
+      {
+       "energy_wh": 3,
+       "month": 3,
+       "year": 2026
+      },
+      {
+       "energy_wh": 3037,
+       "month": 4,
+       "year": 2026
+      },
+      {
+       "energy_wh": 4819,
+       "month": 5,
+       "year": 2026
+      },
+      {
+       "energy_wh": 4897,
+       "month": 6,
+       "year": 2026
+      },
+      {
+       "energy_wh": 5078,
+       "month": 7,
+       "year": 2026
+      },
+      {
+       "energy_wh": 5043,
+       "month": 8,
+       "year": 2026
+      },
+      {
+       "energy_wh": 0,
+       "month": 10,
+       "year": 2026
+      }
+     ]
+    },
+    "get_realtime": {
+     "current_ma": 0,
+     "err_code": 0,
+     "power_mw": 0,
+     "slot_id": 1,
+     "total_wh": 0,
+     "voltage_mv": 120381
+    }
+   },
+   "schedule": {
+    "get_daystat": {
+     "day_list": [
+      {
+       "day": 28,
+       "month": 10,
+       "time": 0,
+       "year": 2026
+      }
+     ],
+     "err_code": 0
+    },
+    "get_monthstat": {
+     "err_code": 0,
+     "month_list": [
+      {
+       "month": 3,
+       "time": 22,
+       "year": 2026
+      },
+      {
+       "month": 4,
+       "time": 22458,
+       "year": 2026
+      },
+      {
+       "month": 5,
+       "time": 38586,
+       "year": 2026
+      },
+      {
+       "month": 6,
+       "time": 42949,
+       "year": 2026
+      },
+      {
+       "month": 7,
+       "time": 44381,
+       "year": 2026
+      },
+      {
+       "month": 8,
+       "time": 43994,
+       "year": 2026
+      },
+      {
+       "month": 10,
+       "time": 0,
+       "year": 2026
+      }
+     ]
+    },
+    "get_next_action": {
+     "err_code": 0,
+     "type": -1
+    },
+    "get_realtime": {
+     "err_code": -2,
+     "err_msg": "member not support"
+    },
+    "get_rules": {
+     "enable": 1,
+     "err_code": 0,
+     "rule_list": [],
+     "version": 2
+    }
+   }
+  },
+  "800600000000000000000000000000000000000002": {
+   "anti_theft": {
+    "get_next_action": {
+     "err_code": -2,
+     "err_msg": "member not support"
+    },
+    "get_rules": {
+     "enable": 0,
+     "err_code": 0,
+     "rule_list": [],
+     "version": 2
+    }
+   },
+   "emeter": {
+    "get_daystat": {
+     "day_list": [
+      {
+       "day": 28,
+       "energy_wh": 0,
+       "month": 10,
+       "year": 2026
+      }
+     ],
+     "err_code": 0
+    },
+    "get_monthstat": {
+     "err_code": 0,
+     "month_list": [
+      {
+       "energy_wh": 231,
+       "month": 3,
+       "year": 2026
+      },
+      {
+       "energy_wh": 2356,
+       "month": 4,
+       "year": 2026
+      },
+      {
+       "energy_wh": 2042,
+       "month": 5,
+       "year": 2026
+      },
+      {
+       "energy_wh": 0,
+       "month": 10,
+       "year": 2026
+      }
+     ]
+    },
+    "get_realtime": {
+     "current_ma": 0,
+     "err_code": 0,
+     "power_mw": 0,
+     "slot_id": 2,
+     "total_wh": 0,
+     "voltage_mv": 120550
+    }
+   },
+   "schedule": {
+    "get_daystat": {
+     "day_list": [
+      {
+       "day": 28,
+       "month": 10,
+       "time": 0,
+       "year": 2026
+      }
+     ],
+     "err_code": 0
+    },
+    "get_monthstat": {
+     "err_code": 0,
+     "month_list": [
+      {
+       "month": 3,
+       "time": 3712,
+       "year": 2026
+      },
+      {
+       "month": 4,
+       "time": 32228,
+       "year": 2026
+      },
+      {
+       "month": 5,
+       "time": 21010,
+       "year": 2026
+      },
+      {
+       "month": 10,
+       "time": 0,
+       "year": 2026
+      }
+     ]
+    },
+    "get_next_action": {
+     "err_code": 0,
+     "type": -1
+    },
+    "get_realtime": {
+     "err_code": -2,
+     "err_msg": "member not support"
+    },
+    "get_rules": {
+     "enable": 1,
+     "err_code": 0,
+     "rule_list": [],
+     "version": 2
+    }
+   }
+  },
+  "800600000000000000000000000000000000000003": {
+   "anti_theft": {
+    "get_next_action": {
+     "err_code": -2,
+     "err_msg": "member not support"
+    },
+    "get_rules": {
+     "enable": 0,
+     "err_code": 0,
+     "rule_list": [],
+     "version": 2
+    }
+   },
+   "emeter": {
+    "get_daystat": {
+     "day_list": [
+      {
+       "day": 28,
+       "energy_wh": 0,
+       "month": 10,
+       "year": 2026
+      }
+     ],
+     "err_code": 0
+    },
+    "get_monthstat": {
+     "err_code": 0,
+     "month_list": [
+      {
+       "energy_wh": 492,
+       "month": 3,
+       "year": 2026
+      },
+      {
+       "energy_wh": 9258,
+       "month": 4,
+       "year": 2026
+      },
+      {
+       "energy_wh": 0,
+       "month": 10,
+       "year": 2026
+      }
+     ]
+    },
+    "get_realtime": {
+     "current_ma": 0,
+     "err_code": 0,
+     "power_mw": 0,
+     "slot_id": 3,
+     "total_wh": 0,
+     "voltage_mv": 120446
+    }
+   },
+   "schedule": {
+    "get_daystat": {
+     "day_list": [
+      {
+       "day": 28,
+       "month": 10,
+       "time": 0,
+       "year": 2026
+      }
+     ],
+     "err_code": 0
+    },
+    "get_monthstat": {
+     "err_code": 0,
+     "month_list": [
+      {
+       "month": 3,
+       "time": 846,
+       "year": 2026
+      },
+      {
+       "month": 4,
+       "time": 10789,
+       "year": 2026
+      },
+      {
+       "month": 10,
+       "time": 0,
+       "year": 2026
+      }
+     ]
+    },
+    "get_next_action": {
+     "err_code": 0,
+     "type": -1
+    },
+    "get_realtime": {
+     "err_code": -2,
+     "err_msg": "member not support"
+    },
+    "get_rules": {
+     "enable": 1,
+     "err_code": 0,
+     "rule_list": [],
+     "version": 2
+    }
+   }
+  },
+  "800600000000000000000000000000000000000004": {
+   "anti_theft": {
+    "get_next_action": {
+     "err_code": -2,
+     "err_msg": "member not support"
+    },
+    "get_rules": {
+     "enable": 0,
+     "err_code": 0,
+     "rule_list": [],
+     "version": 2
+    }
+   },
+   "emeter": {
+    "get_daystat": {
+     "day_list": [
+      {
+       "day": 28,
+       "energy_wh": 0,
+       "month": 10,
+       "year": 2026
+      }
+     ],
+     "err_code": 0
+    },
+    "get_monthstat": {
+     "err_code": 0,
+     "month_list": [
+      {
+       "energy_wh": 21,
+       "month": 3,
+       "year": 2026
+      },
+      {
+       "energy_wh": 2,
+       "month": 4,
+       "year": 2026
+      },
+      {
+       "energy_wh": 0,
+       "month": 10,
+       "year": 2026
+      }
+     ]
+    },
+    "get_realtime": {
+     "current_ma": 0,
+     "err_code": 0,
+     "power_mw": 0,
+     "slot_id": 4,
+     "total_wh": 0,
+     "voltage_mv": 120764
+    }
+   },
+   "schedule": {
+    "get_daystat": {
+     "day_list": [
+      {
+       "day": 28,
+       "month": 10,
+       "time": 0,
+       "year": 2026
+      }
+     ],
+     "err_code": 0
+    },
+    "get_monthstat": {
+     "err_code": 0,
+     "month_list": [
+      {
+       "month": 3,
+       "time": 555,
+       "year": 2026
+      },
+      {
+       "month": 4,
+       "time": 55,
+       "year": 2026
+      },
+      {
+       "month": 10,
+       "time": 0,
+       "year": 2026
+      }
+     ]
+    },
+    "get_next_action": {
+     "err_code": 0,
+     "type": -1
+    },
+    "get_realtime": {
+     "err_code": -2,
+     "err_msg": "member not support"
+    },
+    "get_rules": {
+     "enable": 1,
+     "err_code": 0,
+     "rule_list": [],
+     "version": 2
+    }
+   }
+  },
+  "800600000000000000000000000000000000000005": {
+   "anti_theft": {
+    "get_next_action": {
+     "err_code": -2,
+     "err_msg": "member not support"
+    },
+    "get_rules": {
+     "enable": 0,
+     "err_code": 0,
+     "rule_list": [],
+     "version": 2
+    }
+   },
+   "emeter": {
+    "get_daystat": {
+     "day_list": [
+      {
+       "day": 28,
+       "energy_wh": 0,
+       "month": 10,
+       "year": 2026
+      }
+     ],
+     "err_code": 0
+    },
+    "get_monthstat": {
+     "err_code": 0,
+     "month_list": [
+      {
+       "energy_wh": 502,
+       "month": 4,
+       "year": 2026
+      },
+      {
+       "energy_wh": 1496,
+       "month": 5,
+       "year": 2026
+      },
+      {
+       "energy_wh": 2406,
+       "month": 6,
+       "year": 2026
+      },
+      {
+       "energy_wh": 2487,
+       "month": 7,
+       "year": 2026
+      },
+      {
+       "energy_wh": 2468,
+       "month": 8,
+       "year": 2026
+      },
+      {
+       "energy_wh": 0,
+       "month": 10,
+       "year": 2026
+      }
+     ]
+    },
+    "get_realtime": {
+     "current_ma": 0,
+     "err_code": 0,
+     "power_mw": 0,
+     "slot_id": 5,
+     "total_wh": 0,
+     "voltage_mv": 120784
+    }
+   },
+   "schedule": {
+    "get_daystat": {
+     "day_list": [
+      {
+       "day": 28,
+       "month": 10,
+       "time": 0,
+       "year": 2026
+      }
+     ],
+     "err_code": 0
+    },
+    "get_monthstat": {
+     "err_code": 0,
+     "month_list": [
+      {
+       "month": 3,
+       "time": 22,
+       "year": 2026
+      },
+      {
+       "month": 4,
+       "time": 10424,
+       "year": 2026
+      },
+      {
+       "month": 5,
+       "time": 26254,
+       "year": 2026
+      },
+      {
+       "month": 6,
+       "time": 42949,
+       "year": 2026
+      },
+      {
+       "month": 7,
+       "time": 44381,
+       "year": 2026
+      },
+      {
+       "month": 8,
+       "time": 43995,
+       "year": 2026
+      },
+      {
+       "month": 10,
+       "time": 0,
+       "year": 2026
+      }
+     ]
+    },
+    "get_next_action": {
+     "err_code": 0,
+     "type": -1
+    },
+    "get_realtime": {
+     "err_code": -2,
+     "err_msg": "member not support"
+    },
+    "get_rules": {
+     "enable": 1,
+     "err_code": 0,
+     "rule_list": [],
+     "version": 2
+    }
+   }
+  }
+ },
+ "root": {
+  "anti_theft": {
+   "get_next_action": {
+    "err_code": -2,
+    "err_msg": "member not support"
+   },
+   "get_rules": {
+    "enable": 0,
+    "err_code": 0,
+    "rule_list": [],
+    "version": 2
+   }
+  },
+  "cnCloud": {
+   "get_info": {
+    "binded": 1,
+    "cld_connection": 1,
+    "err_code": 0,
+    "fwDlPage": "",
+    "fwNotifyType": -1,
+    "illegalType": 0,
+    "server": "n-devs.tplinkcloud.com",
+    "stopConnect": 0,
+    "tcspInfo": "",
+    "tcspStatus": 1,
+    "username": "user@example.com"
+   }
+  },
+  "countdown": {
+   "err_code": -1,
+   "err_msg": "module not support"
+  },
+  "schedule": {
+   "get_daystat": {
+    "day_list": [
+     {
+      "day": 28,
+      "month": 10,
+      "time": 0,
+      "year": 2026
+     }
+    ],
+    "err_code": 0
+   },
+   "get_monthstat": {
+    "err_code": 0,
+    "month_list": [
+     {
+      "month": 3,
+      "time": 462,
+      "year": 2026
+     },
+     {
+      "month": 4,
+      "time": 29073,
+      "year": 2026
+     },
+     {
+      "month": 5,
+      "time": 33808,
+      "year": 2026
+     },
+     {
+      "month": 6,
+      "time": 42949,
+      "year": 2026
+     },
+     {
+      "month": 7,
+      "time": 44381,
+      "year": 2026
+     },
+     {
+      "month": 8,
+      "time": 43994,
+      "year": 2026
+     },
+     {
+      "month": 10,
+      "time": 0,
+      "year": 2026
+     }
+    ]
+   },
+   "get_next_action": {
+    "err_code": 0,
+    "type": -1
+   },
+   "get_realtime": {
+    "err_code": -2,
+    "err_msg": "member not support"
+   },
+   "get_rules": {
+    "enable": 1,
+    "err_code": 0,
+    "rule_list": [],
+    "version": 2
+   }
+  },
+  "system": {
+   "get_sysinfo": {
+    "alias": "TP-LINK_Power Strip_0000",
+    "child_num": 6,
+    "children": [
+     {
+      "alias": "Plug 1",
+      "id": "800600000000000000000000000000000000000000",
+      "next_action": {
+       "type": -1
+      },
+      "on_time": 0,
+      "state": 0
+     },
+     {
+      "alias": "Plug 2",
+      "id": "800600000000000000000000000000000000000001",
+      "next_action": {
+       "type": -1
+      },
+      "on_time": 0,
+      "state": 0
+     },
+     {
+      "alias": "Plug 3",
+      "id": "800600000000000000000000000000000000000002",
+      "next_action": {
+       "type": -1
+      },
+      "on_time": 0,
+      "state": 0
+     },
+     {
+      "alias": "Plug 4",
+      "id": "800600000000000000000000000000000000000003",
+      "next_action": {
+       "type": -1
+      },
+      "on_time": 0,
+      "state": 0
+     },
+     {
+      "alias": "Plug 5",
+      "id": "800600000000000000000000000000000000000004",
+      "next_action": {
+       "type": -1
+      },
+      "on_time": 0,
+      "state": 0
+     },
+     {
+      "alias": "Plug 6",
+      "id": "800600000000000000000000000000000000000005",
+      "next_action": {
+       "type": -1
+      },
+      "on_time": 0,
+      "state": 0
+     }
+    ],
+    "deviceId": "8006000000000000000000000000000000000000",
+    "err_code": 0,
+    "feature": "TIM:ENE",
+    "hwId": "00000000000000000000000000000000",
+    "hw_ver": "2.0",
+    "latitude_i": 0,
+    "led_off": 0,
+    "lnk_on": 1,
+    "longitude_i": 0,
+    "mac": "00:00:00:00:00:00",
+    "mic_type": "IOT.SMARTPLUGSWITCH",
+    "model": "HS300(US)",
+    "obd_src": "tplink",
+    "oemId": "00000000000000000000000000000000",
+    "rssi": -53,
+    "status": "new",
+    "sw_ver": "1.1.2 Build 241220 Rel.171333",
+    "updating": 0
+   }
+  },
+  "time": {
+   "get_time": {
+    "err_code": 0,
+    "hour": 15,
+    "mday": 28,
+    "min": 58,
+    "month": 10,
+    "sec": 54,
+    "year": 2026
+   },
+   "get_timezone": {
+    "err_code": 0,
+    "index": 6
+   }
+  }
+ }
+}
