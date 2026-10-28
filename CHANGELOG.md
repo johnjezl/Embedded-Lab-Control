@@ -100,9 +100,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Kasa strips that only answer KLAP discovery (e.g. HS300 firmware 1.1.2,
   which closed the legacy port 9999) are controlled per outlet again.
   python-kasa types such a device by its family (`IOT.SMARTPLUGSWITCH`)
-  as a single plug with no outlets, so every command failed with
-  `KeyError: 'relay_state'`. When the device's sysinfo lists outlets,
-  labctl now re-types it as a strip on the same connection.
+  as a single plug with no outlets: state reads failed with
+  `KeyError: 'relay_state'`, and an on/off for any outlet was sent to the
+  strip as a whole, not to that outlet. labctl now reads the sysinfo and
+  lets python-kasa pick the class from it, as python-kasa's own `connect`
+  does, rebuilding the device on the same connection when discovery
+  picked another. A Kasa device that reports no outlets now refuses an
+  outlet index above 1 instead of switching the whole device.
 - Kasa power control works again with IOT devices whose firmware moved to
   KLAP login version 2 (e.g. HS300 hardware 2.0, firmware 1.1.2): every
   command failed with `AuthenticationError: Device response did not match

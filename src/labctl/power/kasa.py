@@ -153,16 +153,21 @@ class KasaController(PowerController):
         Discovery over KLAP (UDP 20002) types an IOT device by its family
         alone: ``IOT.SMARTPLUGSWITCH`` becomes ``IotPlug``, so a strip
         that no longer answers legacy discovery (HS300 firmware 1.1.2
-        closed port 9999) comes back as a plug without children, whose
-        ``is_on`` raises ``KeyError: 'relay_state'``. When the sysinfo
-        lists children, re-type it as ``IotStrip`` on the same protocol
-        (same KLAP session, no new handshake).
+        closed port 9999) comes back as a plug without children. For IOT
+        devices this does what python-kasa's own ``connect`` does: query
+        the sysinfo, let ``get_device_class_from_sys_info`` pick the
+        class, and rebuild the device as that class on the same protocol
+        (same session, no new handshake) when discovery picked another.
 
-        The caller must disconnect the returned device; on failure it is
-        disconnected here.
+        The caller must disconnect the returned device; on failure
+        (including cancellation) it is disconnected here.
         """
         from kasa import Discover
-        from kasa.iot import IotDevice, IotStrip
+        from kasa.device_factory import (
+            GET_SYSINFO_QUERY,
+            get_device_class_from_sys_info,
+        )
+        from kasa.iot import IotDevice
 
         credentials = self._load_credentials()
         kwargs = {"host": self.address}
@@ -173,23 +178,23 @@ class KasaController(PowerController):
         device = await Discover.discover_single(**kwargs)
 
         try:
+            if isinstance(device, IotDevice):
+                info = await device.protocol.query(GET_SYSINFO_QUERY)
+                device_class = get_device_class_from_sys_info(info)
+                if type(device) is not device_class:
+                    logger.debug(
+                        "Kasa device at %s discovered as %s; using %s",
+                        self.address,
+                        type(device).__name__,
+                        device_class.__name__,
+                    )
+                    device = device_class(self.address, protocol=device.protocol)
+                    device.update_from_discover_info(info)
             logger.debug(
                 "Updating device state for %s (%s)", self.address, device.alias
             )
             await device.update()
-            if (
-                isinstance(device, IotDevice)
-                and not isinstance(device, IotStrip)
-                and device.sys_info.get("children")
-            ):
-                logger.debug(
-                    "Kasa device at %s reports outlets; using IotStrip",
-                    self.address,
-                )
-                strip = IotStrip(device.host, protocol=device.protocol)
-                await strip.update()
-                device = strip
-        except Exception:
+        except BaseException:
             await device.disconnect()
             raise
         return device
@@ -223,6 +228,15 @@ class KasaController(PowerController):
             )
             return device, target
 
+        # No outlets: only index 1 (or the legacy 0) means the device
+        # itself. Anything else is a misconfiguration or a strip that
+        # wasn't recognised; switching the root would switch every outlet.
+        if self.plug_index > 1:
+            await device.disconnect()
+            raise RuntimeError(
+                f"Outlet index {self.plug_index} given, but the Kasa device "
+                f"at {self.address} reports no outlets"
+            )
         return device, device
 
     def _run_async(self, coro_factory, action: str, retries: int = 2):

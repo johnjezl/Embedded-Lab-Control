@@ -514,86 +514,194 @@ class TestKasaKlapV2Hint:
             assert _klap_v2_hint() == ""
 
 
+class _FakeKasaIotProtocol:
+    """Answers IOT queries from responses recorded on a real device.
+
+    Each module/method in a request gets its recorded response (per
+    child for ``context.child_ids``), or the device's "not supported"
+    error. Writes (``set_relay_state``) succeed and every request is kept
+    in ``requests``.
+    """
+
+    def __init__(self, fixture, host="192.168.1.100"):
+        self.fixture = fixture
+        self.requests = []
+        self.closed = False
+        # Device.host and .port read these.
+        self._transport = types.SimpleNamespace(_host=host, _port=None)
+
+    async def query(self, request, retry_count=3):
+        import json
+
+        if isinstance(request, str):
+            request = json.loads(request)
+        self.requests.append(request)
+        child_ids = request.get("context", {}).get("child_ids")
+        source = (
+            self.fixture["children"][child_ids[0]]
+            if child_ids
+            else self.fixture["root"]
+        )
+        response = {}
+        for module, methods in request.items():
+            if module == "context":
+                continue
+            if module == "system" and "set_relay_state" in methods:
+                response[module] = {"set_relay_state": {"err_code": 0}}
+            elif module not in source:
+                response[module] = {"err_code": -1, "err_msg": "module not support"}
+            else:
+                response[module] = {
+                    method: source[module].get(
+                        method, {"err_code": -2, "err_msg": "member not support"}
+                    )
+                    for method in methods
+                }
+        return response
+
+    async def close(self):
+        self.closed = True
+
+
 class TestKasaStripDiscoveredAsPlug:
-    """KLAP discovery types an HS300 as IotPlug; its outlets must survive."""
+    """KLAP discovery types an HS300 as IotPlug; its outlets must survive.
+
+    Uses responses recorded from the lab's HS300 (firmware 1.1.2) and
+    python-kasa's real classes, discovered as IotPlug as on the device.
+    """
 
     @staticmethod
-    def _discovered(sys_info):
+    def _fixture():
+        import json
+        from pathlib import Path
+
+        path = Path(__file__).parent.parent / "fixtures" / "kasa_hs300_fw112.json"
+        return json.loads(path.read_text())
+
+    def _controller(self, plug_index):
         from unittest.mock import AsyncMock
 
         from kasa.iot import IotPlug
 
-        device = Mock(spec=IotPlug)
-        device.host = "192.168.1.100"
-        device.alias = "strip"
-        device.protocol = Mock(name="protocol")
-        device.sys_info = sys_info
-        device.children = []
-        device.update = AsyncMock()
-        device.disconnect = AsyncMock()
-        return device
+        from labctl.power.kasa import KasaController
 
-    @staticmethod
-    def _discover(device, strip_update=None):
+        protocol = _FakeKasaIotProtocol(self._fixture())
+        discovered = IotPlug("192.168.1.100", protocol=protocol)
+        controller = KasaController("192.168.1.100", plug_index=plug_index)
+        patches = [
+            patch(
+                "kasa.Discover.discover_single",
+                new_callable=AsyncMock,
+                return_value=discovered,
+            ),
+            patch.object(controller, "_load_credentials", return_value=None),
+            patch("labctl.power.kasa.time.sleep"),
+        ]
+        for p in patches:
+            p.start()
+        self._patches = patches
+        return controller, protocol
+
+    def teardown_method(self):
+        for p in getattr(self, "_patches", []):
+            p.stop()
+
+    def test_selects_the_configured_outlet(self):
         import asyncio
-        from unittest.mock import AsyncMock
 
         from kasa.iot import IotStrip
 
+        controller, protocol = self._controller(plug_index=2)
+
+        async def go():
+            root, target = await controller._get_device()
+            try:
+                return type(root), len(root.children), target.alias
+            finally:
+                await root.disconnect()
+
+        root_type, outlets, alias = asyncio.run(go())
+        assert root_type is IotStrip
+        assert outlets == 6
+        assert alias == "Plug 2"
+        assert protocol.closed
+
+    def test_power_on_switches_only_that_outlet(self):
+        controller, protocol = self._controller(plug_index=2)
+
+        assert controller.power_on() is True
+
+        writes = [r for r in protocol.requests if "set_relay_state" in str(r)]
+        assert len(writes) == 1
+        outlet_2 = sorted(self._fixture()["children"])[1]
+        assert outlet_2.endswith("01")
+        assert writes[0]["context"]["child_ids"] == [outlet_2]
+        assert writes[0]["system"]["set_relay_state"] == {"state": 1}
+
+    def test_reads_every_outlet_state(self):
+        controller, _ = self._controller(plug_index=1)
+
+        states = controller._fetch_all_outlet_states()
+
+        assert states == {i: False for i in range(1, 7)}
+
+    def test_no_outlets_refuses_an_outlet_index(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+
         from labctl.power.kasa import KasaController
 
-        controller = KasaController("192.168.1.100", plug_index=2)
+        controller = KasaController("192.168.1.100", plug_index=3)
+        device = Mock(children=[])
+        device.disconnect = AsyncMock()
+        with patch.object(
+            controller,
+            "_discover_and_update",
+            new_callable=AsyncMock,
+            return_value=device,
+        ):
+            with pytest.raises(RuntimeError, match="reports no outlets"):
+                asyncio.run(controller._get_device())
+        device.disconnect.assert_awaited_once()
+        device.turn_on.assert_not_called()
+
+    def test_no_outlets_index_1_is_the_device(self):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from labctl.power.kasa import KasaController
+
+        controller = KasaController("192.168.1.100", plug_index=1)
+        device = Mock(children=[])
+        with patch.object(
+            controller,
+            "_discover_and_update",
+            new_callable=AsyncMock,
+            return_value=device,
+        ):
+            assert asyncio.run(controller._get_device()) == (device, device)
+
+    @pytest.mark.parametrize("exc", [OSError("boom"), KeyboardInterrupt()])
+    def test_update_failure_disconnects(self, exc):
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from labctl.power.kasa import KasaController
+
+        controller = KasaController("192.168.1.100")
+        device = Mock()  # not an IotDevice: no sysinfo re-typing
+        device.update = AsyncMock(side_effect=exc)
+        device.disconnect = AsyncMock()
         with (
             patch(
                 "kasa.Discover.discover_single",
                 new_callable=AsyncMock,
                 return_value=device,
-            ) as discover,
+            ),
             patch.object(controller, "_load_credentials", return_value=None),
-            patch.object(
-                IotStrip, "update", new_callable=AsyncMock, side_effect=strip_update
-            ) as update,
         ):
-            result = asyncio.run(controller._discover_and_update())
-        return result, discover, update
-
-    def test_plug_with_children_in_sysinfo_becomes_strip(self):
-        from kasa.iot import IotStrip
-
-        device = self._discovered({"children": [{"id": "00"}, {"id": "01"}]})
-        result, discover, update = self._discover(device)
-
-        assert isinstance(result, IotStrip)
-        # Same KLAP session: the strip reuses the discovered protocol.
-        assert result.protocol is device.protocol
-        assert discover.await_count == 1
-        device.update.assert_awaited_once()
-        update.assert_awaited_once()
-        device.disconnect.assert_not_awaited()
-
-    def test_plug_without_children_is_left_alone(self):
-        device = self._discovered({"relay_state": 1})
-        result, _, update = self._discover(device)
-
-        assert result is device
-        update.assert_not_awaited()
-
-    def test_non_iot_device_is_left_alone(self):
-        from unittest.mock import AsyncMock
-
-        device = Mock()  # e.g. a SMART-protocol device: not an IotDevice
-        device.children = []
-        device.update = AsyncMock()
-        device.disconnect = AsyncMock()
-        result, _, update = self._discover(device)
-
-        assert result is device
-        update.assert_not_awaited()
-
-    def test_strip_update_failure_disconnects(self):
-        device = self._discovered({"children": [{"id": "00"}]})
-        with pytest.raises(OSError, match="boom"):
-            self._discover(device, strip_update=OSError("boom"))
+            with pytest.raises(type(exc)):
+                asyncio.run(controller._discover_and_update())
         device.disconnect.assert_awaited_once()
 
 
