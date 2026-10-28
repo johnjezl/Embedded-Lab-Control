@@ -278,7 +278,7 @@ class KasaController(PowerController):
             f"[{self.plug_index}] after {total_attempts} attempts: "
             f"{error_type}: {last_error}"
         )
-        if error_type == "AuthenticationError":
+        if error_type == "AuthenticationError" and self._load_credentials():
             msg += _klap_v2_hint()
         logger.error(msg)
         raise RuntimeError(msg) from last_error

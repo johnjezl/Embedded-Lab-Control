@@ -454,7 +454,7 @@ class TestKasaKlapV2Hint:
     """A persistent AuthenticationError names the python-kasa < 0.12 cause."""
 
     @staticmethod
-    def _fail_with(exc_cls, kasa_version):
+    def _fail_with(exc_cls, kasa_version, credentials=True):
         from unittest.mock import AsyncMock
 
         from labctl.power.kasa import KasaController
@@ -468,6 +468,11 @@ class TestKasaKlapV2Hint:
             patch.object(controller, "_get_device", new_callable=AsyncMock) as dev,
             patch("labctl.power.kasa.time.sleep"),
             patch("importlib.metadata.version", return_value=kasa_version),
+            patch.object(
+                controller,
+                "_load_credentials",
+                return_value=Mock() if credentials else None,
+            ),
         ):
             mock_device = Mock()
             mock_device.disconnect = AsyncMock()
@@ -486,6 +491,12 @@ class TestKasaKlapV2Hint:
     def test_no_hint_on_python_kasa_0_12(self):
         AuthenticationError = type("AuthenticationError", (Exception,), {})
         msg = self._fail_with(AuthenticationError, "0.12.0")
+        assert "can't authenticate" not in msg
+
+    def test_no_hint_without_credentials(self):
+        AuthenticationError = type("AuthenticationError", (Exception,), {})
+        msg = self._fail_with(AuthenticationError, "0.10.2", credentials=False)
+        assert "after 3 attempts" in msg
         assert "can't authenticate" not in msg
 
     def test_no_hint_for_other_errors(self):
