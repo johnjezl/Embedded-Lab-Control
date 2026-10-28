@@ -79,10 +79,12 @@
 
 ## Blockers
 
-- None. (TP-Link HS300 HW v2.0 firmware 1.1.2 KLAP authentication failures,
-  intermittent at first and total from Sep 2026, were python-kasa using
-  KLAP v1 for a device on login version 2; fixed by python-kasa 0.12, now
-  required on Python 3.11+. Upstream: python-kasa #1604, #1648, PR #1731.)
+- On Python 3.10, Kasa devices on KLAP login version 2 (e.g. TP-Link HS300
+  HW v2.0 firmware 1.1.2) can't be controlled: python-kasa 0.12, the first
+  release that handles them, needs Python 3.11+, and 3.10 gets 0.7.x.
+  Python 3.11+ installs are fixed (the failures, intermittent at first and
+  total from Sep 2026, were python-kasa using KLAP v1 for these devices).
+  Upstream: python-kasa #1604, #1648, PR #1731.
 
 ## Notes
 

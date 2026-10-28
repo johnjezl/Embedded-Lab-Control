@@ -450,6 +450,59 @@ class TestKasaRetry:
         mock_sleep.assert_called_once_with(2)
 
 
+class TestKasaKlapV2Hint:
+    """A persistent AuthenticationError names the python-kasa < 0.12 cause."""
+
+    @staticmethod
+    def _fail_with(exc_cls, kasa_version):
+        from unittest.mock import AsyncMock
+
+        from labctl.power.kasa import KasaController
+
+        controller = KasaController("192.168.1.100", plug_index=2)
+
+        async def _failing_coro(device, target):
+            raise exc_cls("Device response did not match our challenge")
+
+        with (
+            patch.object(controller, "_get_device", new_callable=AsyncMock) as dev,
+            patch("labctl.power.kasa.time.sleep"),
+            patch("importlib.metadata.version", return_value=kasa_version),
+        ):
+            mock_device = Mock()
+            mock_device.disconnect = AsyncMock()
+            dev.return_value = (mock_device, mock_device)
+            with pytest.raises(RuntimeError) as excinfo:
+                controller._run(_failing_coro, "power_on")
+        return str(excinfo.value)
+
+    def test_auth_error_on_old_python_kasa_names_the_upgrade(self):
+        AuthenticationError = type("AuthenticationError", (Exception,), {})
+        msg = self._fail_with(AuthenticationError, "0.10.2")
+        assert "after 3 attempts" in msg
+        assert "python-kasa 0.10.2 can't authenticate" in msg
+        assert "python-kasa >= 0.12" in msg
+
+    def test_no_hint_on_python_kasa_0_12(self):
+        AuthenticationError = type("AuthenticationError", (Exception,), {})
+        msg = self._fail_with(AuthenticationError, "0.12.0")
+        assert "can't authenticate" not in msg
+
+    def test_no_hint_for_other_errors(self):
+        msg = self._fail_with(TimeoutError, "0.10.2")
+        assert "can't authenticate" not in msg
+
+    def test_no_hint_when_version_unknown(self):
+        from importlib.metadata import PackageNotFoundError
+
+        from labctl.power.kasa import _klap_v2_hint
+
+        with patch("importlib.metadata.version", side_effect=PackageNotFoundError("x")):
+            assert _klap_v2_hint() == ""
+        with patch("importlib.metadata.version", return_value="1.0b1"):
+            assert _klap_v2_hint() == ""
+
+
 class TestKasaRunningLoopErrors:
     def test_kasa_error_survives_running_event_loop(self):
         """Inside a running loop (the MCP server) the driver's own error
