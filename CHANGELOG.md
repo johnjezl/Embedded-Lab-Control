@@ -103,10 +103,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   our challenge` even with correct credentials, because python-kasa before
   0.12 always used KLAP v1 for IOT devices. The `kasa` extra now requires
   `python-kasa>=0.12` on Python 3.11+. python-kasa 0.8 and later need
-  Python 3.11, so on 3.10 it pins 0.7.x (it allowed 0.5, which lacks
+  Python 3.11, so on 3.10 it pins 0.7.7 (it allowed 0.5, which lacks
   APIs labctl uses) and those devices still can't be controlled there.
-  When an authentication error persists with python-kasa < 0.12, the
-  error message now says so and names the upgrade.
+  When an authentication error persists with credentials configured and
+  python-kasa < 0.12, the error message now says so and names the upgrade.
 - `labctl mcp --http` waits up to 15 s for a port that is in use before
   starting (seen once on a deploy: the port was still in use ~1 s after
   the old server had exited, cause unknown; the new server's start failed

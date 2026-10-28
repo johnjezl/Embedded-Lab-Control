@@ -56,11 +56,11 @@ sdwire = [
 ]
 # python-kasa 0.12 is the first release that speaks KLAP v2 to IOT devices
 # (e.g. HS300 firmware 1.1.2). Releases from 0.8 on require Python >= 3.11,
-# so 3.10 stays on 0.7.x (the oldest series with the API labctl uses) and
-# can't authenticate to those devices.
+# so 3.10 stays on 0.7.7 (the last release for 3.10; it has the API labctl
+# uses) and can't authenticate to those devices.
 kasa = [
     "python-kasa>=0.12; python_version >= '3.11'",
-    "python-kasa>=0.7,<0.8; python_version < '3.11'",
+    "python-kasa>=0.7.7,<0.8; python_version < '3.11'",
 ]
 actuators = [
     "pyserial>=3.5",

@@ -105,7 +105,7 @@ This document records significant design decisions made during development.
   - `device.children` provides outlet access for strips; single plugs have no children
   - No need for users to specify device type — `plug_index` is sufficient
   - TP-Link cloud credentials added to config (`kasa:` section) for KLAP-authenticated devices
-  - Note: HS300 HW v2.0 firmware 1.1.2+ has known KLAP auth issues; workaround is Tapo app "Third Party Compatibility" toggle
+  - Note (superseded, see the update below): HS300 HW v2.0 firmware 1.1.2+ has known KLAP auth issues; workaround is Tapo app "Third Party Compatibility" toggle
   - Update (2026-10-28): the HS300 firmware 1.1.2 failures were python-kasa < 0.12 using KLAP v1 for IOT devices on KLAP login version 2. The `kasa` extra requires python-kasa >= 0.12 on Python 3.11+; 3.10 can't use 0.12 and stays affected
 
 ---

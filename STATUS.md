@@ -81,7 +81,7 @@
 
 - On Python 3.10, Kasa devices on KLAP login version 2 (e.g. TP-Link HS300
   HW v2.0 firmware 1.1.2) can't be controlled: python-kasa 0.12, the first
-  release that handles them, needs Python 3.11+, and 3.10 gets 0.7.x.
+  release that handles them, needs Python 3.11+, and 3.10 gets 0.7.7.
   Python 3.11+ installs are fixed (the failures, intermittent at first and
   total from Sep 2026, were python-kasa using KLAP v1 for these devices).
   Upstream: python-kasa #1604, #1648, PR #1731.
