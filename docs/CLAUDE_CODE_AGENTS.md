@@ -40,8 +40,9 @@ each process is already a separate claimant, without keys. But those
 claims show up as `unnamed-…` unless the agent passes `agent_name`, the
 server runs with your own permissions and database access, and it only
 works on the lab host. There is no image upload route over stdio: agents
-pass host paths inside `mcp.allowed_read_paths` instead, or copy images
-into `mcp.upload_dir` (`list_images` explains). This guide covers the
+pass host paths inside `mcp.allowed_read_paths` instead, or, when
+`mcp.upload_dir` is inside that list, copy images into it and pass the
+bare name (`list_images` explains). This guide covers the
 HTTP service.)
 
 What keys do *not* do:
