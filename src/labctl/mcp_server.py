@@ -47,9 +47,10 @@ mcp = MCPServer(
         "Lab Controller MCP server. Provides access to embedded development "
         "lab resources including SBC management, power control, serial ports, "
         "and health monitoring. Use resources to read state, tools to perform actions. "
-        "Files for the SD card (images, kernels) are uploaded over HTTP, not "
-        "through tool arguments: list_images says how; tools then take the "
-        "uploaded file's bare name."
+        "Files for the SD card (images, kernels) can't go in tool arguments: "
+        "over HTTP, upload them (list_images says how) and pass the bare "
+        "name; over stdio, pass a host path inside mcp.allowed_read_paths "
+        "(list_images lists the options)."
     ),
 )
 
@@ -2700,9 +2701,9 @@ def _stdio_host_path_route() -> str:
     return (
         "Pass the image's absolute host path to flash_image, sdwire_update "
         "or boot_test; it must be inside mcp.allowed_read_paths "
-        f"({read_paths}). To use a build directory in place, add it to "
-        "mcp.allowed_read_paths in config.yaml (read when a stdio session "
-        "starts)."
+        f"({read_paths}). To use a build directory in place, ask the user "
+        "to add it to mcp.allowed_read_paths in config.yaml and restart "
+        "this MCP server (the config is read when it starts)."
     )
 
 
@@ -2718,17 +2719,18 @@ def _stdio_image_routes() -> list[str]:
     upload_dir = _get_config().mcp.upload_dir
     if not upload_dir or _resolve_host_path(upload_dir, "read")[1]:
         return routes
-    if not os.path.isdir(upload_dir):
-        access = "it does not exist yet"
-    elif os.access(upload_dir, os.W_OK | os.X_OK):
+    if os.access(upload_dir, os.W_OK | os.X_OK):
         access = "this session can create files there"
     else:
         access = "this session can't write there"
     routes.append(
         f"Copy the image with your shell into {upload_dir} ({access}) and "
-        "pass its bare name. Copy to a dot name first and rename it into "
-        "place (cp build/sdcard.img DIR/.sdcard.img && mv DIR/.sdcard.img "
-        "DIR/sdcard.img), so no session reads a half-written image; pick a "
+        "pass its bare name. Copy to a temp name first and rename it into "
+        "place (cp build/sdcard.img DIR/.upload-sdcard.img && mv "
+        "DIR/.upload-sdcard.img DIR/sdcard.img), so no session reads a "
+        "half-written image (a failed copy's .upload-* file is removed "
+        "after a day); check free space first, as uploads keep 1 GiB "
+        "free. Pick a "
         "name not in list_images, since one copied over replaces that image "
         "for everyone. Names are 1-128 letters, digits, '.', '_', '+' or "
         "'-', starting with a letter or digit. Images put there this way "
@@ -2806,6 +2808,8 @@ def list_images() -> str:
     try:
         images = store.list()
     except ImageError as e:
+        if _SESSION_KIND != "mcp-http":
+            return f"Error: {e.message}. {_stdio_host_path_route()}"
         return f"Error: {e.message}"
     max_mb = _get_config().mcp.max_upload_mb
     return json.dumps(

@@ -101,11 +101,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   HTTP transport, which read as a dead end. It now lists what a stdio
   session (which runs on the lab host) can do instead, with this server's
   paths: pass an absolute path inside `mcp.allowed_read_paths`, copy the
-  image into `mcp.upload_dir` (under a dot name, then renamed into place;
+  image into `mcp.upload_dir` (under a `.upload-` temp name, then renamed into place;
   it says whether the session can write there) and use its bare name, or
   upload to the host's HTTP service. The last two are offered only when
   bare names resolve (`upload_dir` inside `allowed_read_paths`). With
-  uploads off, a stdio session is still pointed at host paths.
+  uploads off or `upload_dir` unreadable, a stdio session is still pointed
+  at host paths, and the server instructions no longer say files must be
+  uploaded over HTTP.
 - Kasa strips that only answer KLAP discovery (e.g. HS300 firmware 1.1.2,
   which closed the legacy port 9999) are controlled per outlet again.
   python-kasa types such a device by its family (`IOT.SMARTPLUGSWITCH`)

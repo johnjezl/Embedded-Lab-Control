@@ -774,7 +774,7 @@ class TestTools:
         assert lab[0].mcp.allowed_read_paths[0] in host_path
         upload_dir = lab[0].mcp.upload_dir
         assert f"into {upload_dir} (this session can create files there)" in copy
-        assert "rename it into place" in copy  # no half-written images
+        assert "rename it into" in copy and ".upload-sdcard.img" in copy
         assert "/images/<name>" in http and f"same upload_dir ({upload_dir})" in http
 
     def test_stdio_copy_route_says_when_upload_dir_is_read_only(
@@ -789,11 +789,18 @@ class TestTools:
             routes = mcp_server._stdio_image_routes()
         assert "(this session can't write there)" in routes[1]
 
-    def test_stdio_copy_route_says_when_upload_dir_is_missing(self, lab, images_dir):
+    def test_unlistable_upload_dir_over_stdio_points_to_host_paths(
+        self, lab, images_dir
+    ):
         from labctl import mcp_server
 
         images_dir.rmdir()
-        assert "(it does not exist yet)" in mcp_server._stdio_image_routes()[1]
+        with patch.object(mcp_server, "_SESSION_KIND", "mcp-stdio"):
+            result = mcp_server.list_images()
+        assert result.startswith("Error: ")
+        assert result.endswith(mcp_server._stdio_host_path_route())
+        with patch.object(mcp_server, "_SESSION_KIND", "mcp-http"):
+            assert "allowed_read_paths" not in mcp_server.list_images()
 
     def test_stdio_bare_name_routes_need_upload_dir_readable(
         self, lab, images_dir, tmp_path
