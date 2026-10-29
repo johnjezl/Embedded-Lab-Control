@@ -97,6 +97,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   follow-up read doesn't misjudge the mux position.
 
 ### Fixed
+- Over stdio, the MCP `list_images` tool said only that uploads need the
+  HTTP transport, which read as a dead end. It now lists what a stdio
+  session (which runs on the lab host) can do instead, with this server's
+  paths: pass an absolute path inside `mcp.allowed_read_paths`, copy the
+  image into `mcp.upload_dir` (noting whether the session can write
+  there) and use its bare name, or upload to the host's HTTP service. With
+  uploads off, a stdio session is still pointed at host paths.
 - Kasa strips that only answer KLAP discovery (e.g. HS300 firmware 1.1.2,
   which closed the legacy port 9999) are controlled per outlet again.
   python-kasa types such a device by its family (`IOT.SMARTPLUGSWITCH`)

@@ -39,7 +39,10 @@ host, every Claude Code session starts its own `labctl mcp` process and
 each process is already a separate claimant, without keys. But those
 claims show up as `unnamed-…` unless the agent passes `agent_name`, the
 server runs with your own permissions and database access, and it only
-works on the lab host. This guide covers the HTTP service.)
+works on the lab host. There is no image upload route over stdio: agents
+pass host paths inside `mcp.allowed_read_paths` instead, or copy images
+into `mcp.upload_dir` (`list_images` explains). This guide covers the
+HTTP service.)
 
 What keys do *not* do:
 
