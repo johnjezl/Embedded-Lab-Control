@@ -73,12 +73,26 @@ class SendPacing:
         return self.chunk_size > 0 and self.delay_ms > 0
 
 
+# Pause between the parts of a multi-part send (one per named key), so a
+# console can tell a lone ESC from the start of an escape sequence.
+PART_GAP_SECONDS = 0.05
+
+
 def _write_payload(
     sock: socket.socket,
-    raw: bytes,
+    raw: Union[bytes, list[bytes]],
     pacing: Optional[SendPacing] = None,
 ) -> None:
-    """Write ``raw`` to ``sock``, optionally paced into delayed slices."""
+    """Write ``raw`` to ``sock``, optionally paced into delayed slices.
+
+    A list is written part by part with PART_GAP_SECONDS between parts.
+    """
+    if isinstance(raw, list):
+        for i, part in enumerate(raw):
+            if i:
+                time.sleep(PART_GAP_SECONDS)
+            _write_payload(sock, part, pacing)
+        return
     if pacing is None or not pacing.enabled:
         sock.sendall(raw)
         return
@@ -88,6 +102,10 @@ def _write_payload(
         sock.sendall(raw[i : i + step])
         if i + step < len(raw):
             time.sleep(delay)
+
+
+def _payload_len(raw: Union[bytes, list[bytes]]) -> int:
+    return sum(map(len, raw)) if isinstance(raw, list) else len(raw)
 
 
 def resolve_port(manager, port_name: str):
@@ -234,7 +252,7 @@ def capture_serial_output(
 def send_serial_data(
     tcp_host: str,
     tcp_port: int,
-    data: Union[str, bytes],
+    data: Union[str, bytes, list[bytes]],
     newline: bool = True,
     capture_timeout: Optional[float] = None,
     capture_until: Optional[str] = None,
@@ -247,7 +265,8 @@ def send_serial_data(
     Args:
         tcp_host: Host where ser2net is running
         tcp_port: TCP port for the serial connection
-        data: Text to send (UTF-8), or bytes sent as they are
+        data: Text to send (UTF-8), bytes sent as they are, or a list of
+            byte parts written with a short pause between them
         newline: Append \\r\\n after data (default True)
         capture_timeout: If set, capture response for this many seconds
         capture_until: If set, capture until this regex matches
@@ -256,9 +275,14 @@ def send_serial_data(
     Returns:
         SendResult with send status and optional capture.
     """
-    raw = data if isinstance(data, bytes) else data.encode("utf-8")
-    if newline:
-        raw += b"\r\n"
+    if isinstance(data, list):
+        raw = list(data)
+        if newline:
+            raw.append(b"\r\n")
+    else:
+        raw = data if isinstance(data, bytes) else data.encode("utf-8")
+        if newline:
+            raw += b"\r\n"
 
     if capture_timeout is not None:
         # Send and capture in one connection
@@ -278,7 +302,7 @@ def send_serial_data(
     try:
         sock.connect((tcp_host, tcp_port))
         _write_payload(sock, raw, pacing)
-        return SendResult(sent=True, bytes_sent=len(raw))
+        return SendResult(sent=True, bytes_sent=_payload_len(raw))
     except (ConnectionRefusedError, OSError) as e:
         raise RuntimeError(
             f"Cannot connect to serial port at {tcp_host}:{tcp_port}: {e}"
@@ -293,7 +317,7 @@ def send_serial_data(
 def _send_and_capture(
     tcp_host: str,
     tcp_port: int,
-    raw_data: bytes,
+    raw_data: Union[bytes, list[bytes]],
     timeout: float,
     until_pattern: Optional[str] = None,
     pacing: Optional[SendPacing] = None,
@@ -328,7 +352,7 @@ def _send_and_capture(
         sock.setblocking(True)
         sock.settimeout(5.0)
         _write_payload(sock, raw_data, pacing)
-        bytes_sent = len(raw_data)
+        bytes_sent = _payload_len(raw_data)
 
         # Capture response
         sock.setblocking(False)

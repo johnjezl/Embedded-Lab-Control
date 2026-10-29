@@ -2495,32 +2495,37 @@ def serial_capture(
 
 def _serial_send_payload(
     data: str, newline: bool | None, keys: list[str] | None, data_hex: str | None
-) -> bytes:
-    """The bytes serial_send writes; ValueError for bad keys or hex."""
+) -> list[bytes]:
+    """The parts serial_send writes (one per named key, with a short pause
+    between them); ValueError for bad keys or hex."""
     from labctl.serial.keys import decode_hex, encode_keys
 
     if data_hex is not None:
         if data or keys:
             raise ValueError("data_hex can't be combined with data or keys")
-        raw = decode_hex(data_hex)
+        parts = [decode_hex(data_hex)]
     else:
-        raw = data.encode("utf-8") + encode_keys(keys or [])
+        parts = ([data.encode("utf-8")] if data else []) + encode_keys(keys or [])
     if newline is None:
         newline = data_hex is None and not keys
+    parts = [p for p in parts if p]
     if newline:
-        raw += b"\r\n"
-    if not raw:
-        raise ValueError("nothing to send: give data, keys or data_hex")
-    return raw
+        if parts and not keys:
+            parts[-1] += b"\r\n"  # text and its line end in one write
+        else:
+            parts.append(b"\r\n")
+    return parts
 
 
 def _serial_send_preview(arguments: dict) -> dict:
     """The exact bytes a serial_send call will write, for its confirmation."""
-    raw = _serial_send_payload(
-        arguments.get("data", ""),
-        arguments.get("newline"),
-        arguments.get("keys"),
-        arguments.get("data_hex"),
+    raw = b"".join(
+        _serial_send_payload(
+            arguments.get("data", ""),
+            arguments.get("newline"),
+            arguments.get("keys"),
+            arguments.get("data_hex"),
+        )
     )
     return {"bytes_hex": raw.hex(" "), "byte_count": len(raw)}
 
@@ -2556,14 +2561,16 @@ def serial_send(
             False when keys or data_hex is given)
         capture_timeout: If set, capture response for this many seconds
         capture_until: If set, capture until this regex matches a line
-        keys: Named keys sent after data, in order (case-insensitive):
-            ESC, Enter, Tab, Space, Backspace (0x7F), Up, Down, Left,
-            Right, Home, End, Insert, Delete, PgUp, PgDn, F1-F12,
-            Ctrl-A..Ctrl-Z. xterm encodings (F11 = ESC [ 2 3 ~), which
-            EDK2/UEFI, U-Boot and Linux consoles accept.
+        keys: Named keys sent after data, in order, with a short pause
+            between keys (case-insensitive): ESC, Enter, Tab, Space,
+            Backspace (0x08), Up, Down, Left, Right, Home, End, Insert,
+            Delete, PgUp, PgDn, F1-F12, Ctrl-A..Ctrl-Z (or Ctrl+C, ^C).
+            xterm encodings (F11 = ESC [ 2 3 ~). If firmware ignores a
+            function key, its terminal type may want another encoding
+            (EDK2 VT100+: F11 = ESC !, data_hex "1b21").
         data_hex: Raw bytes as hex, e.g. "1b5b32337e" (spaces allowed);
             not combined with data or keys
-    """  # noqa: E501
+    """
     from labctl.serial.capture import (
         resolve_port,
         send_serial_data,

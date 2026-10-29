@@ -15,7 +15,7 @@ class TestEncodeKey:
             ("Return", b"\r"),
             ("Tab", b"\t"),
             ("Space", b" "),
-            ("Backspace", b"\x7f"),
+            ("Backspace", b"\x08"),
             ("Up", b"\x1b[A"),
             ("Down", b"\x1b[B"),
             ("Right", b"\x1b[C"),
@@ -36,20 +36,26 @@ class TestEncodeKey:
             ("ctrl-c", b"\x03"),
             ("Ctrl-H", b"\x08"),
             ("Ctrl-Z", b"\x1a"),
+            ("Ctrl+C", b"\x03"),
+            ("^C", b"\x03"),
+            ("Control-D", b"\x04"),
+            ("Page Up", b"\x1b[5~"),
+            ("Del", b"\x1b[3~"),
+            ("Ins", b"\x1b[2~"),
         ],
     )
     def test_known_keys(self, name, expected):
         assert encode_key(name) == expected
 
     @pytest.mark.parametrize(
-        "name", ["F13", "Ctrl-1", "Ctrl-", "Ctrl-AB", "", "\x1b", 3]
+        "name", ["F13", "Ctrl-1", "Ctrl-", "Ctrl-AB", "^", "", "\x1b", 3]
     )
     def test_unknown_keys_refused(self, name):
         with pytest.raises(ValueError, match="unknown key"):
             encode_key(name)
 
     def test_sequence_in_order(self):
-        assert encode_keys(["Down", "Down", "Enter"]) == b"\x1b[B\x1b[B\r"
+        assert encode_keys(["Down", "Down", "Enter"]) == [b"\x1b[B", b"\x1b[B", b"\r"]
 
 
 class TestDecodeHex:

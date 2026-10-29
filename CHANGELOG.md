@@ -235,8 +235,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 - MCP `serial_send` takes `keys` (named keys: ESC, Enter, Tab, Space,
-  Backspace, arrows, Home/End/Insert/Delete/PgUp/PgDn, F1-F12,
-  Ctrl-A..Ctrl-Z, in xterm encodings) and `data_hex` (raw bytes), so
+  Backspace (0x08), arrows, Home/End/Insert/Delete/PgUp/PgDn, F1-F12,
+  Ctrl-A..Ctrl-Z, in xterm encodings; each key is written with a 50 ms
+  pause after the previous one, so a lone ESC isn't read as the start of
+  a sequence) and `data_hex` (raw bytes, e.g. for firmware whose
+  terminal type wants other function-key codes), so
   agents can drive UEFI/U-Boot menus: a raw ESC in `data` is dropped
   before it reaches the server (#33). `newline` defaults to off when
   either is given. Its confirmation now shows the exact bytes it will

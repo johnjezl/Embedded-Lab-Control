@@ -2,8 +2,11 @@
 
 Tool arguments are text written by a model, which can't reliably carry
 raw control characters (an ESC is dropped before it reaches the server),
-so MCP clients name keys instead (issue #33). Encodings are xterm's,
-which VT100-style consoles (EDK2/UEFI, U-Boot, Linux) accept.
+so MCP clients name keys instead (issue #33). Encodings are xterm's.
+Arrows, Enter, ESC, Tab and Ctrl keys are understood by nearly every
+console; function keys vary by terminal type: firmware set to VT100+
+expects ESC 1..ESC 0, ESC ! and ESC @ for F1-F12, which callers can send
+as raw hex instead.
 """
 
 from __future__ import annotations
@@ -13,7 +16,7 @@ _NAMED = {
     "enter": b"\r",
     "tab": b"\t",
     "space": b" ",
-    "backspace": b"\x7f",
+    "backspace": b"\x08",
     "up": b"\x1b[A",
     "down": b"\x1b[B",
     "right": b"\x1b[C",
@@ -42,13 +45,18 @@ _ALIASES = {
     "return": "enter",
     "pageup": "pgup",
     "pagedown": "pgdn",
+    "page up": "pgup",
+    "page down": "pgdn",
+    "del": "delete",
+    "ins": "insert",
 }
 
 KEY_NAMES = (
-    "ESC, Enter, Tab, Space, Backspace (0x7F), Up, Down, Left, Right, "
+    "ESC, Enter, Tab, Space, Backspace (0x08), Up, Down, Left, Right, "
     "Home, End, Insert, Delete, PgUp, PgDn, F1-F12, Ctrl-A..Ctrl-Z "
-    "(0x01-0x1A; Ctrl-H is 0x08)"
+    "(0x01-0x1A; also written Ctrl+C or ^C)"
 )
+_CTRL_PREFIXES = ("ctrl-", "ctrl+", "control-", "control+", "^")
 
 
 def encode_key(name: str) -> bytes:
@@ -57,14 +65,17 @@ def encode_key(name: str) -> bytes:
     key = _ALIASES.get(key, key)
     if key in _NAMED:
         return _NAMED[key]
-    if key.startswith("ctrl-") and len(key) == 6 and "a" <= key[5] <= "z":
-        return bytes([ord(key[5]) - ord("a") + 1])
+    for prefix in _CTRL_PREFIXES:
+        if key.startswith(prefix):
+            letter = key[len(prefix) :]
+            if len(letter) == 1 and "a" <= letter <= "z":
+                return bytes([ord(letter) - ord("a") + 1])
     raise ValueError(f"unknown key {name!r}; known keys: {KEY_NAMES}")
 
 
-def encode_keys(names: list[str]) -> bytes:
-    """The bytes for a sequence of key names, in order."""
-    return b"".join(encode_key(n) for n in names)
+def encode_keys(names: list[str]) -> list[bytes]:
+    """The bytes for each of a sequence of key names, in order."""
+    return [encode_key(n) for n in names]
 
 
 def decode_hex(text: str) -> bytes:
