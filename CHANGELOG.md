@@ -234,6 +234,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   from removing dead code flagged by flake8 (unused imports/variables).
 
 ### Added
+- MCP `serial_send` takes `keys` (named keys: ESC, Enter, Tab, Space,
+  Backspace, arrows, Home/End/Insert/Delete/PgUp/PgDn, F1-F12,
+  Ctrl-A..Ctrl-Z, in xterm encodings) and `data_hex` (raw bytes), so
+  agents can drive UEFI/U-Boot menus: a raw ESC in `data` is dropped
+  before it reaches the server (#33). `newline` defaults to off when
+  either is given. Its confirmation now shows the exact bytes it will
+  send (`will_do`), and an unknown key or bad hex is refused before a
+  token is issued.
 - **Image uploads over MCP HTTP** (D014): `PUT /images/<name>` on the MCP
   HTTP port, with the same API key, stores a file in the new
   `mcp.upload_dir` (default empty: off); `flash_image`, `sdwire_update`
