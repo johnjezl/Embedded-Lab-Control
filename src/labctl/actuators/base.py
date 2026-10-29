@@ -79,9 +79,10 @@ def device_permission_hint(device_path: str) -> str:
     import stat
 
     try:
-        user = pwd.getpwuid(os.geteuid()).pw_name
+        account = pwd.getpwuid(os.geteuid())
+        user, primary_gid = account.pw_name, account.pw_gid
     except KeyError:
-        user = None  # no account to name in a usermod command
+        user, primary_gid = None, None  # no account to name in usermod
     generic = (
         f"check that {user or f'uid {os.geteuid()}'} may read and write "
         f"{device_path} "
@@ -107,7 +108,7 @@ def device_permission_hint(device_path: str) -> str:
         f"in (or run newgrp {name} in this shell), and restart any service "
         "or MCP client that runs labctl"
     )
-    if user in group.gr_mem:
+    if user in group.gr_mem or primary_gid == st.st_gid:
         return (
             f"{user} is in the '{name}' group that owns the device, but this "
             f"process started before it was added; {takes_effect}"

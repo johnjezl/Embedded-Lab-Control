@@ -462,6 +462,22 @@ class TestCheckPrePowerActuators:
         runtime.check_pre_power_actuators(lab.manager, lab.sbc)
         assert probed == ["relay-1"]
 
+    def test_broken_binding_fails_the_check(self, lab, monkeypatch):
+        """apply_pre_power_bindings resolves every pre_power binding, so a
+        binding to a missing channel must fail before power-off too, even
+        one it wouldn't drive."""
+        binding = _make_binding(lab)
+        lab.manager.update_binding_desired_state(
+            binding.id, DesiredState.FOLLOWING_POWER
+        )
+
+        def missing(manager, b):
+            raise runtime.ActuationError("references missing channel")
+
+        monkeypatch.setattr(runtime, "_resolve", missing)
+        with pytest.raises(runtime.ActuationError, match="missing channel"):
+            runtime.check_pre_power_actuators(lab.manager, lab.sbc)
+
     def test_each_actuator_probed_once(self, lab, monkeypatch):
         """Two bindings on one relay probe it once; a second relay is
         still probed."""
