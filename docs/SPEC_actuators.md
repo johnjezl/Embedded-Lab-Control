@@ -327,7 +327,13 @@ power flows:
 
 - `pre_power` — actuator must be in target state **before** power is
   applied. `power_on` / `power_cycle` consult bindings' `desired_state`
-  and drive the actuator accordingly before applying power.
+  and drive the actuator accordingly before applying power. This holds
+  for every path that powers a board on: CLI `power on`/`cycle`,
+  `power-all on`, `boot-test`, and the cycle or power-on after `sdwire
+  flash`/`update`; the matching MCP tools; and the web UI and REST API
+  (`labctl.actuators.runtime.power_on_with_bindings` /
+  `power_cycle_with_bindings`). A cycle checks the relays before
+  power-off, so one that can't be opened leaves the board running.
 - `post_power` — actuator is driven after the device is up. *Deferred.*
 - `none` — no automatic coupling; user drives explicitly.
 

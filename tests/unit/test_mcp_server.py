@@ -373,14 +373,21 @@ class TestMcpPowerTools:
         from labctl.mcp_server import power_cycle
 
         mock_ctrl = MagicMock()
-        mock_ctrl.power_cycle.return_value = True
+        mock_ctrl.power_off.return_value = True
+        mock_ctrl.power_on.return_value = True
 
-        with patch("labctl.power.base.PowerController.from_plug") as mock_from_plug:
+        with (
+            patch("labctl.power.base.PowerController.from_plug") as mock_from_plug,
+            patch("labctl.actuators.runtime.time.sleep") as sleep,
+        ):
             mock_from_plug.return_value = mock_ctrl
             result = power_cycle(sbc_name="test-sbc-1", delay=1.0)
 
         assert "Power cycled" in result
-        mock_ctrl.power_cycle.assert_called_once_with(1.0)
+        # Off, wait, on (with pre_power bindings applied in between).
+        mock_ctrl.power_off.assert_called_once()
+        sleep.assert_called_once_with(1.0)
+        mock_ctrl.power_on.assert_called_once()
 
     def test_power_on_failure(self, mock_manager):
         from unittest.mock import MagicMock
@@ -706,11 +713,16 @@ class TestMcpSDWireTools:
         }
 
         mock_power = MagicMock()
-        mock_power.power_cycle.return_value = True
+        mock_power.power_off.return_value = True
+        mock_power.power_on.return_value = True
 
         with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl_instance):
-            with patch(
-                "labctl.power.base.PowerController.from_plug", return_value=mock_power
+            with (
+                patch(
+                    "labctl.power.base.PowerController.from_plug",
+                    return_value=mock_power,
+                ),
+                patch("labctl.actuators.runtime.time.sleep"),
             ):
                 result = sdwire_update(
                     sbc_name="test-sbc-1",
@@ -720,7 +732,39 @@ class TestMcpSDWireTools:
                 )
 
         assert "Power cycled" in result
-        mock_power.power_cycle.assert_called_once()
+        mock_power.power_on.assert_called_once()
+
+    def test_sdwire_update_reboot_relay_failure_is_reported(self, mock_manager):
+        """Files are updated; a strap that can't be applied is said, not raised."""
+        from unittest.mock import MagicMock
+
+        from labctl.actuators.runtime import ActuationError
+        from labctl.mcp_server import sdwire_update
+
+        mock_ctrl_instance = MagicMock()
+        mock_ctrl_instance.update_files.return_value = {
+            "copied": ["kernel.img"],
+            "renamed": [],
+            "deleted": [],
+        }
+        with (
+            patch("labctl.sdwire.SDWireController", return_value=mock_ctrl_instance),
+            patch("labctl.power.base.PowerController.from_plug"),
+            patch(
+                "labctl.actuators.runtime.power_cycle_with_bindings",
+                side_effect=ActuationError("relay gone"),
+            ) as cycle,
+        ):
+            result = sdwire_update(
+                sbc_name="test-sbc-1",
+                partition=1,
+                copies=[f"{self.host_dir}/local.bin:kernel.img"],
+                reboot=True,
+            )
+
+        assert result.startswith("Partition 1: Copied: kernel.img. Not power cycled:")
+        assert "relay gone" in result
+        assert cycle.call_args.args[1].name == "test-sbc-1"
 
     def test_sdwire_update_runtime_error(self, mock_manager):
         from unittest.mock import MagicMock
@@ -1888,6 +1932,41 @@ class TestMcpFlashImage:
         assert "Powered on" in result
         mock_power_inst.power_on.assert_called_once()
 
+    def test_flash_image_reboot_relay_failure_is_reported(self, mock_manager):
+        from unittest.mock import MagicMock
+
+        from labctl.actuators.runtime import ActuationError
+        from labctl.mcp_server import flash_image
+
+        mock_ctrl = MagicMock()
+        mock_ctrl.get_block_device.return_value = "/dev/sdb"
+        mock_ctrl.flash_image.return_value = {
+            "bytes_written": 1024,
+            "elapsed_seconds": 1.0,
+            "block_device": "/dev/sdb",
+        }
+        mock_power_inst = MagicMock()
+        with (
+            patch("labctl.sdwire.SDWireController", return_value=mock_ctrl),
+            patch(
+                "labctl.power.base.PowerController.from_plug",
+                return_value=mock_power_inst,
+            ),
+            patch(
+                "labctl.actuators.runtime.apply_pre_power_bindings",
+                side_effect=ActuationError("relay gone"),
+            ),
+        ):
+            result = flash_image(
+                sbc_name="test-sbc-1",
+                image_path=f"{self.host_dir}/test.img",
+                reboot=True,
+            )
+
+        assert "Flashed" in result
+        assert "Not powered on: relay gone" in result
+        mock_power_inst.power_on.assert_not_called()
+
     def test_flash_image_no_block_device(self, mock_manager):
         from unittest.mock import MagicMock
 
@@ -2038,6 +2117,53 @@ class TestMcpBootTest:
 
 class TestMcpRemoveTools:
     """Tests for MCP remove and unassign tools."""
+
+    def test_boot_test_cycles_through_pre_power_bindings(self, mock_manager):
+        from labctl.mcp_server import boot_test
+        from labctl.serial.boot_test import BootTestResult
+
+        def fake_run(**kwargs):
+            kwargs["power_cycle_fn"]()
+            return BootTestResult(
+                sbc_name="test-sbc-1",
+                expect_pattern="ok",
+                total_runs=1,
+                timeout_per_run=1.0,
+            )
+
+        with (
+            patch("labctl.serial.boot_test.run_boot_test", side_effect=fake_run),
+            patch("labctl.power.base.PowerController.from_plug") as from_plug,
+            patch("labctl.actuators.runtime.power_cycle_with_bindings") as cycle,
+        ):
+            boot_test(sbc_name="test-sbc-1", expect_pattern="ok", runs=1)
+
+        manager, sbc, controller, delay = cycle.call_args.args
+        assert (manager, sbc.name, controller, delay) == (
+            mock_manager,
+            "test-sbc-1",
+            from_plug.return_value,
+            3.0,
+        )
+
+    def test_boot_test_relay_failure_is_an_error(self, mock_manager):
+        from labctl.actuators.runtime import ActuationError
+        from labctl.mcp_server import boot_test
+
+        def fake_run(**kwargs):
+            kwargs["power_cycle_fn"]()
+
+        with (
+            patch("labctl.serial.boot_test.run_boot_test", side_effect=fake_run),
+            patch("labctl.power.base.PowerController.from_plug"),
+            patch(
+                "labctl.actuators.runtime.power_cycle_with_bindings",
+                side_effect=ActuationError("relay gone"),
+            ),
+        ):
+            result = boot_test(sbc_name="test-sbc-1", expect_pattern="ok", runs=1)
+
+        assert result == "Error: relay gone"
 
     def test_remove_serial_port(self, mock_manager):
         from labctl.mcp_server import remove_serial_port
@@ -3644,18 +3770,21 @@ class TestDestructiveConfirmation:
         )
 
         assert result["status"] == "confirmation_failed"
-        power.power_cycle.assert_not_called()
+        power.power_off.assert_not_called()
+        power.power_on.assert_not_called()
 
     def test_defaults_are_part_of_the_binding(self, env):
         """power_cycle(delay omitted) == power_cycle(delay=3.0): same call."""
         from labctl.mcp_server import power_cycle
 
         _, power = env
-        power.power_cycle.return_value = True
+        power.power_off.return_value = True
+        power.power_on.return_value = True
         token = self._plan(power_cycle(sbc_name="test-sbc-1"))["confirm_token"]
-        power_cycle(sbc_name="test-sbc-1", delay=3.0, confirm_token=token)
+        with patch("labctl.actuators.runtime.time.sleep"):
+            power_cycle(sbc_name="test-sbc-1", delay=3.0, confirm_token=token)
 
-        power.power_cycle.assert_called_once()
+        power.power_on.assert_called_once()
 
     def test_expired_token_refused(self, env):
         from labctl import mcp_server
@@ -3703,7 +3832,8 @@ class TestDestructiveConfirmation:
 
         assert power_off(sbc_name="test-sbc-1").startswith("Power OFF")
         self._plan(power_cycle(sbc_name="test-sbc-1"))
-        power.power_cycle.assert_not_called()
+        power.power_off.assert_called_once()  # the exempt power_off only
+        power.power_on.assert_not_called()
 
     def test_every_destructive_tool_requires_confirmation(self):
         """Enforcement: the destructive set comes from the annotation table,

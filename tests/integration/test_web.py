@@ -547,20 +547,26 @@ class TestPowerEndpoints:
         )
 
         mock_controller = MagicMock()
-        mock_controller.power_cycle.return_value = True
+        mock_controller.power_off.return_value = True
+        mock_controller.power_on.return_value = True
         mock_controller.get_state.return_value = PowerState.ON
         mock_power.from_plug.return_value = mock_controller
 
-        response = client.post(
-            "/api/sbcs/test-pi/power",
-            data=json.dumps({"action": "cycle", "delay": 3.0}),
-            content_type="application/json",
-        )
+        with patch("labctl.actuators.runtime.time.sleep") as sleep:
+            response = client.post(
+                "/api/sbcs/test-pi/power",
+                data=json.dumps({"action": "cycle", "delay": 3.0}),
+                content_type="application/json",
+            )
         assert response.status_code == 200
 
         data = json.loads(response.data)
         assert data["success"] is True
         assert data["action"] == "cycle"
+        # Off, wait, on (pre_power bindings are applied before the on).
+        mock_controller.power_off.assert_called_once()
+        sleep.assert_called_once_with(3.0)
+        mock_controller.power_on.assert_called_once()
 
     @patch("labctl.web.api.PowerController")
     def test_get_power_status(self, mock_power, client, manager, sample_sbc):

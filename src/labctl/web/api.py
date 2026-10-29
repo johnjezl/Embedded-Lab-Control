@@ -7,6 +7,7 @@ import time
 from flask import Blueprint, g, jsonify, request
 
 from labctl import __version__
+from labctl.actuators.runtime import power_cycle_with_bindings, power_on_with_bindings
 from labctl.core import audit
 from labctl.core.models import PortType, Status
 from labctl.power import PowerController
@@ -219,12 +220,12 @@ def control_power(name: str):
         controller = PowerController.from_plug(sbc.power_plug)
 
         if action == "on":
-            success = controller.power_on()
+            success = power_on_with_bindings(g.manager, sbc, controller)
         elif action == "off":
             success = controller.power_off()
         else:
             delay = data.get("delay", 3.0)
-            success = controller.power_cycle(delay)
+            success = power_cycle_with_bindings(g.manager, sbc, controller, delay)
             if success:
                 _power_cycle_times[name] = time.monotonic()
 

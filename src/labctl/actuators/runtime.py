@@ -55,6 +55,10 @@ class ActuationError(Exception):
     """Driver-level failure during a verb (e.g. WRITE_FAILED, DEVICE_GONE)."""
 
 
+class PrePowerCheckError(ActuationError):
+    """A pre_power actuator can't be used; power was not switched."""
+
+
 class BindingShapeError(Exception):
     """Verb does not match the binding's declared shape."""
 
@@ -596,7 +600,7 @@ def _bindings_with_sample_phase(manager, sbc_id: int, phase) -> list[Binding]:
 
 
 def check_pre_power_actuators(manager, sbc) -> None:
-    """Raise :class:`ActuationError` if an actuator that
+    """Raise :class:`PrePowerCheckError` if an actuator that
     apply_pre_power_bindings will drive for ``sbc`` can't be opened.
 
     For power cycle, so a relay that would fail after power-off (e.g. no
@@ -609,7 +613,12 @@ def check_pre_power_actuators(manager, sbc) -> None:
     for binding in _bindings_with_sample_phase(manager, sbc.id, SamplePhase.PRE_POWER):
         # Resolved first, as apply_pre_power_bindings does, so a binding
         # to a missing channel fails here rather than after power-off.
-        actuator, _ = _resolve(manager, binding)
+        try:
+            actuator, _ = _resolve(manager, binding)
+        except PrePowerCheckError:
+            raise
+        except ActuationError as e:
+            raise PrePowerCheckError(str(e)) from e
         if binding.desired_state not in (
             DesiredState.ASSERTED,
             DesiredState.RELEASED,
@@ -620,7 +629,7 @@ def check_pre_power_actuators(manager, sbc) -> None:
         seen.add(actuator.id)
         outcome = probe_actuator(actuator)
         if outcome.result is not ProbeResult.OK:
-            raise ActuationError(
+            raise PrePowerCheckError(
                 f"actuator {actuator.name!r} for {binding.purpose!r} can't "
                 f"be used: {outcome.detail or outcome.result.value}"
             )
@@ -679,6 +688,43 @@ def apply_pre_power_bindings(manager, sbc) -> None:
                 ok=True,
                 cycle_changed=(prior_state != target),
             )
+
+
+def power_on_with_bindings(manager, sbc, controller) -> bool:
+    """Drive ``sbc``'s pre_power bindings, then power it on.
+
+    Every path that powers a board on goes through here (or
+    :func:`power_cycle_with_bindings`) so a strap is in its desired state
+    whichever interface did it (issue #36). Raises :class:`ActuationError`
+    without switching power if a binding can't be applied; returns the
+    controller's result otherwise.
+    """
+    apply_pre_power_bindings(manager, sbc)
+    return controller.power_on()
+
+
+def power_cycle_with_bindings(
+    manager,
+    sbc,
+    controller,
+    delay_s: float,
+    *,
+    sleep_fn=None,
+) -> bool:
+    """Power-cycle ``sbc``: off, wait, drive pre_power bindings, on.
+
+    Checks the pre_power actuators first and raises
+    :class:`PrePowerCheckError` while the board is still running if one
+    can't be opened. A later :class:`ActuationError` (the write itself
+    failing) leaves the board off rather than booting without the strap.
+    Returns False if power_off or power_on reports failure.
+    """
+    check_pre_power_actuators(manager, sbc)
+    if not controller.power_off():
+        return False
+    (sleep_fn or time.sleep)(delay_s)
+    apply_pre_power_bindings(manager, sbc)
+    return controller.power_on()
 
 
 def enter_recovery(
