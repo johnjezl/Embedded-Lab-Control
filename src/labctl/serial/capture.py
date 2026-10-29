@@ -11,7 +11,7 @@ import select
 import socket
 import time
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +234,7 @@ def capture_serial_output(
 def send_serial_data(
     tcp_host: str,
     tcp_port: int,
-    data: str,
+    data: Union[str, bytes],
     newline: bool = True,
     capture_timeout: Optional[float] = None,
     capture_until: Optional[str] = None,
@@ -247,7 +247,7 @@ def send_serial_data(
     Args:
         tcp_host: Host where ser2net is running
         tcp_port: TCP port for the serial connection
-        data: String data to send
+        data: Text to send (UTF-8), or bytes sent as they are
         newline: Append \\r\\n after data (default True)
         capture_timeout: If set, capture response for this many seconds
         capture_until: If set, capture until this regex matches
@@ -256,10 +256,9 @@ def send_serial_data(
     Returns:
         SendResult with send status and optional capture.
     """
-    payload = data
+    raw = data if isinstance(data, bytes) else data.encode("utf-8")
     if newline:
-        payload += "\r\n"
-    raw = payload.encode("utf-8")
+        raw += b"\r\n"
 
     if capture_timeout is not None:
         # Send and capture in one connection

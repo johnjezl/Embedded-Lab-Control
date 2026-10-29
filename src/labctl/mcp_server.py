@@ -678,6 +678,9 @@ _CONFIRM_TTL_SECONDS = 120
 _DESTRUCTIVE_TOOLS = frozenset(
     name for name, ann in TOOL_ANNOTATIONS.items() if ann.destructive_hint
 )
+# Tool -> function(arguments) -> dict shown as "will_do" in its
+# confirmation (e.g. serial_send's exact bytes); ValueError refuses the call.
+_CONFIRM_PREVIEWS: dict = {}
 # token -> (tool, call digest, expiry, user it was issued to; None = no auth)
 _pending_confirmations: dict[str, tuple[str, str, float, str | None]] = {}
 _confirm_lock = threading.Lock()
@@ -700,7 +703,9 @@ def _call_digest(tool_name: str, arguments: dict) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
-def _issue_confirmation(tool_name: str, arguments: dict) -> str:
+def _issue_confirmation(
+    tool_name: str, arguments: dict, preview: dict | None = None
+) -> str:
     import secrets
 
     token = secrets.token_urlsafe(16)
@@ -718,12 +723,17 @@ def _issue_confirmation(tool_name: str, arguments: dict) -> str:
             _authenticated_user(),
         )
     title = TOOL_ANNOTATIONS[tool_name].title
+    response = {
+        "status": "confirmation_required",
+        "tool": tool_name,
+        "action": title,
+        "arguments": arguments,
+    }
+    if preview:
+        response["will_do"] = preview
     return json.dumps(
         {
-            "status": "confirmation_required",
-            "tool": tool_name,
-            "action": title,
-            "arguments": arguments,
+            **response,
             "confirm_token": token,
             "expires_in_seconds": _CONFIRM_TTL_SECONDS,
             "message": (
@@ -785,7 +795,14 @@ def _with_confirmation(func):
         bound.apply_defaults()
         arguments = dict(bound.arguments)
         if confirm_token is None:
-            return _issue_confirmation(name, arguments)
+            preview = _CONFIRM_PREVIEWS.get(name)
+            try:
+                extra = preview(arguments) if preview else None
+            except ValueError as e:
+                # Refuse a call that would fail anyway before handing out
+                # a token for it.
+                return f"Error: {e}"
+            return _issue_confirmation(name, arguments, extra)
         problem = _redeem_confirmation(name, arguments, confirm_token)
         if problem:
             return json.dumps(
@@ -2476,31 +2493,86 @@ def serial_capture(
         return f"Error: {e}"
 
 
+def _serial_send_payload(
+    data: str, newline: bool | None, keys: list[str] | None, data_hex: str | None
+) -> bytes:
+    """The bytes serial_send writes; ValueError for bad keys or hex."""
+    from labctl.serial.keys import decode_hex, encode_keys
+
+    if data_hex is not None:
+        if data or keys:
+            raise ValueError("data_hex can't be combined with data or keys")
+        raw = decode_hex(data_hex)
+    else:
+        raw = data.encode("utf-8") + encode_keys(keys or [])
+    if newline is None:
+        newline = data_hex is None and not keys
+    if newline:
+        raw += b"\r\n"
+    if not raw:
+        raise ValueError("nothing to send: give data, keys or data_hex")
+    return raw
+
+
+def _serial_send_preview(arguments: dict) -> dict:
+    """The exact bytes a serial_send call will write, for its confirmation."""
+    raw = _serial_send_payload(
+        arguments.get("data", ""),
+        arguments.get("newline"),
+        arguments.get("keys"),
+        arguments.get("data_hex"),
+    )
+    return {"bytes_hex": raw.hex(" "), "byte_count": len(raw)}
+
+
+_CONFIRM_PREVIEWS["serial_send"] = _serial_send_preview
+
+
 @mcp.tool(annotations=TOOL_ANNOTATIONS["serial_send"])
 @_with_mcp_activity
 def serial_send(
     port_name: str,
-    data: str,
-    newline: bool = True,
+    data: str = "",
+    newline: bool | None = None,
     capture_timeout: float | None = None,
     capture_until: str | None = None,
+    keys: list[str] | None = None,
+    data_hex: str | None = None,
 ) -> str:
     """Send data to a serial port, optionally capturing the response.
 
     Connects to the serial port via ser2net, sends data, optionally
     captures the response, then disconnects.
 
+    Control characters can't be typed into ``data`` (they are lost before
+    they reach the server): name keys in ``keys`` instead, e.g. ["F11"]
+    for the UEFI boot menu, ["Down", "Down", "Enter"], ["Ctrl-C"] to stop
+    U-Boot autoboot, or give raw bytes as ``data_hex``.
+
     Args:
         port_name: Port alias or SBC name (SBC defaults to console port)
-        data: String data to send
-        newline: Append \\r\\n after data (default: True)
+        data: Text to send
+        newline: Append \\r\\n at the end (default: True for data alone,
+            False when keys or data_hex is given)
         capture_timeout: If set, capture response for this many seconds
         capture_until: If set, capture until this regex matches a line
-    """
+        keys: Named keys sent after data, in order (case-insensitive):
+            ESC, Enter, Tab, Space, Backspace (0x7F), Up, Down, Left,
+            Right, Home, End, Insert, Delete, PgUp, PgDn, F1-F12,
+            Ctrl-A..Ctrl-Z. xterm encodings (F11 = ESC [ 2 3 ~), which
+            EDK2/UEFI, U-Boot and Linux consoles accept.
+        data_hex: Raw bytes as hex, e.g. "1b5b32337e" (spaces allowed);
+            not combined with data or keys
+    """  # noqa: E501
     from labctl.serial.capture import (
         resolve_port,
         send_serial_data,
     )
+
+    try:
+        payload = _serial_send_payload(data, newline, keys, data_hex)
+    except ValueError as e:
+        return f"Error: {e}"
 
     manager = _get_manager()
 
@@ -2523,8 +2595,8 @@ def serial_send(
         result = send_serial_data(
             tcp_host="localhost",
             tcp_port=port.tcp_port,
-            data=data,
-            newline=newline,
+            data=payload,
+            newline=False,
             capture_timeout=capture_timeout,
             capture_until=capture_until,
         )

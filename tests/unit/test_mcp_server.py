@@ -1745,6 +1745,50 @@ class TestMcpSerialTools:
 
         assert "response" in result
 
+    @pytest.mark.parametrize(
+        "kwargs,expected",
+        [
+            ({"data": "boot"}, b"boot\r\n"),
+            ({"data": "boot", "newline": False}, b"boot"),
+            ({"keys": ["F11"]}, b"\x1b[23~"),  # no newline after keys
+            ({"keys": ["ESC"]}, b"\x1b"),
+            ({"data": "ls", "keys": ["Enter"]}, b"ls\r"),
+            ({"keys": ["Ctrl-C"], "newline": True}, b"\x03\r\n"),
+            ({"data_hex": "1b5b32337e"}, b"\x1b[23~"),
+            ({}, b"\r\n"),  # a bare Enter, as before
+        ],
+    )
+    def test_serial_send_payload(self, mock_manager, kwargs, expected):
+        """Named keys and hex reach the wire as bytes (#33)."""
+        from labctl.mcp_server import serial_send
+        from labctl.serial.capture import SendResult
+
+        with patch(
+            "labctl.serial.capture.send_serial_data",
+            return_value=SendResult(sent=True, bytes_sent=len(expected)),
+        ) as send:
+            serial_send(port_name="sbc1-console", **kwargs)
+        assert send.call_args.kwargs["data"] == expected
+        assert send.call_args.kwargs["newline"] is False
+
+    @pytest.mark.parametrize(
+        "kwargs,message",
+        [
+            ({"keys": ["F13"]}, "unknown key"),
+            ({"data_hex": "1b5"}, "data_hex must be"),
+            ({"data": "x", "data_hex": "1b"}, "can't be combined"),
+            ({"keys": ["ESC"], "data_hex": "1b"}, "can't be combined"),
+            ({"data": "", "newline": False}, "nothing to send"),
+        ],
+    )
+    def test_serial_send_bad_payload_sends_nothing(self, mock_manager, kwargs, message):
+        from labctl.mcp_server import serial_send
+
+        with patch("labctl.serial.capture.send_serial_data") as send:
+            result = serial_send(port_name="sbc1-console", **kwargs)
+        assert result.startswith("Error: ") and message in result
+        send.assert_not_called()
+
     def test_serial_send_connection_error(self, mock_manager):
         """Test send handles connection errors."""
         from labctl.mcp_server import serial_send
@@ -3457,6 +3501,33 @@ class TestDestructiveConfirmation:
         data = json.loads(result)
         assert data["status"] == "confirmation_required", data
         return data
+
+    def test_serial_send_plan_shows_exact_bytes(self, mock_manager):
+        """The plan shows what reaches the wire, so a dropped ESC is
+        visible before confirming (#33)."""
+        from labctl.mcp_server import serial_send
+        from labctl.serial.capture import SendResult
+
+        with patch(
+            "labctl.serial.capture.send_serial_data",
+            return_value=SendResult(sent=True, bytes_sent=5),
+        ) as send:
+            plan = self._plan(serial_send(port_name="sbc1-console", keys=["F11"]))
+            assert plan["will_do"] == {"bytes_hex": "1b 5b 32 33 7e", "byte_count": 5}
+            send.assert_not_called()
+            serial_send(
+                port_name="sbc1-console",
+                keys=["F11"],
+                confirm_token=plan["confirm_token"],
+            )
+        assert send.call_args.kwargs["data"] == b"\x1b[23~"
+
+    def test_serial_send_bad_key_gets_no_token(self, mock_manager):
+        from labctl.mcp_server import serial_send
+
+        result = serial_send(port_name="sbc1-console", keys=["F13"])
+        assert result.startswith("Error: unknown key")
+        assert "confirm_token" not in result
 
     def test_first_call_does_nothing_and_returns_plan(self, env):
         from labctl.mcp_server import power_off
