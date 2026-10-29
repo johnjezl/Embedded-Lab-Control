@@ -18,6 +18,7 @@ import errno
 import json
 import logging
 import os
+import shlex
 import sys
 import threading
 import time as _time_mod
@@ -2725,12 +2726,14 @@ def _stdio_image_routes() -> list[str]:
         access = "this session can't write there"
     routes.append(
         f"Copy the image with your shell into {upload_dir} ({access}) and "
-        "pass its bare name. Copy to a temp name first and rename it into "
-        "place (cp build/sdcard.img DIR/.upload-sdcard.img && mv "
-        "DIR/.upload-sdcard.img DIR/sdcard.img), so no session reads a "
-        "half-written image (a failed copy's .upload-* file is removed "
-        "after a day); check free space first, as uploads keep 1 GiB "
-        "free. Pick a "
+        "pass its bare name. Copy to a unique temp name in the same "
+        "directory and rename it into place, so no session reads a "
+        "half-written image, and remove the temp file if the copy fails: "
+        f"t=$(mktemp {shlex.quote(upload_dir + '/.upload-XXXXXX')}) && "
+        f'{{ cp build/sdcard.img "$t" && chmod 644 "$t" && mv "$t" '
+        f'{shlex.quote(upload_dir + "/sdcard.img")}; }} || rm -f "$t". '
+        "Check free space first (df); this copy isn't counted by the "
+        "upload free-space checks. Pick a "
         "name not in list_images, since one copied over replaces that image "
         "for everyone. Names are 1-128 letters, digits, '.', '_', '+' or "
         "'-', starting with a letter or digit. Images put there this way "

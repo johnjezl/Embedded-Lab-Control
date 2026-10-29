@@ -101,7 +101,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   HTTP transport, which read as a dead end. It now lists what a stdio
   session (which runs on the lab host) can do instead, with this server's
   paths: pass an absolute path inside `mcp.allowed_read_paths`, copy the
-  image into `mcp.upload_dir` (under a `.upload-` temp name, then renamed into place;
+  image into `mcp.upload_dir` (under a unique temp name, then renamed into place;
   it says whether the session can write there) and use its bare name, or
   upload to the host's HTTP service. The last two are offered only when
   bare names resolve (`upload_dir` inside `allowed_read_paths`). With
