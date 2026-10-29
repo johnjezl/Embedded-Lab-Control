@@ -73,8 +73,10 @@ class SendPacing:
         return self.chunk_size > 0 and self.delay_ms > 0
 
 
-# Pause between the parts of a multi-part send (one per named key), so a
-# console can tell a lone ESC from the start of an escape sequence.
+# Pause between the parts of a multi-part send (one per named key). Meant
+# to let consoles that time out a lone ESC quickly (e.g. U-Boot's menus)
+# see it as a key; not checked on hardware, and firmware that waits longer
+# for the rest of a sequence (EDK2 waits up to ~2 s) is not helped by it.
 PART_GAP_SECONDS = 0.05
 
 
@@ -252,7 +254,7 @@ def capture_serial_output(
 def send_serial_data(
     tcp_host: str,
     tcp_port: int,
-    data: Union[str, bytes, list[bytes]],
+    data: Union[str, list[bytes]],
     newline: bool = True,
     capture_timeout: Optional[float] = None,
     capture_until: Optional[str] = None,
@@ -265,8 +267,8 @@ def send_serial_data(
     Args:
         tcp_host: Host where ser2net is running
         tcp_port: TCP port for the serial connection
-        data: Text to send (UTF-8), bytes sent as they are, or a list of
-            byte parts written with a short pause between them
+        data: Text to send (UTF-8), or a list of byte parts written with
+            a short pause between them
         newline: Append \\r\\n after data (default True)
         capture_timeout: If set, capture response for this many seconds
         capture_until: If set, capture until this regex matches
@@ -280,7 +282,7 @@ def send_serial_data(
         if newline:
             raw.append(b"\r\n")
     else:
-        raw = data if isinstance(data, bytes) else data.encode("utf-8")
+        raw = data.encode("utf-8")
         if newline:
             raw += b"\r\n"
 

@@ -34,3 +34,29 @@ def test_empty_part_list_sends_nothing():
         result = capture.send_serial_data("localhost", 1, [], newline=False)
     assert result.bytes_sent == 0
     sock.sendall.assert_not_called()
+
+
+def test_send_and_capture_writes_parts():
+    """keys plus capture_timeout (e.g. F11, then read the boot menu) goes
+    through the capture path with a list of parts."""
+    from tests.unit.test_serial_capture import FakeTCPServer
+
+    server = FakeTCPServer(response_lines=["Boot Manager"], wait_for_data=True)
+    server.start()
+    try:
+        with patch.object(
+            capture, "_write_payload", wraps=capture._write_payload
+        ) as write:
+            result = capture.send_serial_data(
+                "localhost",
+                server.port,
+                [b"\x1b", b"\x1b[B"],
+                newline=False,
+                capture_timeout=2.0,
+                capture_until="Boot Manager",
+            )
+    finally:
+        server.stop()
+    assert write.call_args_list[0].args[1] == [b"\x1b", b"\x1b[B"]
+    assert result.bytes_sent == 4
+    assert result.capture is not None and result.capture.pattern_matched

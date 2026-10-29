@@ -236,15 +236,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Added
 - MCP `serial_send` takes `keys` (named keys: ESC, Enter, Tab, Space,
   Backspace (0x08), arrows, Home/End/Insert/Delete/PgUp/PgDn, F1-F12,
-  Ctrl-A..Ctrl-Z, in xterm encodings; each key is written with a 50 ms
-  pause after the previous one, so a lone ESC isn't read as the start of
-  a sequence) and `data_hex` (raw bytes, e.g. for firmware whose
-  terminal type wants other function-key codes), so
+  Ctrl-A..Ctrl-Z, in xterm encodings; each key is written 50 ms after
+  the previous one, for consoles that time out a lone ESC quickly) and
+  `data_hex` (raw bytes, e.g. for firmware whose terminal type wants
+  other function-key codes, or 0x7F to erase at a Linux prompt), so
   agents can drive UEFI/U-Boot menus: a raw ESC in `data` is dropped
   before it reaches the server (#33). `newline` defaults to off when
   either is given. Its confirmation now shows the exact bytes it will
   send (`will_do`), and an unknown key or bad hex is refused before a
-  token is issued.
+  token is issued. The encodings have not been checked on real firmware
+  yet.
 - **Image uploads over MCP HTTP** (D014): `PUT /images/<name>` on the MCP
   HTTP port, with the same API key, stores a file in the new
   `mcp.upload_dir` (default empty: off); `flash_image`, `sdwire_update`

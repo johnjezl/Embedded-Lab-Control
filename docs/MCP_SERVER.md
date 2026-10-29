@@ -403,7 +403,7 @@ Tools perform mutations — the AI assistant calls these to take action.
 | Tool | Parameters | Description |
 |------|------------|-------------|
 | `serial_capture` | `port_name`, `timeout`, `until_pattern`, `tail` | Capture serial output until timeout or pattern match |
-| `serial_send` | `port_name`, `data`, `newline`, `capture_timeout`, `capture_until`, `keys`, `data_hex` | Send data to serial port, optionally capture response. Control characters can't travel in `data` (clients drop them), so name keys in `keys` (`["F11"]`, `["Down", "Enter"]`, `["Ctrl-C"]`; xterm encodings, a short pause between keys) or give raw bytes as `data_hex`; `newline` defaults to off with either. The confirmation shows the exact bytes (`will_do.bytes_hex`) |
+| `serial_send` | `port_name`, `data`, `newline`, `capture_timeout`, `capture_until`, `keys`, `data_hex` | Send data to serial port, optionally capture response. Control characters can't travel in `data` (clients drop them), so name keys in `keys` (`["F11"]`, `["Down", "Enter"]`, `["Ctrl-C"]`; xterm encodings, not yet checked on real firmware; a short pause between keys; function keys differ by terminal type, so firmware that ignores one needs its own sequence as `data_hex`) or give raw bytes as `data_hex`; `newline` defaults to off with either. The confirmation shows the exact bytes (`will_do.bytes_hex`) |
 
 ### Boot Testing
 
