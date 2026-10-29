@@ -1173,6 +1173,10 @@ def get_status_overview() -> str:
 def power_on(sbc_name: str) -> str:
     """Turn on power to an SBC.
 
+    Relays bound to the SBC with sample_phase=pre_power (e.g. a recovery
+    strap) are set to their desired state first; if one can't be set,
+    power is not switched.
+
     Args:
         sbc_name: Name of the SBC to power on
     """
@@ -1188,14 +1192,16 @@ def power_on(sbc_name: str) -> str:
     if not sbc.power_plug:
         return f"Error: No power plug assigned to '{sbc_name}'"
 
+    from labctl.actuators.runtime import ActuationError, power_on_with_bindings
+
     try:
         controller = PowerController.from_plug(sbc.power_plug)
-        if controller.power_on():
+        if power_on_with_bindings(manager, sbc, controller):
             result = f"Power ON: {sbc_name}"
             advisory = _claim_advisory(manager, sbc_name)
             return f"{result}\n\n{advisory}" if advisory else result
         return f"Failed to power on {sbc_name}"
-    except RuntimeError as e:
+    except (RuntimeError, ActuationError) as e:
         return f"Error: {e}"
 
 
@@ -1235,6 +1241,10 @@ def power_off(sbc_name: str) -> str:
 def power_cycle(sbc_name: str, delay: float = 3.0) -> str:
     """Power cycle an SBC (turn off, wait, turn on).
 
+    Relays bound with sample_phase=pre_power are set to their desired
+    state before power comes back on. They are checked before power-off,
+    so a relay that can't be opened leaves the board running.
+
     Args:
         sbc_name: Name of the SBC to power cycle
         delay: Seconds to wait between off and on (default 3.0)
@@ -1254,14 +1264,16 @@ def power_cycle(sbc_name: str, delay: float = 3.0) -> str:
     if not sbc.power_plug:
         return f"Error: No power plug assigned to '{sbc_name}'"
 
+    from labctl.actuators.runtime import ActuationError, power_cycle_with_bindings
+
     try:
         controller = PowerController.from_plug(sbc.power_plug)
-        if controller.power_cycle(delay):
+        if power_cycle_with_bindings(manager, sbc, controller, delay):
             result = f"Power cycled: {sbc_name} (delay: {delay}s)"
             advisory = _claim_advisory(manager, sbc_name)
             return f"{result}\n\n{advisory}" if advisory else result
         return f"Failed to power cycle {sbc_name}"
-    except RuntimeError as e:
+    except (RuntimeError, ActuationError) as e:
         return f"Error: {e}"
 
 
@@ -2054,11 +2066,19 @@ def sdwire_update(
         summary = f"Partition {partition}: {'; '.join(parts)}"
 
         if reboot and sbc.power_plug:
+            from labctl.actuators.runtime import (
+                ActuationError,
+                power_cycle_with_bindings,
+            )
             from labctl.power import PowerController
 
             power_ctrl = PowerController.from_plug(sbc.power_plug)
-            power_ctrl.power_cycle()
-            summary += f". Power cycled {sbc_name}."
+            try:
+                power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
+            except ActuationError as e:
+                summary += f". Not power cycled: {e}"
+            else:
+                summary += f". Power cycled {sbc_name}."
 
         advisory = _claim_advisory(manager, sbc_name)
         return f"{summary}\n\n{advisory}" if advisory else summary
@@ -2409,11 +2429,19 @@ def flash_image(
 
         # Reboot
         if reboot and sbc.power_plug:
+            from labctl.actuators.runtime import (
+                ActuationError,
+                power_on_with_bindings,
+            )
             from labctl.power import PowerController
 
             power_ctrl = PowerController.from_plug(sbc.power_plug)
-            power_ctrl.power_on()
-            parts.append(f"Powered on {sbc_name}")
+            try:
+                power_on_with_bindings(manager, sbc, power_ctrl)
+            except ActuationError as e:
+                parts.append(f"Not powered on: {e}")
+            else:
+                parts.append(f"Powered on {sbc_name}")
 
         result = ". ".join(parts)
         advisory = _claim_advisory(manager, sbc_name)
@@ -2717,11 +2745,13 @@ def boot_test(
         deploy_fn = _deploy
 
     # Build power cycle function
+    from labctl.actuators.runtime import ActuationError, power_cycle_with_bindings
+
     def power_cycle_fn():
         from labctl.power import PowerController
 
         power_ctrl = PowerController.from_plug(sbc.power_plug)
-        power_ctrl.power_cycle(delay=3.0)
+        power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
 
     try:
         result = run_boot_test(
@@ -2742,7 +2772,7 @@ def boot_test(
         result_str = result.format_summary()
         advisory = _claim_advisory(manager, sbc_name)
         return f"{result_str}\n\n{advisory}" if advisory else result_str
-    except RuntimeError as e:
+    except (RuntimeError, ActuationError) as e:
         return f"Error: {e}"
     finally:
         for fd in (image_fd, output_dir_fd):

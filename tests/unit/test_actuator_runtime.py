@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 from contextlib import contextmanager
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -436,7 +437,7 @@ class TestCheckPrePowerActuators:
             raise DriverError("permission denied opening /dev/x: hint")
 
         monkeypatch.setattr(lab.driver, "open", refuse)
-        with pytest.raises(runtime.ActuationError) as exc:
+        with pytest.raises(runtime.PrePowerCheckError) as exc:
             runtime.check_pre_power_actuators(lab.manager, lab.sbc)
         assert str(exc.value) == (
             "actuator 'relay-1' for 'recovery_mode' can't be used: "
@@ -475,7 +476,7 @@ class TestCheckPrePowerActuators:
             raise runtime.ActuationError("references missing channel")
 
         monkeypatch.setattr(runtime, "_resolve", missing)
-        with pytest.raises(runtime.ActuationError, match="missing channel"):
+        with pytest.raises(runtime.PrePowerCheckError, match="missing channel"):
             runtime.check_pre_power_actuators(lab.manager, lab.sbc)
 
     def test_each_actuator_probed_once(self, lab, monkeypatch):
@@ -1003,3 +1004,107 @@ class TestProbeActuator:
         outcome = runtime.probe_actuator(lab.actuator)
         assert outcome.result is ProbeResult.UNREACHABLE
         assert outcome.detail and "usb hub" in outcome.detail
+
+
+class TestPowerHelpers:
+    """The shared power-on / power-cycle sequences every path uses (#36)."""
+
+    @pytest.fixture
+    def controller(self, lab):
+        events = []
+        ctrl = MagicMock()
+        ctrl.power_off.side_effect = lambda: events.append("off") or True
+        ctrl.power_on.side_effect = (
+            lambda: events.append(("on", list(lab.driver.write_log))) or True
+        )
+        ctrl.events = events
+        return ctrl
+
+    def test_power_on_drives_strap_first(self, lab, controller):
+        binding = _make_binding(lab)
+        lab.manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
+        assert runtime.power_on_with_bindings(lab.manager, lab.sbc, controller)
+        assert controller.events == [("on", [(1, True, WriteOutcome.OK)])]
+
+    def test_power_on_drives_released_strap_open(self, lab, controller):
+        _make_binding(lab)  # desired_state defaults to RELEASED
+        assert runtime.power_on_with_bindings(lab.manager, lab.sbc, controller)
+        assert controller.events == [("on", [(1, False, WriteOutcome.OK)])]
+
+    def test_power_on_returns_controller_result(self, lab, controller):
+        controller.power_on.side_effect = None
+        controller.power_on.return_value = False
+        assert not runtime.power_on_with_bindings(lab.manager, lab.sbc, controller)
+
+    def test_power_on_strap_failure_leaves_power_alone(self, lab, controller):
+        binding = _make_binding(lab)
+        lab.manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
+        lab.driver.next_write_outcome = WriteOutcome.DEVICE_GONE
+        with pytest.raises(runtime.ActuationError, match="device_gone"):
+            runtime.power_on_with_bindings(lab.manager, lab.sbc, controller)
+        controller.power_on.assert_not_called()
+
+    def test_cycle_sequence(self, lab, controller):
+        binding = _make_binding(lab)
+        lab.manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
+        slept = []
+        assert runtime.power_cycle_with_bindings(
+            lab.manager,
+            lab.sbc,
+            controller,
+            2.5,
+            sleep_fn=lambda s: (slept.append(s), controller.events.append("sleep")),
+        )
+        assert slept == [2.5]
+        assert controller.events == [
+            "off",
+            "sleep",
+            ("on", [(1, True, WriteOutcome.OK)]),
+        ]
+
+    def test_cycle_refuses_before_power_off(self, lab, controller, monkeypatch):
+        from labctl.actuators.base import DriverError
+
+        binding = _make_binding(lab)
+        lab.manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
+
+        def refuse(transport):
+            raise DriverError("permission denied opening /dev/x: hint")
+
+        monkeypatch.setattr(lab.driver, "open", refuse)
+        with pytest.raises(runtime.PrePowerCheckError, match="permission denied"):
+            runtime.power_cycle_with_bindings(
+                lab.manager, lab.sbc, controller, 0, sleep_fn=lambda s: None
+            )
+        controller.power_off.assert_not_called()
+
+    def test_cycle_power_off_failure_stops(self, lab, controller):
+        binding = _make_binding(lab)
+        lab.manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
+        controller.power_off.side_effect = None
+        controller.power_off.return_value = False
+        assert not runtime.power_cycle_with_bindings(
+            lab.manager, lab.sbc, controller, 0, sleep_fn=lambda s: None
+        )
+        assert lab.driver.write_log == []
+        controller.power_on.assert_not_called()
+
+    def test_cycle_strap_write_failure_leaves_board_off(self, lab, controller):
+        """The relay opened fine at the check but the write fails: the board
+        stays off rather than booting without its strap."""
+        binding = _make_binding(lab)
+        lab.manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
+        lab.driver.next_write_outcome = WriteOutcome.WRITE_FAILED
+        with pytest.raises(runtime.ActuationError) as exc:
+            runtime.power_cycle_with_bindings(
+                lab.manager, lab.sbc, controller, 0, sleep_fn=lambda s: None
+            )
+        assert not isinstance(exc.value, runtime.PrePowerCheckError)
+        controller.power_off.assert_called_once()
+        controller.power_on.assert_not_called()
+
+    def test_no_bindings_is_plain_cycle(self, lab, controller):
+        assert runtime.power_cycle_with_bindings(
+            lab.manager, lab.sbc, controller, 0, sleep_fn=lambda s: None
+        )
+        assert controller.events == ["off", ("on", [])]

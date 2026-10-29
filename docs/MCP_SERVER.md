@@ -337,9 +337,9 @@ Tools perform mutations — the AI assistant calls these to take action.
 
 | Tool | Parameters | Description |
 |------|------------|-------------|
-| `power_on` | `sbc_name` | Turn on power to an SBC |
+| `power_on` | `sbc_name` | Turn on power to an SBC, after setting its `pre_power` relay bindings |
 | `power_off` | `sbc_name` | Turn off power to an SBC |
-| `power_cycle` | `sbc_name`, `delay` (default 2.0) | Power cycle (off, wait, on) |
+| `power_cycle` | `sbc_name`, `delay` (default 3.0) | Power cycle (off, wait, set `pre_power` bindings, on); refuses before power-off if a relay can't be opened |
 
 ### Health Monitoring
 

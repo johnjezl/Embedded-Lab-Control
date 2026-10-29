@@ -1827,10 +1827,17 @@ def sdwire_flash_cmd(
         # Optional power cycle
         if not no_reboot and sbc.power_plug:
             click.echo(f"Power cycling {sbc_name}...")
+            from labctl.actuators.runtime import (
+                ActuationError,
+                power_cycle_with_bindings,
+            )
             from labctl.power import PowerController
 
             power_ctrl = PowerController.from_plug(sbc.power_plug)
-            power_ctrl.power_cycle()
+            try:
+                power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
+            except ActuationError as e:
+                raise RuntimeError(f"flashed, but not power cycled: {e}") from e
             click.echo(f"Power cycled: {sbc_name}")
 
         click.echo(f"Done! {sbc_name} should boot from the new image.")
@@ -2023,10 +2030,17 @@ def sdwire_update_cmd(
         # Step 4: Optional power cycle
         if reboot and sbc.power_plug:
             click.echo(f"Power cycling {sbc_name}...")
+            from labctl.actuators.runtime import (
+                ActuationError,
+                power_cycle_with_bindings,
+            )
             from labctl.power import PowerController
 
             power_ctrl = PowerController.from_plug(sbc.power_plug)
-            power_ctrl.power_cycle(delay=3.0)
+            try:
+                power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
+            except ActuationError as e:
+                raise RuntimeError(f"files updated, but not power cycled: {e}") from e
             click.echo(f"Power cycled: {sbc_name}")
         elif reboot and not sbc.power_plug:
             click.echo("Warning: --reboot requested but no power plug assigned")
@@ -3291,28 +3305,24 @@ def power_on_cmd(ctx: click.Context, sbc_name: str) -> None:
     is applied. If applying any of those straps fails the device stays
     powered off rather than booting without the strap.
     """
-    from labctl.actuators.runtime import (
-        ActuationError,
-        apply_pre_power_bindings,
-    )
+    from labctl.actuators.runtime import ActuationError, power_on_with_bindings
 
     manager = _get_manager(ctx)
     controller, sbc = _get_power_controller(manager, sbc_name)
 
     click.echo(f"Powering on {sbc_name}...")
     try:
-        apply_pre_power_bindings(manager, sbc)
-    except ActuationError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
-    try:
-        ok = controller.power_on()
+        ok = power_on_with_bindings(manager, sbc, controller)
         _emit_power_event(manager, sbc, "power_on", ok)
         if ok:
             click.echo(f"Power ON: {sbc_name}")
         else:
             click.echo(f"Error: Failed to power on {sbc_name}", err=True)
             sys.exit(1)
+    except ActuationError as e:
+        # A strap couldn't be applied; power wasn't switched.
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
     except RuntimeError as e:
         _emit_power_event(manager, sbc, "power_on", False, error=str(e))
         click.echo(f"Error: {e}", err=True)
@@ -3416,29 +3426,18 @@ def power_cycle_cmd(
         return
 
     click.echo(f"Power cycling {sbc_name} (delay: {effective_delay}s)...")
-    # power_cycle expands to off → sleep → apply pre_power bindings → on,
-    # rather than the controller's built-in (which would skip the
-    # binding step). Any pre_power application failure leaves the
-    # device powered off rather than booting without the strap.
     from labctl.actuators.runtime import (
         ActuationError,
-        apply_pre_power_bindings,
-        check_pre_power_actuators,
+        PrePowerCheckError,
+        power_cycle_with_bindings,
     )
 
-    # Check the relays first: failing after power-off would leave the board
-    # off. Nothing has been switched yet, so no power event.
     try:
-        check_pre_power_actuators(manager, sbc)
-    except ActuationError as e:
+        ok = power_cycle_with_bindings(manager, sbc, controller, effective_delay)
+    except PrePowerCheckError as e:
+        # Refused before power-off: nothing switched, so no power event.
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
-    try:
-        if not controller.power_off():
-            raise RuntimeError("power_off failed")
-        time.sleep(effective_delay)
-        apply_pre_power_bindings(manager, sbc)
-        ok = controller.power_on()
     except (RuntimeError, ActuationError) as e:
         _emit_power_event(
             manager,
@@ -3505,6 +3504,8 @@ def power_all_cmd(
     Boards another user has claimed (or that share a plug, SDWire, console
     or relay with one) are skipped, unless --override-claim.
     """
+    from labctl.actuators.runtime import power_on_with_bindings
+
     manager = _get_manager(ctx)
 
     sbcs = manager.list_sbcs(project=project)
@@ -3577,7 +3578,7 @@ def power_all_cmd(
         try:
             controller = PowerController.from_plug(sbc.power_plug)
             if action == "on":
-                result = controller.power_on()
+                result = power_on_with_bindings(manager, sbc, controller)
             else:
                 result = controller.power_off()
 
@@ -5994,11 +5995,13 @@ def boot_test_cmd(
         deploy_fn = _deploy
 
     # Build power cycle function
+    from labctl.actuators.runtime import ActuationError, power_cycle_with_bindings
+
     def power_cycle_fn():
         from labctl.power import PowerController
 
         power_ctrl = PowerController.from_plug(sbc.power_plug)
-        power_ctrl.power_cycle()
+        power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
 
     # Progress callback
     def progress(run_num, total, run_result):
@@ -6034,7 +6037,7 @@ def boot_test_cmd(
         click.echo("")
         click.echo(result.format_summary())
 
-    except RuntimeError as e:
+    except (RuntimeError, ActuationError) as e:
         click.echo(f"\nError: {e}", err=True)
         sys.exit(1)
 
