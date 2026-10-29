@@ -2,11 +2,11 @@
 
 Tool arguments are text written by a model, which can't reliably carry
 raw control characters (an ESC is dropped before it reaches the server),
-so MCP clients name keys instead (issue #33). Encodings are xterm's.
-Arrows, Enter, ESC, Tab and Ctrl keys are understood by nearly every
-console; function keys vary by terminal type: firmware set to VT100+
-expects ESC 1..ESC 0, ESC ! and ESC @ for F1-F12, which callers can send
-as raw hex instead.
+so MCP clients name keys instead (issue #33). Encodings are xterm's,
+except Backspace (0x08, which U-Boot and EDK2 take as backspace; Linux
+ttys usually erase with 0x7F). None has been checked on real firmware.
+Function keys vary by terminal type (EDK2 VT100+ uses ESC 1..ESC 0,
+ESC ! and ESC @ for F1-F12); callers can send those as raw hex.
 """
 
 from __future__ import annotations

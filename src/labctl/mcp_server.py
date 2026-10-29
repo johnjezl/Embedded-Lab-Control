@@ -2565,9 +2565,12 @@ def serial_send(
             between keys (case-insensitive): ESC, Enter, Tab, Space,
             Backspace (0x08), Up, Down, Left, Right, Home, End, Insert,
             Delete, PgUp, PgDn, F1-F12, Ctrl-A..Ctrl-Z (or Ctrl+C, ^C).
-            xterm encodings (F11 = ESC [ 2 3 ~). If firmware ignores a
-            function key, its terminal type may want another encoding
-            (EDK2 VT100+: F11 = ESC !, data_hex "1b21").
+            xterm encodings (F11 = ESC [ 2 3 ~), not yet checked against
+            real firmware. Function keys differ by terminal type: if one
+            is ignored, find the firmware's terminal type and send its
+            sequence as data_hex (e.g. EDK2 VT100+ F11 = ESC !, "1b21").
+            Backspace is 0x08 (U-Boot, EDK2); Linux ttys usually erase
+            with 0x7F (data_hex "7f").
         data_hex: Raw bytes as hex, e.g. "1b5b32337e" (spaces allowed);
             not combined with data or keys
     """
