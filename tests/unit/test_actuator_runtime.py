@@ -369,6 +369,42 @@ class TestApplyPrePowerBindings:
             runtime.apply_pre_power_bindings(lab.manager, lab.sbc)
 
 
+class TestDriverOpenFailure:
+    """A device the driver can't open (e.g. permission denied) is an
+    ActuationError, which every verb's caller reports, not a bare
+    DriverError that escapes as a traceback."""
+
+    def test_pre_power_open_failure_is_actuation_error(self, lab, monkeypatch):
+        from labctl.actuators.base import DriverError
+
+        binding = _make_binding(lab)
+        lab.manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
+
+        def refuse(transport):
+            raise DriverError("permission denied opening /dev/x: join dialout")
+
+        monkeypatch.setattr(lab.driver, "open", refuse)
+        with pytest.raises(runtime.ActuationError) as exc:
+            runtime.apply_pre_power_bindings(lab.manager, lab.sbc)
+        assert str(exc.value) == (
+            "actuator 'relay-1': permission denied opening /dev/x: join dialout"
+        )
+        assert isinstance(exc.value.__cause__, DriverError)
+        assert lab.driver.write_log == []
+
+    def test_actuate_open_failure_is_actuation_error(self, lab, monkeypatch):
+        from labctl.actuators.base import DriverError
+
+        binding = _make_binding(lab)
+
+        def refuse(transport):
+            raise DriverError("failed to open /dev/x: gone")
+
+        monkeypatch.setattr(lab.driver, "open", refuse)
+        with pytest.raises(runtime.ActuationError, match="failed to open"):
+            runtime.actuate_binding(lab.manager, binding)
+
+
 class TestEnterRecovery:
     def _make_binding_and_controller(self, lab):
         binding = _make_binding(lab, purpose="recovery_mode")

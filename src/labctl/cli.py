@@ -3792,7 +3792,7 @@ def actuator_set_cmd(ctx: click.Context, name: str, channel: int, state: str) ->
     Provisioning aid for verifying wiring; production paths should go
     through `labctl actuate / release / press`.
     """
-    from labctl.actuators import get_driver
+    from labctl.actuators import DriverError, get_driver
     from labctl.core.models import ChannelState
 
     manager = _get_manager(ctx)
@@ -3823,6 +3823,9 @@ def actuator_set_cmd(ctx: click.Context, name: str, channel: int, state: str) ->
     try:
         driver.open(transport)
         outcome = driver.set_channel(channel, closed=closed)
+    except DriverError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
     finally:
         driver.close()
 

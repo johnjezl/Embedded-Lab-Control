@@ -37,6 +37,7 @@ serializes writes. ``open`` and ``close`` are idempotent.
 
 from __future__ import annotations
 
+import errno
 import logging
 from typing import Optional
 
@@ -47,6 +48,7 @@ from labctl.actuators.base import (
     RelayDriver,
     Transport,
     WriteOutcome,
+    device_permission_hint,
 )
 
 logger = logging.getLogger(__name__)
@@ -108,6 +110,11 @@ class Lcus1SerialDriver(RelayDriver):
             )
         except (OSError, serial.SerialException) as e:
             self._port = None
+            if getattr(e, "errno", None) in (errno.EACCES, errno.EPERM):
+                raise DriverError(
+                    f"permission denied opening {transport.device_path}: "
+                    + device_permission_hint(transport.device_path)
+                ) from e
             raise DriverError(f"failed to open {transport.device_path}: {e}") from e
         self._transport = transport
         logger.debug("LCUS-1 opened %s", transport.device_path)

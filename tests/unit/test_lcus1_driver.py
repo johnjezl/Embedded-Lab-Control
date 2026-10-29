@@ -8,6 +8,7 @@ subset of the API.
 
 from __future__ import annotations
 
+import os
 import sys
 import types
 
@@ -143,6 +144,41 @@ class TestOpenClose:
         d = Lcus1SerialDriver()
         with pytest.raises(DriverError, match="failed to open"):
             d.open(Transport(device_path="/dev/ttyUSB-bad"))
+
+    def test_permission_denied_says_which_group_to_join(
+        self, fake_serial, tmp_path, monkeypatch
+    ):
+        """pyserial reports EACCES as SerialException(errno=13); the error
+        names the device's group and how to join it."""
+        import errno
+        import getpass
+        import grp
+
+        device = tmp_path / "relay"
+        device.write_text("")
+        group = grp.getgrgid(os.stat(device).st_gid).gr_name
+        monkeypatch.setattr(getpass, "getuser", lambda: "alice")
+        err = fake_serial.SerialException(errno.EACCES, "could not open port")
+        err.errno = errno.EACCES
+        fake_serial.constructor_raises = err
+        d = Lcus1SerialDriver()
+        with pytest.raises(DriverError) as exc:
+            d.open(Transport(device_path=str(device)))
+        message = str(exc.value)
+        assert message.startswith(f"permission denied opening {device}: ")
+        assert f"alice needs to be in the '{group}' group" in message
+        assert f"sudo usermod -aG {group} alice" in message
+        assert f"newgrp {group}" in message
+
+    def test_permission_denied_without_a_group_name(self, fake_serial, monkeypatch):
+        import errno
+
+        err = PermissionError(errno.EACCES, "Permission denied")
+        fake_serial.constructor_raises = err
+        d = Lcus1SerialDriver()
+        with pytest.raises(DriverError) as exc:
+            d.open(Transport(device_path="/nonexistent/relay"))
+        assert "may read and write /nonexistent/relay" in str(exc.value)
 
     def test_close_idempotent(self, fake_serial):
         d = Lcus1SerialDriver()

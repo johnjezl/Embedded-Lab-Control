@@ -13,6 +13,7 @@ safe decisions when the underlying USB transport flakes mid-sequence
 
 from __future__ import annotations
 
+import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
@@ -64,6 +65,32 @@ class Transport:
     serial_no: Optional[str] = None
     baud: int = 9600
     open_timeout_seconds: float = 2.0
+
+
+def device_permission_hint(device_path: str) -> str:
+    """What to do when this user may not open ``device_path``: join the
+    group that owns the device (dialout for USB serial relays)."""
+    import getpass
+    import grp
+
+    try:
+        user = getpass.getuser()
+    except Exception:  # noqa: BLE001 - no name for this uid
+        user = "your user"
+    try:
+        group = grp.getgrgid(os.stat(device_path).st_gid).gr_name
+    except (OSError, KeyError):
+        group = None
+    if not group:
+        return (
+            f"check that {user} may read and write {device_path} "
+            "(ls -lL shows its owner, group and mode)"
+        )
+    return (
+        f"{user} needs to be in the '{group}' group that owns the device "
+        f"(check with: id -nG). To add it: sudo usermod -aG {group} {user}, "
+        f"then log out and back in (or run newgrp {group} in this shell)"
+    )
 
 
 class DriverError(Exception):

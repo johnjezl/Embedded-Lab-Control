@@ -942,3 +942,57 @@ class TestActuatorSet:
         a = lab.manager.get_actuator_by_name("relay-1")
         assert a.channels[0].last_state is None
         assert a.channels[0].cycle_count == 0
+
+
+class TestRelayOpenFailure:
+    """A relay the user can't open (not in dialout) gives one Error line
+    with the fix, not a traceback (power cycle used to crash here)."""
+
+    MESSAGE = (
+        "permission denied opening /dev/lab/relay-a: john needs to be in "
+        "the 'dialout' group that owns the device"
+    )
+
+    def _refuse_open(self, monkeypatch, target):
+        from labctl.actuators.base import DriverError
+
+        stub = _StubDriver()
+
+        def refuse(transport):
+            raise DriverError(self.MESSAGE)
+
+        stub.open = refuse
+        monkeypatch.setattr(target, lambda *a, **kw: stub)
+        return stub
+
+    def test_power_cycle(self, runner, lab, monkeypatch):
+        calls: list[str] = []
+        TestEnterExitRecovery()._setup(runner, lab, monkeypatch, calls)
+        b = lab.manager.get_binding_by_target(lab.sbc.id, "recovery_mode")
+        from labctl.core.models import DesiredState
+
+        lab.manager.update_binding_desired_state(b.id, DesiredState.ASSERTED)
+        self._refuse_open(monkeypatch, "labctl.actuators.runtime.get_driver")
+
+        result = runner.invoke(
+            main,
+            ["-c", str(lab.config_path), "power", "cycle", "jetson-nano-2", "--yes"],
+        )
+        assert result.exit_code == 1
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert f"Error: actuator 'relay-1': {self.MESSAGE}" in result.output
+        assert "Traceback" not in result.output
+        # Powered off, never back on without the strap.
+        assert calls == ["off"]
+
+    def test_actuator_set(self, runner, lab, monkeypatch):
+        _add_relay(runner, lab.config_path)
+        self._refuse_open(monkeypatch, "labctl.actuators.get_driver")
+
+        result = runner.invoke(
+            main,
+            ["-c", str(lab.config_path), "actuator", "set", "relay-1", "1", "closed"],
+        )
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert f"Error: {self.MESSAGE}" in result.output

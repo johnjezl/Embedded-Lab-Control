@@ -3807,7 +3807,7 @@ def actuator_set(name: str, channel: int, state: str) -> str:
         channel: Channel index (1-based).
         state: "open" or "closed".
     """
-    from labctl.actuators import get_driver
+    from labctl.actuators import DriverError, get_driver
     from labctl.core.models import ChannelState
 
     if not _admin_actuator_ops_allowed():
@@ -3853,6 +3853,8 @@ def actuator_set(name: str, channel: int, state: str) -> str:
         outcome = driver.set_channel(
             channel, closed=target_state is ChannelState.CLOSED
         )
+    except DriverError as e:
+        return f"Error: {e}"
     finally:
         driver.close()
 

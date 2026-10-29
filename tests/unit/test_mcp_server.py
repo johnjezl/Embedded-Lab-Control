@@ -2821,6 +2821,20 @@ class TestMcpActuatorAdminTools:
         )
         assert ch.last_state.value == "closed"
 
+    def test_actuator_set_open_failure_is_an_error_string(
+        self, actuator_lab, admin_actuator_ops_enabled, monkeypatch
+    ):
+        from labctl.actuators.base import DriverError
+        from labctl.mcp_server import actuator_set
+
+        def refuse(transport):
+            raise DriverError("permission denied opening /dev/x: join dialout")
+
+        monkeypatch.setattr(actuator_lab["driver"], "open", refuse)
+        result = actuator_set(name="relay-1", channel=1, state="closed")
+        assert result == "Error: permission denied opening /dev/x: join dialout"
+        assert actuator_lab["driver"].write_log == []
+
 
 class TestMcpAdminGate:
     """Privileged actuator_* tools refuse without the config flag."""
