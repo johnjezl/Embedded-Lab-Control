@@ -1748,14 +1748,17 @@ class TestMcpSerialTools:
     @pytest.mark.parametrize(
         "kwargs,expected",
         [
-            ({"data": "boot"}, b"boot\r\n"),
-            ({"data": "boot", "newline": False}, b"boot"),
-            ({"keys": ["F11"]}, b"\x1b[23~"),  # no newline after keys
-            ({"keys": ["ESC"]}, b"\x1b"),
-            ({"data": "ls", "keys": ["Enter"]}, b"ls\r"),
-            ({"keys": ["Ctrl-C"], "newline": True}, b"\x03\r\n"),
-            ({"data_hex": "1b5b32337e"}, b"\x1b[23~"),
-            ({}, b"\r\n"),  # a bare Enter, as before
+            ({"data": "boot"}, [b"boot\r\n"]),
+            ({"data": "boot", "newline": False}, [b"boot"]),
+            ({"keys": ["F11"]}, [b"\x1b[23~"]),  # no newline after keys
+            ({"keys": ["ESC"]}, [b"\x1b"]),
+            # One part per key, so the console sees a pause after a lone ESC.
+            ({"keys": ["ESC", "Down", "Enter"]}, [b"\x1b", b"\x1b[B", b"\r"]),
+            ({"data": "ls", "keys": ["Enter"]}, [b"ls", b"\r"]),
+            ({"keys": ["^C"], "newline": True}, [b"\x03", b"\r\n"]),
+            ({"data_hex": "1b5b32337e"}, [b"\x1b[23~"]),
+            ({}, [b"\r\n"]),  # a bare Enter, as before
+            ({"data": "", "newline": False}, []),  # nothing sent, as before
         ],
     )
     def test_serial_send_payload(self, mock_manager, kwargs, expected):
@@ -1778,7 +1781,6 @@ class TestMcpSerialTools:
             ({"data_hex": "1b5"}, "data_hex must be"),
             ({"data": "x", "data_hex": "1b"}, "can't be combined"),
             ({"keys": ["ESC"], "data_hex": "1b"}, "can't be combined"),
-            ({"data": "", "newline": False}, "nothing to send"),
         ],
     )
     def test_serial_send_bad_payload_sends_nothing(self, mock_manager, kwargs, message):
@@ -3520,7 +3522,14 @@ class TestDestructiveConfirmation:
                 keys=["F11"],
                 confirm_token=plan["confirm_token"],
             )
-        assert send.call_args.kwargs["data"] == b"\x1b[23~"
+        assert send.call_args.kwargs["data"] == [b"\x1b[23~"]
+
+    def test_confirm_previews_are_destructive_tools(self):
+        """A preview for a tool that isn't destructive would never run."""
+        from labctl import mcp_server
+
+        assert "serial_send" in mcp_server._CONFIRM_PREVIEWS
+        assert set(mcp_server._CONFIRM_PREVIEWS) <= mcp_server._DESTRUCTIVE_TOOLS
 
     def test_serial_send_bad_key_gets_no_token(self, mock_manager):
         from labctl.mcp_server import serial_send
