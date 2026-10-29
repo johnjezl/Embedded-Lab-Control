@@ -27,6 +27,7 @@ from typing import Optional
 
 from labctl.actuators import get_driver
 from labctl.actuators.base import (
+    DriverError,
     ProbeOutcome,
     ProbeResult,
     RelayDriver,
@@ -161,12 +162,19 @@ def _build_transport(actuator: Actuator) -> Transport:
 
 @contextmanager
 def open_driver_for(actuator: Actuator) -> RelayDriver:
-    """Open a driver for ``actuator`` and close it on exit."""
+    """Open a driver for ``actuator`` and close it on exit.
+
+    A driver that can't open its device raises :class:`ActuationError`,
+    which the verbs' callers report, rather than a bare DriverError.
+    """
     driver = get_driver(
         actuator.driver, expected_channel_count=len(actuator.channels) or None
     )
     transport = _build_transport(actuator)
-    driver.open(transport)
+    try:
+        driver.open(transport)
+    except DriverError as e:
+        raise ActuationError(f"actuator {actuator.name!r}: {e}") from e
     try:
         yield driver
     finally:
