@@ -1759,6 +1759,9 @@ class TestMcpSerialTools:
             ({"data_hex": "1b5b32337e"}, [b"\x1b[23~"]),
             ({}, [b"\r\n"]),  # a bare Enter, as before
             ({"data": "", "newline": False}, []),  # nothing sent, as before
+            ({"keys": []}, []),  # keys given (if empty): no newline
+            ({"data_hex": "1b", "newline": True}, [b"\x1b", b"\r\n"]),
+            ({"data_hex": ""}, []),
         ],
     )
     def test_serial_send_payload(self, mock_manager, kwargs, expected):
