@@ -774,7 +774,8 @@ class TestTools:
         assert lab[0].mcp.allowed_read_paths[0] in host_path
         upload_dir = lab[0].mcp.upload_dir
         assert f"into {upload_dir} (this session can create files there)" in copy
-        assert "rename it into" in copy and ".upload-sdcard.img" in copy
+        assert f"mktemp {upload_dir}/.upload-XXXXXX" in copy
+        assert f'mv "$t" {upload_dir}/sdcard.img' in copy
         assert "/images/<name>" in http and f"same upload_dir ({upload_dir})" in http
 
     def test_stdio_copy_route_says_when_upload_dir_is_read_only(

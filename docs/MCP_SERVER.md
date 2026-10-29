@@ -723,7 +723,7 @@ curl --fail-with-body -T build/sdcard.img \
   session runs on the lab host, though, so it can pass an image's
   absolute path inside `mcp.allowed_read_paths` directly (add a build
   directory there to use it in place), copy the image with its shell into
-  `upload_dir` (to a `.upload-` temp name, then `mv` it into place) and pass the bare
+  `upload_dir` (to a unique temp name, then `mv` it into place) and pass the bare
   name, or upload to the host's HTTP service if it uses the same
   `upload_dir`. The last two need `upload_dir` inside
   `allowed_read_paths`, and all three assume the client starts `labctl
