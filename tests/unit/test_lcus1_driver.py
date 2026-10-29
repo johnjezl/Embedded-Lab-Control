@@ -159,6 +159,16 @@ class TestOpenClose:
             Lcus1SerialDriver().open(Transport(device_path="/dev/x"))
         assert str(exc.value) == "permission denied opening /dev/x: HINT"
 
+    def test_eperm_carries_the_hint_too(self, fake_serial, monkeypatch):
+        import errno
+
+        from labctl.actuators import lcus1
+
+        monkeypatch.setattr(lcus1, "device_permission_hint", lambda p: "HINT")
+        fake_serial.constructor_raises = PermissionError(errno.EPERM, "nope")
+        with pytest.raises(DriverError, match="^permission denied opening /dev/x"):
+            Lcus1SerialDriver().open(Transport(device_path="/dev/x"))
+
     def test_other_open_errors_unchanged(self, fake_serial):
         import errno
 
@@ -313,7 +323,9 @@ class TestDevicePermissionHint:
         gid = os.stat(path).st_gid
         members: list[str] = []
         monkeypatch.setattr(
-            pwd, "getpwuid", lambda uid: SimpleNamespace(pw_name="alice")
+            pwd,
+            "getpwuid",
+            lambda uid: SimpleNamespace(pw_name="alice", pw_gid=gid + 2),
         )
         monkeypatch.setattr(
             grp,
@@ -384,3 +396,20 @@ class TestDevicePermissionHint:
         hint = self._hint(device.path)
         assert "usermod" not in hint
         assert hint.startswith(f"check that uid {os.geteuid()} may read and write")
+
+    def test_process_primary_group_counts_as_in_group(self, device, monkeypatch):
+        monkeypatch.setattr(os, "getegid", lambda: device.gid)
+        assert "something else denies access" in self._hint(device.path)
+
+    def test_account_primary_group_counts_as_member(self, device, monkeypatch):
+        import pwd
+        from types import SimpleNamespace
+
+        monkeypatch.setattr(
+            pwd,
+            "getpwuid",
+            lambda uid: SimpleNamespace(pw_name="alice", pw_gid=device.gid),
+        )
+        hint = self._hint(device.path)
+        assert "alice is in the 'dialout' group" in hint
+        assert "usermod" not in hint

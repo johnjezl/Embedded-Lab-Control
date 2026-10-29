@@ -607,12 +607,14 @@ def check_pre_power_actuators(manager, sbc) -> None:
 
     seen = set()
     for binding in _bindings_with_sample_phase(manager, sbc.id, SamplePhase.PRE_POWER):
+        # Resolved first, as apply_pre_power_bindings does, so a binding
+        # to a missing channel fails here rather than after power-off.
+        actuator, _ = _resolve(manager, binding)
         if binding.desired_state not in (
             DesiredState.ASSERTED,
             DesiredState.RELEASED,
         ):
             continue
-        actuator, _ = _resolve(manager, binding)
         if actuator.id in seen:
             continue
         seen.add(actuator.id)
