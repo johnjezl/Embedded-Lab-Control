@@ -3426,10 +3426,14 @@ def power_cycle_cmd(
         check_pre_power_actuators,
     )
 
+    # Check the relays first: failing after power-off would leave the board
+    # off. Nothing has been switched yet, so no power event.
     try:
-        # Check the relays first: failing after power-off would leave the
-        # board off.
         check_pre_power_actuators(manager, sbc)
+    except ActuationError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    try:
         if not controller.power_off():
             raise RuntimeError("power_off failed")
         time.sleep(effective_delay)

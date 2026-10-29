@@ -81,9 +81,10 @@ def device_permission_hint(device_path: str) -> str:
     try:
         user = pwd.getpwuid(os.geteuid()).pw_name
     except KeyError:
-        user = f"uid {os.geteuid()}"
+        user = None  # no account to name in a usermod command
     generic = (
-        f"check that {user} may read and write {device_path} "
+        f"check that {user or f'uid {os.geteuid()}'} may read and write "
+        f"{device_path} "
         "(ls -lL shows its owner, group and mode; for USB serial relays a "
         "udev rule normally gives the dialout group read/write)"
     )
@@ -93,7 +94,7 @@ def device_permission_hint(device_path: str) -> str:
     except (OSError, KeyError):
         return generic
     group_rw = stat.S_IRGRP | stat.S_IWGRP
-    if st.st_gid == 0 or st.st_mode & group_rw != group_rw:
+    if user is None or st.st_gid == 0 or st.st_mode & group_rw != group_rw:
         return generic
     name = group.gr_name
     if st.st_gid in os.getgroups() or st.st_gid == os.getegid():
@@ -101,18 +102,20 @@ def device_permission_hint(device_path: str) -> str:
             f"this process is already in the '{name}' group that owns it, so "
             f"something else denies access; {generic}"
         )
-    relogin = f"log out and back in (or run newgrp {name} in this shell)"
+    takes_effect = (
+        f"it takes effect in processes started after that: log out and back "
+        f"in (or run newgrp {name} in this shell), and restart any service "
+        "or MCP client that runs labctl"
+    )
     if user in group.gr_mem:
         return (
             f"{user} is in the '{name}' group that owns the device, but this "
-            f"process started before it was added: {relogin}, or restart the "
-            "service if this is one (e.g. labctl-mcp)"
+            f"process started before it was added; {takes_effect}"
         )
     return (
         f"{user} needs to be in the '{name}' group that owns the device "
-        f"(check with: id -nG). To add it: sudo usermod -aG {name} {user}, "
-        f"then {relogin}; for a service such as labctl-mcp, add the "
-        "service's user instead and restart it"
+        f"(check with: id -nG). To add it: sudo usermod -aG {name} {user}; "
+        + takes_effect
     )
 
 
