@@ -3423,9 +3423,13 @@ def power_cycle_cmd(
     from labctl.actuators.runtime import (
         ActuationError,
         apply_pre_power_bindings,
+        check_pre_power_actuators,
     )
 
     try:
+        # Check the relays first: failing after power-off would leave the
+        # board off.
+        check_pre_power_actuators(manager, sbc)
         if not controller.power_off():
             raise RuntimeError("power_off failed")
         time.sleep(effective_delay)

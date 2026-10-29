@@ -145,40 +145,28 @@ class TestOpenClose:
         with pytest.raises(DriverError, match="failed to open"):
             d.open(Transport(device_path="/dev/ttyUSB-bad"))
 
-    def test_permission_denied_says_which_group_to_join(
-        self, fake_serial, tmp_path, monkeypatch
-    ):
-        """pyserial reports EACCES as SerialException(errno=13); the error
-        names the device's group and how to join it."""
+    def test_permission_denied_carries_the_hint(self, fake_serial, monkeypatch):
+        """pyserial reports EACCES as SerialException(errno=13)."""
         import errno
-        import getpass
-        import grp
 
-        device = tmp_path / "relay"
-        device.write_text("")
-        group = grp.getgrgid(os.stat(device).st_gid).gr_name
-        monkeypatch.setattr(getpass, "getuser", lambda: "alice")
+        from labctl.actuators import lcus1
+
+        monkeypatch.setattr(lcus1, "device_permission_hint", lambda p: "HINT")
         err = fake_serial.SerialException(errno.EACCES, "could not open port")
         err.errno = errno.EACCES
         fake_serial.constructor_raises = err
-        d = Lcus1SerialDriver()
         with pytest.raises(DriverError) as exc:
-            d.open(Transport(device_path=str(device)))
-        message = str(exc.value)
-        assert message.startswith(f"permission denied opening {device}: ")
-        assert f"alice needs to be in the '{group}' group" in message
-        assert f"sudo usermod -aG {group} alice" in message
-        assert f"newgrp {group}" in message
+            Lcus1SerialDriver().open(Transport(device_path="/dev/x"))
+        assert str(exc.value) == "permission denied opening /dev/x: HINT"
 
-    def test_permission_denied_without_a_group_name(self, fake_serial, monkeypatch):
+    def test_other_open_errors_unchanged(self, fake_serial):
         import errno
 
-        err = PermissionError(errno.EACCES, "Permission denied")
+        err = fake_serial.SerialException(errno.ENOENT, "no such device")
+        err.errno = errno.ENOENT
         fake_serial.constructor_raises = err
-        d = Lcus1SerialDriver()
-        with pytest.raises(DriverError) as exc:
-            d.open(Transport(device_path="/nonexistent/relay"))
-        assert "may read and write /nonexistent/relay" in str(exc.value)
+        with pytest.raises(DriverError, match="failed to open /dev/x: "):
+            Lcus1SerialDriver().open(Transport(device_path="/dev/x"))
 
     def test_close_idempotent(self, fake_serial):
         d = Lcus1SerialDriver()
@@ -307,3 +295,81 @@ class TestRegistry:
 
         with pytest.raises(NotImplementedError):
             get_driver(DriverName.NUMATO_ACM)
+
+
+class TestDevicePermissionHint:
+    """The advice depends on the device's group and mode and on whether
+    the account (or this process) is already in that group."""
+
+    @pytest.fixture
+    def device(self, tmp_path, monkeypatch):
+        import grp
+        import pwd
+        from types import SimpleNamespace
+
+        path = tmp_path / "relay"
+        path.write_text("")
+        path.chmod(0o660)
+        gid = os.stat(path).st_gid
+        members: list[str] = []
+        monkeypatch.setattr(
+            pwd, "getpwuid", lambda uid: SimpleNamespace(pw_name="alice")
+        )
+        monkeypatch.setattr(
+            grp,
+            "getgrgid",
+            lambda g: SimpleNamespace(gr_name="dialout", gr_mem=members),
+        )
+        # By default this process is not in the device's group.
+        monkeypatch.setattr(os, "getgroups", lambda: [])
+        monkeypatch.setattr(os, "getegid", lambda: gid + 1)
+        return SimpleNamespace(path=path, gid=gid, members=members)
+
+    def _hint(self, path):
+        from labctl.actuators.base import device_permission_hint
+
+        return device_permission_hint(str(path))
+
+    def test_not_in_group(self, device):
+        hint = self._hint(device.path)
+        assert "alice needs to be in the 'dialout' group" in hint
+        assert "sudo usermod -aG dialout alice" in hint
+        assert "newgrp dialout" in hint
+        assert "add the service's user instead and restart it" in hint
+
+    def test_account_in_group_but_process_is_not(self, device):
+        device.members.append("alice")
+        hint = self._hint(device.path)
+        assert "alice is in the 'dialout' group" in hint
+        assert "started before it was added: log out and back in" in hint
+        assert "usermod" not in hint
+
+    def test_process_already_in_group(self, device, monkeypatch):
+        monkeypatch.setattr(os, "getgroups", lambda: [device.gid])
+        hint = self._hint(device.path)
+        assert "already in the 'dialout' group" in hint
+        assert "something else denies access" in hint
+        assert "usermod" not in hint
+
+    def test_group_without_read_write_gets_generic_advice(self, device):
+        device.path.chmod(0o640)
+        hint = self._hint(device.path)
+        assert "usermod" not in hint and "ls -lL" in hint
+
+    def test_root_group_never_recommended(self, device, monkeypatch):
+        real_stat = os.stat
+
+        def stat_root_group(p, *a, **kw):
+            st = real_stat(p, *a, **kw)
+            return os.stat_result(
+                (st.st_mode, st.st_ino, st.st_dev, st.st_nlink, st.st_uid, 0)
+                + tuple(st)[6:]
+            )
+
+        monkeypatch.setattr(os, "stat", stat_root_group)
+        hint = self._hint(device.path)
+        assert "usermod" not in hint and "ls -lL" in hint
+
+    def test_missing_device_gets_generic_advice(self, device, tmp_path):
+        hint = self._hint(tmp_path / "gone")
+        assert hint.startswith("check that alice may read and write ")
