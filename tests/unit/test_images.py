@@ -497,7 +497,8 @@ class TestSchema:
         path = tmp_path / "old.db"
         get_database(path)
         conn = sqlite3.connect(path)
-        conn.executescript("""
+        conn.executescript(
+            """
             DROP TABLE images;
             CREATE TABLE images (
                 name TEXT PRIMARY KEY,
@@ -510,7 +511,8 @@ class TestSchema:
                 VALUES ('a.img', 'bot', 3, 'abc');
             DELETE FROM schema_version;
             INSERT INTO schema_version (version) VALUES (10);
-            """)
+            """
+        )
         conn.commit()
         conn.close()
         (images_dir / "a.img").write_bytes(b"old")
@@ -769,12 +771,48 @@ class TestTools:
         with patch.object(mcp_server, "_SESSION_KIND", "mcp-stdio"):
             upload = json.loads(mcp_server.list_images())["upload"]
         assert upload["available"] is False
+        host_path, copy, http = upload["alternatives"]
+        # The allowlist and the upload directory are named concretely.
+        assert lab[0].mcp.allowed_read_paths[0] in host_path
+        assert f"into {lab[0].mcp.upload_dir} (writable by this session)" in copy
+        assert "/images/<name>" in http
+
+    def test_stdio_copy_route_says_when_upload_dir_is_read_only(
+        self, lab, images_dir, as_bot
+    ):
+        from labctl import mcp_server
+
+        with (
+            patch.object(mcp_server, "_SESSION_KIND", "mcp-stdio"),
+            patch.object(mcp_server.os, "access", return_value=False),
+        ):
+            routes = mcp_server._stdio_image_routes()
+        assert "(not writable by this session)" in routes[1]
+
+    def test_uploads_off_over_stdio_points_to_host_paths(self, lab, images_dir):
+        from labctl import mcp_server
+
+        lab[0].mcp.upload_dir = ""
+        with patch.object(mcp_server, "_SESSION_KIND", "mcp-stdio"):
+            result = mcp_server.list_images()
+        assert result.startswith("Error: image uploads are off")
+        assert f"mcp.allowed_read_paths ({images_dir})" in result
+        assert "into" not in result  # no copy route without upload_dir
+
+    def test_uploads_off_over_stdio_without_read_paths(self, lab):
+        from labctl import mcp_server
+
+        lab[0].mcp.upload_dir = ""
+        lab[0].mcp.allowed_read_paths = []
+        with patch.object(mcp_server, "_SESSION_KIND", "mcp-stdio"):
+            assert "mcp.allowed_read_paths ((none set))" in mcp_server.list_images()
 
     def test_uploads_off(self, lab):
         from labctl import mcp_server
 
         lab[0].mcp.upload_dir = ""
-        assert "uploads are off" in mcp_server.list_images()
+        with patch.object(mcp_server, "_SESSION_KIND", "mcp-http"):
+            assert mcp_server.list_images() == mcp_server._UPLOADS_OFF
         lab[0].mcp.confirm_destructive = False
         assert "uploads are off" in mcp_server.delete_image("a.img")
 

@@ -719,7 +719,13 @@ curl --fail-with-body -T build/sdcard.img \
 
 - `PUT /images/<name>` on the HTTP transport's port, next to `/mcp`. The
   route checks the API key (when auth is on) and the `Host`/`Origin`
-  headers as `/mcp` does. stdio servers have no upload route.
+  headers as `/mcp` does. stdio servers have no upload route. A stdio
+  session runs on the lab host, though, so it can pass an image's
+  absolute path inside `mcp.allowed_read_paths` directly (add a build
+  directory there to use it in place), copy the image with its shell into
+  `upload_dir` and pass the bare name, or upload to the host's HTTP
+  service if one runs. Over stdio, `list_images` spells out these
+  alternatives with this server's paths.
 - Names are 1-128 letters, digits, `.`, `_`, `+` or `-`, starting with a
   letter or digit: no paths.
 - `Content-Length` is required (`curl -T` sends it). Bodies over
