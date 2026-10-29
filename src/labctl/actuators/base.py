@@ -68,28 +68,51 @@ class Transport:
 
 
 def device_permission_hint(device_path: str) -> str:
-    """What to do when this user may not open ``device_path``: join the
-    group that owns the device (dialout for USB serial relays)."""
-    import getpass
+    """What to do when this process may not open ``device_path``.
+
+    Recommends joining the device's group only when that group grants
+    read/write and isn't root's; says when the account is already in it
+    but this process isn't (a login or service restart is missing).
+    """
     import grp
+    import pwd
+    import stat
 
     try:
-        user = getpass.getuser()
-    except Exception:  # noqa: BLE001 - no name for this uid
-        user = "your user"
+        user = pwd.getpwuid(os.geteuid()).pw_name
+    except KeyError:
+        user = f"uid {os.geteuid()}"
+    generic = (
+        f"check that {user} may read and write {device_path} "
+        "(ls -lL shows its owner, group and mode; for USB serial relays a "
+        "udev rule normally gives the dialout group read/write)"
+    )
     try:
-        group = grp.getgrgid(os.stat(device_path).st_gid).gr_name
+        st = os.stat(device_path)
+        group = grp.getgrgid(st.st_gid)
     except (OSError, KeyError):
-        group = None
-    if not group:
+        return generic
+    group_rw = stat.S_IRGRP | stat.S_IWGRP
+    if st.st_gid == 0 or st.st_mode & group_rw != group_rw:
+        return generic
+    name = group.gr_name
+    if st.st_gid in os.getgroups() or st.st_gid == os.getegid():
         return (
-            f"check that {user} may read and write {device_path} "
-            "(ls -lL shows its owner, group and mode)"
+            f"this process is already in the '{name}' group that owns it, so "
+            f"something else denies access; {generic}"
+        )
+    relogin = f"log out and back in (or run newgrp {name} in this shell)"
+    if user in group.gr_mem:
+        return (
+            f"{user} is in the '{name}' group that owns the device, but this "
+            f"process started before it was added: {relogin}, or restart the "
+            "service if this is one (e.g. labctl-mcp)"
         )
     return (
-        f"{user} needs to be in the '{group}' group that owns the device "
-        f"(check with: id -nG). To add it: sudo usermod -aG {group} {user}, "
-        f"then log out and back in (or run newgrp {group} in this shell)"
+        f"{user} needs to be in the '{name}' group that owns the device "
+        f"(check with: id -nG). To add it: sudo usermod -aG {name} {user}, "
+        f"then {relogin}; for a service such as labctl-mcp, add the "
+        "service's user instead and restart it"
     )
 
 

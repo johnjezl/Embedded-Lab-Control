@@ -99,12 +99,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Fixed
 - A relay that labctl can't open no longer crashes `power on`/`power
   cycle` (and the binding verbs and recovery composites) with a
-  traceback. The driver error is reported as one `Error:` line, the board
-  stays off rather than booting without its strap, and a permission
-  error names the group that owns the device and how to join it (e.g.
-  `john needs to be in the 'dialout' group ... sudo usermod -aG dialout
-  john`). `labctl actuator set` and the MCP `actuator_set` tool report
-  the same error instead of raising.
+  traceback; nor does an actuator whose driver isn't implemented. The
+  error is one `Error:` line, and the board is never powered on without
+  its strap. `power cycle` now checks the relays its pre-power bindings
+  need before powering off, so a relay it can't open no longer leaves the
+  board off. A permission error says what to do: join the group that
+  owns the device (only when that group grants read/write and isn't
+  root's), log in again if the account was added after this process
+  started, or restart the service. `labctl actuator set` and the MCP
+  `actuator_set` tool report the same error instead of raising.
 - Over stdio, the MCP `list_images` tool said only that uploads need the
   HTTP transport, which read as a dead end. It now lists what a stdio
   session (which runs on the lab host) can do instead, with this server's

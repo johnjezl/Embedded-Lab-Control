@@ -164,17 +164,17 @@ def _build_transport(actuator: Actuator) -> Transport:
 def open_driver_for(actuator: Actuator) -> RelayDriver:
     """Open a driver for ``actuator`` and close it on exit.
 
-    A driver that can't open its device raises :class:`ActuationError`,
-    which the verbs' callers report, rather than a bare DriverError.
+    A driver that isn't implemented or can't open its device raises
+    :class:`ActuationError`, which the verbs' callers report, rather than
+    a bare DriverError or NotImplementedError.
     """
-    driver = get_driver(
-        actuator.driver, expected_channel_count=len(actuator.channels) or None
-    )
-    transport = _build_transport(actuator)
     try:
-        driver.open(transport)
-    except DriverError as e:
-        raise ActuationError(f"actuator {actuator.name!r}: {e}") from e
+        driver = get_driver(
+            actuator.driver, expected_channel_count=len(actuator.channels) or None
+        )
+        driver.open(_build_transport(actuator))
+    except (DriverError, NotImplementedError) as e:
+        raise ActuationError(str(e)) from e
     try:
         yield driver
     finally:
@@ -593,6 +593,35 @@ def probe_actuator(actuator: Actuator) -> ProbeOutcome:
 def _bindings_with_sample_phase(manager, sbc_id: int, phase) -> list[Binding]:
     """Return bindings on ``sbc_id`` whose sample_phase matches ``phase``."""
     return [b for b in manager.list_bindings(sbc_id=sbc_id) if b.sample_phase == phase]
+
+
+def check_pre_power_actuators(manager, sbc) -> None:
+    """Raise :class:`ActuationError` if an actuator that
+    apply_pre_power_bindings will drive for ``sbc`` can't be opened.
+
+    For power cycle, so a relay that would fail after power-off (e.g. no
+    permission) is found while the board is still running. Read-only: the
+    probe opens and closes the device without touching a channel.
+    """
+    from labctl.core.models import SamplePhase
+
+    seen = set()
+    for binding in _bindings_with_sample_phase(manager, sbc.id, SamplePhase.PRE_POWER):
+        if binding.desired_state not in (
+            DesiredState.ASSERTED,
+            DesiredState.RELEASED,
+        ):
+            continue
+        actuator, _ = _resolve(manager, binding)
+        if actuator.id in seen:
+            continue
+        seen.add(actuator.id)
+        outcome = probe_actuator(actuator)
+        if outcome.result is not ProbeResult.OK:
+            raise ActuationError(
+                f"actuator {actuator.name!r} for {binding.purpose!r} is "
+                f"{outcome.result.value}: {outcome.detail or 'no detail'}"
+            )
 
 
 def apply_pre_power_bindings(manager, sbc) -> None:

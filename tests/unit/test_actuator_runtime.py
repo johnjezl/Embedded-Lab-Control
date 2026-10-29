@@ -386,9 +386,7 @@ class TestDriverOpenFailure:
         monkeypatch.setattr(lab.driver, "open", refuse)
         with pytest.raises(runtime.ActuationError) as exc:
             runtime.apply_pre_power_bindings(lab.manager, lab.sbc)
-        assert str(exc.value) == (
-            "actuator 'relay-1': permission denied opening /dev/x: join dialout"
-        )
+        assert str(exc.value) == "permission denied opening /dev/x: join dialout"
         assert isinstance(exc.value.__cause__, DriverError)
         assert lab.driver.write_log == []
 
@@ -403,6 +401,67 @@ class TestDriverOpenFailure:
         monkeypatch.setattr(lab.driver, "open", refuse)
         with pytest.raises(runtime.ActuationError, match="failed to open"):
             runtime.actuate_binding(lab.manager, binding)
+
+    def test_unimplemented_driver_is_actuation_error(self, lab, monkeypatch):
+        binding = _make_binding(lab)
+
+        def unimplemented(*a, **kw):
+            raise NotImplementedError("driver 'numato_acm' is not implemented")
+
+        monkeypatch.setattr("labctl.actuators.runtime.get_driver", unimplemented)
+        with pytest.raises(runtime.ActuationError, match="not implemented"):
+            runtime.actuate_binding(lab.manager, binding)
+
+    def test_probe_detail_names_the_actuator_once(self, lab, monkeypatch):
+        from labctl.actuators.base import DriverError
+
+        def refuse(transport):
+            raise DriverError("permission denied opening /dev/x: hint")
+
+        monkeypatch.setattr(lab.driver, "open", refuse)
+        outcome = runtime.probe_actuator(lab.actuator)
+        assert outcome.detail == "permission denied opening /dev/x: hint"
+
+
+class TestCheckPrePowerActuators:
+    """power cycle checks the relays before powering off (read-only)."""
+
+    def test_unopenable_relay_raises_before_anything_is_driven(self, lab, monkeypatch):
+        from labctl.actuators.base import DriverError
+
+        binding = _make_binding(lab)
+        lab.manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
+
+        def refuse(transport):
+            raise DriverError("permission denied opening /dev/x: hint")
+
+        monkeypatch.setattr(lab.driver, "open", refuse)
+        with pytest.raises(runtime.ActuationError) as exc:
+            runtime.check_pre_power_actuators(lab.manager, lab.sbc)
+        assert str(exc.value) == (
+            "actuator 'relay-1' for 'recovery_mode' is unreachable: "
+            "permission denied opening /dev/x: hint"
+        )
+        assert lab.driver.write_log == []
+
+    def test_reachable_relay_passes_without_writing(self, lab):
+        binding = _make_binding(lab)
+        lab.manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
+        runtime.check_pre_power_actuators(lab.manager, lab.sbc)
+        assert lab.driver.write_log == []
+
+    @pytest.mark.parametrize(
+        "phase,desired",
+        [
+            (SamplePhase.NONE, DesiredState.ASSERTED),
+            (SamplePhase.PRE_POWER, DesiredState.FOLLOWING_POWER),
+        ],
+    )
+    def test_skips_bindings_apply_wont_drive(self, lab, monkeypatch, phase, desired):
+        binding = _make_binding(lab, sample_phase=phase)
+        lab.manager.update_binding_desired_state(binding.id, desired)
+        monkeypatch.setattr(runtime, "probe_actuator", lambda a: pytest.fail("probed"))
+        runtime.check_pre_power_actuators(lab.manager, lab.sbc)
 
 
 class TestEnterRecovery:

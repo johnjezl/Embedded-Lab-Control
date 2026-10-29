@@ -979,11 +979,30 @@ class TestRelayOpenFailure:
             ["-c", str(lab.config_path), "power", "cycle", "jetson-nano-2", "--yes"],
         )
         assert result.exit_code == 1
-        assert result.exception is None or isinstance(result.exception, SystemExit)
-        assert f"Error: actuator 'relay-1': {self.MESSAGE}" in result.output
-        assert "Traceback" not in result.output
-        # Powered off, never back on without the strap.
-        assert calls == ["off"]
+        assert isinstance(result.exception, SystemExit)
+        assert (
+            "Error: actuator 'relay-1' for 'recovery_mode' is unreachable: "
+            f"{self.MESSAGE}"
+        ) in result.output
+        # Found before power-off: the board keeps running.
+        assert calls == []
+
+    def test_power_on(self, runner, lab, monkeypatch):
+        calls: list[str] = []
+        TestEnterExitRecovery()._setup(runner, lab, monkeypatch, calls)
+        b = lab.manager.get_binding_by_target(lab.sbc.id, "recovery_mode")
+        from labctl.core.models import DesiredState
+
+        lab.manager.update_binding_desired_state(b.id, DesiredState.ASSERTED)
+        self._refuse_open(monkeypatch, "labctl.actuators.runtime.get_driver")
+
+        result = runner.invoke(
+            main, ["-c", str(lab.config_path), "power", "on", "jetson-nano-2"]
+        )
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        assert f"Error: {self.MESSAGE}" in result.output
+        assert calls == []  # never powered on without the strap
 
     def test_actuator_set(self, runner, lab, monkeypatch):
         _add_relay(runner, lab.config_path)
