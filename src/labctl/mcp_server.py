@@ -2694,39 +2694,53 @@ def _image_caller():
 _UPLOADS_OFF = "Error: image uploads are off on this server (mcp.upload_dir is not set)"
 
 
-def _stdio_image_routes() -> list[str]:
-    """How a stdio session, which has no upload route, gets an image in.
-
-    stdio servers run on the lab host as the user who started them, so the
-    client's shell is on the lab host too and can use host files directly.
-    """
-    mcp_cfg = _get_config().mcp
-    read_paths = ", ".join(mcp_cfg.allowed_read_paths) or "(none set)"
-    routes = [
+def _stdio_host_path_route() -> str:
+    """How a stdio session uses an image that is already on the lab host."""
+    read_paths = ", ".join(_get_config().mcp.allowed_read_paths) or "(none set)"
+    return (
         "Pass the image's absolute host path to flash_image, sdwire_update "
         "or boot_test; it must be inside mcp.allowed_read_paths "
         f"({read_paths}). To use a build directory in place, add it to "
         "mcp.allowed_read_paths in config.yaml (read when a stdio session "
-        "starts).",
-    ]
-    if mcp_cfg.upload_dir:
-        writable = os.access(mcp_cfg.upload_dir, os.W_OK)
-        routes.append(
-            f"Copy the image with your shell into {mcp_cfg.upload_dir} "
-            + (
-                "(writable by this session) "
-                if writable
-                else "(not writable by this session) "
-            )
-            + "and pass its bare name. Images put there this way have no "
-            "recorded uploader, so only operators may replace or delete them "
-            "through labctl."
-        )
-        routes.append(
-            "If the lab host also runs the HTTP MCP service (labctl mcp "
-            "--http), PUT the image to its /images/<name> route with a labctl "
-            "API key; list_images over HTTP shows the curl command."
-        )
+        "starts)."
+    )
+
+
+def _stdio_image_routes() -> list[str]:
+    """How a stdio session, which has no upload route, gets an image in.
+
+    stdio servers usually run on the lab host as the user who started
+    them, so the client's shell can use host files directly. The copy and
+    HTTP routes end in a bare name, so they are offered only when bare
+    names resolve here (upload_dir set and inside allowed_read_paths).
+    """
+    routes = [_stdio_host_path_route()]
+    upload_dir = _get_config().mcp.upload_dir
+    if not upload_dir or _resolve_host_path(upload_dir, "read")[1]:
+        return routes
+    if not os.path.isdir(upload_dir):
+        access = "it does not exist yet"
+    elif os.access(upload_dir, os.W_OK | os.X_OK):
+        access = "this session can create files there"
+    else:
+        access = "this session can't write there"
+    routes.append(
+        f"Copy the image with your shell into {upload_dir} ({access}) and "
+        "pass its bare name. Copy to a dot name first and rename it into "
+        "place (cp build/sdcard.img DIR/.sdcard.img && mv DIR/.sdcard.img "
+        "DIR/sdcard.img), so no session reads a half-written image; pick a "
+        "name not in list_images, since one copied over replaces that image "
+        "for everyone. Names are 1-128 letters, digits, '.', '_', '+' or "
+        "'-', starting with a letter or digit. Images put there this way "
+        "have no recorded uploader, so only operators may replace or delete "
+        "them through labctl."
+    )
+    routes.append(
+        "If the lab host also runs the HTTP MCP service (labctl mcp --http) "
+        f"with the same upload_dir ({upload_dir}), PUT the image to its "
+        "/images/<name> route with a labctl API key; list_images over HTTP "
+        "shows the curl command."
+    )
     return routes
 
 
@@ -2735,8 +2749,9 @@ def _upload_instructions() -> dict:
         return {
             "available": False,
             "message": "This stdio session has no upload route (that is on "
-            "the HTTP transport), but it runs on the lab host, so use one of "
-            "the alternatives.",
+            "the HTTP transport). These alternatives assume your shell is on "
+            "the lab host, as it is when the client starts labctl mcp locally "
+            "(not over ssh).",
             "alternatives": _stdio_image_routes(),
         }
     auth = (
@@ -2786,7 +2801,7 @@ def list_images() -> str:
     store = _image_store()
     if store is None:
         if _SESSION_KIND != "mcp-http":
-            return _UPLOADS_OFF + ". " + _stdio_image_routes()[0]
+            return _UPLOADS_OFF + ". " + _stdio_host_path_route()
         return _UPLOADS_OFF
     try:
         images = store.list()

@@ -497,8 +497,7 @@ class TestSchema:
         path = tmp_path / "old.db"
         get_database(path)
         conn = sqlite3.connect(path)
-        conn.executescript(
-            """
+        conn.executescript("""
             DROP TABLE images;
             CREATE TABLE images (
                 name TEXT PRIMARY KEY,
@@ -511,8 +510,7 @@ class TestSchema:
                 VALUES ('a.img', 'bot', 3, 'abc');
             DELETE FROM schema_version;
             INSERT INTO schema_version (version) VALUES (10);
-            """
-        )
+            """)
         conn.commit()
         conn.close()
         (images_dir / "a.img").write_bytes(b"old")
@@ -774,8 +772,10 @@ class TestTools:
         host_path, copy, http = upload["alternatives"]
         # The allowlist and the upload directory are named concretely.
         assert lab[0].mcp.allowed_read_paths[0] in host_path
-        assert f"into {lab[0].mcp.upload_dir} (writable by this session)" in copy
-        assert "/images/<name>" in http
+        upload_dir = lab[0].mcp.upload_dir
+        assert f"into {upload_dir} (this session can create files there)" in copy
+        assert "rename it into place" in copy  # no half-written images
+        assert "/images/<name>" in http and f"same upload_dir ({upload_dir})" in http
 
     def test_stdio_copy_route_says_when_upload_dir_is_read_only(
         self, lab, images_dir, as_bot
@@ -787,7 +787,23 @@ class TestTools:
             patch.object(mcp_server.os, "access", return_value=False),
         ):
             routes = mcp_server._stdio_image_routes()
-        assert "(not writable by this session)" in routes[1]
+        assert "(this session can't write there)" in routes[1]
+
+    def test_stdio_copy_route_says_when_upload_dir_is_missing(self, lab, images_dir):
+        from labctl import mcp_server
+
+        images_dir.rmdir()
+        assert "(it does not exist yet)" in mcp_server._stdio_image_routes()[1]
+
+    def test_stdio_bare_name_routes_need_upload_dir_readable(
+        self, lab, images_dir, tmp_path
+    ):
+        """Bare names in an upload_dir outside allowed_read_paths are
+        refused, so the copy and HTTP routes would be dead ends."""
+        from labctl import mcp_server
+
+        lab[0].mcp.allowed_read_paths = [str(tmp_path / "builds")]
+        assert mcp_server._stdio_image_routes() == [mcp_server._stdio_host_path_route()]
 
     def test_uploads_off_over_stdio_points_to_host_paths(self, lab, images_dir):
         from labctl import mcp_server
@@ -797,7 +813,7 @@ class TestTools:
             result = mcp_server.list_images()
         assert result.startswith("Error: image uploads are off")
         assert f"mcp.allowed_read_paths ({images_dir})" in result
-        assert "into" not in result  # no copy route without upload_dir
+        assert "Copy the image" not in result  # no copy route without upload_dir
 
     def test_uploads_off_over_stdio_without_read_paths(self, lab):
         from labctl import mcp_server
