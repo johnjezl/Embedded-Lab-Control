@@ -1083,9 +1083,10 @@ class TestPowerHelpers:
         lab.manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
         controller.power_off.side_effect = None
         controller.power_off.return_value = False
-        assert not runtime.power_cycle_with_bindings(
-            lab.manager, lab.sbc, controller, 0, sleep_fn=lambda s: None
-        )
+        with pytest.raises(RuntimeError, match="power_off failed on 'jetson-nano-2'"):
+            runtime.power_cycle_with_bindings(
+                lab.manager, lab.sbc, controller, 0, sleep_fn=lambda s: None
+            )
         assert lab.driver.write_log == []
         controller.power_on.assert_not_called()
 
@@ -1100,6 +1101,7 @@ class TestPowerHelpers:
                 lab.manager, lab.sbc, controller, 0, sleep_fn=lambda s: None
             )
         assert not isinstance(exc.value, runtime.PrePowerCheckError)
+        assert str(exc.value).endswith("'jetson-nano-2' was left powered off")
         controller.power_off.assert_called_once()
         controller.power_on.assert_not_called()
 
@@ -1108,3 +1110,25 @@ class TestPowerHelpers:
             lab.manager, lab.sbc, controller, 0, sleep_fn=lambda s: None
         )
         assert controller.events == ["off", ("on", [])]
+
+    @pytest.mark.parametrize("delay", [-1, "3", None, True, float("nan")])
+    def test_cycle_bad_delay_refused_before_anything(self, lab, controller, delay):
+        with pytest.raises(ValueError, match="delay must be a non-negative number"):
+            runtime.power_cycle_with_bindings(
+                lab.manager, lab.sbc, controller, delay, sleep_fn=lambda s: None
+            )
+        controller.power_off.assert_not_called()
+
+    def test_busy_strap_channel_is_an_actuation_error(self, lab, controller):
+        """Another verb holding the channel in this process (e.g. an MCP
+        pulse) is a strap failure like any other, not an unhandled error."""
+        binding = _make_binding(lab)
+        lab.manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
+        with runtime._channel_lock(lab.channel.id):
+            with pytest.raises(runtime.ActuationError, match="busy"):
+                runtime.power_on_with_bindings(lab.manager, lab.sbc, controller)
+            with pytest.raises(runtime.ActuationError, match="left powered off"):
+                runtime.power_cycle_with_bindings(
+                    lab.manager, lab.sbc, controller, 0, sleep_fn=lambda s: None
+                )
+        controller.power_on.assert_not_called()

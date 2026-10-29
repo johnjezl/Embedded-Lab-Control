@@ -1273,7 +1273,7 @@ def power_cycle(sbc_name: str, delay: float = 3.0) -> str:
             advisory = _claim_advisory(manager, sbc_name)
             return f"{result}\n\n{advisory}" if advisory else result
         return f"Failed to power cycle {sbc_name}"
-    except (RuntimeError, ActuationError) as e:
+    except (RuntimeError, ActuationError, ValueError) as e:
         return f"Error: {e}"
 
 
@@ -2074,11 +2074,14 @@ def sdwire_update(
 
             power_ctrl = PowerController.from_plug(sbc.power_plug)
             try:
-                power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
-            except ActuationError as e:
-                summary += f". Not power cycled: {e}"
+                ok = power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
+            except (ActuationError, RuntimeError) as e:
+                summary += f". Not powered back on: {e}"
             else:
-                summary += f". Power cycled {sbc_name}."
+                if ok:
+                    summary += f". Power cycled {sbc_name}."
+                else:
+                    summary += f". power_on failed on {sbc_name!r}."
 
         advisory = _claim_advisory(manager, sbc_name)
         return f"{summary}\n\n{advisory}" if advisory else summary
@@ -2437,11 +2440,14 @@ def flash_image(
 
             power_ctrl = PowerController.from_plug(sbc.power_plug)
             try:
-                power_on_with_bindings(manager, sbc, power_ctrl)
-            except ActuationError as e:
+                ok = power_on_with_bindings(manager, sbc, power_ctrl)
+            except (ActuationError, RuntimeError) as e:
                 parts.append(f"Not powered on: {e}")
             else:
-                parts.append(f"Powered on {sbc_name}")
+                if ok:
+                    parts.append(f"Powered on {sbc_name}")
+                else:
+                    parts.append(f"power_on failed on {sbc_name!r}")
 
         result = ". ".join(parts)
         advisory = _claim_advisory(manager, sbc_name)
@@ -2751,7 +2757,11 @@ def boot_test(
         from labctl.power import PowerController
 
         power_ctrl = PowerController.from_plug(sbc.power_plug)
-        power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
+        try:
+            power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
+        except ActuationError as e:
+            # Recorded as a failed run, like a plug failure.
+            raise RuntimeError(str(e)) from e
 
     try:
         result = run_boot_test(
@@ -2772,7 +2782,7 @@ def boot_test(
         result_str = result.format_summary()
         advisory = _claim_advisory(manager, sbc_name)
         return f"{result_str}\n\n{advisory}" if advisory else result_str
-    except (RuntimeError, ActuationError) as e:
+    except RuntimeError as e:
         return f"Error: {e}"
     finally:
         for fd in (image_fd, output_dir_fd):

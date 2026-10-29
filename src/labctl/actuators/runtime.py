@@ -690,6 +690,16 @@ def apply_pre_power_bindings(manager, sbc) -> None:
             )
 
 
+def _apply_pre_power(manager, sbc) -> None:
+    """apply_pre_power_bindings, with a busy channel (another verb in
+    flight in this process) reported as an :class:`ActuationError` like
+    any other strap failure."""
+    try:
+        apply_pre_power_bindings(manager, sbc)
+    except ChannelBusyError as e:
+        raise ActuationError(str(e)) from e
+
+
 def power_on_with_bindings(manager, sbc, controller) -> bool:
     """Drive ``sbc``'s pre_power bindings, then power it on.
 
@@ -699,7 +709,7 @@ def power_on_with_bindings(manager, sbc, controller) -> bool:
     without switching power if a binding can't be applied; returns the
     controller's result otherwise.
     """
-    apply_pre_power_bindings(manager, sbc)
+    _apply_pre_power(manager, sbc)
     return controller.power_on()
 
 
@@ -713,17 +723,28 @@ def power_cycle_with_bindings(
 ) -> bool:
     """Power-cycle ``sbc``: off, wait, drive pre_power bindings, on.
 
-    Checks the pre_power actuators first and raises
-    :class:`PrePowerCheckError` while the board is still running if one
-    can't be opened. A later :class:`ActuationError` (the write itself
-    failing) leaves the board off rather than booting without the strap.
-    Returns False if power_off or power_on reports failure.
+    Before anything is switched: a bad ``delay_s`` raises ValueError, and
+    a pre_power actuator that can't be opened raises
+    :class:`PrePowerCheckError`, so the board keeps running. After
+    power-off, a strap that can't be applied raises :class:`ActuationError`
+    saying the board is off (it is not powered on without its strap), and
+    a plug that won't switch off raises RuntimeError. Returns the result
+    of power_on.
     """
+    if (
+        isinstance(delay_s, bool)
+        or not isinstance(delay_s, (int, float))
+        or not delay_s >= 0
+    ):
+        raise ValueError(f"delay must be a non-negative number, not {delay_s!r}")
     check_pre_power_actuators(manager, sbc)
     if not controller.power_off():
-        return False
+        raise RuntimeError(f"power_off failed on {sbc.name!r}")
     (sleep_fn or time.sleep)(delay_s)
-    apply_pre_power_bindings(manager, sbc)
+    try:
+        _apply_pre_power(manager, sbc)
+    except ActuationError as e:
+        raise ActuationError(f"{e}; {sbc.name!r} was left powered off") from e
     return controller.power_on()
 
 
