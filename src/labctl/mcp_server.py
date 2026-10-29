@@ -2717,9 +2717,7 @@ def _stdio_image_routes() -> list[str]:
     names resolve here (upload_dir set and inside allowed_read_paths).
     """
     routes = [_stdio_host_path_route()]
-    config = _get_config()
-    upload_dir = config.mcp.upload_dir
-    auth = config.auth.enabled
+    upload_dir = _get_config().mcp.upload_dir
     if _resolve_host_path(upload_dir, "read")[1]:
         return routes
     if os.access(upload_dir, os.W_OK | os.X_OK):
@@ -2730,10 +2728,12 @@ def _stdio_image_routes() -> list[str]:
         f"Copy the image with your shell into {upload_dir} ({access}) and "
         "pass its bare name. Copy to a unique temp name in the same "
         "directory and rename it into place, so no session reads a "
-        "half-written image, and remove the temp file if the copy fails: "
+        "half-written image, and remove the temp file if the copy fails "
+        "(set name to the image name): "
+        "name=sdcard.img; "
         f"t=$(mktemp {shlex.quote(upload_dir + '/.upload-XXXXXX')}) && "
         f'{{ cp build/sdcard.img "$t" && chmod 644 "$t" && mv "$t" '
-        f'{shlex.quote(upload_dir)}/<name>; }} || rm -f "$t". '
+        f'{shlex.quote(upload_dir)}/"$name"; }} || rm -f "$t". '
         "Check free space first (df); this copy isn't counted by the "
         "upload free-space checks. Pick a "
         "name not in list_images, since one copied over replaces that image "
@@ -2744,12 +2744,9 @@ def _stdio_image_routes() -> list[str]:
     )
     routes.append(
         "If the lab host also runs the HTTP MCP service (labctl mcp --http) "
-        f"with the same upload_dir ({upload_dir}), PUT the image to its "
-        "/images/<name> route (ask the user for its URL if you don't know "
-        "it): curl --fail-with-body -T build/sdcard.img"
-        + (' -H "Authorization: Bearer $LABCTL_API_KEY"' if auth else "")
-        + ' "http://127.0.0.1:PORT/images/<name>"'
-        + (" with a labctl API key." if auth else ".")
+        f"with the same upload_dir ({upload_dir}), you can PUT the image to "
+        "its /images/<name> route instead; this session can't tell its URL "
+        "or whether it needs an API key, so ask the user for both."
     )
     return routes
 
