@@ -335,13 +335,13 @@ class TestDevicePermissionHint:
         assert "alice needs to be in the 'dialout' group" in hint
         assert "sudo usermod -aG dialout alice" in hint
         assert "newgrp dialout" in hint
-        assert "add the service's user instead and restart it" in hint
+        assert "restart any service or MCP client that runs labctl" in hint
 
     def test_account_in_group_but_process_is_not(self, device):
         device.members.append("alice")
         hint = self._hint(device.path)
         assert "alice is in the 'dialout' group" in hint
-        assert "started before it was added: log out and back in" in hint
+        assert "started before it was added; it takes effect" in hint
         assert "usermod" not in hint
 
     def test_process_already_in_group(self, device, monkeypatch):
@@ -373,3 +373,14 @@ class TestDevicePermissionHint:
     def test_missing_device_gets_generic_advice(self, device, tmp_path):
         hint = self._hint(tmp_path / "gone")
         assert hint.startswith("check that alice may read and write ")
+
+    def test_no_account_name_never_suggests_usermod(self, device, monkeypatch):
+        import pwd
+
+        def no_entry(uid):
+            raise KeyError(uid)
+
+        monkeypatch.setattr(pwd, "getpwuid", no_entry)
+        hint = self._hint(device.path)
+        assert "usermod" not in hint
+        assert hint.startswith(f"check that uid {os.geteuid()} may read and write")

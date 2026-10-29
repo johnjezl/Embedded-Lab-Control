@@ -619,8 +619,8 @@ def check_pre_power_actuators(manager, sbc) -> None:
         outcome = probe_actuator(actuator)
         if outcome.result is not ProbeResult.OK:
             raise ActuationError(
-                f"actuator {actuator.name!r} for {binding.purpose!r} is "
-                f"{outcome.result.value}: {outcome.detail or 'no detail'}"
+                f"actuator {actuator.name!r} for {binding.purpose!r} can't "
+                f"be used: {outcome.detail or outcome.result.value}"
             )
 
 
@@ -711,6 +711,8 @@ def enter_recovery(
             f"pre-flight probe failed on {actuator.name!r}: "
             f"{outcome.result.value} ({outcome.detail or 'no detail'})"
         )
+    # The power-on step also drives the SBC's other pre_power bindings.
+    check_pre_power_actuators(manager, sbc)
 
     # 1. Power off.
     if not controller.power_off():
@@ -748,6 +750,8 @@ def exit_recovery(
             f"pre-flight probe failed on {actuator.name!r}: "
             f"{outcome.result.value} ({outcome.detail or 'no detail'})"
         )
+    # The power-on step also drives the SBC's other pre_power bindings.
+    check_pre_power_actuators(manager, sbc)
 
     if not controller.power_off():
         raise ActuationError(f"power_off failed on {sbc.name!r}")

@@ -439,7 +439,7 @@ class TestCheckPrePowerActuators:
         with pytest.raises(runtime.ActuationError) as exc:
             runtime.check_pre_power_actuators(lab.manager, lab.sbc)
         assert str(exc.value) == (
-            "actuator 'relay-1' for 'recovery_mode' is unreachable: "
+            "actuator 'relay-1' for 'recovery_mode' can't be used: "
             "permission denied opening /dev/x: hint"
         )
         assert lab.driver.write_log == []
@@ -449,6 +449,57 @@ class TestCheckPrePowerActuators:
         lab.manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
         runtime.check_pre_power_actuators(lab.manager, lab.sbc)
         assert lab.driver.write_log == []
+
+    def test_released_strap_is_checked_too(self, lab, monkeypatch):
+        _make_binding(lab)  # desired_state defaults to RELEASED
+        probed = []
+        monkeypatch.setattr(
+            runtime,
+            "probe_actuator",
+            lambda a: probed.append(a.name)
+            or runtime.ProbeOutcome(result=ProbeResult.OK),
+        )
+        runtime.check_pre_power_actuators(lab.manager, lab.sbc)
+        assert probed == ["relay-1"]
+
+    def test_each_actuator_probed_once(self, lab, monkeypatch):
+        """Two bindings on one relay probe it once; a second relay is
+        still probed."""
+        _make_binding(lab, purpose="recovery_mode")
+        ch2 = lab.manager.add_actuator_channel(
+            lab.actuator.id, 2, default_state=ChannelState.OPEN
+        )
+        lab.manager.create_binding(
+            lab.sbc.id,
+            "boot_select",
+            ch2.id,
+            shape_mode=ShapeMode.LATCH,
+            shape_active=ChannelState.CLOSED,
+            sample_phase=SamplePhase.PRE_POWER,
+        )
+        other = lab.manager.create_actuator(
+            "relay-2", DriverName.LCUS1_SERIAL, device_path="/dev/ttyUSB-relay-2"
+        )
+        other_ch = lab.manager.add_actuator_channel(
+            other.id, 1, default_state=ChannelState.OPEN
+        )
+        lab.manager.create_binding(
+            lab.sbc.id,
+            "power_button",
+            other_ch.id,
+            shape_mode=ShapeMode.LATCH,
+            shape_active=ChannelState.CLOSED,
+            sample_phase=SamplePhase.PRE_POWER,
+        )
+        probed = []
+        monkeypatch.setattr(
+            runtime,
+            "probe_actuator",
+            lambda a: probed.append(a.name)
+            or runtime.ProbeOutcome(result=ProbeResult.OK),
+        )
+        runtime.check_pre_power_actuators(lab.manager, lab.sbc)
+        assert sorted(probed) == ["relay-1", "relay-2"]
 
     @pytest.mark.parametrize(
         "phase,desired",
@@ -564,6 +615,36 @@ class TestEnterRecovery:
                 delay_s=1.0,
                 sleep_fn=lambda s: None,
             )
+
+
+class TestRecoveryChecksOtherPrePowerRelays:
+    """enter/exit_recovery's power-on drives every pre_power binding, so
+    a second relay that can't be opened stops them before power-off."""
+
+    @pytest.mark.parametrize("composite", ["enter_recovery", "exit_recovery"])
+    def test_refuses_before_power_off(self, lab, monkeypatch, composite):
+        _make_binding(lab)
+        calls = []
+        monkeypatch.setattr(
+            runtime,
+            "check_pre_power_actuators",
+            lambda m, s: (_ for _ in ()).throw(runtime.ActuationError("relay-2")),
+        )
+
+        class Controller:
+            def power_off(self):
+                calls.append("off")
+                return True
+
+            def power_on(self):
+                calls.append("on")
+                return True
+
+        with pytest.raises(runtime.ActuationError, match="relay-2"):
+            getattr(runtime, composite)(
+                lab.manager, lab.sbc, Controller(), delay_s=0, sleep_fn=lambda s: None
+            )
+        assert calls == []
 
 
 class TestExitRecovery:

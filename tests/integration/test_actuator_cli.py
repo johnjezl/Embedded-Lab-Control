@@ -973,6 +973,10 @@ class TestRelayOpenFailure:
 
         lab.manager.update_binding_desired_state(b.id, DesiredState.ASSERTED)
         self._refuse_open(monkeypatch, "labctl.actuators.runtime.get_driver")
+        events: list = []
+        monkeypatch.setattr(
+            "labctl.cli._emit_power_event", lambda *a, **kw: events.append(a)
+        )
 
         result = runner.invoke(
             main,
@@ -981,11 +985,13 @@ class TestRelayOpenFailure:
         assert result.exit_code == 1
         assert isinstance(result.exception, SystemExit)
         assert (
-            "Error: actuator 'relay-1' for 'recovery_mode' is unreachable: "
+            "Error: actuator 'relay-1' for 'recovery_mode' can't be used: "
             f"{self.MESSAGE}"
         ) in result.output
-        # Found before power-off: the board keeps running.
+        # Found before power-off: the board keeps running, and no power
+        # event is recorded for a cycle that never started.
         assert calls == []
+        assert events == []
 
     def test_power_on(self, runner, lab, monkeypatch):
         calls: list[str] = []
