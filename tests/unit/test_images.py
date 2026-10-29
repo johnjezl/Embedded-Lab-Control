@@ -775,7 +775,12 @@ class TestTools:
         upload_dir = lab[0].mcp.upload_dir
         assert f"into {upload_dir} (this session can create files there)" in copy
         assert f"mktemp {upload_dir}/.upload-XXXXXX" in copy
-        assert f'mv "$t" {upload_dir}/sdcard.img' in copy
+        assert f'mv "$t" {upload_dir}/<name>' in copy  # no fixed name to clobber
+        assert "Authorization: Bearer" in http  # lab has auth on
+        lab[0].auth.enabled = False
+        with patch.object(mcp_server, "_SESSION_KIND", "mcp-stdio"):
+            http = mcp_server._stdio_image_routes()[2]
+        assert "Authorization" not in http and "API key" not in http
         assert "/images/<name>" in http and f"same upload_dir ({upload_dir})" in http
 
     def test_stdio_copy_route_says_when_upload_dir_is_read_only(

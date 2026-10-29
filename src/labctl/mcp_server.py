@@ -2717,8 +2717,10 @@ def _stdio_image_routes() -> list[str]:
     names resolve here (upload_dir set and inside allowed_read_paths).
     """
     routes = [_stdio_host_path_route()]
-    upload_dir = _get_config().mcp.upload_dir
-    if not upload_dir or _resolve_host_path(upload_dir, "read")[1]:
+    config = _get_config()
+    upload_dir = config.mcp.upload_dir
+    auth = config.auth.enabled
+    if _resolve_host_path(upload_dir, "read")[1]:
         return routes
     if os.access(upload_dir, os.W_OK | os.X_OK):
         access = "this session can create files there"
@@ -2731,7 +2733,7 @@ def _stdio_image_routes() -> list[str]:
         "half-written image, and remove the temp file if the copy fails: "
         f"t=$(mktemp {shlex.quote(upload_dir + '/.upload-XXXXXX')}) && "
         f'{{ cp build/sdcard.img "$t" && chmod 644 "$t" && mv "$t" '
-        f'{shlex.quote(upload_dir + "/sdcard.img")}; }} || rm -f "$t". '
+        f'{shlex.quote(upload_dir)}/<name>; }} || rm -f "$t". '
         "Check free space first (df); this copy isn't counted by the "
         "upload free-space checks. Pick a "
         "name not in list_images, since one copied over replaces that image "
@@ -2743,8 +2745,11 @@ def _stdio_image_routes() -> list[str]:
     routes.append(
         "If the lab host also runs the HTTP MCP service (labctl mcp --http) "
         f"with the same upload_dir ({upload_dir}), PUT the image to its "
-        "/images/<name> route with a labctl API key; list_images over HTTP "
-        "shows the curl command."
+        "/images/<name> route (ask the user for its URL if you don't know "
+        "it): curl --fail-with-body -T build/sdcard.img"
+        + (' -H "Authorization: Bearer $LABCTL_API_KEY"' if auth else "")
+        + ' "http://127.0.0.1:PORT/images/<name>"'
+        + (" with a labctl API key." if auth else ".")
     )
     return routes
 
