@@ -2506,11 +2506,12 @@ def _serial_send_payload(
         parts = [decode_hex(data_hex)]
     else:
         parts = ([data.encode("utf-8")] if data else []) + encode_keys(keys or [])
+    text_only = data_hex is None and keys is None
     if newline is None:
-        newline = data_hex is None and not keys
+        newline = text_only
     parts = [p for p in parts if p]
     if newline:
-        if parts and not keys:
+        if parts and text_only:
             parts[-1] += b"\r\n"  # text and its line end in one write
         else:
             parts.append(b"\r\n")
