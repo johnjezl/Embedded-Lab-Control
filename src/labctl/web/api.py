@@ -195,6 +195,12 @@ def control_power(name: str):
     if action not in ["on", "off", "cycle"]:
         return jsonify({"error": "action must be on, off, or cycle"}), 400
 
+    delay = data.get("delay", 3.0)
+    if action == "cycle" and (
+        isinstance(delay, bool) or not isinstance(delay, (int, float)) or not delay >= 0
+    ):
+        return jsonify({"error": "delay must be a non-negative number"}), 400
+
     refusal = claims.check(sbc.name)
     if refusal:
         return _refused(refusal)
@@ -224,7 +230,6 @@ def control_power(name: str):
         elif action == "off":
             success = controller.power_off()
         else:
-            delay = data.get("delay", 3.0)
             success = power_cycle_with_bindings(g.manager, sbc, controller, delay)
             if success:
                 _power_cycle_times[name] = time.monotonic()

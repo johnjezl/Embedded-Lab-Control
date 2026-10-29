@@ -22,7 +22,6 @@ from labctl.core.models import (
     SamplePhase,
     ShapeMode,
 )
-from labctl.serial.boot_test import BootTestResult
 
 STRAP_CLOSED = (1, True, WriteOutcome.OK)
 
@@ -133,31 +132,32 @@ class TestCli:
         assert "permission denied" in result.output
         unopenable.controller.power_on.assert_not_called()
 
-    def test_boot_test(self, lab):
-        def fake_run(**kwargs):
-            kwargs["power_cycle_fn"]()
-            return BootTestResult(
-                sbc_name="board",
-                expect_pattern="login",
-                total_runs=1,
-                timeout_per_run=1.0,
-            )
+    @pytest.fixture
+    def console(self):
+        """The serial console shows the boot pattern straight away."""
+        from labctl.serial.capture import CaptureResult
 
-        with patch("labctl.serial.boot_test.run_boot_test", side_effect=fake_run):
-            result = lab.run("boot-test", "board", "-e", "login", "--no-deploy")
+        with patch(
+            "labctl.serial.boot_test.capture_serial_output",
+            return_value=CaptureResult(output="login:", lines=1, pattern_matched=True),
+        ):
+            yield
+
+    def test_boot_test(self, lab, console):
+        result = lab.run("boot-test", "board", "-e", "login", "--no-deploy", "-r", "2")
         assert result.exit_code == 0, result.output
+        assert "2/2" in result.output
+        assert lab.events.count("off") == 2
         _strap_closed_before_on(lab)
 
-    def test_boot_test_unopenable_relay(self, unopenable):
-        def fake_run(**kwargs):
-            kwargs["power_cycle_fn"]()
-
-        with patch("labctl.serial.boot_test.run_boot_test", side_effect=fake_run):
-            result = unopenable.run("boot-test", "board", "-e", "login", "--no-deploy")
-        assert result.exit_code == 1
-        assert "Error: actuator 'relay-a' for 'recovery_mode' can't be used" in (
-            result.output
+    def test_boot_test_unopenable_relay_fails_each_run(self, unopenable, console):
+        """Like a plug failure: each run is recorded as failed, with why."""
+        result = unopenable.run(
+            "boot-test", "board", "-e", "login", "--no-deploy", "-r", "2"
         )
+        assert result.exit_code == 0, result.output
+        assert "0/2" in result.output
+        assert "actuator 'relay-a' for 'recovery_mode' can't be used" in (result.output)
         assert "Traceback" not in result.output
         unopenable.controller.power_off.assert_not_called()
 
@@ -192,7 +192,7 @@ class TestCli:
         image.write_bytes(b"img")
         result = unopenable.run("sdwire", "flash", "board", str(image), "--yes")
         assert result.exit_code == 1
-        assert "Error: flashed, but not power cycled: actuator 'relay-a'" in (
+        assert "Error: flashed, but not powered back on: actuator 'relay-a'" in (
             result.output
         )
         unopenable.controller.power_on.assert_not_called()
@@ -229,7 +229,9 @@ class TestCli:
             "--yes",
         )
         assert result.exit_code == 1
-        assert "Error: files updated, but not power cycled: actuator" in (result.output)
+        assert "Error: files updated, but not powered back on: actuator" in (
+            result.output
+        )
         unopenable.controller.power_on.assert_not_called()
 
 
@@ -315,6 +317,15 @@ class TestWeb:
         assert "permission denied" in resp.get_json()["error"]
         unopenable.controller.power_on.assert_not_called()
         unopenable.controller.power_off.assert_not_called()
+
+    @pytest.mark.parametrize("delay", ["5", -1, None, True])
+    def test_api_bad_delay_refused_before_power_off(self, lab, client, delay):
+        resp = client.post(
+            "/api/sbcs/board/power", json={"action": "cycle", "delay": delay}
+        )
+        assert resp.status_code == 400
+        assert "delay" in resp.get_json()["error"]
+        lab.controller.power_off.assert_not_called()
 
     @pytest.mark.parametrize("action", ["on", "cycle"])
     def test_view(self, lab, client, action):

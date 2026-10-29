@@ -1835,9 +1835,11 @@ def sdwire_flash_cmd(
 
             power_ctrl = PowerController.from_plug(sbc.power_plug)
             try:
-                power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
-            except ActuationError as e:
-                raise RuntimeError(f"flashed, but not power cycled: {e}") from e
+                ok = power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
+            except (ActuationError, RuntimeError) as e:
+                raise RuntimeError(f"flashed, but not powered back on: {e}") from e
+            if not ok:
+                raise RuntimeError(f"flashed, but power_on failed on {sbc_name!r}")
             click.echo(f"Power cycled: {sbc_name}")
 
         click.echo(f"Done! {sbc_name} should boot from the new image.")
@@ -2038,9 +2040,15 @@ def sdwire_update_cmd(
 
             power_ctrl = PowerController.from_plug(sbc.power_plug)
             try:
-                power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
-            except ActuationError as e:
-                raise RuntimeError(f"files updated, but not power cycled: {e}") from e
+                ok = power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
+            except (ActuationError, RuntimeError) as e:
+                raise RuntimeError(
+                    f"files updated, but not powered back on: {e}"
+                ) from e
+            if not ok:
+                raise RuntimeError(
+                    f"files updated, but power_on failed on {sbc_name!r}"
+                )
             click.echo(f"Power cycled: {sbc_name}")
         elif reboot and not sbc.power_plug:
             click.echo("Warning: --reboot requested but no power plug assigned")
@@ -6001,7 +6009,11 @@ def boot_test_cmd(
         from labctl.power import PowerController
 
         power_ctrl = PowerController.from_plug(sbc.power_plug)
-        power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
+        try:
+            power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
+        except ActuationError as e:
+            # Recorded as a failed run, like a plug failure.
+            raise RuntimeError(str(e)) from e
 
     # Progress callback
     def progress(run_num, total, run_result):
@@ -6037,7 +6049,7 @@ def boot_test_cmd(
         click.echo("")
         click.echo(result.format_summary())
 
-    except (RuntimeError, ActuationError) as e:
+    except RuntimeError as e:
         click.echo(f"\nError: {e}", err=True)
         sys.exit(1)
 

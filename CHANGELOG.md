@@ -107,8 +107,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   out of recovery depending on which interface turned it on. A relay that
   can't be opened now stops these before power is switched (cycles check
   before powering off): MCP and the CLI say so in one line, the REST API
-  returns it as a 500 error, the web UI flashes it, and after a flash or
-  file update the tools report that the board wasn't power cycled.
+  returns it as a 500 error, the web UI flashes it, after a flash or file
+  update the tools report that the board wasn't powered back on, and
+  `boot-test` records the run as failed. A strap that fails after
+  power-off leaves the board off, and the error says so. A REST power
+  cycle with a `delay` that isn't a non-negative number is now refused
+  with a 400 before power-off (it used to switch the board off, then
+  fail).
 - A relay that labctl can't open no longer crashes `power on`/`power
   cycle` (and the binding verbs and recovery composites) with a
   traceback; nor does an actuator whose driver isn't implemented. The
