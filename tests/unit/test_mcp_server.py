@@ -2204,6 +2204,22 @@ class TestMcpRemoveTools:
             3.0,
         )
 
+    def test_boot_test_relays_checked_before_anything(self, mock_manager):
+        from labctl.actuators.runtime import PrePowerCheckError
+        from labctl.mcp_server import boot_test
+
+        with (
+            patch("labctl.serial.boot_test.run_boot_test") as run,
+            patch(
+                "labctl.actuators.runtime.check_power_on",
+                side_effect=PrePowerCheckError("relay gone"),
+            ),
+        ):
+            result = boot_test(sbc_name="test-sbc-1", expect_pattern="ok", runs=1)
+
+        assert result == "Error: relay gone. Nothing changed."
+        run.assert_not_called()
+
     def test_boot_test_relay_failure_is_an_error(self, mock_manager):
         from labctl.actuators.runtime import ActuationError
         from labctl.mcp_server import boot_test

@@ -2737,6 +2737,15 @@ def boot_test(
     if image and not dest:
         return "Error: dest is required when image is specified"
 
+    # Every run power-cycles through the pre_power relays: check them
+    # before deploying anything.
+    from labctl.actuators.runtime import ActuationError, check_power_on
+
+    try:
+        check_power_on(manager, sbc)
+    except ActuationError as e:
+        return f"Error: {e}. Nothing changed."
+
     # Host paths: the image is read, per-run output is written (D012).
     # Both are checked and opened now; I/O then goes through these
     # descriptors, never the paths. `dest` is a path on the SD card.
