@@ -7,6 +7,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Security
+- MCP `sdwire_to_host` fails closed (#41): it switches the card only when
+  the board's plug reports it off. It used to go ahead when the board had
+  no plug or its state couldn't be read; it now refuses, like
+  `sdwire_ls`/`cat`/`info`, unless `force=true`. CLI `labctl sdwire host`
+  does the same: it refuses a board with no plug or an unreadable or
+  unknown plug state unless `--force` (which, as before, skips the power
+  check). CLI `sdwire ls`/`cat`/`info` are unchanged.
+- A per-board cycle delay stored before `edit --cycle-delay` checked the
+  range (e.g. `1e9`, NaN, negative) is refused on every path before
+  anything is switched or written (#41): MCP/REST/web cycles, the reboot
+  after `sdwire flash`/`update`, `boot-test` and the recovery commands, CLI
+  and MCP. Only CLI `power cycle` checked it before; the others slept on
+  it. Clear it with `labctl edit <name> --cycle-delay -1`.
+- `labctl serial remove` and `labctl serial udev --install` check claims
+  (#41). `serial remove` refuses an adapter that a board someone else has
+  claimed has a port on, by any path that reaches it (including a port
+  assigned by `/dev/ttyUSB0` behind the adapter's link, which isn't linked
+  to the registration). `serial udev --install` refuses when the new rules
+  would remove or re-point a `/dev/lab/<name>` link such a board uses
+  (every link, if the installed rules file can't be read). Both take
+  `--override-claim`. `serial remove` now asks for confirmation only on a
+  terminal, like the other destructive commands.
+
+### Changed
+- The per-board cycle delay (`labctl edit --cycle-delay`) is the default
+  and the minimum for every power cycle of the board (#41), not only CLI
+  `power cycle` and recovery: MCP `power_cycle` (whose `delay` now
+  defaults to the stored value), REST `cycle` (likewise; the response adds
+  `delay_seconds`), the web UI's power-cycle button, the reboot after
+  `sdwire flash`/`update` and every `boot-test` run (CLI and MCP). A
+  smaller requested delay is raised to it. The `--dry-run` plans of
+  `sdwire flash`/`update` and the MCP confirmations of `power_cycle`,
+  `enter_/exit_recovery`, `boot_test` and `sdwire_update` (with
+  `reboot=true`) show the delay (`will_do.cycle_delay_seconds`).
 - Generated udev rules (`labctl serial udev`, and the legacy
   `scripts/generate-udev-rules.py`) make `/dev/lab/*` devices
   `root:dialout 0660`. They were world-writable (`0666`), so any local

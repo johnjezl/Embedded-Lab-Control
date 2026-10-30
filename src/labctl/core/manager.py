@@ -1031,6 +1031,34 @@ class ResourceManager:
         names.discard(None)
         return sorted(names)
 
+    def sbcs_using_serial_links(self, link_names: Optional[Iterable[str]]) -> list[str]:
+        """Names of SBCs with a serial port that reaches its adapter through
+        one of these ``/dev/lab/<name>`` links (None: any link): assigned by
+        that path (or a bare legacy ``<name>``), or linked to the registered
+        adapter of that name. A port assigned by another path
+        (``/dev/ttyUSB0``, ``/dev/serial/by-id/...``) doesn't use a link."""
+        wanted = None if link_names is None else set(link_names)
+        if wanted is not None and not wanted:
+            return []
+        rows = self.db.execute(
+            "SELECT s.name, p.device_path, d.name AS device_name"
+            " FROM serial_ports p JOIN sbcs s ON s.id = p.sbc_id"
+            " LEFT JOIN serial_devices d ON d.id = p.serial_device_id"
+        )
+        names: set[str] = set()
+        for r in rows:
+            path = r["device_path"] or ""
+            if path.startswith("/dev/lab/"):
+                link = os.path.normpath(path)[len("/dev/lab/") :]
+            elif path and "/" not in path:
+                link = path
+            else:
+                link = None
+            used = {n for n in (link, r["device_name"]) if n}
+            if used and (wanted is None or used & wanted):
+                names.add(r["name"])
+        return sorted(names)
+
     def _serial_identity(
         self, device_path: Optional[str], serial_device_id: Optional[int]
     ) -> set:

@@ -624,29 +624,59 @@ def _display_recent_activity(manager, *, limit: int = 5) -> None:
 
 
 def _sdwire_host_switch_guard_cli(
-    sbc_name: str, sbc, force: bool = False, allow_force_override: bool = False
+    sbc_name: str,
+    sbc,
+    force: bool = False,
+    allow_force_override: bool = False,
+    *,
+    fail_closed: bool = False,
 ) -> str | None:
-    """Refuse host-mode switching when the SBC still appears powered on."""
-    if force or not sbc.power_plug:
+    """Refuse host-mode switching when the SBC still appears powered on.
+
+    With ``fail_closed`` (``sdwire host``, like MCP ``sdwire_to_host``),
+    proceed only when the plug reports the board OFF: no plug, a plug
+    that can't be read, or another state refuse too. Without it (the CLI
+    ``sdwire ls``/``cat``/``info``) only a plug reporting ON refuses.
+    ``force`` skips the check either way.
+    """
+    if force:
         return None
+    override = (
+        "\nUse --force to override (risks SD card corruption)."
+        if allow_force_override
+        else ""
+    )
+    if not sbc.power_plug:
+        if not fail_closed:
+            return None
+        return (
+            f"Error: {sbc_name} has no power plug, so labctl can't confirm it "
+            f"is off. Make sure the board is off first.{override}"
+        )
+
+    from labctl.power import PowerController
+    from labctl.power.base import PowerState
 
     try:
-        from labctl.power import PowerController
-        from labctl.power.base import PowerState
-
-        power_ctrl = PowerController.from_plug(sbc.power_plug)
-        state = power_ctrl.get_state()
-        if state == PowerState.ON:
-            message = (
-                f"Error: {sbc_name} is powered on. Power off before "
-                f"switching SD to host mode."
-            )
-            if allow_force_override:
-                message += "\nUse --force to override (risks SD card corruption)."
-            return message
-    except Exception:
-        return None
-
+        state = PowerController.from_plug(sbc.power_plug).get_state()
+    except Exception as e:
+        if not fail_closed:
+            return None
+        return (
+            f"Error: could not read the power state of {sbc_name}: {e}. Make "
+            f"sure the board is off first.{override}"
+        )
+    if state == PowerState.ON:
+        return (
+            f"Error: {sbc_name} is powered on. Power off before "
+            f"switching SD to host mode.{override}"
+        )
+    if fail_closed and state != PowerState.OFF:
+        return (
+            f"Error: the power state of {sbc_name} is {state.value}, so labctl "
+            f"can't confirm it is off. Make sure the board is off first."
+            f"{override}"
+        )
     return None
 
 
@@ -1350,13 +1380,12 @@ def info_cmd(ctx: click.Context, name: str) -> None:
     type=float,
     default=None,
     help=(
-        "Per-SBC power-cycle off→on delay (seconds, 0-86400). Used as both the "
-        "default and the floor for CLI `power cycle --delay`, and as the "
-        "delay of `enter-recovery`/`exit-recovery` (CLI and MCP); other "
-        "reboots (MCP/REST power cycle, sdwire --reboot, boot-test) don't "
-        "use it. Pass a negative "
-        "number (e.g. -1) to clear the override and fall back to the default "
-        f"({DEFAULT_POWER_CYCLE_DELAY_SECONDS}s)."
+        "Per-SBC power-cycle off→on delay (seconds, 0-86400). The default "
+        "and the minimum for every power cycle of the board: `power cycle`, "
+        "the reboot after `sdwire flash`/`update`, `boot-test`, "
+        "`enter-recovery`/`exit-recovery`, and MCP/REST/web cycles. Pass a "
+        "negative number (e.g. -1) to clear the override and fall back to the "
+        f"default ({DEFAULT_POWER_CYCLE_DELAY_SECONDS}s)."
     ),
 )
 @click.pass_context
@@ -1644,15 +1673,20 @@ def sdwire_dut_cmd(ctx: click.Context, sbc_name: str) -> None:
 @destructive_command("Switch the SD card to the host (away from the board)")
 @claim_checked()
 @click.argument("sbc_name")
-@click.option("--force", is_flag=True, help="Override power-on safety check")
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Skip the power-off check (risks SD card corruption if the board runs)",
+)
 @click.pass_context
 def sdwire_host_cmd(ctx: click.Context, sbc_name: str, force: bool) -> None:
     """Switch SD card to host (dev machine can flash it).
 
-    Refuses if the SBC's plug reports it powered on, to prevent SD card bus
-    contention. The check is skipped when the SBC has no plug or its state
-    can't be read. Use --force to override (e.g., if SBC is halted but power
-    relay is on).
+    Proceeds only when the SBC's plug reports it off, to prevent SD card bus
+    contention: refuses when the plug reports it on, when the SBC has no
+    plug, or when its state can't be read or is unknown. Use --force to
+    override (e.g. the board is halted but its plug is on, or it has no
+    plug and you know it is off).
     """
     from labctl.sdwire.controller import SDWireController
 
@@ -1667,7 +1701,7 @@ def sdwire_host_cmd(ctx: click.Context, sbc_name: str, force: bool) -> None:
         sys.exit(1)
 
     guard_err = _sdwire_host_switch_guard_cli(
-        sbc_name, sbc, force=force, allow_force_override=True
+        sbc_name, sbc, force=force, allow_force_override=True, fail_closed=True
     )
     if guard_err:
         click.echo(guard_err, err=True)
@@ -1763,6 +1797,10 @@ def sdwire_flash_cmd(
             sys.exit(1)
         post_pairs.append((src, dest))
 
+    reboot_delay = None
+    if not no_reboot and sbc.power_plug:
+        reboot_delay = _reboot_cycle_delay(sbc)
+
     if dry_run:
         from labctl.sdwire.controller import _validate_image_file
 
@@ -1784,7 +1822,10 @@ def sdwire_flash_cmd(
         )
         steps.append("switch the card back to the board")
         if not no_reboot and sbc.power_plug:
-            steps.append(f"power-cycle {sbc_name}")
+            steps.append(
+                f"power-cycle {sbc_name} (waiting {reboot_delay}s between off "
+                "and on)"
+            )
         click.echo("Dry run: would " + "; ".join(steps) + ". Nothing changed.")
         return
 
@@ -1870,7 +1911,7 @@ def sdwire_flash_cmd(
 
             power_ctrl = PowerController.from_plug(sbc.power_plug)
             try:
-                ok = power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
+                ok = power_cycle_with_bindings(manager, sbc, power_ctrl, reboot_delay)
             except (ActuationError, RuntimeError) as e:
                 raise RuntimeError(
                     f"flashed, but the power cycle failed and {sbc_name} may be "
@@ -2013,6 +2054,10 @@ def sdwire_update_cmd(
     # Deletes are just filenames, no parsing needed
     delete_list = list(deletes)
 
+    reboot_delay = None
+    if reboot and sbc.power_plug:
+        reboot_delay = _reboot_cycle_delay(sbc)
+
     if dry_run:
         steps = []
         if sbc.power_plug:
@@ -2026,7 +2071,10 @@ def sdwire_update_cmd(
         steps.extend(f"delete {name}" for name in delete_list)
         steps.append("unmount and switch the card back to the board")
         if reboot and sbc.power_plug:
-            steps.append(f"power-cycle {sbc_name}")
+            steps.append(
+                f"power-cycle {sbc_name} (waiting {reboot_delay}s between off "
+                "and on)"
+            )
         click.echo("Dry run: would " + "; ".join(steps) + ". Nothing changed.")
         return
 
@@ -2094,7 +2142,7 @@ def sdwire_update_cmd(
 
             power_ctrl = PowerController.from_plug(sbc.power_plug)
             try:
-                ok = power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
+                ok = power_cycle_with_bindings(manager, sbc, power_ctrl, reboot_delay)
             except (ActuationError, RuntimeError) as e:
                 raise RuntimeError(
                     f"files updated, but the power cycle failed and {sbc_name} "
@@ -2484,26 +2532,39 @@ def serial_add_cmd(
         sys.exit(1)
 
 
+def _serial_remove_claim_check(ctx, kwargs, override, probe):
+    """An adapter belongs to every board with a port on it, by any path
+    (``/dev/lab/<name>``, its registration, or a path resolving to the
+    same device node, such as the ``/dev/ttyUSB0`` behind the link)."""
+    if not ctx.obj["config"].claims.enabled:
+        return []
+    manager = _get_manager(ctx)
+    device = manager.get_serial_device_by_name(kwargs["name"])
+    if not device:
+        return []  # the command reports it
+    boards = manager.sbcs_sharing_hardware(
+        serial_device_path=f"/dev/lab/{device.name}", serial_device_id=device.id
+    )
+    return _check_claims_of_cli(ctx, boards, override, probe=probe)
+
+
 @serial_group.command("remove")
+@destructive_command("Unregister a USB-serial adapter")
+@claim_checked(check=_serial_remove_claim_check)
 @click.argument("name")
-@click.option(
-    "--yes",
-    "-y",
-    is_flag=True,
-    help="Skip confirmation (asked even when not on a terminal)",
-)
 @click.pass_context
-def serial_remove_cmd(ctx: click.Context, name: str, yes: bool) -> None:
-    """Unregister a USB-serial adapter."""
+def serial_remove_cmd(ctx: click.Context, name: str) -> None:
+    """Unregister a USB-serial adapter.
+
+    Refuses when a board someone else has claimed has a port on the
+    adapter, by any path that reaches it (--override-claim to proceed).
+    """
     manager = _get_manager(ctx)
 
     device = manager.get_serial_device_by_name(name)
     if not device:
         click.echo(f"Error: Serial device '{name}' not found", err=True)
         sys.exit(1)
-
-    if not yes:
-        click.confirm(f"Remove serial device '{name}'?", abort=True)
 
     try:
         manager.delete_serial_device(device.id)
@@ -2624,12 +2685,40 @@ def serial_rename_cmd(ctx: click.Context, name: str, new_name: str) -> None:
         sys.exit(1)
 
 
+def _serial_udev_claim_check(ctx, kwargs, override, probe):
+    """Installing the rules removes or re-points the ``/dev/lab/<name>``
+    links that differ from the installed file; refuse when a board someone
+    else has claimed reaches its adapter through one of them. A rules file
+    that can't be read counts as changing every link."""
+    if not kwargs.get("install") or not ctx.obj["config"].claims.enabled:
+        return []
+    from labctl.serial.udev import changed_links, installed_rule_links
+
+    manager = _get_manager(ctx)
+    devices = manager.list_serial_devices()
+    if not devices:
+        return []  # nothing is installed
+    old = installed_rule_links()
+    if old is None:
+        boards = manager.sbcs_using_serial_links(None)
+    else:
+        new = {d.name: d.usb_path for d in devices}
+        boards = manager.sbcs_using_serial_links(changed_links(old, new))
+    return _check_claims_of_cli(ctx, boards, override, probe=probe)
+
+
 @serial_group.command("udev")
+@claim_checked(check=_serial_udev_claim_check)
 @click.option("--install", is_flag=True, help="Install rules to /etc/udev/rules.d/")
 @click.option("--reload", is_flag=True, help="Reload udev rules after install")
 @click.pass_context
 def serial_udev_cmd(ctx: click.Context, install: bool, reload: bool) -> None:
-    """Generate udev rules from registered serial devices."""
+    """Generate udev rules from registered serial devices.
+
+    With --install, refuses when the new rules would remove or re-point a
+    /dev/lab/<name> link that a board someone else has claimed uses for a
+    port (--override-claim to proceed).
+    """
     from labctl.serial.udev import (
         device_group_note,
         generate_udev_rules,
@@ -3461,11 +3550,13 @@ def _resolve_cycle_delay(sbc, requested: float | None) -> tuple[float, str | Non
 
     Returns a tuple ``(delay, warning)``. ``warning`` is a human-readable
     string when the requested value was raised to the floor, else None.
+    An out-of-range stored value raises StoredCycleDelayError (a
+    ValueError whose message says how to clear it).
     """
-    sbc_value = getattr(sbc, "power_cycle_delay_seconds", None)
-    floor = (
-        float(sbc_value) if sbc_value is not None else DEFAULT_POWER_CYCLE_DELAY_SECONDS
-    )
+    from labctl.actuators.runtime import stored_cycle_delay
+
+    sbc_value = stored_cycle_delay(sbc)
+    floor = sbc_value if sbc_value is not None else DEFAULT_POWER_CYCLE_DELAY_SECONDS
 
     if requested is None:
         return floor, None
@@ -3478,6 +3569,18 @@ def _resolve_cycle_delay(sbc, requested: float | None) -> tuple[float, str | Non
             f"--delay {requested}s is below the {source} of {floor}s; using {floor}s",
         )
     return requested, None
+
+
+def _reboot_cycle_delay(sbc) -> float:
+    """The delay a reboot (power cycle) of ``sbc`` will wait, checked
+    before anything is changed: an out-of-range stored delay exits."""
+    from labctl.actuators.runtime import board_cycle_delay
+
+    try:
+        return board_cycle_delay(sbc)
+    except ValueError as e:
+        click.echo(f"Error: {e}. Nothing changed.", err=True)
+        sys.exit(1)
 
 
 @power_group.command("cycle")
@@ -3522,25 +3625,14 @@ def power_cycle_cmd(
         validate_cycle_delay,
     )
 
-    effective_delay, warning = _resolve_cycle_delay(sbc, delay)
+    try:
+        effective_delay, warning = _resolve_cycle_delay(sbc, delay)
+        validate_cycle_delay(effective_delay)
+    except ValueError as e:  # incl. an out-of-range stored delay
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
     if warning:
         click.echo(f"Warning: {warning}", err=True)
-    try:
-        validate_cycle_delay(effective_delay)
-    except ValueError as e:
-        click.echo(f"Error: {e}", err=True)
-        stored = sbc.power_cycle_delay_seconds
-        if stored is not None:
-            try:
-                validate_cycle_delay(stored)
-            except ValueError:
-                # Stored before edit --cycle-delay checked the range.
-                click.echo(
-                    f"The delay stored for {sbc_name} is out of range; clear "
-                    f"it with: labctl edit {sbc_name} --cycle-delay -1",
-                    err=True,
-                )
-        sys.exit(1)
 
     if dry_run:
         plug = sbc.power_plug
@@ -4279,7 +4371,11 @@ def _run_composite(ctx, sbc_name: str, fn_name: str, fn) -> None:
         sys.exit(1)
 
     controller, _sbc = _get_power_controller(manager, sbc_name)
-    delay, _warning = _resolve_cycle_delay(sbc, None)
+    try:
+        delay, _warning = _resolve_cycle_delay(sbc, None)
+    except ValueError as e:  # an out-of-range stored delay; nothing touched
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
 
     try:
         fn(manager, sbc, controller, delay_s=delay)
@@ -6159,8 +6255,9 @@ def boot_test_cmd(
             click.echo("Error: --dest is required with --image", err=True)
             sys.exit(1)
 
-    # Every run power-cycles through the pre_power relays: check them
-    # before deploying anything.
+    # Every run power-cycles through the pre_power relays and waits the
+    # board's cycle delay: check both before deploying anything.
+    cycle_delay = _reboot_cycle_delay(sbc)
     from labctl.actuators.runtime import ActuationError, check_power_on
 
     try:
@@ -6204,7 +6301,7 @@ def boot_test_cmd(
 
         power_ctrl = PowerController.from_plug(sbc.power_plug)
         try:
-            ok = power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
+            ok = power_cycle_with_bindings(manager, sbc, power_ctrl, cycle_delay)
         except ActuationError as e:
             # Recorded as a failed run, like a plug failure.
             raise RuntimeError(str(e)) from e

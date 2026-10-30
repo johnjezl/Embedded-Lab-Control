@@ -5,6 +5,7 @@ Generates and installs udev rules from the serial_devices database table,
 creating /dev/lab/<name> symlinks for registered USB-serial adapters.
 """
 
+import re
 import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -45,6 +46,40 @@ def generate_udev_rules(devices: list["SerialDevice"]) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+
+_RULE_LINK_RE = re.compile(r'KERNELS=="([^"]*)".*?SYMLINK\+="lab/([^"]+)"')
+
+
+def rule_links(rules_text: str) -> dict[str, str]:
+    """The ``/dev/lab/<name>`` links a rules file creates: name -> USB path."""
+    links = {}
+    for line in rules_text.splitlines():
+        line = line.strip()
+        if line.startswith("#"):
+            continue
+        m = _RULE_LINK_RE.search(line)
+        if m:
+            links[m.group(2)] = m.group(1)
+    return links
+
+
+def installed_rule_links(rules_path: Path | None = None) -> dict[str, str] | None:
+    """The links the installed rules file creates ({} when there is none
+    yet), or None when it exists but can't be read."""
+    try:
+        return rule_links((rules_path or UDEV_RULES_PATH).read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def changed_links(old: dict[str, str], new: dict[str, str]) -> set[str]:
+    """Link names that installing ``new`` over ``old`` removes or points
+    at a different USB path. New names only add links, so they're not
+    included."""
+    return {name for name, usb_path in old.items() if new.get(name) != usb_path}
 
 
 def device_group_note(group: str = "dialout") -> str | None:

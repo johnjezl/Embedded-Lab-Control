@@ -1066,3 +1066,181 @@ class TestRoundNineFixes:
         )
         port = manager.assign_serial_port(sbc_id, PortType.CONSOLE, "/dev/lab/new")
         assert (port.device_path, port.tcp_port) == ("/dev/lab/new", 65535)
+
+
+class TestSerialAdapters:
+    """`serial remove` and `serial udev --install` are claim-checked (#41)."""
+
+    @pytest.fixture
+    def unlinked(self, lab, monkeypatch):
+        """pi-a's console is assigned by /dev/ttyUSB7, the node behind
+        /dev/lab/port-a, so the port isn't linked to the registration."""
+        _, manager, _ = lab
+        device = manager.create_serial_device("port-a", "1-1.1")
+        manager.assign_serial_port(
+            manager.get_sbc_by_name("pi-a").id, PortType.CONSOLE, "/dev/ttyUSB7"
+        )
+        real = __import__("os").path.realpath
+        nodes = {"/dev/lab/port-a": "/dev/ttyUSB7", "/dev/ttyUSB7": "/dev/ttyUSB7"}
+        monkeypatch.setattr(
+            "labctl.core.manager.os.path.realpath", lambda p: nodes.get(p) or real(p)
+        )
+        return device
+
+    def test_serial_remove_refused_for_a_claimed_boards_adapter(self, lab, unlinked):
+        run, manager, _ = lab
+        result = run("serial", "remove", "port-a", "--yes")
+        assert result.exit_code == 1
+        assert "'pi-a' is claimed by 'agent-x'" in result.output
+        assert "--override-claim" in result.output
+        assert manager.get_serial_device_by_name("port-a") is not None
+
+    def test_serial_remove_override_removes_and_logs(self, lab, unlinked):
+        run, manager, _ = lab
+        result = run("serial", "remove", "port-a", "--yes", "--override-claim")
+        assert result.exit_code == 0, result.output
+        assert manager.get_serial_device_by_name("port-a") is None
+        assert len(_overrides(manager, "pi-a")) == 1
+
+    def test_serial_remove_by_legacy_bare_name_refused(self, lab):
+        run, manager, _ = lab
+        manager.create_serial_device("port-b", "1-1.2")
+        manager.db.execute_modify(
+            "INSERT INTO serial_ports (sbc_id, port_type, device_path, tcp_port,"
+            " baud_rate) VALUES (?, 'console', 'port-b', 4555, 115200)",
+            (manager.get_sbc_by_name("pi-a").id,),
+        )
+        result = run("serial", "remove", "port-b", "--yes")
+        assert result.exit_code == 1
+        assert "'pi-a' is claimed by 'agent-x'" in result.output
+
+    def test_serial_remove_of_an_unclaimed_boards_adapter(self, lab, monkeypatch):
+        run, manager, _ = lab
+        manager.create_serial_device("port-c", "1-1.3")
+        result = run("serial", "remove", "port-c", "--yes")
+        assert result.exit_code == 0, result.output
+        assert manager.get_serial_device_by_name("port-c") is None
+
+    def test_serial_remove_refuses_before_asking(self, lab, unlinked, monkeypatch):
+        run, manager, _ = lab
+        monkeypatch.setattr("labctl.cli._stdin_is_tty", lambda: True)
+        result = run("serial", "remove", "port-a", input="y\n")
+        assert result.exit_code == 1
+        assert "Continue?" not in result.output
+        assert manager.get_serial_device_by_name("port-a") is not None
+
+    def test_serial_remove_asks_only_on_a_terminal(self, lab):
+        run, manager, _ = lab
+        manager.create_serial_device("port-c", "1-1.3")
+        result = run("serial", "remove", "port-c")
+        assert result.exit_code == 0, result.output
+        assert "Continue?" not in result.output
+        assert manager.get_serial_device_by_name("port-c") is None
+
+    @pytest.fixture
+    def rules(self, tmp_path, monkeypatch):
+        """The installed rules file, and the rules each install writes."""
+        path = tmp_path / "99-lab-serial.rules"
+        monkeypatch.setattr("labctl.serial.udev.UDEV_RULES_PATH", path)
+        installed = []
+        monkeypatch.setattr(
+            "labctl.serial.udev.install_udev_rules", lambda text: installed.append(text)
+        )
+        return path, installed
+
+    def _console_on_link(self, manager, link):
+        manager.assign_serial_port(
+            manager.get_sbc_by_name("pi-a").id, PortType.CONSOLE, f"/dev/lab/{link}"
+        )
+
+    def test_udev_install_refused_when_a_claimed_boards_link_moves(self, lab, rules):
+        """port-a's adapter was re-registered on another USB path."""
+        from labctl.serial.udev import generate_udev_rules
+
+        run, manager, _ = lab
+        path, installed = rules
+        device = manager.create_serial_device("port-a", "1-1.1")
+        path.write_text(generate_udev_rules([device]))
+        manager.db.execute_modify(
+            "UPDATE serial_devices SET usb_path = '1-9.9' WHERE id = ?", (device.id,)
+        )
+        self._console_on_link(manager, "port-a")
+
+        result = run("serial", "udev", "--install")
+        assert result.exit_code == 1
+        assert "'pi-a' is claimed by 'agent-x'" in result.output
+        assert installed == []
+
+        result = run("serial", "udev", "--install", "--override-claim")
+        assert result.exit_code == 0, result.output
+        assert len(installed) == 1
+        assert len(_overrides(manager, "pi-a")) == 1
+
+    def test_udev_install_refused_when_a_claimed_boards_link_goes(self, lab, rules):
+        """port-a was renamed: its old link disappears."""
+        from labctl.serial.udev import generate_udev_rules
+
+        run, manager, _ = lab
+        path, installed = rules
+        device = manager.create_serial_device("port-a", "1-1.1")
+        path.write_text(generate_udev_rules([device]))
+        manager.db.execute_modify(
+            "UPDATE serial_devices SET name = 'port-z' WHERE id = ?", (device.id,)
+        )
+        manager.db.execute_modify(
+            "INSERT INTO serial_ports (sbc_id, port_type, device_path, tcp_port,"
+            " baud_rate) VALUES (?, 'console', '/dev/lab/port-a', 4556, 115200)",
+            (manager.get_sbc_by_name("pi-a").id,),
+        )
+
+        result = run("serial", "udev", "--install")
+        assert result.exit_code == 1
+        assert "'pi-a' is claimed by 'agent-x'" in result.output
+        assert installed == []
+
+    def test_udev_install_with_unchanged_links_allowed(self, lab, rules):
+        from labctl.serial.udev import generate_udev_rules
+
+        run, manager, _ = lab
+        path, installed = rules
+        device = manager.create_serial_device("port-a", "1-1.1")
+        path.write_text(generate_udev_rules([device]))
+        self._console_on_link(manager, "port-a")
+        manager.create_serial_device("port-new", "1-1.7")  # only adds a link
+
+        result = run("serial", "udev", "--install")
+        assert result.exit_code == 0, result.output
+        assert len(installed) == 1
+
+    def test_udev_install_first_time_allowed(self, lab, rules):
+        run, manager, _ = lab
+        _, installed = rules
+        manager.create_serial_device("port-a", "1-1.1")
+        self._console_on_link(manager, "port-a")
+
+        result = run("serial", "udev", "--install")
+        assert result.exit_code == 0, result.output
+        assert len(installed) == 1
+
+    def test_udev_install_unreadable_rules_count_as_every_link(self, lab, rules):
+        run, manager, _ = lab
+        path, installed = rules
+        path.mkdir()  # exists, can't be read as a file
+        manager.create_serial_device("port-a", "1-1.1")
+        self._console_on_link(manager, "port-a")
+
+        result = run("serial", "udev", "--install")
+        assert result.exit_code == 1
+        assert "'pi-a' is claimed by 'agent-x'" in result.output
+        assert installed == []
+
+    def test_udev_without_install_not_checked(self, lab, rules):
+        run, manager, _ = lab
+        path, _ = rules
+        path.mkdir()
+        manager.create_serial_device("port-a", "1-1.1")
+        self._console_on_link(manager, "port-a")
+
+        result = run("serial", "udev")
+        assert result.exit_code == 0, result.output
+        assert 'SYMLINK+="lab/port-a"' in result.output

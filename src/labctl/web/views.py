@@ -111,7 +111,7 @@ def sbc_power_action(name: str, action: str):
             success = controller.power_off()
             msg = "Power OFF" if success else "Failed to power off"
         else:
-            success = power_cycle_with_bindings(g.manager, sbc, controller, 3.0)
+            success = power_cycle_with_bindings(g.manager, sbc, controller)
             msg = "Power cycled" if success else "Failed to power cycle"
 
         flash(msg, "success" if success else "error")
