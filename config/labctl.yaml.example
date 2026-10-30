@@ -1,7 +1,22 @@
 # Lab Controller Configuration
 #
-# Copy this file to ~/.config/labctl/config.yaml and customize as needed.
-# Environment variables can override any setting (see documentation).
+# Copy this file to ~/.config/labctl/config.yaml (or, for the system
+# services, /etc/labctl/config.yaml) and customize as needed. Search order:
+# -c FILE, $LABCTL_CONFIG, ~/.config/labctl/config.yaml,
+# /etc/labctl/config.yaml, built-in defaults.
+#
+# Only these environment variables override settings:
+#   LABCTL_DEV_DIR            serial.dev_dir
+#   LABCTL_BASE_TCP_PORT      serial.base_tcp_port
+#   LABCTL_DATABASE_PATH      database_path
+#   LABCTL_DATABASE_TIMEOUT   database.timeout_seconds
+#   LABCTL_LOG_LEVEL          log_level
+#   LABCTL_PROXY_ENABLED      proxy.enabled
+#   LABCTL_PROXY_PORT_BASE    proxy.port_base
+#   LABCTL_PROXY_WRITE_POLICY proxy.write_policy
+#   LABCTL_PROXY_LOG_DIR      proxy.log_dir
+# LABCTL_CONFIG names the config file (LABCTL_CONFIG_EXCLUSIVE=1: only that
+# file), and LABCTL_SYSTEM_CONFIG replaces /etc/labctl/config.yaml.
 
 # Serial port settings
 serial:
@@ -21,6 +36,30 @@ ser2net:
 
   # Enable ser2net integration (set to false for direct serial only)
   enabled: true
+
+# Multi-client serial proxy (`labctl proxy start`); defaults shown.
+# proxy:
+#   enabled: true
+#   port_base: 5500
+#   port_range: 100            # ports 5500-5599
+#   write_policy: first        # first, all or queue
+#   log_dir: ~/.local/share/labctl/logs   # default: $XDG_DATA_HOME/labctl/logs
+#   log_retention_days: 7
+#   max_clients: 10
+#   idle_timeout: 3600         # seconds
+
+# Health checks and the monitor daemon (`labctl monitor`); defaults shown.
+# health:
+#   check_interval: 10         # seconds between ping + serial checks
+#   power_check_interval: 60   # seconds between power-plug probes
+#   min_sleep_seconds: 1.0
+#   ping_timeout: 2.0
+#   serial_timeout: 2.0
+#   status_retention_days: 30
+#   alert_log_path: ~/.local/share/labctl/alerts.log  # default: $XDG_DATA_HOME/labctl/alerts.log
+#   alert_on_offline: true
+#   alert_on_power_change: true
+#   update_status_on_check: true
 
 # Authentication (disabled by default). Also secures `labctl mcp --http`:
 # with auth enabled, MCP HTTP clients must send
@@ -61,6 +100,14 @@ ser2net:
 #   # Recommended when several agents share the lab. Needs claims
 #   # enabled.
 #   require_claim: false
+#   # Claim durations, in whole minutes (out-of-range values are clamped).
+#   default_duration_minutes: 30
+#   min_duration_minutes: 1
+#   max_duration_minutes: 1440
+#   # An expired claim stays its holder's for this long before it is freed.
+#   grace_period_seconds: 60
+#   # `labctl claims expire` prunes released claims older than this.
+#   auto_prune_released_after_days: 30
 
 # Web server SSL/TLS (disabled by default, serves HTTP)
 # To enable HTTPS, generate a self-signed certificate:
@@ -110,9 +157,18 @@ mcp:
   # names are always accepted when bound to 127.0.0.1.
   # allowed_hosts: ["lab.example.com", "lab.example.com:*"]
   # allowed_origins: ["https://lab.example.com"]
+  # Security gate: actuator_add / actuator_remove / actuator_set (raw relay
+  # access that bypasses bindings) are refused over MCP unless this is
+  # true. Default false. Write an unquoted true/false: a quoted string such
+  # as "false" currently counts as on.
+  # allow_admin_actuator_ops: false
+
+# SQLite busy-wait when another process holds a write lock (seconds).
+# database:
+#   timeout_seconds: 10.0
 
 # Database path for SBC and resource tracking
 database_path: ~/.config/labctl/labctl.db
 
-# Logging level (DEBUG, INFO, WARNING, ERROR)
+# Logging level (DEBUG, INFO, WARNING, ERROR); WARNING when unset
 log_level: INFO

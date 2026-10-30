@@ -25,6 +25,9 @@ This document outlines the phased implementation of the Lab Controller System. E
 | M6 | Multi-Client Serial | Shared serial access |
 | M7 | Monitoring | Health checks and status tracking |
 | Auth | Authentication | Web login, API keys, CSRF |
+| Claims | Hardware claims | Exclusive access coordination (PR #1; enforcement PRs #22/#24/#25) |
+| Actuators | USB relays + bindings | Relay channels bound to (SBC, purpose); `pre_power` straps (PR #4, #37) |
+| Release | PyPI release | P0 installable, P1 safety (done); P2 publish (next) |
 
 ---
 
@@ -599,10 +602,14 @@ This document outlines the phased implementation of the Lab Controller System. E
 ```
 click>=8.0
 pyyaml>=6.0
-flask>=3.0
-flask-socketio>=5.0
-python-kasa>=0.12 (optional; 0.7.7 on Python 3.10)
 requests>=2.28
+# extras (pyproject.toml)
+web:        flask>=3.0, flask-socketio>=5.0
+mcp:        mcp>=2.2,<3
+kasa:       python-kasa>=0.12 (Python 3.11+; 0.7.7 on 3.10)
+sdwire:     sdwire>=0.3 (Python 3.12+ only)
+actuators:  pyserial>=3.5
+dev:        pytest, pytest-cov, black==26.5.1, isort==9.0.1, flake8==7.4.1
 ```
 
 ### System Packages
@@ -618,7 +625,7 @@ picocom or minicom (for direct serial access)
 
 ## Appendix B: Testing Strategy
 
-### Unit Tests (188 total)
+### Unit Tests (188 at M7; 1985 tests collected in total on 2026-10-29)
 - ✅ Database operations (test_database.py - 8 tests)
 - ✅ Model serialization (test_manager.py - 19 tests)
 - ✅ Config loading (test_config.py - 17 tests)
@@ -699,7 +706,8 @@ preventing destructive interference between concurrent workflows.
 - ✅ Heartbeat on every claimant tool call (via `_check_claim`)
 - ✅ Tests: claim tools (round-trip, conflict, renew, force-release,
   request-release, resources, claim enforcement on power_on/remove_sbc)
-- ☐ HTTP session ID via FastMCP `ctx.session_id` (deferred to Phase C)
+- ⏸️ HTTP session ID via FastMCP `ctx.session_id` — deferred; HTTP uses
+  `mcp-http:<pid>-<epoch>`, per authenticated user `…:<username>` (PR #16)
 
 ### Phase C: Expiry and dead-session handling
 
@@ -713,7 +721,8 @@ preventing destructive interference between concurrent workflows.
 - ✅ Logging via `logger.info` for auto-release events + audit_log
 - ✅ Tests: dead PID release, alive PID skip, CLI session skipped,
   grace period respected, atexit release, other-session ignored
-- ☐ MCP HTTP session liveness (FastMCP session expiry) — deferred
+- ⏸️ MCP HTTP session liveness (FastMCP session expiry) — deferred (the
+  sweep checks the server process for `mcp-http` claims too)
 
 ### Phase D: Operator tooling
 
@@ -823,7 +832,7 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
     `mcp.allowed_origins`) on top of the loopback names
   - ✅ Review follow-ups from #15: confirm tokens bound to the
     authenticated user; accurate error for an output dir that is a file
-- WS5 Wrap-up — in progress
+- WS5 Wrap-up — merged (PR #18)
   - ✅ Security overview in `docs/MCP_SERVER.md` (controls table, known
     limits, deployment checklist); README safety note and doc links
   - ✅ `SECURITY.md` (private vulnerability reporting)
@@ -834,7 +843,8 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
     via `labctl.core.admin_files` (no symlink/hard-link following as root)
   - ⏸️ Remaining by-path root operations under `/var/lib/labctl`
     (`chown -R`, `mkdir -p`, drift `cmp`, allowlist read): #19
-  - ☐ Deploy Phase 1 to tarrasque (allowlist config, client heads-up)
+  - ✅ Deploy Phase 1 to tarrasque (allowlist config, client heads-up);
+    everything through PR #37 deployed 2026-10-29
 - Claim enforcement on every surface (D013), three PRs
   - ✅ Part 1: core + MCP — roles, claim owners (schema v9),
     `claims.require_claim`, config tools and shared hardware checked
@@ -847,3 +857,39 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
   into `mcp.upload_dir`, bare image names in tools, `list_images` /
   `delete_image`, uploader-or-operator replace/delete (schema v10),
   `labctl mcp --cert/--key`
+
+## Feature: Actuators (USB relays + per-target bindings)
+
+**Spec**: `docs/SPEC_actuators.md`
+
+- ✅ Schema v8: `actuators`, `actuator_channels`, `bindings` (PR #4)
+- ✅ `lcus1_serial` driver, mock driver, `RelayDriver` ABC with
+  `WriteOutcome` / side-effect-free probe (PR #4)
+- ✅ CLI `actuator add/list/probe/set/remove`, `bind`/`unbind`,
+  `bindings list/actuate/release/press/status`,
+  `enter-recovery`/`exit-recovery`; matching MCP tools, with
+  `actuator_add/remove/set` behind `mcp.allow_admin_actuator_ops` (PR #4)
+- ✅ Monitor-daemon start-up safe drive gated by `desired_state` (PR #4)
+- ✅ Relay open failures reported as one error line with a group hint;
+  relays checked before a cycle powers off (PR #35)
+- ✅ `pre_power` bindings applied on every power-on path (CLI, MCP, web,
+  REST, boot-test, post-flash reboots, recovery), including boards sharing
+  the outlet; relays checked before switching (#36, PR #37)
+- ⏸️ Phase 8 live hardware validation on a Jetson Orin Nano + LCUS-1
+- ⏸️ `post_power` phase (stored, not acted on), relay probes in health
+  checks, other drivers, web UI
+
+## Fixes after Phase 1 WS4 (PRs #24–#37)
+
+- ✅ #24, #25 Claim enforcement parts 2/3 (CLI; web UI / REST)
+- ✅ #26 Image uploads over MCP HTTP + MCP TLS (schema v10)
+- ✅ #27 Config example comments for roles and claims
+- ✅ #28 Tests isolated from the machine's real config and database;
+  schema v11 repairs a pre-release `images` table
+- ✅ #29 `labctl mcp --http` waits for a busy port; `update.sh` waits
+  through systemd auto-restarts
+- ✅ #30 Kasa KLAP v2 on IOT devices (python-kasa ≥ 0.12 on 3.11+)
+- ✅ #31 KLAP-discovered Kasa strips re-typed so outlets work
+- ✅ #32 `list_images` guidance for stdio sessions
+- ✅ #34 MCP `serial_send` `keys` / `data_hex`
+- ✅ #35, #37 Actuator fixes (see Feature: Actuators)

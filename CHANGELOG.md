@@ -96,6 +96,46 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   the host before returning, and warns if it isn't, so an immediate
   follow-up read doesn't misjudge the mux position.
 
+### Changed (documentation audit)
+- README, CLI help, MCP tool descriptions and docs were audited against
+  the code and corrected. Users will notice:
+  - README examples that failed as written: `labctl power on <sbc>` (not
+    `power <sbc> on`), `port assign` with its port type, `monitor` (no
+    `--foreground`), `-r` on `claim`/`force-release`/`request-release`.
+    The REST table lists the real routes, with the power endpoint's
+    `delay`, `override_claim` and status codes (400/409 `switched:
+    false`/429/500).
+  - Install instructions use the extras from a checkout (`pip install -e
+    ".[web,mcp,kasa,sdwire,actuators]"`): the package isn't on PyPI yet.
+    The README gives the Python requirements, the config search order
+    (a personal `~/.config/labctl/config.yaml` wins over `/etc`), and the
+    `labctl serial udev` flow in place of `install-udev.sh`. The SDWire
+    sudoers rule adds `parted` and `blkid` and gets its own file.
+  - New README sections on relays, bindings and recovery (`pre_power`)
+    and on the common flags (`--yes`, `--override-claim`, `--dry-run`).
+  - `docs/MCP_SERVER.md` documents the actuator, binding and recovery
+    tools; the prompt names are `debug_sbc` and `lab_report`; 24 tools
+    need confirmation; every image-upload error is listed.
+  - CLI help and MCP tool descriptions say what commands actually do,
+    e.g. `sdwire flash`/`update` power the board off and leave it off
+    without a reboot; `power on`/`cycle` set the `pre_power` relays of
+    boards sharing the outlet too; MCP/REST cycles don't use the board's
+    stored cycle delay; `actuator set` points at `labctl bindings
+    actuate`; `bind --phase post-power` is stored but not acted on yet.
+  - `SECURITY.md` lists the controls and states the web UI's default
+    exposure: the shipped unit listens on `0.0.0.0` over HTTP, auth is
+    off by default, and CSRF applies only with auth.
+  - `config/labctl.yaml.example` lists the environment variables that
+    actually override settings, and the `claims`, `proxy`, `health` and
+    `database` keys and `mcp.allow_admin_actuator_ops` with their
+    defaults.
+  - `docs/OPERATIONS.md`: `run_health_check` is `shared-resource` (it
+    writes nothing); claim-unchecked commands and aliases are complete.
+  - `docs/HARDWARE_MAP.md` is a generic example; `SPEC_actuators.md`,
+    `STATUS.md`, `CLAUDE.md` (schema v11) and `IMPLEMENTATION.md` match
+    what was built; the `deploy-and-test` skill covers confirmation,
+    claims and image upload.
+
 ### Fixed
 - `pre_power` relay bindings (e.g. a `recovery_mode` strap) are now set
   before power-on on every path, not just CLI `power on`/`power cycle` and
@@ -115,9 +155,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   (a failure after power-off stays a 500), the web UI flashes it, after a
   flash or file update the tools report that the power cycle failed and
   why, and `boot-test` records the run as failed. A strap that fails after
-  power-off leaves the board off, and the error says so. A REST power
-  cycle with a `delay` outside 0–86400 seconds is now refused with a 400
-  before power-off (it used to switch the board off, then fail).
+  power-off leaves the board off, and the error says so. A power-cycle
+  delay outside 0–86400 seconds (or not a finite number) is now refused
+  before power-off: by CLI `power cycle` (also with `--dry-run`, and when
+  the board's stored delay is out of range), by MCP `power_cycle`, and by
+  the REST API with a 400. It used to switch the board off, then fail.
 - A relay that labctl can't open no longer crashes `power on`/`power
   cycle` (and the binding verbs and recovery composites) with a
   traceback; nor does an actuator whose driver isn't implemented. The
@@ -276,8 +318,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   before it reaches the server (#33). `newline` defaults to off when
   either is given. Its confirmation now shows the exact bytes it will
   send (`will_do`), and an unknown key or bad hex is refused before a
-  token is issued. The encodings have not been checked on real firmware
-  yet.
+  token is issued. F11 has been checked on a Jetson's UEFI; the other
+  encodings have not been checked on real firmware yet.
 - **Image uploads over MCP HTTP** (D014): `PUT /images/<name>` on the MCP
   HTTP port, with the same API key, stores a file in the new
   `mcp.upload_dir` (default empty: off); `flash_image`, `sdwire_update`
@@ -453,14 +495,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
     self-deadlock. Defensive — nothing in the current codebase
     triggers re-entry.
 
-### Added (actuators feature, P1–P7 — groundwork only, awaits hardware)
+### Added (actuators feature, P1–P7, PR #4)
 
 First-class support for USB-controlled relays as provisioned lab
 resources, with per-target purpose **bindings** (recovery_mode,
 boot_select, power_button, …) so verbs are semantic
 (`labctl enter-recovery jetson-nano-2`) rather than device-specific.
-Built per `docs/SPEC_actuators.md`. Live hardware validation (Phase 8)
-is the only remaining piece.
+Built per `docs/SPEC_actuators.md`. Since #37, `pre_power` straps are
+set on every power-on path (see Fixed above).
 
 - **Schema v8** — `actuators`, `actuator_channels`, `bindings` tables
   with CHECK constraints on enum columns, UNIQUE on

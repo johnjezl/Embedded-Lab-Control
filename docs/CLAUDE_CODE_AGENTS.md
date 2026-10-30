@@ -424,4 +424,6 @@ reads keys only at startup.
 ## Later
 
 Planned (not implemented yet): a labctl command that creates the user and
-key file in one step.
+key file in one step. (`labctl user add NAME` exists, but it is for web
+users: it always asks for a password and prints no `role`, so it doesn't
+fit agents.)

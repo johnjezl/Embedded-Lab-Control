@@ -14,11 +14,16 @@ Centralized management system for embedded development lab resources. Provides d
 - **Hardware Claims** - Exclusive-access coordination for long-running SBC workflows
 - **Session Logging** - Capture serial output with rotation and compression
 - **Authentication** - Session-based web login and API key auth (optional, disabled by default)
-- **Claude Code Skill** - `/deploy-and-test` orchestrates build, deploy, boot, and serial capture
+- **Claude Code Skill** - an example `/deploy-and-test` skill orchestrates build, deploy, boot, and serial capture over MCP ([install](#claude-code-skill-deploy-and-test))
 
 ## Installation
 
 ### Prerequisites
+
+- Linux, Python 3.10+. Some extras need newer Python: Kasa devices that use
+  KLAP v2 authentication need 3.11+ (`python-kasa` 0.12), and the `sdwire`
+  extra installs nothing below 3.12 (SDWire commands then report the package
+  as missing).
 
 ```bash
 # System packages
@@ -31,21 +36,51 @@ cd Embedded-Lab-Control
 
 ### Setup
 
+labctl is not on PyPI yet, so install it from a checkout:
+
 ```bash
 # Create virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
 
-# Install package
-pip install -e .
+# Install with the extras you need: web (dashboard/REST), mcp (AI
+# integration), kasa (TP-Link plugs), sdwire (SD muxes), actuators (USB relays)
+pip install -e ".[web,mcp,kasa,sdwire,actuators]"
 
-# Copy example config
+# Copy example config (a personal config; see "Config file search order")
 mkdir -p ~/.config/labctl
 cp config/labctl.yaml.example ~/.config/labctl/config.yaml
-
-# Install udev rules (optional, for deterministic naming)
-sudo ./scripts/install-udev.sh
 ```
+
+Once the package is published, `pip install 'embedded-lab-control[web,mcp]'`
+(the distribution name; the command is still `labctl`) will work as well.
+
+Deterministic `/dev/lab/<name>` serial names come from udev rules generated
+from the adapters you register:
+
+```bash
+labctl serial discover                 # find adapters and their USB paths
+labctl serial add sbc1-console 1-10.1.3
+labctl serial udev --install --reload  # write /etc/udev/rules.d/99-lab-serial.rules
+```
+
+For a shared, system-wide install with systemd services, see
+[Systemd Services](#systemd-services).
+
+### Config file search order
+
+labctl uses the first config file it finds:
+
+1. `-c/--config PATH` (only that file)
+2. `$LABCTL_CONFIG`
+3. `~/.config/labctl/config.yaml` (or `$XDG_CONFIG_HOME/labctl/config.yaml`)
+4. `/etc/labctl/config.yaml`
+5. Built-in defaults
+
+> **Warning:** a personal `~/.config/labctl/config.yaml` wins over the shared
+> `/etc/labctl/config.yaml`. On a system install, a personal config left over
+> from the Setup step silently points labctl at a different database than the
+> services use. Remove it, or pass `-c /etc/labctl/config.yaml`.
 
 ## Quick Start
 
@@ -53,8 +88,8 @@ sudo ./scripts/install-udev.sh
 # Add an SBC
 labctl add rpi4 --description "Raspberry Pi 4"
 
-# Assign a serial port
-labctl port assign rpi4 /dev/lab/rpi4 --baud 115200
+# Assign its console serial port (type: console, jtag or debug)
+labctl port assign rpi4 console /dev/lab/rpi4 --baud 115200
 
 # Assign a power plug (Tasmota example)
 labctl plug assign rpi4 tasmota 192.168.1.100
@@ -66,8 +101,8 @@ labctl status
 labctl console rpi4
 
 # Control power
-labctl power rpi4 on
-labctl power rpi4 cycle --delay 5
+labctl power on rpi4
+labctl power cycle rpi4 --delay 5
 
 # Start web dashboard
 labctl web --port 5000
@@ -75,14 +110,26 @@ labctl web --port 5000
 
 ## CLI Reference
 
+Every command has `--help`. This section lists the commands; see
+[docs/OPERATIONS.md](docs/OPERATIONS.md) for what each one changes.
+
 ### Global Options
 
 | Option | Description |
 |--------|-------------|
 | `-v`, `--verbose` | Enable verbose (DEBUG) output |
 | `-q`, `--quiet` | Suppress non-essential output |
-| `-d`, `--delay <seconds>` | Wait before executing the command |
-| `-c`, `--config <path>` | Path to config file |
+| `-d`, `--delay <seconds>` | Wait before executing the command (put it before the command name) |
+| `-c`, `--config <path>` | Use this config file only (see [search order](#config-file-search-order)) |
+| `--version` | Show the version and exit |
+
+### Common Flags
+
+| Flag | Description |
+|------|-------------|
+| `-y`, `--yes` | Skip the confirmation on destructive commands. The question is asked only when stdin is a terminal, so cron, CI, pipes and agents are never prompted. `remove`, `power-all`, `sdwire remove`, `serial remove` and `actuator remove` ask whenever `-y` is missing, so pass `-y` in scripts. |
+| `--override-claim` | Act on a board another user has claimed (or that shares hardware with one). The override is recorded in the activity log. Without it, such commands refuse. |
+| `--dry-run` | On `power cycle`, `sdwire flash` and `sdwire update`: print the plan and change nothing |
 
 ### SBC Management
 
@@ -93,8 +140,14 @@ labctl web --port 5000
 | `labctl list` | List all SBCs |
 | `labctl info <name>` | Show SBC details |
 | `labctl edit <name>` | Edit SBC properties (--rename, --project, etc.) |
+| `labctl edit <name> --cycle-delay N` | Per-SBC off→on delay in seconds; the default and minimum for `power cycle` (negative clears it) |
+| `labctl network set <sbc> ethernet\|wifi <ip>` | Set an SBC's IP address (`-m` MAC, `-h` hostname); `network remove` deletes it |
+| `labctl ssh <sbc>` | SSH to the SBC's configured IP (`-u` user) |
 | `labctl status` | Show status overview |
 | `labctl status --watch` | Continuous status monitoring |
+| `labctl status --fast` | Skip live power probes; show the monitor daemon's cached power state |
+| `labctl export [-f yaml\|json] [-o file]` | Export SBCs with their ports, network addresses, plugs and SDWires, plus serial adapters |
+| `labctl import <file> [--update]` | Import an export file (skips existing SBCs unless `--update`) |
 
 ### Activity Stream
 
@@ -103,7 +156,8 @@ labctl web --port 5000
 | `labctl activity tail` | Show recent activity events |
 | `labctl activity tail --follow` | Stream new activity events by polling the database |
 | `labctl activity tail --actor <actor>` | Filter events by actor |
-| `labctl activity tail --source <source>` | Filter events by source (`cli`, `mcp`, `api`, `web`, `daemon`) |
+| `labctl activity tail --source <source>` | Filter events by source (`cli`, `mcp`, `api`, `web`, `daemon`, `internal`) |
+| `labctl activity tail --result <result>` | Filter events by result (`ok`, `error`, `forbidden`) |
 | `labctl activity tail --sbc <name>` | Filter events for one SBC |
 | `labctl activity export --format ndjson` | Export activity events as NDJSON |
 
@@ -111,15 +165,15 @@ labctl web --port 5000
 
 | Command | Description |
 |---------|-------------|
-| `labctl claim <sbc>` | Claim exclusive access to an SBC |
+| `labctl claim <sbc> -r "<reason>" [-d 2h]` | Claim exclusive access to an SBC (`--reason` is required) |
 | `labctl release <sbc>` | Release your active claim |
 | `labctl renew <sbc>` | Extend your active claim |
-| `labctl force-release <sbc>` | Operator override for an active claim |
-| `labctl request-release <sbc>` | Politely ask the claimant to release |
+| `labctl force-release <sbc> -r "<reason>"` | Override: release someone else's claim |
+| `labctl request-release <sbc> -r "<reason>"` | Politely ask the claimant to release |
 | `labctl claims list` | List all active claims |
 | `labctl claims show <sbc>` | Show the active claim on one SBC |
 | `labctl claims history <sbc>` | Show released claim history for one SBC |
-| `labctl claims expire` | Run one expiry/dead-session sweep |
+| `labctl claims expire` | Run one expiry/dead-session sweep (also prunes old released claims) |
 | `labctl claims stats` | Show aggregate claim statistics |
 
 ### SDWire (SD Card Multiplexer)
@@ -134,23 +188,26 @@ labctl web --port 5000
 | `labctl sdwire unassign <sbc>` | Remove SDWire assignment |
 | `labctl sdwire dut <sbc>` | Switch SD card to SBC (boot from SD) |
 | `labctl sdwire host <sbc>` | Switch SD card to host (for flashing) |
-| `labctl sdwire flash <sbc> <image>` | Flash full image to SD card and reboot SBC |
-| `labctl sdwire update <sbc> -p N -c src:dest -r old:new -d file` | Copy, rename, or delete files on a partition |
+| `labctl sdwire flash <sbc> <image>` | Power off, flash full image to SD card, power-cycle (`--no-reboot` leaves the SBC off) |
+| `labctl sdwire update <sbc> -p N -c src:dest -r old:new -d file` | Power off, then copy, rename, or delete files on a partition (`--reboot` to power-cycle; without it the SBC is left off) |
 | `labctl sdwire ls <sbc> -p N [--path /] [--recursive]` | List directory contents on a partition |
 | `labctl sdwire cat <sbc> -p N --path /file [--encoding text|base64|hex]` | Read a file from a partition |
 | `labctl sdwire info <sbc>` | Show partition table and filesystem metadata |
 
 Partition numbers are 1-based (e.g., `-p 1` for the first partition, which maps to `/dev/sdb1`).
+`ls`, `cat` and `info` borrow the card: they switch it to the host and back,
+and refuse while the SBC is powered on.
 
-SDWire flash/update operations shell out to `mount`, `umount`, `dd`, `sync`, and
-`partprobe`. They do not use `sd-mux-ctrl`, and they do not require a fixed
-privileged mountpoint such as `/mnt/sdwire`.
+SDWire operations shell out (via `sudo`) to `mount`, `umount`, `dd`, `sync`,
+`partprobe`, `parted` and `blkid`. They do not use `sd-mux-ctrl`, and they do
+not require a fixed privileged mountpoint such as `/mnt/sdwire`.
 
 To reduce friction for interactive use and MCP/service flows, add a narrowly
-scoped sudoers rule:
+scoped sudoers rule. Use its own file: `scripts/install-services.sh` rewrites
+`/etc/sudoers.d/labctl`.
 ```bash
-echo '<user> ALL=(root) NOPASSWD: /usr/bin/mount, /usr/bin/umount, /usr/bin/dd, /bin/dd, /usr/bin/sync, /bin/sync, /usr/sbin/partprobe, /sbin/partprobe' | sudo tee /etc/sudoers.d/labctl
-sudo chmod 440 /etc/sudoers.d/labctl
+echo '<user> ALL=(root) NOPASSWD: /usr/bin/mount, /usr/bin/umount, /usr/bin/dd, /bin/dd, /usr/bin/sync, /bin/sync, /usr/sbin/partprobe, /sbin/partprobe, /usr/sbin/parted, /sbin/parted, /usr/sbin/blkid, /sbin/blkid' | sudo tee /etc/sudoers.d/labctl-sdwire
+sudo chmod 440 /etc/sudoers.d/labctl-sdwire
 ```
 
 Keep this scoped to the exact commands above. `NOPASSWD` sudo is still privileged;
@@ -166,37 +223,75 @@ the point here is to allow SDWire workflows without granting broader root access
 | `labctl serial list` | List all registered adapters |
 | `labctl serial rename <name> <new>` | Rename an adapter |
 | `labctl serial udev --install --reload` | Generate and apply udev rules |
+| `labctl serial repair [--apply]` | Re-link port assignments to registered adapters (dry run by default) |
 | `labctl serial capture <port> --timeout N --until <pattern>` | Capture serial output |
-| `labctl serial send <port> <data> --capture N` | Send data to serial port |
+| `labctl serial send <port> <data> --capture N` | Send data (plus CRLF unless `--raw`) to a serial port |
+| `labctl ser2net generate [--install]` | Generate the ser2net config from the database (`--install` writes `/etc/ser2net.yaml`) |
+| `labctl ser2net reload` | Restart the ser2net service |
 
 ### Boot Testing
 
 | Command | Description |
 |---------|-------------|
-| `labctl boot-test <sbc> -i <image> -d <dest> -e <pattern> -r N` | Automated boot reliability testing |
+| `labctl boot-test <sbc> -i <image> -d <dest> -e <pattern> -r N` | Deploy a file to the SD card, then power-cycle N times and count boots that print the pattern |
+| `labctl boot-test <sbc> --no-deploy -e <pattern> -r N` | Same, without deploying |
 
 ### Serial Console
 
 | Command | Description |
 |---------|-------------|
-| `labctl port assign <sbc> <type> [device]` | Assign serial port (-s, --alias) |
+| `labctl port assign <sbc> <type> [device]` | Assign a `console`, `jtag` or `debug` port (`-a/--alias`, `-s/--serial-device`, `-t/--tcp-port`, `-b/--baud`) |
+| `labctl port remove <sbc> <type>` | Remove a port assignment |
 | `labctl port list` | List port assignments |
 | `labctl port list --unassigned` | Show unassigned /dev/lab/* devices |
+| `labctl ports` | List `/dev/lab` symlinks and their ser2net TCP ports |
 | `labctl connect <alias\|sbc\|device>` | Connect by alias, SBC name, or device |
 | `labctl console <sbc>` | Connect to serial console |
-| `labctl log <sbc>` | Capture serial to log file |
-| `labctl log <sbc> --follow` | Stream serial output to terminal |
+| `labctl log <sbc>` | Capture serial output to a log file until Ctrl+C (`-n N` to stop after N lines) |
+| `labctl log <sbc> --follow` | Same, also echoing each line to the terminal |
 
 ### Power Control
 
 | Command | Description |
 |---------|-------------|
 | `labctl plug assign <sbc> <type> <addr>` | Assign power plug (--index for strips) |
-| `labctl power <sbc> on` | Turn on |
-| `labctl power <sbc> off` | Turn off |
-| `labctl power <sbc> cycle` | Power cycle |
-| `labctl power <sbc> status` | Check power state |
-| `labctl power-all on/off` | Control all SBCs |
+| `labctl plug remove <sbc>` | Remove the plug assignment |
+| `labctl power on <sbc>` | Turn on (sets pre_power relays first; see below) |
+| `labctl power off <sbc>` | Turn off |
+| `labctl power cycle <sbc> [--delay N] [--dry-run]` | Off, wait, set pre_power relays, on. The delay is 0–86400 s; the default and minimum are the SBC's `--cycle-delay`, otherwise 3 s. |
+| `labctl power status <sbc>` | Check power state |
+| `labctl power-all on/off` | Control all SBCs (claimed boards are skipped) |
+
+### Relays, Bindings and Recovery
+
+USB relays ("actuators") can drive board straps and buttons: recovery mode,
+boot select, reset. An actuator channel is *bound* to an (SBC, purpose) pair.
+Only the `lcus1_serial` driver is implemented so far; it needs the
+`actuators` extra (pyserial).
+
+| Command | Description |
+|---------|-------------|
+| `labctl actuator add <name> --driver lcus1_serial --device <path> --channels N` | Register a relay board |
+| `labctl actuator list` / `probe <name>` / `remove <name>` | List, check reachability (read-only), or remove (with its bindings) |
+| `labctl actuator set <name> <channel> open\|closed` | Drive a channel directly, for checking wiring |
+| `labctl bind <sbc> <purpose> --actuator A --channel N --mode latch\|momentary [--phase pre-power]` | Bind a channel (`--pulse-ms` for momentary; `--active-when` for polarity) |
+| `labctl unbind <sbc> <purpose>` | Remove a binding |
+| `labctl bindings list [--target <sbc>]` / `status <sbc> <purpose>` | Show bindings and their desired vs. last state |
+| `labctl bindings actuate\|release <sbc> <purpose>` | Assert or release a latch binding |
+| `labctl bindings press <sbc> <purpose>` | Pulse a momentary binding |
+| `labctl enter-recovery <sbc>` | Power off, wait, assert the `recovery_mode` binding, power on |
+| `labctl exit-recovery <sbc>` | Same, releasing the strap for a normal boot |
+
+**pre_power bindings** (`--phase pre-power`) are straps that must be in place
+before the board gets power. Every power-on (`power on`, `power cycle`,
+`power-all on`, the reboot after `sdwire flash`/`update`, `boot-test`, MCP and
+REST) first checks those relays on the board and on every board sharing its
+outlet. If a relay can't be reached, nothing is switched. labctl then drives
+each relay to its desired state and only then applies power. If a strap fails
+after a cycle's power-off, the boards are left off rather than booting
+without it. `--phase post-power` is stored but not yet acted on. When the
+monitor daemon starts, it returns unheld relay channels to their default
+state and leaves asserted bindings alone.
 
 ### Multi-Client Access
 
@@ -219,7 +314,8 @@ people do not silently bypass the shared session.
 | `labctl health-check` | Run all health checks |
 | `labctl health-check --type ping` | Ping check only |
 | `labctl health-check --sbc <name>` | Check single SBC |
-| `labctl monitor --foreground` | Start monitoring daemon |
+| `labctl monitor` | Run the monitoring daemon in the foreground (`-i` interval, `--no-alerts`) |
+| `labctl services status` | Show the state of `labctl-monitor`, `labctl-mcp`, `labctl-web` and `ser2net` (exit 1 if any is not running) |
 
 ### User Management
 
@@ -235,8 +331,16 @@ people do not silently bypass the shared session.
 | Command | Description |
 |---------|-------------|
 | `labctl mcp` | Start MCP server (stdio transport) |
-| `labctl mcp --http 8080` | Start MCP server (HTTP transport) |
+| `labctl mcp --http 8080` | Start MCP server (HTTP transport, binds 127.0.0.1) |
+| `labctl mcp --http 8080 --host 0.0.0.0` | Listen on other interfaces (requires `auth.enabled` with API keys) |
 | `labctl mcp --http 8080 --cert C --key K` | HTTP transport over TLS |
+| `labctl mcp [--http 8080 ...] --check` | Run the startup checks and exit: whether clients need API keys, or why the server would refuse to start |
+
+### Shell Completion
+
+```bash
+eval "$(labctl completion bash)"   # or zsh; fish: labctl completion fish > ~/.config/fish/completions/labctl.fish
+```
 
 ### Aliases
 
@@ -410,25 +514,54 @@ Key activity and claims endpoints:
 | `/sbcs` | GET | List all SBCs |
 | `/sbcs/<name>` | GET | Get SBC details |
 | `/sbcs` | POST | Create SBC |
+| `/sbcs/<name>` | PUT | Update SBC |
 | `/sbcs/<name>` | DELETE | Remove SBC |
-| `/sbcs/<name>/power` | POST | Control power (`{"action": "on/off/cycle"}`) |
-| `/sbcs/<name>/health` | GET | Get health status |
-| `/sbcs/<name>/uptime` | GET | Get uptime statistics |
-| `/health` | GET | System health (always open, no auth required) |
+| `/sbcs/<name>/power` | GET | Get power state |
+| `/sbcs/<name>/power` | POST | Control power (see below) |
+| `/sbcs/<name>/ports` | POST | Assign a serial port |
+| `/sbcs/<name>/console/info` | GET | Console connection info (TCP port, baud rate, proxy port) |
+| `/sbcs/<name>/history` | GET | Status history |
+| `/sbcs/<name>/uptime` | GET | Uptime statistics |
+| `/ports` | GET | List all serial port assignments |
+| `/status` | GET | Status overview of all SBCs |
+| `/health/check` | GET, POST | GET: last health-check results; POST: run a new check |
+| `/health` | GET | Service liveness and version (always open, no auth required) |
+
+`POST /sbcs/<name>/power` takes `{"action": "on"|"off"|"cycle"}`, plus an
+optional `delay` for a cycle (seconds, 0–86400, default 3.0) and
+`"override_claim": true` to act on a board another user has claimed.
+Power-on and cycle set the pre_power relays first
+(see [Relays, Bindings and Recovery](#relays-bindings-and-recovery)). Responses:
+
+| Status | Meaning |
+|--------|---------|
+| 200 | Done; the body includes the new `state` |
+| 400 | Bad `action` or `delay`, or no plug assigned |
+| 403 | An `agent`-role user tried `override_claim` (`not_operator`) |
+| 404 | No such SBC |
+| 409 | Refused with nothing switched: the board is claimed (`sbc_claimed`) or must be claimed first (`claim_required`), or a pre_power relay couldn't be checked or set before power-on (`{"error": ..., "switched": false}`) |
+| 429 | A cycle requested within 5 s of the last one on this board |
+| 500 | The plug failed, or a strap failed after a cycle's power-off (the board may be off) |
+
+See [docs/OPERATIONS.md](docs/OPERATIONS.md) for the full claim and REST
+error codes.
 
 ## MCP Server (AI Integration)
 
 labctl includes an MCP (Model Context Protocol) server for AI assistant integration.
 This allows tools like Claude Desktop and Claude Code to manage lab resources directly.
 
-Install the MCP dependency:
+Install the MCP dependency from a checkout (the `[mcp]` extra):
 
 ```bash
-pip install 'embedded-lab-control[mcp]'
+pip install -e ".[mcp]"
+# after publication on PyPI: pip install 'embedded-lab-control[mcp]'
 ```
 
 **Resources** (read-only data): `lab://sbcs`, `lab://sbcs/{name}`, `lab://power/{name}`,
-`lab://serial-devices`, `lab://ports`, `lab://health/{name}`, `lab://status`
+`lab://serial-devices`, `lab://sdwire-devices`, `lab://ports`, `lab://health/{name}`,
+`lab://status`, `lab://claims`, `lab://claims/{name}`, `lab://claims/history/{name}`,
+`lab://claims/metrics`, `lab://activity/recent`, `lab://activity/{name}`
 
 **Tools** (actions): `power_on`, `power_off`, `power_cycle`, `run_health_check`,
 `add_sbc`, `remove_sbc`, `update_sbc`, `assign_serial_port`, `assign_power_plug`,
@@ -441,7 +574,7 @@ pip install 'embedded-lab-control[mcp]'
 `flash_image`, `sdwire_update` or `boot_test`, so an agent can build on
 another machine ([Uploading images](docs/MCP_SERVER.md#uploading-images)).
 
-**Prompts**: `debug-sbc` (guided SBC debugging), `lab-report` (comprehensive status)
+**Prompts**: `debug_sbc` (guided SBC debugging), `lab_report` (comprehensive status)
 
 See `docs/MCP_SERVER.md` for full tool parameters and usage.
 
@@ -473,17 +606,52 @@ point `-c` at your own config):
 }
 ```
 
+### Claude Code skill: /deploy-and-test
+
+`skills/deploy-and-test.md` is an example skill that builds, deploys over
+SDWire, power-cycles and checks the serial console using the labctl MCP
+tools. It is not active in this repository. Claude Code loads a skill from a
+`SKILL.md` file, with `name`/`description` frontmatter, inside a directory
+named after the skill. To install it for one project (or for all your
+projects, under `~/.claude/skills/`):
+
+```bash
+mkdir -p <your-project>/.claude/skills/deploy-and-test
+cp skills/deploy-and-test.md <your-project>/.claude/skills/deploy-and-test/SKILL.md
+```
+
+It expects a connected labctl MCP server, and reads per-target settings from
+`.claude/deploy-config.json`.
+
 ## Systemd Services
 
-Install systemd services for production use:
+Install labctl system-wide with systemd services:
 
 ```bash
 sudo ./scripts/install-services.sh
-sudo systemctl enable --now labctl-web
-sudo systemctl enable --now labctl-monitor
 
-# Optional: MCP server for remote AI integration (HTTP on port 8080)
+# Optional: MCP server over HTTP on 127.0.0.1:8080
 sudo systemctl enable --now labctl-mcp
+```
+
+`install-services.sh` creates the `labctl` user and group and installs
+labctl with the `web,mcp,kasa,sdwire` extras into `/opt/labctl/venv`, linked as
+`/usr/local/bin/labctl`. It sets up `/etc/labctl/config.yaml` (root:labctl,
+640) and `/var/lib/labctl`, and makes the udev rules file and
+`/etc/ser2net.yaml` writable by the `labctl` group. It writes
+`/etc/sudoers.d/labctl` for `udevadm` and `systemctl restart ser2net`.
+It enables and starts `labctl-web` and `labctl-monitor`; `labctl-mcp` is
+installed but not enabled. For USB relays, also install the `actuators` extra
+into the venv (`/opt/labctl/venv/bin/pip install "<checkout>[actuators]"`).
+
+`labctl-mcp` runs `labctl mcp --http 8080`, which binds 127.0.0.1. To
+reach it from other machines, add `--host` in a systemd drop-in
+(`sudo systemctl edit labctl-mcp`) and enable `auth.enabled` with API keys.
+
+To update an existing install after `git pull` (keeps config and database):
+
+```bash
+sudo ./scripts/update.sh
 ```
 
 ## Development
