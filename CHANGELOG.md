@@ -14,8 +14,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   does the same: it refuses a board with no plug or an unreadable or
   unknown plug state unless `--force` (which, as before, skips the power
   check), and so do CLI `sdwire ls`/`cat`/`info` (they refused only a
-  plug reporting ON). One check (`labctl.sdwire.power_guard`) serves all
-  of them.
+  plug reporting ON). These now also read a card already on the host in
+  place, as the MCP read tools do, and take `--force` to skip the check.
+  One check (`labctl.sdwire.power_guard`) serves all of them. The MCP
+  read tools' refusal points at `sdwire_to_host(force=true)` for a board
+  you've made sure is off.
 - A per-board cycle delay stored before `edit --cycle-delay` checked the
   range (e.g. `1e9`, NaN, negative) is refused on every path before
   anything is switched or written (#41): MCP/REST/web cycles, the reboot
@@ -36,9 +39,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - MCP confirmation tokens are bound to the plan they were issued with
   (`will_do`): if it differs at confirmation (e.g. the board's stored cycle
   delay changed), the call is refused and the caller asks for a new plan.
-- REST and web-UI power cycles of a board don't overlap: a cycle requested
-  while another is running (it blocks for the whole delay) is refused
-  with `429`, not started.
+  A claimed board's power-cycling tools return the claim refusal, not a
+  plan.
+- REST and web-UI power cycles don't overlap: the guard and the 5 s rate
+  limit are per plug outlet, so a cycle of an outlet (by any board on it)
+  requested while another is running (it blocks for the whole delay) is
+  refused with `429`, and `on`/`off` of that outlet meanwhile with `409`.
 
 ### Changed
 - One cycle-delay rule on every surface (#41): the board's stored delay
@@ -49,7 +55,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   power-cycle button, the reboot after `sdwire flash`/`update` and every
   `boot-test` run (CLI and MCP). A smaller requested delay is raised to
   it, so MCP and REST no longer allow less than 3 s on a board without a
-  stored delay. A negative requested delay is an error everywhere (CLI
+  stored delay. Boards sharing a plug outlet are cycled together, so the
+  largest stored delay among them applies (and an out-of-range one on any
+  of them refuses). A negative requested delay is an error everywhere (CLI
   `power cycle --delay` used to raise it to the minimum). The `--dry-run` plans of
   `sdwire flash`/`update` and the MCP confirmations of `power_cycle`,
   `enter_/exit_recovery`, `boot_test` and `sdwire_update` (with

@@ -22,40 +22,69 @@ from labctl.web import claims
 
 api_bp = Blueprint("api", __name__)
 
-# Rate limiting: track last power cycle time per SBC to prevent hardware damage
-_power_cycle_times: dict[str, float] = {}
+# Rate limiting and overlap: keyed by plug outlet (type, address, index),
+# not board name, since a cycle switches every board on the outlet. A
+# cycle blocks its request for the whole delay, so the in-progress marker
+# (not the time of the last cycle) is what refuses an overlapping one.
+_power_cycle_times: dict[tuple, float] = {}
 POWER_CYCLE_MIN_INTERVAL = 5.0  # seconds
-# Boards with a REST or web-UI power cycle running in this server. A cycle
-# blocks its request for the whole delay, so the marker (not the time of
-# the last cycle) is what refuses an overlapping one.
-_power_cycles_in_progress: set[str] = set()
+_power_cycles_in_progress: set[tuple] = set()
 _power_cycle_lock = threading.Lock()
 
 
-def begin_power_cycle(name: str) -> str | None:
-    """Mark a REST/web power cycle of ``name`` as started, before anything
-    is switched; return why it must not start instead (another cycle of
-    it is running, or the last one ended under POWER_CYCLE_MIN_INTERVAL
-    ago). Pair with :func:`end_power_cycle`."""
+def _outlet_key(sbc) -> tuple:
+    plug = sbc.power_plug
+    plug_type = getattr(plug.plug_type, "value", plug.plug_type)
+    return (plug_type, plug.address.strip().lower(), plug.plug_index)
+
+
+def _same_outlet(a: tuple, b: tuple) -> bool:
+    # An index below 1 addresses the whole device (as in
+    # ResourceManager.sbcs_sharing_hardware), so it overlaps every outlet.
+    return a[:2] == b[:2] and (a[2] == b[2] or a[2] < 1 or b[2] < 1)
+
+
+def outlet_cycle_in_progress(sbc) -> bool:
+    """Whether a REST/web power cycle of ``sbc``'s outlet is running in
+    this server (``on``/``off`` are refused meanwhile)."""
+    key = _outlet_key(sbc)
+    with _power_cycle_lock:
+        return any(_same_outlet(key, k) for k in _power_cycles_in_progress)
+
+
+def begin_power_cycle(sbc) -> str | None:
+    """Mark a REST/web power cycle of ``sbc``'s outlet as started, before
+    anything is switched; return why it must not start instead (a cycle
+    of that outlet is running, or the last one ended under
+    POWER_CYCLE_MIN_INTERVAL ago). Pair with :func:`end_power_cycle`."""
+    key = _outlet_key(sbc)
     now = time.monotonic()
     with _power_cycle_lock:
-        if name in _power_cycles_in_progress:
-            return f"a power cycle of '{name}' is already in progress"
-        elapsed = now - _power_cycle_times.get(name, float("-inf"))
+        if any(_same_outlet(key, k) for k in _power_cycles_in_progress):
+            return (
+                f"a power cycle of {sbc.name!r}'s power outlet is already in "
+                "progress"
+            )
+        last = max(
+            (t for k, t in _power_cycle_times.items() if _same_outlet(key, k)),
+            default=float("-inf"),
+        )
+        elapsed = now - last
         if elapsed < POWER_CYCLE_MIN_INTERVAL:
             wait = POWER_CYCLE_MIN_INTERVAL - elapsed
             return f"Rate limited: wait {wait:.1f}s before next power cycle"
-        _power_cycles_in_progress.add(name)
+        _power_cycles_in_progress.add(key)
     return None
 
 
-def end_power_cycle(name: str, success: bool) -> None:
+def end_power_cycle(sbc, success: bool) -> None:
     """The cycle begun with :func:`begin_power_cycle` is over; a
     successful one starts the rate-limit interval."""
+    key = _outlet_key(sbc)
     with _power_cycle_lock:
-        _power_cycles_in_progress.discard(name)
+        _power_cycles_in_progress.discard(key)
         if success:
-            _power_cycle_times[name] = time.monotonic()
+            _power_cycle_times[key] = time.monotonic()
 
 
 def sbc_to_dict(sbc) -> dict:
@@ -244,7 +273,7 @@ def control_power(name: str):
                 400,
             )
         try:
-            delay = board_cycle_delay(sbc, data.get("delay"))
+            delay = board_cycle_delay(g.manager, sbc, data.get("delay"))
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
 
@@ -256,9 +285,23 @@ def control_power(name: str):
     # the cycle starts: it blocks for the whole delay, and an overlapping
     # request must not start a second one.
     if action == "cycle":
-        busy = begin_power_cycle(name)
+        busy = begin_power_cycle(sbc)
         if busy:
             return jsonify({"error": busy}), 429
+    elif outlet_cycle_in_progress(sbc):
+        # Switching the outlet mid-cycle would undo or race the cycle.
+        return (
+            jsonify(
+                {
+                    "error": (
+                        f"a power cycle of {sbc.name!r}'s power outlet is in "
+                        "progress; retry when it has finished"
+                    ),
+                    "switched": False,
+                }
+            ),
+            409,
+        )
 
     success = False
     try:
@@ -305,7 +348,7 @@ def control_power(name: str):
         return jsonify({"error": str(e)}), 500
     finally:
         if action == "cycle":
-            end_power_cycle(name, success)
+            end_power_cycle(sbc, success)
 
 
 # --- Port Endpoints ---

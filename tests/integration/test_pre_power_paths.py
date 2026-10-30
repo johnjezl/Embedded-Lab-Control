@@ -25,6 +25,8 @@ from labctl.core.models import (
 )
 
 STRAP_CLOSED = (1, True, WriteOutcome.OK)
+# The board's plug outlet, as the REST/web cycle guard keys it.
+OUTLET = ("tasmota", "10.0.0.5", 1)
 
 
 @pytest.fixture
@@ -819,17 +821,17 @@ class TestCycleRuleAndOverlap:
         seen = []
         monkeypatch.setattr(
             "labctl.actuators.runtime.time.sleep",
-            lambda s: seen.append("board" in api._power_cycles_in_progress),
+            lambda s: seen.append(OUTLET in api._power_cycles_in_progress),
         )
         resp = client.post("/api/sbcs/board/power", json={"action": "cycle"})
         assert resp.status_code == 200, resp.get_json()
         assert seen == [True]
-        assert "board" not in api._power_cycles_in_progress
+        assert OUTLET not in api._power_cycles_in_progress
 
     def test_api_overlapping_cycle_refused(self, lab, client, monkeypatch):
         from labctl.web import api
 
-        monkeypatch.setattr(api, "_power_cycles_in_progress", {"board"})
+        monkeypatch.setattr(api, "_power_cycles_in_progress", {OUTLET})
         resp = client.post("/api/sbcs/board/power", json={"action": "cycle"})
         assert resp.status_code == 429
         assert "already in progress" in resp.get_json()["error"]
@@ -841,14 +843,14 @@ class TestCycleRuleAndOverlap:
         lab.controller.power_off.side_effect = RuntimeError("plug gone")
         resp = client.post("/api/sbcs/board/power", json={"action": "cycle"})
         assert resp.status_code == 500
-        assert "board" not in api._power_cycles_in_progress
+        assert OUTLET not in api._power_cycles_in_progress
         # A failed cycle doesn't start the rate-limit interval.
-        assert "board" not in api._power_cycle_times
+        assert OUTLET not in api._power_cycle_times
 
     def test_view_overlapping_cycle_refused(self, lab, client, monkeypatch):
         from labctl.web import api
 
-        monkeypatch.setattr(api, "_power_cycles_in_progress", {"board"})
+        monkeypatch.setattr(api, "_power_cycles_in_progress", {OUTLET})
         resp = client.post("/sbc/board/power/cycle")
         assert resp.status_code == 302
         lab.controller.power_off.assert_not_called()
@@ -861,3 +863,130 @@ class TestCycleRuleAndOverlap:
         lab.controller.power_off.reset_mock()
         client.post("/sbc/board/power/cycle")
         lab.controller.power_off.assert_not_called()
+
+
+class TestOutletRules:
+    """Boards on one plug outlet are cycled together (#41 review 2): the
+    largest stored delay among them is the floor, and REST/web guards are
+    per outlet."""
+
+    @pytest.fixture
+    def sharer(self, lab):
+        other = lab.manager.create_sbc(name="board-b", project="test")
+        lab.manager.assign_power_plug(other.id, PlugType.TASMOTA, "10.0.0.5", 1)
+        return other
+
+    @staticmethod
+    def _store(lab, name, value):
+        import sqlite3
+
+        with sqlite3.connect(lab.db_path) as db:
+            db.execute(
+                "UPDATE sbcs SET power_cycle_delay_seconds = ? WHERE name = ?",
+                (value, name),
+            )
+
+    @pytest.fixture
+    def slept(self, lab, monkeypatch):
+        waits = []
+        monkeypatch.setattr("labctl.actuators.runtime.time.sleep", waits.append)
+        return waits
+
+    def test_cli_cycle_uses_sharers_larger_delay(self, lab, sharer, slept):
+        self._store(lab, "board", 4.0)
+        self._store(lab, "board-b", 9.0)
+        result = lab.run("power", "cycle", "board", "-y")
+        assert result.exit_code == 0, result.output
+        assert slept == [9.0]
+
+    def test_cli_warning_names_the_sharer(self, lab, sharer):
+        self._store(lab, "board-b", 9.0)
+        result = lab.run("power", "cycle", "board", "--delay", "5", "-y")
+        assert result.exit_code == 0, result.output
+        assert (
+            "--delay 5.0s is below the minimum of 'board-b' (on the same "
+            "outlet) of 9.0s"
+        ) in result.output
+
+    def test_sharers_bad_stored_delay_refuses(self, lab, sharer, slept):
+        self._store(lab, "board-b", 1e9)
+        result = lab.run("power", "cycle", "board", "-y")
+        assert result.exit_code == 1
+        assert "the cycle delay stored for 'board-b'" in result.output
+        assert "('board-b' shares 'board''s power outlet)" in result.output
+        lab.controller.power_off.assert_not_called()
+        assert slept == []
+
+    def test_api_cycle_uses_sharers_larger_delay(self, lab, sharer, client, slept):
+        self._store(lab, "board-b", 6.0)
+        resp = client.post("/api/sbcs/board/power", json={"action": "cycle"})
+        assert resp.status_code == 200, resp.get_json()
+        assert resp.get_json()["delay_seconds"] == 6.0
+
+    def test_api_sharers_cycle_blocks_this_boards_cycle(
+        self, lab, sharer, client, monkeypatch
+    ):
+        """board-b's cycle switches board's outlet too."""
+        from labctl.web import api
+
+        monkeypatch.setattr(api, "_power_cycles_in_progress", {OUTLET})
+        resp = client.post("/api/sbcs/board-b/power", json={"action": "cycle"})
+        assert resp.status_code == 429
+        assert "power outlet is already in progress" in resp.get_json()["error"]
+        lab.controller.power_off.assert_not_called()
+
+    def test_api_rate_limit_is_per_outlet(self, lab, sharer, client):
+        assert (
+            client.post("/api/sbcs/board/power", json={"action": "cycle"}).status_code
+            == 200
+        )
+        resp = client.post("/api/sbcs/board-b/power", json={"action": "cycle"})
+        assert resp.status_code == 429
+        assert "Rate limited" in resp.get_json()["error"]
+
+    def test_api_other_outlet_not_blocked(self, lab, client, monkeypatch):
+        from labctl.web import api
+
+        monkeypatch.setattr(
+            api, "_power_cycles_in_progress", {("tasmota", "10.0.0.5", 2)}
+        )
+        resp = client.post("/api/sbcs/board/power", json={"action": "cycle"})
+        assert resp.status_code == 200, resp.get_json()
+
+    def test_api_whole_device_index_overlaps(self, lab, client, monkeypatch):
+        from labctl.web import api
+
+        monkeypatch.setattr(
+            api, "_power_cycles_in_progress", {("tasmota", "10.0.0.5", 0)}
+        )
+        resp = client.post("/api/sbcs/board/power", json={"action": "cycle"})
+        assert resp.status_code == 429
+
+    @pytest.mark.parametrize("action", ["on", "off"])
+    def test_api_on_off_refused_mid_cycle(
+        self, lab, sharer, client, monkeypatch, action
+    ):
+        from labctl.web import api
+
+        monkeypatch.setattr(api, "_power_cycles_in_progress", {OUTLET})
+        resp = client.post("/api/sbcs/board-b/power", json={"action": action})
+        assert resp.status_code == 409
+        body = resp.get_json()
+        assert body["switched"] is False
+        assert "power outlet is in progress" in body["error"]
+        lab.controller.power_on.assert_not_called()
+        lab.controller.power_off.assert_not_called()
+
+    @pytest.mark.parametrize("action", ["on", "off"])
+    def test_view_on_off_refused_mid_cycle(self, lab, client, monkeypatch, action):
+        from labctl.web import api
+
+        monkeypatch.setattr(api, "_power_cycles_in_progress", {OUTLET})
+        resp = client.post(f"/sbc/board/power/{action}")
+        assert resp.status_code == 302
+        lab.controller.power_on.assert_not_called()
+        lab.controller.power_off.assert_not_called()
+
+    def test_api_on_allowed_when_no_cycle_running(self, lab, client):
+        resp = client.post("/api/sbcs/board/power", json={"action": "on"})
+        assert resp.status_code == 200, resp.get_json()

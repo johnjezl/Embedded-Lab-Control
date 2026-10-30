@@ -162,7 +162,7 @@ Every command has `--help`. This section lists the commands; see
 | `labctl list` | List all SBCs |
 | `labctl info <name>` | Show SBC details |
 | `labctl edit <name>` | Edit SBC properties (--rename, --project, etc.) |
-| `labctl edit <name> --cycle-delay N` | Per-SBC off→on delay in seconds (0–86400); the default and minimum for every power cycle of the board: `power cycle`, the reboot after `sdwire flash`/`update`, `boot-test`, recovery, and MCP/REST/web cycles. Without one, 3 s is the default and minimum (negative clears it) |
+| `labctl edit <name> --cycle-delay N` | Per-SBC off→on delay in seconds (0–86400); the default and minimum for every power cycle of the board: `power cycle`, the reboot after `sdwire flash`/`update`, `boot-test`, recovery, and MCP/REST/web cycles. Without one, 3 s is the default and minimum; boards sharing a plug outlet use the largest stored delay among them (negative clears it) |
 | `labctl network set <sbc> ethernet\|wifi <ip>` | Set an SBC's IP address (`-m` MAC, `-h` hostname); `network remove` deletes it |
 | `labctl ssh <sbc>` | SSH to the SBC's configured IP (`-u` user) |
 | `labctl status` | Show status overview |
@@ -212,9 +212,9 @@ Every command has `--help`. This section lists the commands; see
 | `labctl sdwire host <sbc>` | Switch SD card to host (for flashing). Only when the plug reports the board off: refuses when it's on, has no plug, or its state can't be read (`--force` skips the check) |
 | `labctl sdwire flash <sbc> <image>` | Power off, flash full image to SD card, power-cycle (`--no-reboot` leaves the SBC off) |
 | `labctl sdwire update <sbc> -p N -c src:dest -r old:new -d file` | Power off, then copy, rename, or delete files on a partition (`--reboot` to power-cycle; without it the SBC is left off) |
-| `labctl sdwire ls <sbc> -p N [--path /] [--recursive]` | List directory contents on a partition (the board must be off, as for `sdwire host`) |
-| `labctl sdwire cat <sbc> -p N --path /file [--encoding text|base64|hex]` | Read a file from a partition (board off) |
-| `labctl sdwire info <sbc>` | Show partition table and filesystem metadata (board off) |
+| `labctl sdwire ls <sbc> -p N [--path /] [--recursive] [--force]` | List directory contents on a partition. A card already on the host is read in place; otherwise the board must be confirmed off, as for `sdwire host` (`--force` skips the check) |
+| `labctl sdwire cat <sbc> -p N --path /file [--encoding text|base64|hex] [--force]` | Read a file from a partition (as `ls`) |
+| `labctl sdwire info <sbc> [--force]` | Show partition table and filesystem metadata (as `ls`) |
 
 Partition numbers are 1-based (e.g., `-p 1` for the first partition, which maps to `/dev/sdb1`).
 `ls`, `cat` and `info` borrow the card: they switch it to the host and back,
@@ -562,8 +562,8 @@ Power-on and cycle set the pre_power relays first
 | 400 | Bad `action` or `delay`, an out-of-range stored cycle delay, or no plug assigned |
 | 403 | An `agent`-role user tried `override_claim` (`not_operator`) |
 | 404 | No such SBC |
-| 409 | Refused with nothing switched: the board is claimed (`sbc_claimed`) or must be claimed first (`claim_required`), or a pre_power relay couldn't be checked or set before power-on (`{"error": ..., "switched": false}`) |
-| 429 | A cycle requested while another cycle of this board is running, or within 5 s of the last one |
+| 409 | Refused with nothing switched: the board is claimed (`sbc_claimed`) or must be claimed first (`claim_required`), `on`/`off` while a cycle of the board's outlet is running, or a pre_power relay couldn't be checked or set before power-on (`{"error": ..., "switched": false}`) |
+| 429 | A cycle requested while another cycle of the same outlet is running, or within 5 s of the outlet's last one |
 | 500 | The plug failed, or a strap failed after a cycle's power-off (the board may be off) |
 
 See [docs/OPERATIONS.md](docs/OPERATIONS.md) for the full claim and REST

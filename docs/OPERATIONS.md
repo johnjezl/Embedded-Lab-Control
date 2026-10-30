@@ -257,10 +257,11 @@ exactly like the commands they stand for.
 **SD card power check:** `sdwire host`, `sdwire ls`/`cat`/`info` and
 the MCP `sdwire_to_host`/`sdwire_ls`/`cat`/`info` take the card from the
 board only when its plug reports it OFF: no power plug, a plug that can't
-be read, or an unknown state refuse too. `sdwire host --force` (MCP
-`force=true`) skips the check. Unlike the MCP tools, the CLI `sdwire
-ls`/`cat`/`info` always switch the card to the host and then to the
-board, even if it was on the host to begin with.
+be read, or an unknown state refuse too. `--force` on all four CLI
+commands (MCP `sdwire_to_host(force=true)`) skips the check; use it once
+you've made sure the board is off, e.g. on a board with no plug. The read
+commands (CLI and MCP) read a card that is already on the host in place
+and leave it there, with no power check: the board isn't using it.
 
 ## Web UI and REST API
 
@@ -314,8 +315,8 @@ is raised to it; `null` is refused) and
 | `404` | No such SBC |
 | `400` | No power plug assigned, missing or bad `action`, or for `cycle` a bad `delay` or an out-of-range stored cycle delay (checked before claims) |
 | `409` / `403` | Claim refusals as above (`sbc_claimed`, `claim_required`, `not_operator`) |
-| `429` | A `cycle` while another REST or web-UI cycle of this board is running in this server, or within 5 s of its last successful one |
-| `409` | `{"error": ..., "switched": false}`: a pre_power relay (on this board or one sharing its outlet) couldn't be checked, or, for `on`, couldn't be set; power was not switched |
+| `429` | A `cycle` while another REST or web-UI cycle of the same plug outlet (this board or one sharing it) is running in this server, or within 5 s of the outlet's last successful one |
+| `409` | `{"error": ..., "switched": false}`: `on`/`off` while a REST or web-UI cycle of the board's outlet is running; or a pre_power relay (on this board or one sharing its outlet) couldn't be checked, or, for `on`, couldn't be set; power was not switched |
 | `500` | The plug failed, or for `cycle` a strap couldn't be set after power-off (the board was left off) |
 | `200` | `{"name", "action", "success": true, "state"}`, plus `"delay_seconds"` (the delay used) for `cycle` |
 
@@ -326,11 +327,15 @@ power button, and MCP `power_cycle` follow the same delay rule as every
 other power cycle: the board's stored cycle delay (`labctl edit
 --cycle-delay`), or 3 s if none is set, is the default when no delay is
 given and the minimum when one is (a smaller value is raised to it; a
-negative one is an error). The same holds for CLI `power cycle`, the
+negative one is an error). A cycle switches the whole plug outlet, so
+when boards share it the largest stored delay among them applies, and an
+out-of-range one on any of them refuses the cycle. The same holds for CLI `power cycle`, the
 reboot after `sdwire flash`/`update` (CLI and MCP), `boot-test` (CLI and
 MCP) and the recovery commands. A stored delay outside 0-86400 s (stored
 before `edit --cycle-delay` checked the range) is refused on every path
 before anything is switched or written; clear it with `labctl edit <name>
---cycle-delay -1`. A REST or web-UI cycle request returns only after the
+--cycle-delay -1`. The web UI's power buttons follow the same
+outlet rules as REST (a cycle in progress refuses another cycle and
+on/off). A REST or web-UI cycle request returns only after the
 whole off-wait-on sequence, so behind a reverse proxy set its read timeout
 above the longest delay you store (plus a few seconds for the plug).

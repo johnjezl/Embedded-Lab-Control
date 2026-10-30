@@ -684,6 +684,17 @@ _DESTRUCTIVE_TOOLS = frozenset(
 # redeemed (e.g. the board's stored cycle delay changed), the call is
 # refused and the caller asked for a new plan.
 _CONFIRM_PREVIEWS: dict = {}
+
+
+class _PreviewRefusal(Exception):
+    """Raised by a preview to answer the call with ``response`` (e.g. a
+    claim refusal) instead of a plan and token."""
+
+    def __init__(self, response: str):
+        super().__init__(response)
+        self.response = response
+
+
 # token -> (tool, call digest, expiry, user it was issued to (None = no
 # auth), plan digest)
 _pending_confirmations: dict[str, tuple[str, str, float, str | None, str]] = {}
@@ -768,6 +779,8 @@ def _current_plan(tool_name: str, arguments: dict):
         return None
     try:
         return preview(arguments)
+    except _PreviewRefusal as r:
+        return {"refused": r.response}
     except ValueError as e:
         return {"refused": str(e)}
 
@@ -834,6 +847,8 @@ def _with_confirmation(func):
             preview = _CONFIRM_PREVIEWS.get(name)
             try:
                 extra = preview(arguments) if preview else None
+            except _PreviewRefusal as r:
+                return r.response
             except ValueError as e:
                 # Refuse a call that would fail anyway before handing out
                 # a token for it.
@@ -975,8 +990,9 @@ def _sdwire_read_power_refusal(sbc_name: str, sbc) -> str | None:
         )
     return _sdwire_read_error(
         "power_unknown",
-        f"{text}. Power the board off, or switch the card explicitly with "
-        "sdwire_to_host, then retry.",
+        f"{text}. Once you've made sure the board is off, call "
+        "sdwire_to_host(force=true), then retry: a card already on the host "
+        "is read in place.",
     )
 
 
@@ -1306,7 +1322,7 @@ def power_cycle(sbc_name: str, delay: Optional[float] = None) -> str:
     )
 
     try:
-        effective = board_cycle_delay(sbc, delay)
+        effective = board_cycle_delay(manager, sbc, delay)
     except ValueError as e:  # nothing switched
         return f"Error: {e}"
     try:
@@ -2107,7 +2123,7 @@ def sdwire_update(
             )
 
             try:
-                reboot_delay = board_cycle_delay(sbc)
+                reboot_delay = board_cycle_delay(manager, sbc)
                 check_power_on(manager, sbc)
             except (ActuationError, ValueError) as e:
                 return f"Error: {e}. Nothing changed."
@@ -2719,12 +2735,20 @@ def _cycle_delay_preview(arguments: dict) -> dict | None:
     tool reports that)."""
     if arguments.get("reboot") is False:
         return None
-    sbc = _get_manager().get_sbc_by_name(arguments.get("sbc_name"))
+    manager = _get_manager()
+    # The claim comes first, as in the tool: a claimed board is refused
+    # with the claim error, not a plan (or a delay error).
+    claim_err = _check_claim(manager, arguments.get("sbc_name"), mutating=True)
+    if claim_err:
+        raise _PreviewRefusal(claim_err)
+    sbc = manager.get_sbc_by_name(arguments.get("sbc_name"))
     if sbc is None or not sbc.power_plug:
         return None
     from labctl.actuators.runtime import board_cycle_delay
 
-    return {"cycle_delay_seconds": board_cycle_delay(sbc, arguments.get("delay"))}
+    return {
+        "cycle_delay_seconds": board_cycle_delay(manager, sbc, arguments.get("delay"))
+    }
 
 
 for _tool in (
@@ -2892,7 +2916,7 @@ def boot_test(
     )
 
     try:
-        cycle_delay = board_cycle_delay(sbc)
+        cycle_delay = board_cycle_delay(manager, sbc)
         check_power_on(manager, sbc)
     except (ActuationError, ValueError) as e:
         return f"Error: {e}. Nothing changed."
@@ -4335,7 +4359,7 @@ def _run_recovery_composite(sbc_name: str, fn_name: str, fn) -> str:
         return f"Error: no power plug on '{sbc_name}'"
 
     try:
-        delay = board_cycle_delay(sbc)
+        delay = board_cycle_delay(manager, sbc)
     except ValueError as e:  # an out-of-range stored delay; nothing touched
         return f"Error: {fn_name} refused: {e}"
     try:
