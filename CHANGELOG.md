@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [Unreleased]
 
 ### Security
+- Generated udev rules (`labctl serial udev`, and the legacy
+  `scripts/generate-udev-rules.py`) make `/dev/lab/*` devices
+  `root:dialout 0660`. They were world-writable (`0666`), so any local
+  user could open a console or drive a relay. The labctl services are in
+  `dialout` and ser2net runs as root; a user who drives relays from the
+  CLI must now be in `dialout`. Installed rules change on the next
+  `labctl serial udev --install --reload`.
 - `install-services.sh` and `update.sh` make the service copy of the config
   (`/var/lib/labctl/.config/labctl/config.yaml`, which holds the same API
   keys and credentials as `/etc/labctl/config.yaml`) mode `640`; it was
@@ -97,6 +104,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   follow-up read doesn't misjudge the mux position.
 
 ### Fixed
+- `boot-test` (CLI and MCP) with an image no longer switches the SD card
+  to the host while the board may be running (risking bus contention and
+  a corrupted card): it powers the board off first, and if the board
+  can't be switched off it deploys nothing and says so. `sdwire flash`,
+  `sdwire update` and `sdwire host` already guarded this.
+- `mcp.allow_admin_actuator_ops` turns on only for a YAML boolean `true`.
+  It was read with `bool()`, so a quoted `"false"` (or any other string)
+  enabled `actuator_add`/`actuator_remove`/`actuator_set` over MCP; any
+  non-boolean value now leaves them off, with a warning.
+- `labctl edit --cycle-delay` refuses a delay over 86400 seconds, NaN or
+  infinity (nothing is written). The stored delay is the default and the
+  floor of `power cycle`, so such a value made every later cycle of the
+  board fail, with no `--delay` able to get round it.
+
 - `pre_power` relay bindings (e.g. a `recovery_mode` strap) are now set
   before power-on on every path, not just CLI `power on`/`power cycle` and
   the recovery composites (#36). The MCP `power_on`/`power_cycle`/

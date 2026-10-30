@@ -255,6 +255,47 @@ class TestCli:
         with patch("labctl.sdwire.controller.SDWireController", return_value=ctrl):
             yield ctrl
 
+    def test_boot_test_deploy_powers_off_before_switching_the_card(
+        self, lab, sdwire, console, tmp_path
+    ):
+        """The card never leaves a running board (bus contention)."""
+        image = tmp_path / "kernel.img"
+        image.write_bytes(b"img")
+        sdwire.switch_to_host.side_effect = lambda: lab.events.append("host")
+        result = lab.run(
+            "boot-test", "board", "-e", "login", "-r", "1",
+            "--image", str(image), "--dest", "kernel.img",
+        )  # fmt: skip
+        assert result.exit_code == 0, result.output
+        assert lab.events[:2] == ["off", "host"], lab.events
+        sdwire.update_files.assert_called_once()
+        _strap_closed_before_on(lab)
+
+    @pytest.mark.parametrize("failure", ["false", "raises"])
+    def test_boot_test_deploy_refused_when_power_off_fails(
+        self, lab, sdwire, console, tmp_path, failure
+    ):
+        image = tmp_path / "kernel.img"
+        image.write_bytes(b"img")
+        if failure == "false":
+            lab.controller.power_off.side_effect = lambda: False
+        else:
+            lab.controller.power_off.side_effect = OSError("plug unreachable")
+        result = lab.run(
+            "boot-test", "board", "-e", "login", "-r", "1",
+            "--image", str(image), "--dest", "kernel.img",
+        )  # fmt: skip
+        assert result.exit_code == 1
+        assert "could not power off 'board' before switching its SD card" in (
+            result.output
+        )
+        assert "nothing was deployed" in result.output
+        if failure == "raises":
+            assert "plug unreachable" in result.output
+        sdwire.switch_to_host.assert_not_called()
+        sdwire.update_files.assert_not_called()
+        lab.controller.power_on.assert_not_called()
+
     def test_sdwire_flash_reboot(self, lab, sdwire, tmp_path):
         image = tmp_path / "image.img"
         image.write_bytes(b"img")

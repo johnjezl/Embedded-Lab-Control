@@ -31,7 +31,7 @@ class TestGenerateUdevRules:
         assert "# sbc1-console (FTDI, FT232R)" in result
         assert (
             'SUBSYSTEM=="tty", KERNELS=="1-10.1.3", '
-            'SYMLINK+="lab/sbc1-console", MODE="0666"'
+            'SYMLINK+="lab/sbc1-console", GROUP="dialout", MODE="0660"'
         ) in result
 
     def test_multiple_devices_sorted_by_name(self):
@@ -47,10 +47,7 @@ class TestGenerateUdevRules:
         comment_lines = [
             line
             for line in lines
-            if line.startswith("# ")
-            and not line.startswith("# Lab")
-            and not line.startswith("# Auto")
-            and not line.startswith("# Regen")
+            if line.startswith("# ") and line not in UDEV_HEADER.splitlines()
         ]
         assert len(comment_lines) == 3
         assert comment_lines[0] == "# a-device"
@@ -125,7 +122,7 @@ class TestGenerateUdevRules:
         assert device_lines[1].startswith('SUBSYSTEM=="tty"')
         assert 'KERNELS=="1-5.2.1"' in device_lines[1]
         assert 'SYMLINK+="lab/my-adapter"' in device_lines[1]
-        assert 'MODE="0666"' in device_lines[1]
+        assert 'GROUP="dialout", MODE="0660"' in device_lines[1]
 
     def test_header_content(self):
         """Test that the header contains expected content."""

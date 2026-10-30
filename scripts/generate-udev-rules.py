@@ -31,6 +31,7 @@ from pathlib import Path
 
 try:
     import yaml
+
     YAML_AVAILABLE = True
 except ImportError:
     YAML_AVAILABLE = False
@@ -38,7 +39,7 @@ except ImportError:
 
 UDEV_RULE_TEMPLATE = """\
 # {comment}
-SUBSYSTEM=="tty", KERNELS=="{usb_path}", SYMLINK+="lab/{name}", MODE="0666"
+SUBSYSTEM=="tty", KERNELS=="{usb_path}", SYMLINK+="lab/{name}", GROUP="dialout", MODE="0660"
 """
 
 UDEV_HEADER = """\
@@ -107,12 +108,16 @@ def interactive_mapping(devices: list[dict]) -> dict[str, str]:
     print("-" * 70)
 
     for i, dev in enumerate(devices, 1):
-        print(f"  {i}. {dev['device']:10} USB:{dev['usb_path']:12} "
-              f"{dev['vendor'][:15]:15} {dev['model'][:25]}")
+        print(
+            f"  {i}. {dev['device']:10} USB:{dev['usb_path']:12} "
+            f"{dev['vendor'][:15]:15} {dev['model'][:25]}"
+        )
 
     print("-" * 70)
     print("\nEnter a name for each device (or press Enter to skip):")
-    print("Names should be lowercase, alphanumeric with hyphens (e.g., 'sbc1-console')\n")
+    print(
+        "Names should be lowercase, alphanumeric with hyphens (e.g., 'sbc1-console')\n"
+    )
 
     mapping = {}
     for dev in devices:
@@ -129,7 +134,7 @@ def interactive_mapping(devices: list[dict]) -> dict[str, str]:
             name = default_name
 
         # Validate name
-        if not all(c.isalnum() or c == '-' for c in name):
+        if not all(c.isalnum() or c == "-" for c in name):
             print(f"    Warning: '{name}' contains invalid characters, using default")
             name = default_name
 
@@ -191,12 +196,14 @@ def main():
         description="Generate udev rules for deterministic USB serial naming"
     )
     parser.add_argument(
-        "--mapping", "-m",
+        "--mapping",
+        "-m",
         type=Path,
         help="YAML file with USB path to name mapping",
     )
     parser.add_argument(
-        "--output", "-o",
+        "--output",
+        "-o",
         type=Path,
         help="Output file for udev rules (default: stdout)",
     )
@@ -206,7 +213,8 @@ def main():
         help="Save the mapping to a YAML file",
     )
     parser.add_argument(
-        "--dry-run", "-n",
+        "--dry-run",
+        "-n",
         action="store_true",
         help="Show what would be generated without writing files",
     )

@@ -464,6 +464,32 @@ class TestPowerCycleCommand:
         assert result.exit_code == 0, result.output
         assert m.get_sbc(sbc.id).power_cycle_delay_seconds is None
 
+    def test_edit_cycle_delay_out_of_range_refused(self, runner, tmp_path):
+        """A stored delay over 86400 s would block every later power cycle."""
+        from labctl.core.database import Database
+        from labctl.core.manager import ResourceManager
+
+        db_path = tmp_path / "edit.db"
+        db = Database(db_path)
+        db.initialize()
+        m = ResourceManager(db)
+        sbc = m.create_sbc(name="cycle-edit")
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(f"database_path: {db_path}\n")
+
+        result = runner.invoke(
+            main,
+            ["-c", str(config_path), "edit", "cycle-edit", "--cycle-delay", "90000"],
+        )
+
+        assert result.exit_code == 1
+        assert "Error: --cycle-delay: delay must be a number of seconds from 0" in (
+            result.output
+        )
+        assert "Nothing changed." in result.output
+        assert m.get_sbc(sbc.id).power_cycle_delay_seconds is None
+
     def test_info_renders_cycle_delay(self, runner, tmp_path):
         """`labctl info` shows the resolved cycle delay in both states."""
         from labctl.core.database import Database

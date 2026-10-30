@@ -2770,7 +2770,13 @@ def boot_test(
 
             if not sbc.sdwire:
                 raise RuntimeError(f"No SDWire assigned to '{sbc_name}'")
+            from labctl.serial.boot_test import power_off_for_deploy
+
             ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+            # The card must not leave a running board (bus contention):
+            # switch the board off first, and deploy nothing if that fails.
+            # The first run powers it back on.
+            power_off_for_deploy(sbc)
             ctrl.switch_to_host()
             time_mod.sleep(2)
             ctrl.update_files(

@@ -1588,6 +1588,7 @@ class TestHostPathEnforcementInTools:
         with (
             patch("labctl.sdwire.SDWireController", return_value=ctrl),
             patch("labctl.serial.boot_test.run_boot_test", fake_run_boot_test),
+            patch("labctl.power.base.PowerController.from_plug"),
             patch("time.sleep"),
         ):
             boot_test(
@@ -1600,6 +1601,48 @@ class TestHostPathEnforcementInTools:
         assert captured["pairs"] == [(os.stat(allowed / "k-123").st_ino, "/")]
         assert captured["names"] == ["kernel.img"]
         assert captured["image"] == str(allowed / "kernel.img")  # for reporting
+
+    @pytest.mark.parametrize("power_off_ok", [True, False])
+    def test_boot_test_deploy_powers_off_before_switching_the_card(
+        self, mock_manager, host_paths, power_off_ok
+    ):
+        """The card never leaves a running board; if the board can't be
+        switched off, nothing is deployed."""
+        from labctl.mcp_server import boot_test
+
+        allowed, _, _ = host_paths
+        (allowed / "kernel.img").write_bytes(b"\0")
+        events = []
+        ctrl, power = MagicMock(), MagicMock()
+        ctrl.switch_to_host.side_effect = lambda: events.append("host")
+        power.power_off.side_effect = lambda: events.append("off") or power_off_ok
+
+        def fake_run_boot_test(**kwargs):
+            kwargs["deploy_fn"]()
+            return MagicMock(format_summary=lambda: "ok")
+
+        with (
+            patch("labctl.sdwire.SDWireController", return_value=ctrl),
+            patch("labctl.serial.boot_test.run_boot_test", fake_run_boot_test),
+            patch("labctl.power.base.PowerController.from_plug", return_value=power),
+            patch("labctl.actuators.runtime.check_power_on"),
+            patch("time.sleep"),
+        ):
+            result = boot_test(
+                "test-sbc-1",
+                expect_pattern="ok",
+                image=str(allowed / "kernel.img"),
+                dest="/",
+            )
+
+        if power_off_ok:
+            assert events == ["off", "host"]
+            ctrl.update_files.assert_called_once()
+        else:
+            assert result.startswith("Error: could not power off 'test-sbc-1'")
+            assert "nothing was deployed" in result
+            assert events == ["off"]
+            ctrl.update_files.assert_not_called()
 
     def test_sdwire_update_refuses_before_power_off(self, mock_manager, host_paths):
         from labctl.mcp_server import sdwire_update
