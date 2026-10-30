@@ -496,10 +496,38 @@ class TestBeforeRunCheck:
         assert result.stopped_reason == "claim lost"
         summary = result.format_summary()
         assert "STOPPED after 2 of 4 runs: claim lost" in summary
-        assert "Result: 2/2 boots successful" in summary
+        assert "Result: INCOMPLETE, 2/2 boots successful (100%) in 2 of 4 runs" in (
+            summary
+        )
 
     def test_stop_before_the_first_run(self):
         result, power = self._run(lambda: "claimed by bob")
         power.assert_not_called()
         assert result.runs == []
-        assert "STOPPED after 0 of 4 runs" in result.format_summary()
+        summary = result.format_summary()
+        assert "STOPPED after 0 of 4 runs" in summary
+        assert "Result: STOPPED before the first run (no boots tested)" in summary
+        assert "0/0" not in summary
+        assert "left off" not in summary  # nothing was deployed
+
+    def test_stop_after_deploy_says_the_board_is_left_off(self):
+        from labctl.serial.capture import CaptureResult
+
+        with patch("labctl.serial.boot_test.capture_serial_output") as cap:
+            cap.return_value = CaptureResult(
+                output="ok", lines=1, pattern_matched=True, elapsed_seconds=1.0
+            )
+            result = run_boot_test(
+                sbc_name="test-sbc",
+                expect_pattern="ok",
+                tcp_host="localhost",
+                tcp_port=4000,
+                power_cycle_fn=MagicMock(),
+                runs=2,
+                deploy_fn=MagicMock(),
+                before_run_fn=lambda: "claim lost",
+            )
+        assert result.deployed
+        assert "test-sbc was powered off for the deploy and is left off." in (
+            result.format_summary()
+        )

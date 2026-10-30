@@ -409,6 +409,7 @@ for `power_cycle`), `flash_image` powers it
 on. With `reboot=true` the `pre_power` relays are checked before anything
 is switched. Both keep the caller's claim alive while they write, and
 with `reboot=true` leave the board off if the claim was lost meanwhile
+or someone else has claimed the board or a board sharing its hardware
 (see [Claims](#claims-exclusive-access-coordination)).
 
 `sdwire_ls`, `sdwire_cat` and `sdwire_info` don't change the card or the
@@ -531,19 +532,31 @@ with).
 deadline otherwise moves only when a call starts, so one long call could
 outlast it. While `boot_test`, `serial_capture`, `sdwire_update` and
 `flash_image` run, a claim the caller already holds on the board is
-heartbeated in the background (every quarter of the claim's duration,
-between 5 and 60 s). Nothing is claimed for a caller who holds no claim.
+heartbeated in the background (every quarter of the claim's current
+duration, between 5 and 60 s). Nothing is claimed for a caller who holds no claim.
 Between steps they check again and stop rather than act on a board the
 caller no longer holds:
 
-- `boot_test` checks before each run's power cycle. It stops, with
-  `STOPPED after N of M runs: <reason>` in its result, when the caller's
-  claim was lost meanwhile (released, force-released or expired), when
-  someone else has claimed the board or a board sharing its hardware, or
-  (with `claims.require_claim`) when nobody holds it.
-- `sdwire_update` and `flash_image` with `reboot=true` check before the
-  reboot: if the claim was lost, the card is written but the board is
-  **left off**, and the result says why.
+- `boot_test` checks before each run's power cycle. It stops when
+  someone else has claimed the board or a board sharing its hardware,
+  when the caller's claim was lost meanwhile (released, force-released
+  or expired), or (with `claims.require_claim`) when nobody holds it.
+  The result then starts with `Stopped: <reason>`, says
+  `STOPPED after N of M runs`, and its result line is
+  `Result: INCOMPLETE, ...` (or `Result: STOPPED before the first run`,
+  with the board left off if the deploy had powered it off).
+- `sdwire_update` and `flash_image` with `reboot=true` check the same
+  before the reboot. If the check fails, the card is written but the
+  board is **left off**, and the result says why: `Not power cycled:
+  <reason>` (`Not powered on:` for `flash_image`) when the caller's own
+  claim was lost, or `<board> is left off (not power cycled) because
+  '<other board>' is now claimed by '<agent>'` when someone else claimed
+  it or a board sharing its hardware.
+
+A database error during these checks counts as a missed heartbeat; only
+when the claim's deadline passes without a successful one does it count
+as lost. If the claim can't be read when the call starts, the call goes
+on without keeping it alive (logged).
 
 A claim still has to cover the gaps between calls: size it for the whole
 workflow, and `renew_sbc_claim` between long steps.

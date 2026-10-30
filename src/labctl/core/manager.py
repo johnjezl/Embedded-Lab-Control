@@ -2127,17 +2127,40 @@ class ResourceManager:
         no-op when no claim exists or a different session holds it, so
         that non-claim-aware callers don't need special handling.
         """
-        claim = self.get_active_claim(sbc_name)
-        if claim is None or not ClaimActor(session_id, owner).holds(claim):
-            return False
-        self.touch_claim(claim)
-        return True
+        return self.heartbeat_held_claim(sbc_name, ClaimActor(session_id, owner))
 
-    def touch_claim(self, claim: Claim) -> None:
-        """Heartbeat an already-loaded active claim."""
+    def heartbeat_held_claim(self, sbc_name: str, actor: ClaimActor) -> bool:
+        """Heartbeat ``actor``'s active claim on ``sbc_name``; True if it
+        still holds one (and it was heartbeated), False otherwise.
+
+        One conditional UPDATE: the claim must be unreleased, not past its
+        deadline, and held by ``actor`` (:meth:`ClaimActor.holds`), so a
+        claim released or taken over meanwhile is never revived. The new
+        deadline is computed from the row's own duration, so a renew to
+        another duration is respected. Unknown SBCs raise UnknownSBCError.
+        """
+        sbc_id = self._require_sbc_id(sbc_name)
+        now = self._fmt_ts(datetime.now())
+        changed = self.db.execute_modify(
+            """
+            UPDATE claims
+            SET last_activity = ?,
+                expires_at = strftime(
+                    '%Y-%m-%d %H:%M:%f', ?, '+' || duration_seconds || ' seconds'
+                ) || '000'
+            WHERE sbc_id = ? AND released_at IS NULL AND expires_at >= ?
+              AND (session_id = ? OR (COALESCE(?, '') != '' AND owner = ?))
+            """,
+            (now, now, sbc_id, now, actor.session_id, actor.owner, actor.owner),
+        )
+        return changed > 0
+
+    def touch_claim(self, claim: Claim) -> bool:
+        """Heartbeat an already-loaded active claim. Returns False when no
+        row changed (released or past its deadline meanwhile)."""
         now = datetime.now()
         new_expiry = now + timedelta(seconds=claim.duration_seconds)
-        self.db.execute_modify(
+        changed = self.db.execute_modify(
             """
             UPDATE claims
             SET last_activity = ?, expires_at = ?
@@ -2145,6 +2168,7 @@ class ResourceManager:
             """,
             (self._fmt_ts(now), self._fmt_ts(new_expiry), claim.id, self._fmt_ts(now)),
         )
+        return changed > 0
 
     def check_claim(
         self,

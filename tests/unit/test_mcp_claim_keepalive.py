@@ -63,17 +63,19 @@ def _claim_as_other(manager):  # noqa: F811
 
 
 def _count_touches(manager):  # noqa: F811
-    """Wrap touch_claim; returns (list of calls, event set on each)."""
+    """Wrap the keepalive's heartbeat; returns (list of calls, event set
+    on each)."""
     calls = []
     touched = threading.Event()
-    real = manager.touch_claim
+    real = manager.heartbeat_held_claim
 
-    def touch(claim):
-        real(claim)
-        calls.append(claim.id)
+    def heartbeat(sbc_name, actor):
+        result = real(sbc_name, actor)
+        calls.append(sbc_name)
         touched.set()
+        return result
 
-    manager.touch_claim = touch
+    manager.heartbeat_held_claim = heartbeat
     return calls, touched
 
 
@@ -136,6 +138,49 @@ class TestBootTest:
         assert cycle.call_count == 1
         assert "STOPPED after 1 of 3 runs" in result
         assert "no longer held" in result
+        assert result.startswith("Stopped: ")
+        assert "Result: INCOMPLETE, 1/1 boots successful" in result
+
+    def test_stopped_before_the_first_run(self, keepalive_env):
+        """Someone claims the board while the test starts: no boots, and
+        no normal "0/0 (0%)" result."""
+        _claim_as_caller()
+
+        from labctl.core.claim_keepalive import ClaimKeepalive
+
+        real_start = ClaimKeepalive.start
+
+        def start_then_lose(self):
+            result = real_start(self)
+            keepalive_env.force_release_claim("test-sbc-1", reason="r")
+            return result
+
+        with patch.object(ClaimKeepalive, "start", start_then_lose):
+            result, cycle = self._boot_test(MagicMock(return_value=_ok()))
+        cycle.assert_not_called()
+        assert result.startswith("Stopped: ")
+        assert "STOPPED after 0 of 3 runs" in result
+        assert "Result: STOPPED before the first run" in result
+        assert "0/0" not in result
+
+    def test_database_errors_do_not_escape(self, keepalive_env, monkeypatch):
+        """A database error in the per-run check is a missed beat: the
+        test goes on."""
+        import sqlite3
+
+        _claim_as_caller()
+
+        def down(*args, **kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        def capture(**kwargs):
+            monkeypatch.setattr(keepalive_env, "check_claim", down)
+            monkeypatch.setattr(keepalive_env, "heartbeat_held_claim", down)
+            return _ok()
+
+        result, cycle = self._boot_test(capture)
+        assert cycle.call_count == 3
+        assert "3/3 boots successful" in result
 
     def test_stops_when_someone_else_claims_it(self, keepalive_env):
         """No claim at the start (require_claim off): unchanged, until
@@ -232,6 +277,49 @@ class TestCardWrites:
         ctrl.switch_to_dut.assert_called_once()
         power.power_on.assert_not_called()
         assert not _keepalive_threads()
+
+    def test_sdwire_update_left_off_names_a_new_claim_on_a_sharer(
+        self, keepalive_env, tmp_path
+    ):
+        """No claim at the start; a board sharing the plug is claimed while
+        the card is written: the text says that, not "your claim"."""
+        from labctl.core.models import PlugType
+        from labctl.mcp_server import sdwire_update
+
+        other = keepalive_env.create_sbc(name="sharer")
+        keepalive_env.assign_power_plug(other.id, PlugType.TASMOTA, "192.168.1.200", 1)
+        ctrl = MagicMock()
+
+        def update_files(*args, **kwargs):
+            keepalive_env.claim_sbc(
+                sbc_name="sharer",
+                agent_name="other-agent",
+                session_id="other-session",
+                session_kind="mcp-http",
+                duration_seconds=600,
+                reason="r",
+            )
+            return {"copied": ["kernel.img"], "renamed": [], "deleted": []}
+
+        ctrl.update_files.side_effect = update_files
+        power = MagicMock()
+        power.power_off.return_value = True
+        with (
+            patch("labctl.sdwire.SDWireController", return_value=ctrl),
+            patch("labctl.power.base.PowerController.from_plug", return_value=power),
+            patch("time.sleep"),
+        ):
+            result = sdwire_update(
+                sbc_name="test-sbc-1",
+                partition=1,
+                copies=[f"{tmp_path}/local.bin:kernel.img"],
+                reboot=True,
+            )
+        assert (
+            "test-sbc-1 is left off (not power cycled) because 'sharer' is now "
+            "claimed by 'other-agent'"
+        ) in result
+        power.power_on.assert_not_called()
 
     def test_sdwire_update_reboots_while_the_claim_is_held(
         self, keepalive_env, tmp_path

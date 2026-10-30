@@ -632,6 +632,17 @@ def _claim_keepalive(manager, sbc_name: str):
     )
 
 
+def _left_off_text(sbc_name: str, reason, action: str) -> str:
+    """Why a card write didn't reboot the board (``reason`` from
+    ClaimKeepalive.checkpoint): the caller's claim was lost, or someone
+    has claimed the board or a board sharing its hardware since."""
+    from labctl.core.claim_keepalive import LOST
+
+    if getattr(reason, "kind", None) == LOST:
+        return f"Not {action}: {reason}; {sbc_name} is left off"
+    return f"{sbc_name} is left off (not {action}) because {reason}"
+
+
 def _check_claims_of(manager, sbc_names, for_sbc: str | None = None) -> str | None:
     """Refuse if someone else claims one of these SBCs (boards a call on
     ``for_sbc`` reaches through shared hardware; require_claim doesn't
@@ -2094,8 +2105,9 @@ def sdwire_update(
     powered off unless reboot=true, which power cycles it (waiting the
     largest stored cycle delay among the boards on its plug outlet, each
     counting as 3 s if it has none). A claim you hold is kept alive while
-    it writes; if it was lost meanwhile, the SBC is left off even with
-    reboot=true.
+    it writes; if it was lost meanwhile, or someone else has claimed the
+    SBC or a board sharing its hardware, the SBC is left off even with
+    reboot=true, and the result says why.
 
     Args:
         sbc_name: Name of the SBC with an assigned SDWire device
@@ -2209,7 +2221,7 @@ def sdwire_update(
         stop_reason = keepalive.checkpoint() if reboot and sbc.power_plug else None
         if stop_reason:
             summary = (
-                f"{summary}. Not power cycled: {stop_reason}; {sbc_name} is left off"
+                f"{summary}. {_left_off_text(sbc_name, stop_reason, 'power cycled')}"
             )
         elif reboot and sbc.power_plug:
             from labctl.actuators.runtime import (
@@ -2535,8 +2547,9 @@ def flash_image(
     Powers the SBC off first (refusing, writing nothing, if it can't be
     switched off; a board with no power plug is refused unless
     no_plug_ok=true) and leaves it off unless reboot=true. A claim you
-    hold is kept alive while it writes; if it was lost meanwhile, the
-    board is left off even with reboot=true.
+    hold is kept alive while it writes; if it was lost meanwhile, or
+    someone else has claimed the board or a board sharing its hardware,
+    the board is left off even with reboot=true, and the result says why.
 
     Args:
         sbc_name: Name of the SBC with an assigned SDWire device
@@ -2660,7 +2673,7 @@ def flash_image(
         # Reboot
         stop_reason = keepalive.checkpoint() if reboot and sbc.power_plug else None
         if stop_reason:
-            parts.append(f"Not powered on: {stop_reason}; {sbc_name} is left off")
+            parts.append(_left_off_text(sbc_name, stop_reason, "powered on"))
         elif reboot and sbc.power_plug:
             from labctl.actuators.runtime import (
                 ActuationError,
@@ -2993,10 +3006,12 @@ def boot_test(
     successfully reached the expected pattern.
 
     A claim you hold on the SBC is kept alive while the test runs. Before
-    each run's power cycle the test stops ("STOPPED after N of M runs")
-    if your claim was lost meanwhile (released, force-released or
-    expired) or someone else has claimed the SBC or a board sharing its
-    hardware. Still claim it for the whole test (see renew_sbc_claim).
+    each run's power cycle the test stops if someone else has claimed the
+    SBC or a board sharing its hardware, or your claim was lost meanwhile
+    (released, force-released or expired): the result then starts with
+    "Stopped: <reason>" and its result line says INCOMPLETE (or STOPPED
+    before the first run). Still claim it for the whole test (see
+    renew_sbc_claim).
 
     Args:
         sbc_name: Name of the SBC to test
@@ -3127,6 +3142,8 @@ def boot_test(
                 before_run_fn=keepalive.checkpoint,
             )
         result_str = result.format_summary()
+        if result.stopped_reason:
+            result_str = f"Stopped: {result.stopped_reason}\n\n{result_str}"
         advisory = _claim_advisory(manager, sbc_name)
         return f"{result_str}\n\n{advisory}" if advisory else result_str
     except RuntimeError as e:
