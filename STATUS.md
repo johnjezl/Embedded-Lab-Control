@@ -86,7 +86,7 @@
 ## Notes
 
 - **All Milestones Complete!** (M1–M7 plus the features below)
-- 1985 tests collected (2026-10-29); CI runs Python 3.10–3.13
+- 2038 tests collected (2026-10-29); CI runs Python 3.10–3.13
 - Database schema v11 (v8: actuators/bindings, v9: claim owners,
   v10/v11: uploaded images)
 - Schema migration is automatic and preserves existing data
