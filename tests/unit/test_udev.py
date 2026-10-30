@@ -1,5 +1,7 @@
 """Unit tests for udev rule generation."""
 
+import pytest
+
 from labctl.core.models import SerialDevice
 from labctl.serial.udev import UDEV_HEADER, generate_udev_rules
 
@@ -134,11 +136,16 @@ class TestGenerateUdevRules:
 
 
 class TestMissingDeviceGroup:
-    def test_root_never_missing(self, monkeypatch):
-        from labctl.serial.udev import missing_device_group
+    @pytest.fixture
+    def dialout(self, monkeypatch):
+        """A dialout group (gid 20) whose only listed member is 'alice'."""
+        import grp
 
-        monkeypatch.setattr("os.geteuid", lambda: 0)
-        assert missing_device_group() is False
+        monkeypatch.setattr(
+            grp,
+            "getgrnam",
+            lambda name: type("G", (), {"gr_gid": 20, "gr_mem": ["alice"]})(),
+        )
 
     def test_unknown_group_not_reported(self, monkeypatch):
         from labctl.serial.udev import missing_device_group
@@ -146,17 +153,82 @@ class TestMissingDeviceGroup:
         monkeypatch.setattr("os.geteuid", lambda: 1000)
         assert missing_device_group("no-such-group-labctl") is False
 
-    def test_member_and_non_member(self, monkeypatch):
-        import grp
-
+    def test_member_and_non_member(self, monkeypatch, dialout):
         from labctl.serial.udev import missing_device_group
 
         monkeypatch.setattr("os.geteuid", lambda: 1000)
-        monkeypatch.setattr(
-            grp, "getgrnam", lambda name: type("G", (), {"gr_gid": 20})()
-        )
         monkeypatch.setattr("os.getegid", lambda: 1000)
         monkeypatch.setattr("os.getgroups", lambda: [1000, 20])
         assert missing_device_group() is False
         monkeypatch.setattr("os.getgroups", lambda: [1000])
         assert missing_device_group() is True
+
+    def test_plain_root_never_missing(self, monkeypatch, dialout):
+        from labctl.serial.udev import missing_device_group
+
+        monkeypatch.setattr("os.geteuid", lambda: 0)
+        monkeypatch.delenv("SUDO_USER", raising=False)
+        assert missing_device_group() is False
+
+    @pytest.mark.parametrize(
+        "user, primary_gid, missing",
+        [("alice", 1000, False), ("bob", 20, False), ("bob", 1000, True)],
+    )
+    def test_under_sudo_checks_the_invoking_user(
+        self, monkeypatch, dialout, user, primary_gid, missing
+    ):
+        """Installing the rules usually needs sudo: the note is about the
+        user who ran it, not root."""
+        import pwd
+
+        from labctl.serial.udev import missing_device_group
+
+        monkeypatch.setattr("os.geteuid", lambda: 0)
+        monkeypatch.setenv("SUDO_USER", user)
+        monkeypatch.setattr(
+            pwd, "getpwnam", lambda name: type("P", (), {"pw_gid": primary_gid})()
+        )
+        assert missing_device_group() is missing
+
+
+class TestSerialUdevInstallNote:
+    """`labctl serial udev --install` says when the user can't open the
+    devices it just made root:dialout 0660."""
+
+    @pytest.fixture
+    def run(self, tmp_path, monkeypatch):
+        from click.testing import CliRunner
+
+        from labctl.cli import main
+        from labctl.core.manager import get_manager
+
+        db_path = tmp_path / "labctl.db"
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(f"database_path: {db_path}\n")
+        get_manager(db_path).create_serial_device("adapter", "1-4.2")
+        installed = []
+        monkeypatch.setattr(
+            "labctl.serial.udev.install_udev_rules",
+            lambda rules: installed.append(rules),
+        )
+
+        def run(missing):
+            monkeypatch.setattr(
+                "labctl.serial.udev.missing_device_group", lambda: missing
+            )
+            result = CliRunner().invoke(
+                main, ["-c", str(config_path), "serial", "udev", "--install"]
+            )
+            assert result.exit_code == 0, result.output
+            assert installed
+            return result
+
+        return run
+
+    def test_note_when_not_in_dialout(self, run):
+        result = run(missing=True)
+        assert "you are not in dialout" in result.stderr
+        assert "usermod -aG dialout" in result.stderr
+
+    def test_no_note_when_in_dialout(self, run):
+        assert "dialout" not in run(missing=False).output

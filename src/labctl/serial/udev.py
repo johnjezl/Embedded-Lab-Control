@@ -47,19 +47,29 @@ def generate_udev_rules(devices: list["SerialDevice"]) -> str:
 
 
 def missing_device_group(group: str = "dialout") -> bool:
-    """True when this process (not root) isn't in ``group``, so it can't
-    open the root:<group> 0660 devices the rules create. False when the
-    group doesn't exist on this system."""
+    """True when the user running labctl isn't in ``group``, so they can't
+    open the root:<group> 0660 devices the rules create. Under sudo that is
+    the invoking user (SUDO_USER), not root; plain root is never missing.
+    False when the group doesn't exist on this system."""
     import grp
     import os
+    import pwd
 
-    if os.geteuid() == 0:
-        return False
     try:
-        gid = grp.getgrnam(group).gr_gid
+        group_entry = grp.getgrnam(group)
     except KeyError:
         return False
-    return gid != os.getegid() and gid not in os.getgroups()
+    if os.geteuid() != 0:
+        gid = group_entry.gr_gid
+        return gid != os.getegid() and gid not in os.getgroups()
+    user = os.environ.get("SUDO_USER")
+    if not user or user == "root":
+        return False
+    try:
+        primary_gid = pwd.getpwnam(user).pw_gid
+    except KeyError:
+        return False
+    return primary_gid != group_entry.gr_gid and user not in group_entry.gr_mem
 
 
 def install_udev_rules(

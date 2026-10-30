@@ -1644,6 +1644,78 @@ class TestHostPathEnforcementInTools:
             assert events == ["off"]
             ctrl.update_files.assert_not_called()
 
+    @pytest.mark.parametrize("tool", ["flash_image", "sdwire_update"])
+    @pytest.mark.parametrize("failure", ["false", "raises"])
+    def test_sd_write_refused_when_power_off_fails(
+        self, mock_manager, host_paths, tool, failure
+    ):
+        """The card is never switched away from a board that may be running
+        (both tools used to carry on after a failed power-off)."""
+        from labctl import mcp_server
+
+        allowed, _, _ = host_paths
+        (allowed / "image.img").write_bytes(b"\0")
+        ctrl, power = MagicMock(), MagicMock()
+        if failure == "false":
+            power.power_off.return_value = False
+        else:
+            power.power_off.side_effect = OSError("plug unreachable")
+        with (
+            patch("labctl.sdwire.SDWireController", return_value=ctrl),
+            patch("labctl.power.base.PowerController.from_plug", return_value=power),
+            patch("time.sleep"),
+        ):
+            if tool == "flash_image":
+                result = mcp_server.flash_image(
+                    "test-sbc-1", image_path=str(allowed / "image.img")
+                )
+            else:
+                result = mcp_server.sdwire_update(
+                    "test-sbc-1", partition=1, copies=[f"{allowed}/image.img:/"]
+                )
+
+        assert result.startswith("Error: could not power off 'test-sbc-1'"), result
+        assert "nothing was written to the card" in result
+        ctrl.switch_to_host.assert_not_called()
+        ctrl.flash_image.assert_not_called()
+        ctrl.update_files.assert_not_called()
+
+    @pytest.mark.parametrize("failure", [RuntimeError, OSError])
+    def test_boot_test_deploy_failure_after_power_off(
+        self, mock_manager, host_paths, failure
+    ):
+        """One Error result (no exception) that hands the card back and says
+        the board was left off."""
+        from labctl.mcp_server import boot_test
+
+        allowed, _, _ = host_paths
+        (allowed / "kernel.img").write_bytes(b"\0")
+        ctrl = MagicMock()
+        ctrl.update_files.side_effect = failure("mount failed")
+
+        def fake_run_boot_test(**kwargs):
+            kwargs["deploy_fn"]()
+            return MagicMock(format_summary=lambda: "ok")
+
+        with (
+            patch("labctl.sdwire.SDWireController", return_value=ctrl),
+            patch("labctl.serial.boot_test.run_boot_test", fake_run_boot_test),
+            patch("labctl.power.base.PowerController.from_plug"),
+            patch("labctl.actuators.runtime.check_power_on"),
+            patch("labctl.actuators.runtime.boards_on_plug", lambda m, sbc: [sbc]),
+            patch("time.sleep"),
+        ):
+            result = boot_test(
+                "test-sbc-1",
+                expect_pattern="ok",
+                image=str(allowed / "kernel.img"),
+                dest="/",
+            )
+
+        assert result.startswith("Error: deploy to 'test-sbc-1' failed: mount failed")
+        assert "'test-sbc-1' was left powered off" in result
+        ctrl.switch_to_dut.assert_called_once()
+
     def test_sdwire_update_refuses_before_power_off(self, mock_manager, host_paths):
         from labctl.mcp_server import sdwire_update
 

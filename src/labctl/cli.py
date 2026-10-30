@@ -6061,7 +6061,10 @@ def boot_test_cmd(
             # that fails. The first run powers it back on.
             click.echo("Deploying image...")
             deploy_to_card(
-                sbc, ctrl, lambda: ctrl.update_files(partition, [(image, dest)])
+                manager,
+                sbc,
+                ctrl,
+                lambda: ctrl.update_files(partition, [(image, dest)]),
             )
             click.echo(f"Deployed {image} -> {dest}")
 
