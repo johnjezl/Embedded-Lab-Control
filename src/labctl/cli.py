@@ -363,14 +363,36 @@ def _check_claims_of_cli(
     return found
 
 
-def _port_assign_claim_conflict(ctx: click.Context, sbc_name: str, port):
-    """The claim that would stop `port assign` re-saving ``port`` (a
-    SerialPort of ``sbc_name``), or None: the same checks, in the same
-    order, as port_assign_cmd (boards sharing its console device, then the
-    board's own claim), but probing, so nothing exits or is heartbeated."""
+def _port_assign_claim_check(
+    ctx: click.Context,
+    sbc_name: str,
+    override: bool = False,
+    *,
+    device_path: str,
+    serial_device_id: int | None = None,
+    probe: bool = False,
+):
+    """The claim checks before saving a serial port of ``sbc_name`` (`port
+    assign`, `ser2net generate --install`): other users' claims on boards
+    sharing its console device, then on the board itself.
+
+    By default, exits on a conflict, or with ``override`` announces the
+    override and records it in the activity log; returns None. With
+    ``probe``, returns the first conflicting claim (or None) instead, with
+    no exit, override, record or heartbeat.
+    """
+    if not probe:
+        _check_shared_hardware_cli(
+            ctx,
+            sbc_name,
+            override,
+            serial_device_path=device_path,
+            serial_device_id=serial_device_id,
+        )
+        _check_claim_cli(ctx, sbc_name, override, shared=False)
+        return None
     others = _get_manager(ctx).sbcs_sharing_hardware(
-        serial_device_path=port.device_path,
-        serial_device_id=port.serial_device_id,
+        serial_device_path=device_path, serial_device_id=serial_device_id
     )
     for name in sorted(n for n in others if n and n != sbc_name):
         claim = _cli_claim_conflict(ctx, name, direct=False, probe=True)
@@ -3180,14 +3202,13 @@ def port_assign_cmd(
         )
         sys.exit(1)
 
-    _check_shared_hardware_cli(
+    _port_assign_claim_check(
         ctx,
         sbc_name,
         override_claim,
-        serial_device_path=device,
+        device_path=device,
         serial_device_id=serial_device_id,
     )
-    _check_claim_cli(ctx, sbc_name, override_claim, shared=False)
 
     try:
         port = manager.assign_serial_port(
@@ -3374,6 +3395,7 @@ def ser2net_group() -> None:
 
 
 @ser2net_group.command("generate")
+@override_claim_option
 @click.option(
     "--output",
     "-o",
@@ -3387,26 +3409,29 @@ def ser2net_group() -> None:
         "Write the config to ser2net.config_file (default /etc/ser2net.yaml): "
         "atomically when labctl can create files in its directory, otherwise "
         "rewritten in place; refuses a symlink or hard link there. First "
-        "saves a TCP port for any port that has none, except on a board "
-        "another user has claimed or one sharing a claimed board's device "
-        "(those ports are skipped and left out)."
+        "saves a TCP port for any port that has none; refuses (writing "
+        "nothing) if such a port's board, or a board sharing its console "
+        "device, is claimed by another user, unless --override-claim. A port "
+        "whose save fails is left out, and the command exits 1."
     ),
 )
 @click.pass_context
 def ser2net_generate_cmd(
-    ctx: click.Context, output: Path | None, install: bool
+    ctx: click.Context, output: Path | None, install: bool, override_claim: bool
 ) -> None:
     """Generate ser2net configuration from database.
 
     A port with no TCP port recorded: with --install it is assigned one
     and saved, exactly as `port assign` without -t would (one above the
-    highest in use, at least serial.base_tcp_port), unless `port assign`
-    would refuse it (another user's claim on its board or on a board
-    sharing its console device): that port is skipped (left out of the
-    config) and named. A port whose assignment fails is skipped the same
-    way; the config is still written, and the command then exits 1.
-    Without --install the port is left out of the config and the number it
-    would get is shown.
+    highest in use, at least serial.base_tcp_port), with the same claim
+    checks. If `port assign` would refuse any of them (another user's
+    claim on its board or on a board sharing its console device), nothing
+    is saved or written: leaving such a port out would change a claimed
+    board's console. --override-claim assigns them anyway (recorded in
+    the activity log). A port whose save fails is left out of the config,
+    which is still written, and the command then exits 1. Without
+    --install such ports are left out and the number each would get is
+    shown; nothing is saved.
     """
     config: Config = ctx.obj["config"]
     manager = _get_manager(ctx)
@@ -3431,20 +3456,29 @@ def ser2net_generate_cmd(
     # assign` with --install; otherwise only reported, so no number that
     # isn't saved ends up in a config.
     missing = [p for p in db_ports if not p.tcp_port]
-    failed = 0  # ports skipped for an error rather than a claim
+    failed = 0  # ports left out after a failed save
     if install:
-        for db_port in missing:
-            # Saving a TCP port changes the board's configuration, so the
-            # checks `port assign` makes, without exiting: other users'
-            # claims on boards sharing this console device, then on the
-            # board itself. A port either blocks is skipped.
+        # Saving a TCP port changes the board's configuration: the checks
+        # `port assign` makes. A claimed board's port can't just be left
+        # out either (that changes its console), so refuse before saving
+        # or writing anything, unless --override-claim.
+        def check(db_port, *, probe):
             sbc_name = sbc_names.get(db_port.sbc_id)
-            claim = (
-                _port_assign_claim_conflict(ctx, sbc_name, db_port)
-                if sbc_name
-                else None
+            if not sbc_name:
+                return None
+            return _port_assign_claim_check(
+                ctx,
+                sbc_name,
+                override_claim,
+                device_path=db_port.device_path,
+                serial_device_id=db_port.serial_device_id,
+                probe=probe,
             )
-            if claim is not None:
+
+        blocked = [(p, c) for p in missing if (c := check(p, probe=True))]
+        if blocked and not override_claim:
+            for db_port, claim in blocked:
+                sbc_name = sbc_names.get(db_port.sbc_id)
                 holder_board = claim.sbc_name or sbc_name
                 via = (
                     ""
@@ -3452,12 +3486,21 @@ def ser2net_generate_cmd(
                     else f" (it shares hardware with '{sbc_name}')"
                 )
                 click.echo(
-                    f"skipped {label(db_port)}: '{holder_board}' is claimed by "
-                    f"'{_holder(claim)}'{via}; assign a TCP port with "
-                    "`labctl port assign --override-claim`",
+                    f"  {label(db_port)}: '{holder_board}' is claimed by "
+                    f"'{_holder(claim)}'{via}",
                     err=True,
                 )
-                continue
+            click.echo(
+                "Error: nothing installed: these ports have no TCP port, and "
+                "leaving them out would change claimed boards' consoles. "
+                "Pass --override-claim (recorded in the activity log), or "
+                "have the holder run `labctl port assign`.",
+                err=True,
+            )
+            sys.exit(1)
+        for db_port in missing:
+            if any(db_port is p for p, _ in blocked):
+                check(db_port, probe=False)  # announces and records the override
             try:
                 saved = manager.assign_serial_port(
                     sbc_id=db_port.sbc_id,
@@ -3513,13 +3556,28 @@ def ser2net_generate_cmd(
         try:
             write_ser2net_config(ser2net_path, config_content)
         except PermissionError:
-            hint = (
-                "join the labctl group, which install-services.sh and "
-                "update.sh make it writable by (rerun one if the file was "
-                "created after the install), or use sudo"
-                if ser2net_path == "/etc/ser2net.yaml"
-                else "make it writable for you, or use sudo"
-            )
+            etc = ser2net_path == "/etc/ser2net.yaml"
+            if not os.path.lexists(ser2net_path):
+                # Only a new file needs its directory writable.
+                hint = (
+                    "it doesn't exist yet and you can't create files in its "
+                    "directory: create it with `sudo labctl ser2net generate "
+                    "--install`, then "
+                    + (
+                        "rerun install-services.sh or update.sh to make it "
+                        "group-writable"
+                        if etc
+                        else "make it writable for you"
+                    )
+                )
+            elif etc:
+                hint = (
+                    "join the labctl group, which install-services.sh and "
+                    "update.sh make it writable by (rerun one if the file was "
+                    "created after the install), or use sudo"
+                )
+            else:
+                hint = "make it writable for you, or use sudo"
             click.echo(
                 f"Error: permission denied writing {ser2net_path}; {hint}.",
                 err=True,

@@ -1266,6 +1266,85 @@ class TestStatusHistoryPruningKeepsUptime:
         # A different retention is a different question: it runs.
         assert delete_calls(lambda: manager.cleanup_old_status_logs(60))[1] == 1
 
+    def test_cascade_delete_then_ageing_not_mistaken_for_no_change(self, manager):
+        """A board's rows deleted (e.g. the board removed) plus a row ageing
+        past the cutoff can leave the newest id and the count past the
+        cutoff as they were; the total tells the states apart, so the prune
+        that is now due still runs."""
+        a = manager.create_sbc(name="a")
+        b = manager.create_sbc(name="b")
+        self._row(manager, a.id, "offline", 90)
+        self._row(manager, a.id, "online", 80)
+        self._row(manager, b.id, "online", 50)
+        self._row(manager, a.id, "online", 1)  # newest id
+        assert manager.cleanup_old_status_logs(30) == 0
+
+        manager.db.execute_modify("DELETE FROM status_log WHERE sbc_id = ?", (b.id,))
+        manager.db.execute_modify(
+            "UPDATE status_log SET logged_at = datetime('now', '-40 days')"
+            " WHERE id = (SELECT MAX(id) FROM status_log)"
+        )
+        # Newest id and the count past the cutoff are what they were ...
+        retention, remembered = manager._prune_state
+        now = manager._status_log_state("-30 days")
+        assert now[:2] == remembered[:2] and now[2] != remembered[2]
+        # ... and the online row 80 days old is deletable now.
+        assert manager.cleanup_old_status_logs(30) == 1
+
+    def test_remembered_state_includes_total(self, manager):
+        sbc = manager.create_sbc(name="t")
+        self._row(manager, sbc.id, "offline", 90)
+        self._row(manager, sbc.id, "online", 80)
+        manager.cleanup_old_status_logs(30)
+        retention, (top, old, total) = manager._prune_state
+        assert (retention, old, total) == (30, 2, 2)
+
+    def test_batches_respect_limit_and_match_unbatched(self, manager, tmp_path):
+        """Deleting in small batches ends where one big delete would."""
+        from unittest.mock import patch
+
+        from labctl.core.database import get_database
+        from labctl.core.manager import ResourceManager
+
+        def seed(m):
+            ids = []
+            for name in ("x", "y"):
+                sbc = m.create_sbc(name=name)
+                ids.append(sbc.id)
+                for days in range(60, 31, -1):
+                    for status, hours in (("offline", 12), ("online", 6)):
+                        m.db.execute_insert(
+                            "INSERT INTO status_log (sbc_id, status, logged_at)"
+                            " VALUES (?, ?, datetime('now', ?, ?))",
+                            (sbc.id, status, f"-{days} days", f"-{hours} hours"),
+                        )
+            return ids
+
+        def remaining(m):
+            return [
+                (r["sbc_id"], r["status"])
+                for r in m.db.execute(
+                    "SELECT sbc_id, status FROM status_log"
+                    " ORDER BY sbc_id, logged_at, id"
+                )
+            ]
+
+        seed(manager)
+        other = ResourceManager(get_database(tmp_path / "other.db"))
+        seed(other)
+
+        with patch.object(
+            manager.db, "execute_modify", wraps=manager.db.execute_modify
+        ) as modify:
+            deleted = manager.cleanup_old_status_logs(30, batch_size=7)
+        # 112 rows: 16 full batches of 7, then one that finds none.
+        assert modify.call_count == 17
+        for call in modify.call_args_list:
+            assert call.args[1][-1] == 7  # every batch asked for at most 7
+        one_shot = other.cleanup_old_status_logs(30, batch_size=100000)
+        assert deleted == one_shot == 2 * (29 * 2 - 2)  # 2 kept per board
+        assert remaining(manager) == remaining(other)
+
     def test_due_check_uses_index(self, manager):
         plan = " ".join(
             str(tuple(r))

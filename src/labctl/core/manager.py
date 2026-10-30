@@ -1308,7 +1308,14 @@ class ResourceManager:
             for row in rows
         ]
 
-    def cleanup_old_status_logs(self, retention_days: int) -> int:
+    # Rows one prune transaction deletes at most: the first prune after an
+    # upgrade may have years of history, and each batch holds the write
+    # lock only briefly.
+    PRUNE_BATCH = 5000
+
+    def cleanup_old_status_logs(
+        self, retention_days: int, *, batch_size: Optional[int] = None
+    ) -> int:
         """
         Delete status log entries older than retention period.
 
@@ -1319,63 +1326,79 @@ class ResourceManager:
         in effect when the kept history starts, which the 24-hour uptime
         figure starts from).
 
+        Rows are deleted in transactions of at most ``batch_size``
+        (default PRUNE_BATCH), the keep rules applied afresh each time.
+
         Args:
             retention_days: Number of days to retain status logs
+            batch_size: Rows per delete transaction
 
         Returns:
             Number of deleted entries
         """
         cutoff = f"-{int(retention_days)} days"
+        batch = batch_size or self.PRUNE_BATCH
         # The monitor calls this hourly, and the rows always kept are past
         # the cutoff, so "anything past the cutoff?" is nearly always yes.
-        # Instead: the number of rows past the cutoff (an index count) and
-        # the newest row id. If neither changed since this manager's last
-        # prune with the same retention, nothing can have become
-        # deletable: no row has aged past the cutoff, and no new row has
-        # replaced a kept one as its board's newest for its status. Then
-        # the window-function DELETE below is skipped.
+        # Instead, remember the table's state after the last prune with
+        # this retention: the newest row id, the number of rows past the
+        # cutoff (an index count) and the total. If none changed, nothing
+        # can have become deletable: no row has aged past the cutoff, no
+        # new row has replaced a kept one as its board's newest for its
+        # status, and no rows were deleted meanwhile (e.g. with a removed
+        # board) that ageing could have made up for. The DELETE is skipped.
         state = self._status_log_state(cutoff)
         if state[1] == 0 or (retention_days, state) == self._prune_state:
             self._prune_state = (retention_days, state)
             return 0
-        # A plain DELETE (not WITH ... DELETE): sqlite3 reports rowcount
-        # only for statements that start with DELETE.
-        deleted = self.db.execute_modify(
-            """
-            DELETE FROM status_log
-            WHERE logged_at < datetime('now', ?)
-              AND id NOT IN (
-                SELECT id FROM (
-                    SELECT id, ROW_NUMBER() OVER (
-                        PARTITION BY sbc_id, status
-                        ORDER BY logged_at DESC, id DESC
-                    ) AS rn
-                    FROM status_log
-                ) WHERE rn = 1
-                UNION
-                SELECT id FROM (
-                    SELECT id, ROW_NUMBER() OVER (
-                        PARTITION BY sbc_id ORDER BY logged_at DESC, id DESC
-                    ) AS rn
-                    FROM status_log
-                    WHERE logged_at < datetime('now', ?)
-                ) WHERE rn = 1
-              )
-            """,
-            (cutoff, cutoff),
-        )
+        deleted = 0
+        while True:
+            # A plain DELETE (not WITH ... DELETE): sqlite3 reports
+            # rowcount only for statements that start with DELETE.
+            count = self.db.execute_modify(
+                """
+                DELETE FROM status_log WHERE id IN (
+                  SELECT id FROM status_log
+                  WHERE logged_at < datetime('now', ?)
+                    AND id NOT IN (
+                      SELECT id FROM (
+                          SELECT id, ROW_NUMBER() OVER (
+                              PARTITION BY sbc_id, status
+                              ORDER BY logged_at DESC, id DESC
+                          ) AS rn
+                          FROM status_log
+                      ) WHERE rn = 1
+                      UNION
+                      SELECT id FROM (
+                          SELECT id, ROW_NUMBER() OVER (
+                              PARTITION BY sbc_id ORDER BY logged_at DESC, id DESC
+                          ) AS rn
+                          FROM status_log
+                          WHERE logged_at < datetime('now', ?)
+                      ) WHERE rn = 1
+                    )
+                  ORDER BY logged_at, id
+                  LIMIT ?
+                )
+                """,
+                (cutoff, cutoff, batch),
+            )
+            deleted += count
+            if count < batch:
+                break
         self._prune_state = (retention_days, self._status_log_state(cutoff))
         return deleted
 
     def _status_log_state(self, cutoff: str) -> tuple:
-        """(newest id, number of rows older than ``cutoff``)."""
+        """(newest id, rows older than ``cutoff``, all rows)."""
         row = self.db.execute_one(
             "SELECT (SELECT MAX(id) FROM status_log) AS top,"
             " (SELECT COUNT(*) FROM status_log"
-            "  WHERE logged_at < datetime('now', ?)) AS old",
+            "  WHERE logged_at < datetime('now', ?)) AS old,"
+            " (SELECT COUNT(*) FROM status_log) AS total",
             (cutoff,),
         )
-        return (row["top"], row["old"])
+        return (row["top"], row["old"], row["total"])
 
     def get_uptime(self, sbc_id: int) -> Optional[dict]:
         """

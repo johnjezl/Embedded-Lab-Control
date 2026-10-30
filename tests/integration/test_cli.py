@@ -2284,8 +2284,12 @@ class TestSer2netGenerate:
         cfg.write_text(
             cfg.read_text().replace(str(tmp_path / "ser2net.yaml"), "/etc/ser2net.yaml")
         )
-        with patch(
-            "labctl.cli.write_ser2net_config", side_effect=PermissionError(13, "no")
+        with (
+            patch(
+                "labctl.cli.write_ser2net_config",
+                side_effect=PermissionError(13, "no"),
+            ),
+            patch("labctl.cli.os.path.lexists", return_value=True),
         ):
             result = runner.invoke(
                 main, ["-c", str(cfg), "ser2net", "generate", "--install"]
@@ -2295,10 +2299,32 @@ class TestSer2netGenerate:
         assert "install-services.sh and update.sh make it writable" in result.output
         assert "created after the install" in result.output
 
+    @pytest.mark.parametrize("etc", [True, False])
+    def test_permission_message_when_file_missing(self, runner, tmp_path, etc):
+        """No file yet and an unwritable directory: create it with sudo."""
+        cfg, target, _ = self._lab(tmp_path)
+        path = "/etc/ser2net.yaml" if etc else str(target)
+        cfg.write_text(cfg.read_text().replace(str(target), path))
+        with (
+            patch(
+                "labctl.cli.write_ser2net_config",
+                side_effect=PermissionError(13, "no"),
+            ),
+            patch("labctl.cli.os.path.lexists", return_value=False),
+        ):
+            result = runner.invoke(
+                main, ["-c", str(cfg), "ser2net", "generate", "--install"]
+            )
+        assert result.exit_code == 1
+        assert "doesn't exist yet" in result.output
+        assert "sudo labctl ser2net generate --install" in result.output
+        assert ("rerun install-services.sh or update.sh" in result.output) is etc
+
 
 class TestSer2netGenerateClaims:
-    """`ser2net generate --install` doesn't save a TCP port on a board
-    another user has claimed: it skips that port."""
+    """`ser2net generate --install` makes `port assign`'s claim checks
+    before saving a TCP port. Leaving a claimed board's port out would
+    change its console, so it refuses outright unless --override-claim."""
 
     def _lab(self, tmp_path):
         from labctl.core.manager import get_manager
@@ -2318,65 +2344,86 @@ class TestSer2netGenerateClaims:
         manager.db.execute_modify("UPDATE serial_ports SET tcp_port = NULL")
         return cfg, target, manager
 
-    def _ports(self, manager):
-        return {p.device_path: p.tcp_port for p in manager.list_serial_ports()}
-
-    def test_claimed_board_skipped(self, runner, tmp_path):
-        cfg, target, manager = self._lab(tmp_path)
+    def _claim(self, manager, sbc_name="held"):
         manager.claim_sbc(
-            sbc_name="held",
+            sbc_name=sbc_name,
             agent_name="agent-x",
             session_id="other-session",
             session_kind="mcp-stdio",
             duration_seconds=600,
             reason="testing",
         )
-        result = runner.invoke(
-            main, ["-c", str(cfg), "ser2net", "generate", "--install"]
-        )
-        assert result.exit_code == 0, result.output
-        assert (
-            "skipped held console (/dev/lab/held): 'held' is claimed by "
-            "'agent-x'; assign a TCP port with `labctl port assign "
-            "--override-claim`"
-        ) in result.output
-        assert "Assigned TCP port 5100 to free console" in result.output
-        assert self._ports(manager) == {"/dev/lab/free": 5100, "/dev/lab/held": None}
-        text = target.read_text()
-        assert "/dev/lab/free" in text
-        assert "/dev/lab/held" not in text
 
-    def test_board_sharing_a_claimed_boards_device_skipped(self, runner, tmp_path):
-        """As `port assign` checks: a board wired to the same console device
-        as a board another user has claimed is skipped too."""
+    def _ports(self, manager):
+        return {
+            (p.sbc_id, p.device_path): p.tcp_port for p in manager.list_serial_ports()
+        }
+
+    def _install(self, runner, cfg, *extra):
+        return runner.invoke(
+            main, ["-c", str(cfg), "ser2net", "generate", "--install", *extra]
+        )
+
+    def test_claimed_board_refuses_whole_install(self, runner, tmp_path):
+        cfg, target, manager = self._lab(tmp_path)
+        self._claim(manager)
+        before = self._ports(manager)
+        result = self._install(runner, cfg)
+        assert result.exit_code == 1
+        assert (
+            "held console (/dev/lab/held): 'held' is claimed by 'agent-x'"
+        ) in result.output
+        assert "Error: nothing installed" in result.output
+        assert "--override-claim" in result.output
+        assert self._ports(manager) == before  # free's port not saved either
+        assert not target.exists()
+
+    def test_board_sharing_a_claimed_boards_device_refuses(self, runner, tmp_path):
         cfg, target, manager = self._lab(tmp_path)
         sharer = manager.create_sbc(name="sharer")
         manager.assign_serial_port(sharer.id, PortType.CONSOLE, "/dev/lab/held")
         manager.db.execute_modify("UPDATE serial_ports SET tcp_port = NULL")
-        manager.claim_sbc(
-            sbc_name="held",
-            agent_name="agent-x",
-            session_id="other-session",
-            session_kind="mcp-stdio",
-            duration_seconds=600,
-            reason="testing",
-        )
-        result = runner.invoke(
-            main, ["-c", str(cfg), "ser2net", "generate", "--install"]
-        )
-        assert result.exit_code == 0, result.output
+        self._claim(manager)
+        result = self._install(runner, cfg)
+        assert result.exit_code == 1
         assert (
-            "skipped sharer console (/dev/lab/held): 'held' is claimed by "
-            "'agent-x' (it shares hardware with 'sharer'); assign a TCP port "
-            "with `labctl port assign --override-claim`"
+            "sharer console (/dev/lab/held): 'held' is claimed by 'agent-x' "
+            "(it shares hardware with 'sharer')"
         ) in result.output
-        ports = {
-            (p.sbc_id, p.device_path): p.tcp_port for p in manager.list_serial_ports()
-        }
-        assert ports[(sharer.id, "/dev/lab/held")] is None
-        assert "Assigned TCP port 5100 to free console" in result.output
+        assert not target.exists()
 
-    def test_own_cli_claim_not_skipped(self, runner, tmp_path):
+    def test_override_assigns_and_records(self, runner, tmp_path):
+        from labctl.core import audit
+
+        cfg, target, manager = self._lab(tmp_path)
+        self._claim(manager)
+        result = self._install(runner, cfg, "--override-claim")
+        assert result.exit_code == 0, result.output
+        assert "Assigned TCP port" in result.output
+        assert None not in self._ports(manager).values()
+        assert "/dev/lab/held" in target.read_text()
+        overrides = [
+            e
+            for e in audit.query_events(manager.db, sbc="held")
+            if e["action"] == "claim_override"
+        ]
+        assert overrides
+
+    def test_claimed_board_with_tcp_port_unaffected(self, runner, tmp_path):
+        """Only ports that would need a new TCP port are checked: a claimed
+        board whose port has one is written as before."""
+        cfg, target, manager = self._lab(tmp_path)
+        manager.db.execute_modify(
+            "UPDATE serial_ports SET tcp_port = 5200 WHERE device_path = ?",
+            ("/dev/lab/held",),
+        )
+        self._claim(manager)
+        result = self._install(runner, cfg)
+        assert result.exit_code == 0, result.output
+        text = target.read_text()
+        assert "localhost,5200\n" in text and "/dev/lab/free" in text
+
+    def test_own_cli_claim_not_refused(self, runner, tmp_path):
         from labctl.cli import _cli_session_id
 
         cfg, _, manager = self._lab(tmp_path)
@@ -2388,26 +2435,26 @@ class TestSer2netGenerateClaims:
             duration_seconds=600,
             reason="mine",
         )
-        result = runner.invoke(
-            main, ["-c", str(cfg), "ser2net", "generate", "--install"]
-        )
+        result = self._install(runner, cfg)
         assert result.exit_code == 0, result.output
-        assert "skipped held" not in result.output
-        assert self._ports(manager)["/dev/lab/held"] is not None
+        assert None not in self._ports(manager).values()
 
-    def test_claims_disabled_not_skipped(self, runner, tmp_path):
+    def test_claims_disabled_not_refused(self, runner, tmp_path):
         cfg, _, manager = self._lab(tmp_path)
         cfg.write_text(cfg.read_text() + "claims:\n  enabled: false\n")
-        manager.claim_sbc(
-            sbc_name="held",
-            agent_name="agent-x",
-            session_id="other-session",
-            session_kind="mcp-stdio",
-            duration_seconds=600,
-            reason="testing",
-        )
-        result = runner.invoke(
-            main, ["-c", str(cfg), "ser2net", "generate", "--install"]
-        )
+        self._claim(manager)
+        result = self._install(runner, cfg)
         assert result.exit_code == 0, result.output
-        assert "skipped held" not in result.output
+
+    def test_port_assign_uses_the_same_check(self, runner, tmp_path):
+        """`port assign` and `generate --install` share one claim check."""
+        cfg, _, manager = self._lab(tmp_path)
+        self._claim(manager)
+        with patch("labctl.cli._port_assign_claim_check", return_value=None) as check:
+            runner.invoke(
+                main,
+                ["-c", str(cfg), "port", "assign", "held", "console", "/dev/lab/x"],
+            )
+            self._install(runner, cfg)
+        assert check.call_count >= 2
+        assert {c.args[1] for c in check.call_args_list} >= {"held"}
