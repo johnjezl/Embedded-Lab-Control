@@ -537,16 +537,9 @@ class ResourceManager:
         Returns None if the path doesn't match the /dev/lab/<name>
         convention, or no registered device has that name.
         """
-        if not device_path:
-            return None
-        # Accept "/dev/lab/<name>" and also bare "<name>" (legacy rows).
-        prefix = "/dev/lab/"
-        if device_path.startswith(prefix):
-            name = device_path[len(prefix) :]
-        elif "/" not in device_path:
-            name = device_path
-        else:
-            return None
+        # "/dev/lab/<name>" (normalised) and bare "<name>" (legacy rows),
+        # parsed as everywhere else (_lab_link_name).
+        name = self._lab_link_name(device_path)
         if not name:
             return None
         row = self.db.execute_one(
@@ -972,9 +965,13 @@ class ResourceManager:
         names: set[str] = set()
         if plug is not None:
             wanted = outlet_key(*plug)
+            # SQL narrows to the same plug (type, trimmed case-folded
+            # address, as outlet_key); outlets_overlap decides the index.
             rows = self.db.execute(
                 "SELECT s.name, p.plug_type, p.address, p.plug_index"
                 " FROM power_plugs p JOIN sbcs s ON s.id = p.sbc_id"
+                " WHERE p.plug_type = ? AND lower(trim(p.address)) = ?",
+                (wanted[0], wanted[1]),
             )
             names.update(
                 r["name"]

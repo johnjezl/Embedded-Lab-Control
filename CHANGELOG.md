@@ -55,6 +55,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   limit are per plug outlet, so a cycle of an outlet (by any board on it)
   requested while another is running (it blocks for the whole delay) is
   refused with `429`, and `on`/`off` of that outlet meanwhile with `409`.
+  The guard covers REST and the web UI in one server process only: power
+  operations from the CLI, MCP, `sdwire` reboots or `boot-test` aren't
+  seen by it (a lab-wide outlet lock is tracked in #38).
+- `labctl edit --cycle-delay` (setting or clearing it) is claim-checked
+  against the boards sharing the board's hardware as well, since a stored
+  delay is the minimum of every board on the outlet. Other `edit` changes
+  still check the board alone.
 
 ### Changed
 - One cycle-delay rule on every surface (#41): the board's stored delay

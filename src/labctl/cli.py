@@ -1358,8 +1358,22 @@ def info_cmd(ctx: click.Context, name: str) -> None:
         click.echo("  (none)")
 
 
+def _edit_claim_check(ctx, kwargs, override, probe):
+    """`edit` only changes the board's own records (shared=False), except
+    --cycle-delay: a stored delay is the floor of every board on the plug
+    outlet, so setting or clearing it is checked against the boards sharing
+    the board's hardware too."""
+    return _check_claim_cli(
+        ctx,
+        kwargs["name"],
+        override,
+        shared=kwargs.get("cycle_delay") is not None,
+        probe=probe,
+    )
+
+
 @main.command("edit")
-@claim_checked("name", shared=False)
+@claim_checked(check=_edit_claim_check)
 @click.argument("name")
 @click.option("--rename", "-n", "new_name", help="Rename the SBC")
 @click.option("--project", "-p", help="Set project name")
