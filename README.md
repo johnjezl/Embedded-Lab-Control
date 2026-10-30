@@ -70,8 +70,8 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 The devices are `root:dialout 0660`: join `dialout` to open them directly
 (`sudo usermod -aG dialout $USER`, then log in again). On a system-wide
 install, `install-services.sh` makes the rules file writable by the
-`labctl` group, and `labctl serial udev --install --reload` updates it
-without `sudo`.
+`labctl` group, and members of that group can update it with
+`labctl serial udev --install --reload`, without `sudo`.
 
 For a shared, system-wide install with systemd services, see
 [Systemd Services](#systemd-services).
@@ -89,7 +89,11 @@ labctl uses the first config file it finds:
 > **Warning:** a personal `~/.config/labctl/config.yaml` wins over the shared
 > `/etc/labctl/config.yaml`. On a system install, a personal config left over
 > from the Setup step silently points labctl at a different database than the
-> services use. Remove it, or pass `-c /etc/labctl/config.yaml`.
+> services use. Remove it, or pass `-c /etc/labctl/config.yaml`. Either way,
+> you must be in the `labctl` group: `install-services.sh` makes
+> `/etc/labctl` readable only by it (`sudo usermod -aG labctl $USER`, then
+> log in again). Without that, labctl can't read the shared config and falls
+> back to the built-in defaults and a personal database.
 
 ## Quick Start
 
@@ -528,7 +532,7 @@ Key activity and claims endpoints:
 | `/sbcs/<name>/power` | GET | Get power state |
 | `/sbcs/<name>/power` | POST | Control power (see below) |
 | `/sbcs/<name>/ports` | POST | Assign a serial port |
-| `/sbcs/<name>/console/info` | GET | Console connection info (TCP port, baud rate, proxy port) |
+| `/sbcs/<name>/console/info` | GET | Console connection info (TCP port, baud rate, and the proxy *settings* from config: `port_base`, write policy, client limit; not a running proxy's port) |
 | `/sbcs/<name>/history` | GET | Status history |
 | `/sbcs/<name>/uptime` | GET | Uptime statistics |
 | `/ports` | GET | List all serial port assignments |
@@ -654,8 +658,15 @@ installed but not enabled. For USB relays, also install the `actuators` extra
 into the venv (`sudo /opt/labctl/venv/bin/pip install "<checkout>[actuators]"`).
 
 `labctl-mcp` runs `labctl mcp --http 8080`, which binds 127.0.0.1. To
-reach it from other machines, add `--host` in a systemd drop-in
-(`sudo systemctl edit labctl-mcp`) and enable `auth.enabled` with API keys.
+reach it from other machines, enable `auth.enabled` with API keys and
+override the command in a drop-in (`sudo systemctl edit labctl-mcp`). The
+drop-in must clear `ExecStart` before setting it again:
+
+```ini
+[Service]
+ExecStart=
+ExecStart=/opt/labctl/venv/bin/labctl -c /etc/labctl/config.yaml mcp --http 8080 --host 0.0.0.0
+```
 
 To update an existing install after `git pull` (keeps config and database):
 

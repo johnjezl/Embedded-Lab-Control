@@ -148,9 +148,12 @@ logged (`remove` still refuses a board with an open claim unless
 `monitor`, `actuator probe`, the `claims` commands, lab-wide serial setup
 (`ser2net`, `serial rename`/`repair`/`udev`), which affects every board's
 consoles at once, and the hardware inventory (`add`, `serial add`/`remove`,
-`sdwire add`/`remove`, `actuator add`). `serial remove` and `sdwire
-remove` refuse a device that is still assigned, so they can't take
-hardware from a claimed board.
+`sdwire add`/`remove`, `actuator add`). `sdwire remove` refuses a device
+that is still assigned. `serial remove` refuses an adapter still linked to
+a port. A port is linked when assigned with `--serial-device` or by a
+`/dev/lab/<name>` path naming a registered adapter; a port assigned by any
+other path isn't, so an adapter behind it can be removed from under a
+claimed board.
 The top-level aliases `off` (`power off`), `on` (`power on`),
 `rm`/`delete` (`remove`), `ls` (`list`) and `show` (`info`) behave
 exactly like the commands they stand for.
