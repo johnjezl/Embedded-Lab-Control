@@ -3563,7 +3563,18 @@ def ser2net_generate_cmd(
                 err=True,
             )
             sys.exit(1)
-        for db_port in missing:
+        for listed in missing:
+            # Read the row again: it may have been removed, or given a TCP
+            # port, since it was listed; save from its current values.
+            db_port = manager.get_serial_port(listed.sbc_id, listed.port_type)
+            if db_port is None or db_port.tcp_port:
+                why = (
+                    "it was removed"
+                    if db_port is None
+                    else f"it has TCP port {db_port.tcp_port} now"
+                )
+                click.echo(f"skipped {label(listed)}: {why}", err=True)
+                continue
             # The full `port assign` check at save time too: a claim taken
             # since the probe above still refuses (and an override is
             # announced and recorded). A refusal stops here.

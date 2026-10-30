@@ -2299,6 +2299,51 @@ class TestSer2netGenerate:
         assert "Assigned" not in result.output
         assert self._tcp_ports(manager)["/dev/lab/b"] is None
 
+    def test_rows_reread_before_each_save(self, runner, tmp_path):
+        """A port removed, or given a TCP port, after it was listed is
+        skipped with a note; the others save from their current rows."""
+        from labctl import cli as cli_mod
+
+        cfg, target, manager = self._lab(tmp_path, base=5100)
+        manager.db.execute_modify("UPDATE serial_ports SET tcp_port = NULL")
+        real = cli_mod._port_assign_claim_check
+        sbcs = {s.name: s.id for s in manager.list_sbcs()}
+        changed = []
+
+        def meanwhile(ctx, sbc_name, override=False, **kw):
+            if kw.get("probe") and not changed:
+                changed.append(True)
+                # After listing, before the saves: a gets a TCP port
+                # elsewhere, c is removed, b's baud rate changes.
+                manager.db.execute_modify(
+                    "UPDATE serial_ports SET tcp_port = 5999 WHERE sbc_id = ?",
+                    (sbcs["a"],),
+                )
+                manager.db.execute_modify(
+                    "DELETE FROM serial_ports WHERE sbc_id = ?", (sbcs["c"],)
+                )
+                manager.db.execute_modify(
+                    "UPDATE serial_ports SET baud_rate = 9600 WHERE sbc_id = ?",
+                    (sbcs["b"],),
+                )
+            return real(ctx, sbc_name, override, **kw)
+
+        with patch.object(cli_mod, "_port_assign_claim_check", meanwhile):
+            result = runner.invoke(
+                main, ["-c", str(cfg), "ser2net", "generate", "--install"]
+            )
+        assert result.exit_code == 0, result.output
+        assert (
+            "skipped a console (/dev/lab/a): it has TCP port 5999 now" in result.output
+        )
+        assert "skipped c console (/dev/lab/c): it was removed" in result.output
+        b = manager.get_serial_port(sbcs["b"], PortType.CONSOLE)
+        assert b.tcp_port == 6000  # above a's 5999
+        assert b.baud_rate == 9600  # saved from the current row
+        assert manager.get_serial_port(sbcs["a"], PortType.CONSOLE).tcp_port == 5999
+        text = target.read_text()
+        assert "localhost,5999\n" in text and "localhost,6000\n" in text
+
     def test_failure_after_saving_lists_saved_ports(self, runner, tmp_path):
         cfg, target, manager = self._lab(tmp_path, base=5100)
         self._drop_tcp_ports(manager)

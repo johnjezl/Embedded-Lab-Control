@@ -1,5 +1,7 @@
 """Unit tests for ser2net configuration generator."""
 
+import os
+
 import pytest
 
 from labctl.serial.ser2net import Ser2NetPort, generate_ser2net_config
@@ -362,3 +364,60 @@ class TestCheckSer2netConfigWritable:
         (tmp_path / "ser2net.yaml").symlink_to(tmp_path / "victim")
         with pytest.raises(OSError):
             check_ser2net_config_writable(str(tmp_path / "ser2net.yaml"))
+
+
+class TestOtherUsersFile:
+    """A file owned by another user (so a temporary file couldn't be given
+    its owner): both the write and the pre-check take the in-place path,
+    which needs the file itself writable."""
+
+    def _as_other_user(self, monkeypatch):
+        from labctl.serial import ser2net
+
+        other = os.getuid() + 4321
+        monkeypatch.setattr(ser2net.os, "geteuid", lambda: other)
+
+    def test_check_requires_file_writable(self, tmp_path, monkeypatch):
+        from labctl.serial.ser2net import check_ser2net_config_writable
+
+        path = tmp_path / "ser2net.yaml"
+        path.write_text("old\n")
+        path.chmod(0o444)
+        self._as_other_user(monkeypatch)
+        with pytest.raises(PermissionError):
+            check_ser2net_config_writable(str(path))
+
+    def test_check_ok_when_file_writable(self, tmp_path, monkeypatch):
+        from labctl.serial.ser2net import check_ser2net_config_writable
+
+        path = tmp_path / "ser2net.yaml"
+        path.write_text("old\n")
+        self._as_other_user(monkeypatch)
+        check_ser2net_config_writable(str(path))
+
+    def test_write_rewrites_in_place(self, tmp_path, monkeypatch):
+        from labctl.serial.ser2net import write_ser2net_config
+
+        path = tmp_path / "ser2net.yaml"
+        path.write_text("old content\n")
+        inode = path.stat().st_ino
+        self._as_other_user(monkeypatch)
+        write_ser2net_config(str(path), "new\n")
+        assert path.read_text() == "new\n"
+        assert path.stat().st_ino == inode  # not replaced
+        assert [p.name for p in tmp_path.iterdir()] == ["ser2net.yaml"]
+
+    def test_own_file_replaced_atomically(self, tmp_path):
+        from labctl.serial.ser2net import (
+            check_ser2net_config_writable,
+            write_ser2net_config,
+        )
+
+        path = tmp_path / "ser2net.yaml"
+        path.write_text("old\n")
+        path.chmod(0o444)  # not writable in place, but ours
+        check_ser2net_config_writable(str(path))
+        inode = path.stat().st_ino
+        write_ser2net_config(str(path), "new\n")
+        assert path.read_text() == "new\n"
+        assert path.stat().st_ino != inode

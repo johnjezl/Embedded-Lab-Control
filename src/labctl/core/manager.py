@@ -754,6 +754,18 @@ class ResourceManager:
 
         return False
 
+    def get_serial_port(self, sbc_id: int, port_type: PortType) -> Optional[SerialPort]:
+        """The SBC's port of this type, or None."""
+        row = self.db.execute_one(
+            "SELECT * FROM serial_ports WHERE sbc_id = ? AND port_type = ?",
+            (sbc_id, port_type.value),
+        )
+        if not row:
+            return None
+        port = SerialPort.from_row(row)
+        self._load_serial_device(port)
+        return port
+
     def list_serial_ports(self) -> list[SerialPort]:
         """List all serial port assignments."""
         rows = self.db.execute("SELECT * FROM serial_ports ORDER BY sbc_id, port_type")
