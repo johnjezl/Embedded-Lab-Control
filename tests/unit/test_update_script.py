@@ -496,3 +496,63 @@ class TestPreInstallConfigCheck:
         cfg = tmp_path / "c.yaml"
         cfg.write_text("log_level: INFO\n")
         assert self.run(cfg, loader=tmp_path / "missing.py").returncode == 3
+
+
+class TestInstallServicesDatabase:
+    """install-services.sh puts a fresh install's database in a setgid,
+    group-writable directory of its own, and only secures the database
+    the system config actually names."""
+
+    INSTALL_SH = UPDATE_SH.parent / "install-services.sh"
+
+    def _script(self) -> str:
+        text = self.INSTALL_SH.read_text()
+        head = 'DB_PATH=$("$LABCTL_VENV/bin/python" -I -c \'\n'
+        start = text.index(head) + len(head)
+        return text[start : text.index('\n\' "$SYSTEM_CONFIG_FILE")', start)]
+
+    @pytest.mark.parametrize(
+        "body,expected",
+        [
+            (
+                "database_path: /var/lib/labctl/db/labctl.db\n",
+                "/var/lib/labctl/db/labctl.db",
+            ),
+            ("log_level: INFO\n", ""),
+            ("", ""),
+            ("- a list\n", ""),
+        ],
+    )
+    def test_reads_database_path(self, tmp_path, body, expected):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(body)
+        result = subprocess.run(
+            [sys.executable, "-I", "-c", self._script(), str(cfg)],
+            capture_output=True,
+            text=True,
+            cwd="/",
+            timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout.strip() == expected
+
+    def test_fresh_config_points_at_db_dir(self):
+        text = self.INSTALL_SH.read_text()
+        assert 'LABCTL_DB_DIR="$LABCTL_HOME/db"' in text
+        assert '"database_path: $LABCTL_DB_DIR/labctl.db"' in text
+        assert 'secure-dir "$LABCTL_DB_DIR" labctl labctl 2775' in text
+        assert 'create "$DB_PATH" labctl labctl 664' in text
+
+    def test_update_script_secures_the_same_database(self):
+        """update.sh keeps the db directory and file group-writable with the
+        same database_path reader as install-services.sh."""
+        text = UPDATE_SH.read_text()
+        head = 'DB_PATH=$("$LABCTL_VENV/bin/python" -I -c \'\n'
+        start = text.index(head) + len(head)
+        snippet = text[start : text.index('\n\' "$SYSTEM_CONFIG_FILE")', start)]
+        assert snippet == self._script()
+        assert 'LABCTL_DB_DIR="$LABCTL_HOME/db"' in text
+        assert 'secure-dir "$LABCTL_DB_DIR" labctl labctl 2775' in text
+        assert 'create "$DB_PATH" labctl labctl 664' in text
+        # Before the restart, so services reopen a group-writable database.
+        assert text.index('create "$DB_PATH"') < text.index("systemctl restart")

@@ -42,7 +42,8 @@ are credited unless they ask not to be.
 - **Claims:** a claimed board, and hardware it shares with other boards,
   can't be operated or reconfigured by other users on MCP, REST, the web
   UI or the CLI. Overrides are recorded in the activity log.
-  `claims.require_claim` makes MCP and REST callers claim first.
+  `claims.require_claim` makes MCP and REST callers claim first, and
+  `claims.require_agent_name` refuses their unnamed claims.
 - **Destructive MCP tools** act only on a second call carrying a
   single-use `confirm_token` (`mcp.confirm_destructive`, on by default).
 - **Host file allowlist:** MCP tools may read or write host files only
@@ -61,6 +62,13 @@ are credited unless they ask not to be.
   (`labctl activity tail`).
 - **CLI:** runs with the invoking user's permissions; it isn't limited by
   the `mcp.*` settings.
+- **Shared database:** `install-services.sh` and `update.sh` make the
+  services' database in `/var/lib/labctl/db` (directory setgid `2775`,
+  file `664`) writable by the `labctl` group, so members can use the CLI
+  against it. A member can therefore change any record directly, outside
+  claim checks: membership is trusted, as it already is for reading
+  `/etc/labctl/config.yaml` and its API keys. A database configured
+  elsewhere is left as it is.
 
 ### Web UI exposure
 

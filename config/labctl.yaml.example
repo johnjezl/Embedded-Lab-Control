@@ -5,14 +5,12 @@
 # -c FILE, $LABCTL_CONFIG, ~/.config/labctl/config.yaml,
 # /etc/labctl/config.yaml, built-in defaults.
 #
-# Only these environment variables override settings (keys marked
-# "not used yet" below are parsed but nothing acts on them):
+# Only these environment variables override settings:
 #   LABCTL_DEV_DIR            serial.dev_dir
-#   LABCTL_BASE_TCP_PORT      serial.base_tcp_port (not used yet)
+#   LABCTL_BASE_TCP_PORT      serial.base_tcp_port
 #   LABCTL_DATABASE_PATH      database_path
 #   LABCTL_DATABASE_TIMEOUT   database.timeout_seconds
 #   LABCTL_LOG_LEVEL          log_level
-#   LABCTL_PROXY_ENABLED      proxy.enabled (not used yet)
 #   LABCTL_PROXY_PORT_BASE    proxy.port_base
 #   LABCTL_PROXY_WRITE_POLICY proxy.write_policy
 #   LABCTL_PROXY_LOG_DIR      proxy.log_dir
@@ -24,8 +22,9 @@ serial:
   # Directory where udev creates symlinks for lab devices
   dev_dir: /dev/lab
 
-  # Base TCP port for ser2net connections. Not used yet: automatic port
-  # assignment always starts at 4000 (`port assign -t` picks one).
+  # Lowest TCP port given to a console when none is picked (`port assign`
+  # without -t; MCP, REST and web assignments): the next one above the
+  # highest in use, and at least this. 1-65535.
   base_tcp_port: 4000
 
   # Default baud rate for serial connections
@@ -33,7 +32,10 @@ serial:
 
 # ser2net integration
 ser2net:
-  # Path to ser2net configuration file
+  # Path to ser2net configuration file: `ser2net generate --install`
+  # writes it (in place; a symlink or hard link there is refused) and
+  # `ports`/`connect` read TCP ports from it. install-services.sh makes
+  # only /etc/ser2net.yaml group-writable; for another path, set that up.
   config_file: /etc/ser2net.yaml
 
   # Enable ser2net integration (set to false for direct serial only)
@@ -41,14 +43,11 @@ ser2net:
 
 # Multi-client serial proxy (`labctl proxy start`); defaults shown.
 # proxy:
-#   enabled: true              # not used yet: `proxy start` always runs
 #   port_base: 5500
 #   port_range: 100            # ports 5500-5599
 #   write_policy: first        # first, all or queue
 #   log_dir: ~/.local/share/labctl/logs   # default: $XDG_DATA_HOME/labctl/logs
-#   log_retention_days: 7      # not used yet: logs are never pruned
 #   max_clients: 10
-#   idle_timeout: 3600         # not used yet: idle clients stay connected
 
 # Health checks and the monitor daemon (`labctl monitor`); defaults shown.
 # health:
@@ -57,11 +56,10 @@ ser2net:
 #   min_sleep_seconds: 1.0
 #   ping_timeout: 2.0
 #   serial_timeout: 2.0
-#   status_retention_days: 30  # not used yet: status history isn't pruned
+#   status_retention_days: 30  # the monitor deletes older status history (hourly)
 #   alert_log_path: ~/.local/share/labctl/alerts.log  # default: $XDG_DATA_HOME/labctl/alerts.log
 #   alert_on_offline: true
 #   alert_on_power_change: true
-#   update_status_on_check: true  # not used yet: use `monitor --no-update`
 
 # Authentication (disabled by default). Also secures `labctl mcp --http`:
 # with auth enabled, MCP HTTP clients must send
@@ -102,6 +100,11 @@ ser2net:
 #   # Recommended when several agents share the lab. Needs claims
 #   # enabled.
 #   require_claim: false
+#   # Refuse MCP and REST claims that don't name the agent: the caller's
+#   # user with auth, otherwise agent_name in the call (MCP claim_sbc,
+#   # POST /api/claims/<sbc>). CLI claims are always named ($USER or
+#   # --name).
+#   require_agent_name: false
 #   # Claim durations, in whole minutes. A claim asking for a duration
 #   # outside min..max is refused; inconsistent values here are corrected
 #   # at load, with a warning.
@@ -177,12 +180,14 @@ mcp:
 
 # Database path for SBC and resource tracking. `~` is the home of whoever
 # runs labctl: in /etc/labctl/config.yaml use an absolute path (e.g.
-# /var/lib/labctl/.config/labctl/labctl.db, which install-services.sh
-# writes), or each user and the services get a database of their own.
+# /var/lib/labctl/db/labctl.db, which install-services.sh writes into a
+# new config), or each user and the services get a database of their own.
 # For CLI users to write the services' database, the file and its
-# directory must also be writable by the labctl group (e.g. a setgid 2775
-# directory and a 664 file); install-services.sh doesn't set that up, so
-# otherwise run CLI writes as `sudo -u labctl labctl ...`.
+# directory must also be writable by the labctl group. install-services.sh
+# and update.sh set that up for /var/lib/labctl/db/labctl.db (a setgid
+# 2775 directory and a 664 file); for a database elsewhere, move it there
+# (README "Moving the database") or run CLI writes as
+# `sudo -u labctl labctl ...`.
 database_path: ~/.config/labctl/labctl.db
 
 # Logging level (DEBUG, INFO, WARNING, ERROR); WARNING when unset

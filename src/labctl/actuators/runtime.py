@@ -36,11 +36,13 @@ from labctl.actuators.base import (
     WriteOutcome,
 )
 from labctl.core.models import (
+    POST_POWER_INACTIVE,
     Actuator,
     ActuatorChannel,
     Binding,
     ChannelState,
     DesiredState,
+    SamplePhase,
     ShapeMode,
 )
 
@@ -561,6 +563,11 @@ def binding_status(manager, binding: Binding) -> dict:
             "shape_mode": binding.shape_mode.value,
             "shape_active": binding.shape_active.value,
             "sample_phase": binding.sample_phase.value,
+            **(
+                {"sample_phase_note": POST_POWER_INACTIVE}
+                if binding.sample_phase is SamplePhase.POST_POWER
+                else {}
+            ),
             "momentary_pulse_ms": binding.momentary_pulse_ms,
             "desired_state": binding.desired_state.value,
         },

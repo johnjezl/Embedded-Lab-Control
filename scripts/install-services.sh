@@ -6,7 +6,8 @@
 # This script:
 #   1. Creates a 'labctl' system user
 #   2. Creates a venv at /opt/labctl/venv and installs labctl into it
-#   3. Sets up config in /var/lib/labctl
+#   3. Sets up config in /var/lib/labctl, and a database directory
+#      (/var/lib/labctl/db) that labctl group members can write from the CLI
 #   4. Installs and enables systemd services
 
 set -e
@@ -92,6 +93,7 @@ fi
 mkdir -p "$LABCTL_HOME"  # its parent, /var/lib, is root's
 LABCTL_HOME=$(realpath -e "$LABCTL_HOME")
 LABCTL_CONFIG="$LABCTL_HOME/.config/labctl"
+LABCTL_DB_DIR="$LABCTL_HOME/db"
 echo "[+] Setting up config in $LABCTL_CONFIG..."
 mkdir -p "$LABCTL_CONFIG"
 mkdir -p "$SYSTEM_CONFIG_DIR"
@@ -114,7 +116,7 @@ else
     "${ADMIN_FILES[@]}" copy "$PROJECT_DIR/config/labctl.yaml.example" \
         "$LABCTL_CONFIG/config.yaml" 640 \
         "database_path: ~/.config/labctl/labctl.db" \
-        "database_path: $LABCTL_CONFIG/labctl.db"
+        "database_path: $LABCTL_DB_DIR/labctl.db"
     echo "[ok] Copied example config to $LABCTL_CONFIG/config.yaml"
 fi
 
@@ -155,6 +157,38 @@ chown -R labctl:labctl "$LABCTL_HOME"
 # admin): keep it unreadable to other users.
 "${ADMIN_FILES[@]}" secure "$LABCTL_CONFIG/config.yaml" labctl labctl 640
 echo "[ok] Secured service config: $LABCTL_CONFIG/config.yaml (labctl:labctl, 640)"
+
+# The services' database, in a directory of its own so labctl group members
+# can write it from the CLI without the rest of the home being group-
+# writable. Setgid (2775): the -wal/-shm files SQLite creates next to it
+# are in the labctl group, with the database file's mode (664). Not sticky:
+# whichever process closes the database last removes them.
+if [ -L "$LABCTL_DB_DIR" ]; then
+    echo "[ok] $LABCTL_DB_DIR is a symlink; leaving it (and its permissions) as is"
+else
+    "${ADMIN_FILES[@]}" secure-dir "$LABCTL_DB_DIR" labctl labctl 2775
+    # Root reads only root's own /etc/labctl/config.yaml here.
+    DB_PATH=$("$LABCTL_VENV/bin/python" -I -c '
+import sys, yaml
+with open(sys.argv[1]) as f:
+    data = yaml.safe_load(f)
+print(data.get("database_path", "") if isinstance(data, dict) else "")
+' "$SYSTEM_CONFIG_FILE")
+    if [ "$DB_PATH" = "$LABCTL_DB_DIR/labctl.db" ]; then
+        "${ADMIN_FILES[@]}" create "$DB_PATH" labctl labctl 664
+        for extra in "$DB_PATH-wal" "$DB_PATH-shm"; do
+            if [ "$("${ADMIN_FILES[@]}" state "$extra")" = regular ]; then
+                "${ADMIN_FILES[@]}" secure "$extra" labctl labctl 664
+            fi
+        done
+        echo "[ok] Database $DB_PATH (labctl:labctl, 664; group-writable directory)"
+    else
+        echo "[!] database_path in $SYSTEM_CONFIG_FILE is ${DB_PATH:-unset}, not"
+        echo "    $LABCTL_DB_DIR/labctl.db: labctl group members can't write it from"
+        echo "    the CLI (they'd need sudo -u labctl). To move it there, see"
+        echo "    \"Moving the database\" in README.md."
+    fi
+fi
 
 # 4. Set up udev rules file (group-writable so labctl users don't need sudo)
 echo "[+] Setting up udev rules file..."

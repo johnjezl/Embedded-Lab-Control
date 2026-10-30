@@ -6,6 +6,67 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed (#41: options and config keys that did nothing)
+- `serial.base_tcp_port` (and `LABCTL_BASE_TCP_PORT`) now sets where TCP
+  port auto-assignment starts (`port assign` without `-t`, MCP, REST, web,
+  `import`): one above the highest port in use, and at least the base. It
+  must be 1-65535 (anything else keeps 4000, with a warning). The web
+  settings page showed it blank (it read `ser2net.base_tcp_port`).
+- `ser2net generate` gives a port with no TCP port recorded the next
+  free one from `serial.base_tcp_port` up (one each), instead of 4000 for
+  all of them. Only the generated config changes, not the database.
+- `ser2net generate --install` writes `ser2net.config_file` (default
+  `/etc/ser2net.yaml`, unchanged); it always wrote `/etc/ser2net.yaml`.
+  The file is rewritten in place (owner and mode kept), and a symlink on
+  the path or a hard-linked file is refused, since it may run as root.
+  `install-services.sh` still makes only `/etc/ser2net.yaml`
+  group-writable.
+- `health.status_retention_days` now prunes status history: the monitor
+  deletes older entries at startup and then hourly. It must be a whole
+  number above 0.
+- `claims.require_agent_name` is enforced: MCP `claim_sbc` and
+  `POST /api/claims/<sbc>` refuse (`agent_name_required`) a claim that
+  would be recorded under a placeholder name, i.e. with no `agent_name`
+  (in the call, or earlier in the MCP session) and no authenticated user.
+  CLI claims are always named (`--name` or `$USER`).
+- MCP `claim_sbc` defaults `duration_minutes` to
+  `claims.default_duration_minutes`, like the CLI and REST (it was 30).
+- `bind --phase post-power` (and MCP `bind` with `sample_phase=post_power`)
+  is refused: nothing acts on it yet. Bindings stored with it before are
+  kept and listed as inactive (`bindings list` marks them `*`, `bindings
+  status` says so, MCP output carries `sample_phase_note`).
+- `ports --all` lists the USB serial devices (`/dev/ttyUSB*`,
+  `/dev/ttyACM*`) no `/dev/lab` symlink points at; the flag did nothing.
+- `remove`, `sdwire remove`, `serial remove`, `actuator remove` and
+  `power-all` ask only on a terminal. Without one they no longer read the
+  answer from stdin (a piped `y` used to confirm) and exit 1 asking for
+  `--yes`. Declining `actuator remove` now exits 1, like the others (it
+  printed "Aborted." and exited 0).
+- `install-services.sh` and `update.sh` make the services' database
+  writable by the `labctl` group, so group members can write it from the
+  CLI without `sudo -u labctl`: a new config puts it in
+  `/var/lib/labctl/db` (setgid `2775`; the file, created empty if
+  missing, and any `-wal`/`-shm` are `664`; SQLite gives new `-wal`/`-shm`
+  files the database's mode). A database configured elsewhere is left
+  alone, with a note. Root creates and re-permissions these through
+  `labctl.core.admin_files` (new `create` operation).
+  **Upgrading:** an existing install keeps its database where it is
+  (e.g. `/var/lib/labctl/labctl.db`). To share it with the group: stop the
+  services, move `labctl.db` (and any `labctl.db-wal`/`-shm`) into
+  `/var/lib/labctl/db/`, set `database_path: /var/lib/labctl/db/labctl.db`
+  in `/etc/labctl/config.yaml` and copy it to the service config, run
+  `update.sh` (or `install-services.sh`), and start the services. README
+  "Moving the database" has the commands.
+- REST `POST /api/sbcs/<name>/power` returns 400, not 500, for a
+  non-string `action` or a JSON body that isn't an object.
+
+### Removed
+- Config keys that were parsed but never acted on: `proxy.enabled`
+  (and `LABCTL_PROXY_ENABLED`), `proxy.log_retention_days`,
+  `proxy.idle_timeout` and `health.update_status_on_check` (use
+  `monitor --no-update`). A config that still sets one loads, with a
+  warning that it's ignored.
+
 ### Security
 - MCP `sdwire_to_host` fails closed (#41): it switches the card only when
   the board's plug reports it off. It used to go ahead when the board had

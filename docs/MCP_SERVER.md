@@ -367,7 +367,7 @@ call. `power_on` and `power_cycle` also check and set those boards'
 
 | Tool | Parameters | Description |
 |------|------------|-------------|
-| `assign_serial_port` | `sbc_name`, `port_type`, `device`, `alias`, `baud_rate` | Assign serial port to SBC |
+| `assign_serial_port` | `sbc_name`, `port_type`, `device`, `alias`, `baud_rate` | Assign serial port to SBC; the TCP port is auto-assigned (one above the highest in use, at least `serial.base_tcp_port`) |
 | `remove_serial_port` | `sbc_name`, `port_type` | Remove serial port from SBC |
 | `assign_power_plug` | `sbc_name`, `plug_type`, `address`, `index` | Assign smart plug to SBC |
 | `remove_power_plug` | `sbc_name` | Remove power plug from SBC |
@@ -452,7 +452,7 @@ normally use the binding verbs.
 | `actuator_add` | `name`, `driver` (`lcus1_serial`), `device_path`, `vid`, `pid`, `serial_no`, `channels` (default 1) | Register an actuator. **Privileged**; `device_path` must be under `/dev/lab/`, `/dev/serial/by-id/`, `/dev/ttyUSB*` or `/dev/ttyACM*` |
 | `actuator_remove` | `name` | Remove an actuator and the bindings on its channels. **Privileged** |
 | `actuator_set` | `name`, `channel` (1-based), `state` (`open`/`closed`) | Drive a channel directly, bypassing bindings (wiring checks only). **Privileged** |
-| `bind` | `sbc_name`, `purpose`, `actuator`, `channel`, `mode` (`latch`/`momentary`), `active_when` (`closed` default, or `open`), `pulse_ms` (required for `momentary`), `sample_phase` (`none` default, `pre_power`, `post_power`), `notes` | Bind an actuator channel to (SBC, purpose). `pre_power` bindings are set to their desired state whenever labctl powers the board on |
+| `bind` | `sbc_name`, `purpose`, `actuator`, `channel`, `mode` (`latch`/`momentary`), `active_when` (`closed` default, or `open`), `pulse_ms` (required for `momentary`), `sample_phase` (`none` default, or `pre_power`; `post_power` is refused, not implemented yet), `notes` | Bind an actuator channel to (SBC, purpose). `pre_power` bindings are set to their desired state whenever labctl powers the board on |
 | `unbind` | `sbc_name`, `purpose` | Remove a binding |
 | `bindings_list` | `sbc_name` (optional) | List bindings, for one SBC or all |
 | `actuate` | `sbc_name`, `purpose` | Drive a latch binding to its active state (desired = asserted) |
@@ -479,7 +479,7 @@ it has none. The result names the board it came from.
 
 | Tool | Parameters | Description |
 |------|------------|-------------|
-| `claim_sbc` | `sbc_name`, `duration_minutes` (default 30), `reason` (optional), `agent_name`, `context` | Claim exclusive access to an SBC. The duration must lie within `claims.min_duration_minutes`..`max_duration_minutes`; the MCP default is 30, not `claims.default_duration_minutes` |
+| `claim_sbc` | `sbc_name`, `duration_minutes` (default `claims.default_duration_minutes`), `reason` (optional), `agent_name`, `context` | Claim exclusive access to an SBC. The duration must lie within `claims.min_duration_minutes`..`max_duration_minutes`. `agent_name` is kept for the session; without one the claim is named after the authenticated user, or `unnamed-...` without auth, which `claims.require_agent_name` refuses (`agent_name_required`) |
 | `release_sbc` | `sbc_name` | Release your claim (this session, or your user over authenticated HTTP) |
 | `renew_sbc_claim` | `sbc_name`, `duration_minutes` | Extend an active claim's deadline |
 | `list_claims` | — | List all active claims across the lab |

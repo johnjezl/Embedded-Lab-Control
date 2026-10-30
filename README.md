@@ -101,8 +101,9 @@ refuse to start on any config that didn't load.
 > log in again). Without that, labctl can't read the shared config and falls
 > back to the built-in defaults and a personal database. To write the
 > services' database too, its file and directory must be writable by the
-> group (see `database_path` in `config/labctl.yaml.example`), or run
-> commands as `sudo -u labctl labctl ...`.
+> group. A new install's database (`/var/lib/labctl/db/labctl.db`) is; move
+> an older one there (see [Moving the database](#moving-the-database)), or
+> run commands as `sudo -u labctl labctl ...`.
 
 ## Quick Start
 
@@ -149,7 +150,7 @@ Every command has `--help`. This section lists the commands; see
 
 | Flag | Description |
 |------|-------------|
-| `-y`, `--yes` | Skip the confirmation on destructive commands. The question is asked only when stdin is a terminal, so cron, CI, pipes and agents are never prompted. `remove`, `power-all`, `sdwire remove` and `actuator remove` ask whenever `-y` is missing, so pass `-y` in scripts. |
+| `-y`, `--yes` | Skip the confirmation on destructive commands. The question is asked only when stdin is a terminal, so cron, CI, pipes and agents are never prompted. `remove`, `power-all`, `sdwire remove`, `serial remove` and `actuator remove` also ask on a terminal, but without one they refuse unless `-y` is given. |
 | `--override-claim` | Act on a board another user has claimed (or that shares hardware with one). The override is recorded in the activity log. Without it, such commands refuse. |
 | `--dry-run` | On `power cycle`, `sdwire flash` and `sdwire update`: print the plan and change nothing |
 
@@ -248,7 +249,7 @@ the point here is to allow SDWire workflows without granting broader root access
 | `labctl serial repair [--apply]` | Re-link port assignments to registered adapters (dry run by default) |
 | `labctl serial capture <port> --timeout N --until <pattern>` | Capture serial output |
 | `labctl serial send <port> <data> --capture N` | Send data (plus CRLF unless `--raw`) to a serial port |
-| `labctl ser2net generate [--install]` | Generate the ser2net config from the database (`--install` writes `/etc/ser2net.yaml`) |
+| `labctl ser2net generate [--install]` | Generate the ser2net config from the database (`--install` writes `ser2net.config_file`, default `/etc/ser2net.yaml`) |
 | `labctl ser2net reload` | Restart the ser2net service |
 
 ### Boot Testing
@@ -266,7 +267,7 @@ the point here is to allow SDWire workflows without granting broader root access
 | `labctl port remove <sbc> <type>` | Remove a port assignment |
 | `labctl port list` | List port assignments |
 | `labctl port list --unassigned` | Show unassigned /dev/lab/* devices |
-| `labctl ports` | List `/dev/lab` symlinks and their ser2net TCP ports |
+| `labctl ports [--all]` | List `/dev/lab` symlinks and their ser2net TCP ports; `--all` also lists USB serial devices (`/dev/ttyUSB*`, `/dev/ttyACM*`) no symlink points at |
 | `labctl connect <alias\|sbc\|device>` | Connect by alias, SBC name, or device |
 | `labctl console <sbc>` | Connect to serial console |
 | `labctl log <sbc>` | Capture serial output to a log file until Ctrl+C (`-n N` to stop after N lines) |
@@ -311,7 +312,8 @@ REST) first checks those relays on the board and on every board sharing its
 outlet. If a relay can't be reached, nothing is switched. labctl then drives
 each relay to its desired state and only then applies power. If a strap fails
 after a cycle's power-off, the boards are left off rather than booting
-without it. `--phase post-power` is stored but not yet acted on. When the
+without it. `--phase post-power` is refused: it isn't implemented yet
+(bindings stored with it by older versions are listed as inactive). When the
 monitor daemon starts, it returns unheld relay channels to their default
 state and leaves asserted bindings alone.
 
@@ -385,7 +387,7 @@ the `labctl` group and start a new login session afterward.
 ```yaml
 serial:
   dev_dir: /dev/lab          # udev symlink directory
-  base_tcp_port: 4000        # ser2net base port
+  base_tcp_port: 4000        # lowest auto-assigned ser2net TCP port
   default_baud: 115200
 
 ser2net:
@@ -525,7 +527,7 @@ Key activity and claims endpoints:
 | `GET /api/claims` | List all active claims |
 | `GET /api/claims/<sbc>` | Show the current claim on one SBC |
 | `GET /api/claims/<sbc>/history` | Show released claim history for one SBC |
-| `POST /api/claims/<sbc>` | Create a claim |
+| `POST /api/claims/<sbc>` | Create a claim (`duration_minutes`, `reason`, `agent_name`; with `claims.require_agent_name` and auth off, `agent_name` is required) |
 | `POST /api/claims/<sbc>/renew` | Renew a claim held by the current caller |
 | `POST /api/claims/<sbc>/release` | Release a claim held by the current caller |
 | `POST /api/claims/<sbc>/force-release` | Operator override for an active claim |
@@ -661,8 +663,11 @@ sudo systemctl enable --now labctl-mcp
 `install-services.sh` creates the `labctl` user and group and installs
 labctl with the `web,mcp,kasa,sdwire` extras into `/opt/labctl/venv`, linked as
 `/usr/local/bin/labctl`. It sets up `/etc/labctl/config.yaml` (root:labctl,
-640) and `/var/lib/labctl`, and makes the udev rules file and
-`/etc/ser2net.yaml` writable by the `labctl` group. It writes
+640) and `/var/lib/labctl`, and makes the udev rules file,
+`/etc/ser2net.yaml` and the services' database writable by the `labctl`
+group. A new config puts the database in `/var/lib/labctl/db` (setgid
+2775, the file 664); if `database_path` names another file, the script
+leaves it alone and prints how to move it there. It writes
 `/etc/sudoers.d/labctl` for `udevadm` and `systemctl restart ser2net`.
 It enables and starts `labctl-web` and `labctl-monitor`; `labctl-mcp` is
 installed but not enabled. For USB relays, also install the `actuators` extra
@@ -684,6 +689,38 @@ To update an existing install after `git pull` (keeps config and database):
 ```bash
 sudo ./scripts/update.sh
 ```
+
+When the configured database is `/var/lib/labctl/db/labctl.db`, both
+scripts keep it (and its directory) writable by the `labctl` group;
+otherwise they print a note and leave it alone.
+
+### Moving the database
+
+Installs from before the `/var/lib/labctl/db` directory keep the database
+elsewhere (e.g. `/var/lib/labctl/labctl.db` or
+`/var/lib/labctl/.config/labctl/labctl.db`), which only the `labctl` user
+can write. To let `labctl` group members write it from the CLI, move it:
+
+```bash
+sudo systemctl stop labctl-web labctl-monitor labctl-mcp
+OLD=/var/lib/labctl/labctl.db          # your current database_path
+sudo install -d -o labctl -g labctl -m 2775 /var/lib/labctl/db
+# A clean stop normally leaves no -wal/-shm; move them too if present.
+for f in "$OLD" "$OLD-wal" "$OLD-shm"; do
+    [ -e "$f" ] && sudo mv "$f" /var/lib/labctl/db/
+done
+# Set database_path: /var/lib/labctl/db/labctl.db, then copy the config to
+# the service copy (update.sh refuses to run while the two differ):
+sudoedit /etc/labctl/config.yaml
+sudo -u labctl cp /etc/labctl/config.yaml /var/lib/labctl/.config/labctl/config.yaml
+sudo ./scripts/update.sh   # or install-services.sh: sets 2775/664, restarts
+sudo systemctl start labctl-web labctl-monitor   # and labctl-mcp if you use it
+```
+
+`update.sh` restarts the enabled services itself; the last line covers any
+you started by hand. As a group member, a write such as
+`labctl claim <sbc> -r test` then `labctl release <sbc>` should now work
+without `sudo -u labctl`.
 
 ## Development
 

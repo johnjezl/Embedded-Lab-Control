@@ -77,6 +77,101 @@ class TestTerminalOnlyConfirmation:
         power.power_off.assert_called_once()
 
 
+class TestRecordRemovalNeedsYesWithoutTerminal:
+    """`remove`, `sdwire remove`, `serial remove`, `actuator remove` and
+    `power-all` ask on a terminal; without one they refuse unless --yes,
+    rather than read the answer from a pipe."""
+
+    @pytest.fixture
+    def records(self, lab):
+        from labctl.core.manager import get_manager
+        from labctl.core.models import DriverName
+
+        config, power, tmp_path = lab
+        manager = get_manager(tmp_path / "labctl.db")
+        manager.create_sbc(name="spare")
+        manager.create_sdwire_device(name="sdw-spare", serial_number="bdgrd_x")
+        manager.create_serial_device(name="ser-spare", usb_path="1-1.9")
+        manager.create_actuator("relay-spare", DriverName.LCUS1_SERIAL)
+        return config, power, manager
+
+    CASES = {
+        "remove": (["remove", "spare"], lambda m: m.get_sbc_by_name("spare")),
+        "sdwire remove": (
+            ["sdwire", "remove", "sdw-spare"],
+            lambda m: m.get_sdwire_device_by_name("sdw-spare"),
+        ),
+        "serial remove": (
+            ["serial", "remove", "ser-spare"],
+            lambda m: m.get_serial_device_by_name("ser-spare"),
+        ),
+        "actuator remove": (
+            ["actuator", "remove", "relay-spare"],
+            lambda m: m.get_actuator_by_name("relay-spare"),
+        ),
+    }
+
+    @pytest.mark.parametrize("name", sorted(CASES))
+    def test_no_terminal_refuses_without_yes(self, records, name):
+        config, _, manager = records
+        args, lookup = self.CASES[name]
+        with patch("labctl.cli._stdin_is_tty", return_value=False):
+            result = run(config, *args, input="y\n")
+        assert result.exit_code == 1
+        assert "stdin is not a terminal" in result.output
+        assert "pass --yes" in result.output
+        assert "[y/N]" not in result.output  # never asked
+        assert lookup(manager) is not None
+
+    @pytest.mark.parametrize("name", sorted(CASES))
+    def test_no_terminal_yes_removes(self, records, name):
+        config, _, manager = records
+        args, lookup = self.CASES[name]
+        with patch("labctl.cli._stdin_is_tty", return_value=False):
+            result = run(config, *args, "--yes")
+        assert result.exit_code == 0, result.output
+        assert lookup(manager) is None
+
+    @pytest.mark.parametrize("name", sorted(CASES))
+    def test_terminal_no_aborts_non_zero(self, records, name):
+        config, _, manager = records
+        args, lookup = self.CASES[name]
+        with patch("labctl.cli._stdin_is_tty", return_value=True):
+            result = run(config, *args, input="n\n")
+        assert result.exit_code == 1
+        assert "Aborted" in result.output
+        assert lookup(manager) is not None
+
+    @pytest.mark.parametrize("name", sorted(CASES))
+    def test_terminal_yes_answer_removes(self, records, name):
+        config, _, manager = records
+        args, lookup = self.CASES[name]
+        with patch("labctl.cli._stdin_is_tty", return_value=True):
+            result = run(config, *args, input="y\n")
+        assert result.exit_code == 0, result.output
+        assert lookup(manager) is None
+
+    def test_power_all_no_terminal_needs_yes(self, lab):
+        config, power, _ = lab
+        with patch("labctl.cli._stdin_is_tty", return_value=False):
+            result = run(config, "power-all", "off", input="y\n")
+        assert result.exit_code == 1
+        assert "can't ask before it powers off 1 SBC(s)" in result.output
+        power.power_off.assert_not_called()
+        with patch("labctl.cli._stdin_is_tty", return_value=False):
+            result = run(config, "power-all", "off", "--yes")
+        assert result.exit_code == 0, result.output
+        power.power_off.assert_called_once()
+
+    def test_power_all_terminal_asks(self, lab):
+        config, power, _ = lab
+        with patch("labctl.cli._stdin_is_tty", return_value=True):
+            result = run(config, "power-all", "off", input="n\n")
+        assert result.exit_code == 1
+        assert "Power OFF 1 SBC(s)?" in result.output
+        power.power_off.assert_not_called()
+
+
 class TestDryRun:
     def test_power_cycle_dry_run(self, lab):
         config, power, _ = lab

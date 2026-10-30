@@ -258,6 +258,77 @@ class TestMcpAdminActuatorOpsConfig:
         assert load_config(cfg).mcp.allow_admin_actuator_ops is False
 
 
+class TestBaseTcpPortConfig:
+    """serial.base_tcp_port: a TCP port number, else 4000 with a warning."""
+
+    @pytest.mark.parametrize("value", [0, 65536, -1, "5000", True, 4000.5])
+    def test_invalid_keeps_default_with_warning(self, caplog, value):
+        with caplog.at_level(logging.WARNING):
+            config = Config.from_dict({"serial": {"base_tcp_port": value}})
+        assert config.serial.base_tcp_port == 4000
+        assert "base_tcp_port must be a TCP port number" in caplog.text
+
+    @pytest.mark.parametrize("value", ["0", "70000"])
+    def test_env_out_of_range_ignored(self, monkeypatch, caplog, value):
+        from labctl.core.config import load_config
+
+        monkeypatch.setenv("LABCTL_BASE_TCP_PORT", value)
+        with caplog.at_level(logging.WARNING):
+            assert load_config().serial.base_tcp_port == 4000
+        assert "LABCTL_BASE_TCP_PORT must be a TCP port number" in caplog.text
+
+
+class TestStatusRetentionConfig:
+    def test_default(self):
+        assert Config.from_dict({}).health.status_retention_days == 30
+
+    def test_set(self):
+        config = Config.from_dict({"health": {"status_retention_days": 7}})
+        assert config.health.status_retention_days == 7
+
+    @pytest.mark.parametrize("value", [0, -3, "7", 1.5])
+    def test_invalid_keeps_default(self, caplog, value):
+        with caplog.at_level(logging.WARNING):
+            config = Config.from_dict({"health": {"status_retention_days": value}})
+        assert config.health.status_retention_days == 30
+        assert "status_retention_days must be a whole number" in caplog.text
+
+
+class TestRemovedConfigKeys:
+    """Keys that were parsed but never acted on are gone; a config that
+    still sets one loads, with one warning per key."""
+
+    @pytest.mark.parametrize(
+        "section,key",
+        [
+            ("proxy", "enabled"),
+            ("proxy", "log_retention_days"),
+            ("proxy", "idle_timeout"),
+            ("health", "update_status_on_check"),
+        ],
+    )
+    def test_warns_once_and_loads(self, caplog, section, key):
+        with caplog.at_level(logging.WARNING):
+            for _ in range(3):
+                config = Config.from_dict({section: {key: 1}})
+        assert caplog.text.count(f"{section}.{key} is no longer supported") == 1
+        assert key not in config.to_dict()[section]
+
+    def test_no_warning_without_them(self, caplog):
+        with caplog.at_level(logging.WARNING):
+            Config.from_dict({"proxy": {"port_base": 6000}, "health": {}})
+        assert "no longer supported" not in caplog.text
+
+    def test_proxy_enabled_env_ignored_with_warning(self, monkeypatch, caplog):
+        from labctl.core.config import load_config
+
+        monkeypatch.setenv("LABCTL_PROXY_ENABLED", "false")
+        with caplog.at_level(logging.WARNING):
+            config = load_config()
+        assert not hasattr(config.proxy, "enabled")
+        assert "LABCTL_PROXY_ENABLED is no longer supported" in caplog.text
+
+
 class TestExclusiveConfigEnv:
     """Review #8 of #14: `labctl -c FILE mcp` exports FILE via LABCTL_CONFIG;
     with LABCTL_CONFIG_EXCLUSIVE=1 a missing/broken FILE must give defaults

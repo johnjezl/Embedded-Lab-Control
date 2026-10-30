@@ -271,6 +271,18 @@ class TestMcpTools:
         assert "Assigned" in result
         assert "sbc2-console" not in result or "tcp:" in result
 
+    def test_assign_serial_port_uses_base_tcp_port(self, mock_manager):
+        """serial.base_tcp_port sets where auto-assignment starts."""
+        from labctl.core.config import Config
+        from labctl.mcp_server import assign_serial_port
+
+        config = Config.from_dict({"serial": {"base_tcp_port": 6500}})
+        with patch("labctl.mcp_server._get_config", return_value=config):
+            result = assign_serial_port(
+                sbc_name="test-sbc-2", port_type="console", device="/dev/lab/b"
+            )
+        assert "(tcp:6500)" in result
+
     def test_assign_serial_port_bad_sbc(self, mock_manager):
         from labctl.mcp_server import assign_serial_port
 
@@ -2787,6 +2799,65 @@ class TestMcpClaimTools:
         assert result["was_held_by"] == "other"
 
 
+class TestMcpClaimDefaultsAndNames:
+    """claim_sbc's duration default comes from claims.default_duration_minutes,
+    and claims.require_agent_name refuses unnamed claims."""
+
+    def test_default_duration_from_config(self, claims_env):
+        from labctl import mcp_server
+
+        mcp_server._get_config().claims.default_duration_minutes = 45
+        result = json.loads(mcp_server.claim_sbc(sbc_name="test-sbc-1", reason="r"))
+        assert result["status"] == "claimed"
+        assert result["claim"]["duration_seconds"] == 45 * 60
+
+    def test_unnamed_refused_when_required(self, claims_env):
+        from labctl import mcp_server
+
+        mcp_server._get_config().claims.require_agent_name = True
+        with patch("labctl.mcp_server._AGENT_NAME", None):
+            result = json.loads(
+                mcp_server.claim_sbc(sbc_name="test-sbc-1", agent_name="  ")
+            )
+        assert result["error"] == "agent_name_required"
+        assert claims_env.get_active_claim("test-sbc-1") is None
+
+    def test_named_in_call_allowed_and_kept(self, claims_env):
+        from labctl import mcp_server
+
+        mcp_server._get_config().claims.require_agent_name = True
+        with patch("labctl.mcp_server._AGENT_NAME", None):
+            result = json.loads(
+                mcp_server.claim_sbc(sbc_name="test-sbc-1", agent_name=" fw-bot ")
+            )
+            assert result["claim"]["agent_name"] == "fw-bot"
+            # The name set earlier in the session counts for later claims.
+            result = json.loads(mcp_server.claim_sbc(sbc_name="test-sbc-2"))
+        assert result["status"] == "claimed"
+        assert result["claim"]["agent_name"] == "fw-bot"
+
+    def test_authenticated_user_counts_as_name(self, claims_env):
+        from labctl import mcp_server
+
+        mcp_server._get_config().claims.require_agent_name = True
+        with (
+            patch("labctl.mcp_server._AGENT_NAME", None),
+            patch.dict(mcp_server._USER_AGENT_NAMES, clear=True),
+            patch("labctl.mcp_server._authenticated_user", return_value="alice"),
+        ):
+            result = json.loads(mcp_server.claim_sbc(sbc_name="test-sbc-1"))
+        assert result["status"] == "claimed"
+        assert result["claim"]["agent_name"] == "alice"
+
+    def test_unnamed_allowed_by_default(self, claims_env):
+        from labctl import mcp_server
+
+        with patch("labctl.mcp_server._AGENT_NAME", None):
+            result = json.loads(mcp_server.claim_sbc(sbc_name="test-sbc-1"))
+        assert result["status"] == "claimed"
+        assert result["claim"]["agent_name"].startswith("unnamed-")
+
+
 class TestMcpClaimResources:
     """Tests for claim MCP resources."""
 
@@ -3321,6 +3392,24 @@ class TestMcpBindingTools:
 
         result = unbind(sbc_name="test-sbc-1", purpose="recovery_mode")
         assert "Unbound" in result
+        assert mock_manager.get_binding_by_target(sbc.id, "recovery_mode") is None
+
+    def test_bind_post_power_refused(self, mock_manager):
+        from labctl.core.models import ChannelState, DriverName
+        from labctl.mcp_server import bind
+
+        a = mock_manager.create_actuator("relay-post", DriverName.LCUS1_SERIAL)
+        mock_manager.add_actuator_channel(a.id, 1, default_state=ChannelState.OPEN)
+        result = bind(
+            sbc_name="test-sbc-1",
+            purpose="recovery_mode",
+            actuator="relay-post",
+            channel=1,
+            mode="latch",
+            sample_phase="post_power",
+        )
+        assert result.startswith("Error: post-power bindings aren't implemented")
+        sbc = mock_manager.get_sbc_by_name("test-sbc-1")
         assert mock_manager.get_binding_by_target(sbc.id, "recovery_mode") is None
 
     def test_bind_polarity_validation(self, mock_manager):

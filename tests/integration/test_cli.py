@@ -557,6 +557,63 @@ class TestPortsCommand:
         assert "List available serial ports" in result.output
 
 
+class TestPortsAll:
+    """`ports --all` also lists USB serial devices no lab symlink points at."""
+
+    def _lab(self, tmp_path):
+        raw = tmp_path / "dev"
+        raw.mkdir()
+        (raw / "ttyUSB0").touch()
+        (raw / "ttyUSB1").touch()
+        (raw / "ttyACM0").touch()
+        lab = tmp_path / "lab"
+        lab.mkdir()
+        (lab / "port-1").symlink_to(raw / "ttyUSB0")
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            f"database_path: {tmp_path / 'lab.db'}\n"
+            f"serial:\n  dev_dir: {lab}\n"
+            f"ser2net:\n  config_file: {tmp_path / 'ser2net.yaml'}\n"
+        )
+        globs = (str(raw / "ttyUSB*"), str(raw / "ttyACM*"))
+        return cfg, raw, globs
+
+    def test_all_lists_unlinked_devices(self, runner, tmp_path):
+        cfg, raw, globs = self._lab(tmp_path)
+        with patch("labctl.cli._RAW_SERIAL_GLOBS", globs):
+            result = runner.invoke(main, ["-c", str(cfg), "ports", "--all"])
+        assert result.exit_code == 0, result.output
+        assert "port-1" in result.output
+        other = result.output.split("Other serial devices")[1]
+        assert str(raw / "ttyUSB1") in other
+        assert str(raw / "ttyACM0") in other
+        assert str(raw / "ttyUSB0") not in other
+
+    def test_without_all_only_lab_ports(self, runner, tmp_path):
+        cfg, raw, globs = self._lab(tmp_path)
+        with patch("labctl.cli._RAW_SERIAL_GLOBS", globs):
+            result = runner.invoke(main, ["-c", str(cfg), "ports"])
+        assert result.exit_code == 0, result.output
+        assert "Other serial devices" not in result.output
+        assert "ttyUSB1" not in result.output
+
+    def test_all_with_no_lab_ports(self, runner, tmp_path):
+        cfg, raw, globs = self._lab(tmp_path)
+        (tmp_path / "lab" / "port-1").unlink()
+        with patch("labctl.cli._RAW_SERIAL_GLOBS", globs):
+            result = runner.invoke(main, ["-c", str(cfg), "ports", "-a"])
+        assert result.exit_code == 0, result.output
+        assert "No ports configured" in result.output
+        assert str(raw / "ttyUSB0") in result.output
+
+    def test_all_nothing_else(self, runner, tmp_path):
+        cfg, raw, globs = self._lab(tmp_path)
+        with patch("labctl.cli._RAW_SERIAL_GLOBS", (str(raw / "none*"),)):
+            result = runner.invoke(main, ["-c", str(cfg), "ports", "--all"])
+        assert result.exit_code == 0, result.output
+        assert "No other USB serial devices found." in result.output
+
+
 class TestConnectCommand:
     """Tests for the connect command."""
 
@@ -2045,3 +2102,87 @@ class TestSdwireReadInPlace:
         assert "test-sbc-1 is powered on" in result.output
         assert "Use --force to override" in result.output
         ctrl.switch_to_host.assert_not_called()
+
+
+class TestPortAssignBaseTcpPort:
+    """serial.base_tcp_port sets where `port assign` auto-assignment starts."""
+
+    def test_auto_assign_starts_at_configured_base(self, tmp_path):
+        from labctl.core.manager import get_manager
+
+        db_path = tmp_path / "labctl.db"
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            f"database_path: {db_path}\nserial:\n  base_tcp_port: 6100\n"
+        )
+        manager = get_manager(db_path)
+        manager.create_sbc(name="pi-1")
+
+        result = CliRunner().invoke(
+            main,
+            ["-c", str(config_path), "port", "assign", "pi-1", "console", "/dev/x"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "tcp:6100" in result.output or "6100" in result.output
+        port = manager.get_sbc_by_name("pi-1").serial_ports[0]
+        assert port.tcp_port == 6100
+
+
+class TestSer2netGenerate:
+    """`ser2net generate`: --install writes ser2net.config_file; a port with
+    no TCP port gets the next free one from serial.base_tcp_port."""
+
+    def _lab(self, tmp_path, base=5100):
+        from labctl.core.manager import get_manager
+
+        db_path = tmp_path / "lab.db"
+        target = tmp_path / "ser2net.yaml"
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            f"database_path: {db_path}\n"
+            f"serial:\n  base_tcp_port: {base}\n"
+            f"ser2net:\n  config_file: {target}\n"
+        )
+        manager = get_manager(db_path)
+        for name in ("a", "b", "c"):
+            sbc = manager.create_sbc(name=name)
+            manager.assign_serial_port(
+                sbc.id, PortType.CONSOLE, f"/dev/lab/{name}", base_tcp_port=base
+            )
+        return cfg, target, manager
+
+    def test_install_writes_configured_path(self, runner, tmp_path):
+        cfg, target, _ = self._lab(tmp_path)
+        result = runner.invoke(
+            main, ["-c", str(cfg), "ser2net", "generate", "--install"]
+        )
+        assert result.exit_code == 0, result.output
+        assert f"Installed ser2net config to {target}" in result.output
+        assert "/dev/lab/a" in target.read_text()
+
+    def test_install_refuses_symlink(self, runner, tmp_path):
+        cfg, target, _ = self._lab(tmp_path)
+        victim = tmp_path / "victim"
+        victim.write_text("keep\n")
+        target.symlink_to(victim)
+        result = runner.invoke(
+            main, ["-c", str(cfg), "ser2net", "generate", "--install"]
+        )
+        assert result.exit_code == 1
+        assert f"not writing {target}" in result.output
+        assert victim.read_text() == "keep\n"
+
+    def test_missing_tcp_port_uses_base(self, runner, tmp_path):
+        cfg, _, manager = self._lab(tmp_path, base=5100)
+        # Rows saved without a TCP port (the column is nullable).
+        manager.db.execute_modify(
+            "UPDATE serial_ports SET tcp_port = NULL WHERE device_path != ?",
+            ("/dev/lab/a",),
+        )
+        result = runner.invoke(main, ["-c", str(cfg), "ser2net", "generate"])
+        assert result.exit_code == 0, result.output
+        # a kept 5100; b and c each get the next free port, not 4000.
+        assert "localhost,5100\n" in result.output
+        assert "localhost,5101\n" in result.output
+        assert "localhost,5102\n" in result.output
+        assert "4000" not in result.output

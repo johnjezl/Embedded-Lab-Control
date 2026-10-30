@@ -16,6 +16,7 @@ from labctl.core import audit
 from labctl.core.database import DEFAULT_TIMEOUT_SECONDS as DEFAULT_DB_TIMEOUT
 from labctl.core.database import Database, get_database
 from labctl.core.models import (
+    POST_POWER_REFUSED,
     SBC,
     Actuator,
     ActuatorChannel,
@@ -603,6 +604,7 @@ class ResourceManager:
         baud_rate: int = 115200,
         alias: Optional[str] = None,
         serial_device_id: Optional[int] = None,
+        base_tcp_port: int = 4000,
     ) -> SerialPort:
         """
         Assign a serial port to an SBC.
@@ -611,10 +613,13 @@ class ResourceManager:
             sbc_id: SBC ID
             port_type: Type of port (console, jtag, debug)
             device_path: Path to device (e.g., /dev/lab/port-1)
-            tcp_port: TCP port for ser2net (auto-assigned if None)
+            tcp_port: TCP port for ser2net (auto-assigned if None: one
+                above the highest port in use, and at least base_tcp_port)
             baud_rate: Baud rate (default: 115200)
             alias: Human-friendly name for this assignment
             serial_device_id: FK to serial_devices table
+            base_tcp_port: Lowest TCP port to auto-assign
+                (``serial.base_tcp_port``)
         """
         sbc = self.get_sbc(sbc_id)
         if not sbc:
@@ -651,7 +656,7 @@ class ResourceManager:
 
         # Auto-assign TCP port if not specified
         if tcp_port is None:
-            tcp_port = self._next_tcp_port()
+            tcp_port = self.next_tcp_port(base_tcp_port)
             if not 1 <= tcp_port <= 65535:
                 # Re-assigning a port that holds the highest TCP port: keep it.
                 own = self.db.execute_one(
@@ -764,11 +769,12 @@ class ResourceManager:
         self._load_serial_device(port)
         return port
 
-    def _next_tcp_port(self, base_port: int = 4000) -> int:
-        """Get next available TCP port."""
+    def next_tcp_port(self, base_port: int = 4000) -> int:
+        """Next TCP port to auto-assign: one above the highest in use, and
+        never below ``base_port``."""
         row = self.db.execute_one("SELECT MAX(tcp_port) as max_port FROM serial_ports")
         if row and row["max_port"]:
-            return row["max_port"] + 1
+            return max(row["max_port"] + 1, base_port)
         return base_port
 
     # --- Network Address Operations ---
@@ -2491,6 +2497,8 @@ class ResourceManager:
         sample_phase: SamplePhase = SamplePhase.NONE,
         notes: Optional[str] = None,
     ) -> Binding:
+        if sample_phase is SamplePhase.POST_POWER:
+            raise ValueError(POST_POWER_REFUSED)
         binding_id = self.db.execute_insert(
             """
             INSERT INTO bindings

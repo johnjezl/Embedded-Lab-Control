@@ -93,6 +93,47 @@ class TestSecure:
         assert stat.S_IMODE(victim.stat().st_mode) == 0o600
 
 
+class TestCreate:
+    def test_creates_empty_with_mode(self, managed):
+        path = managed / "labctl.db"
+        admin_files.create(str(path), USER, GROUP, 0o664)
+        assert path.read_bytes() == b""
+        assert stat.S_IMODE(path.stat().st_mode) == 0o664
+
+    def test_existing_kept_and_secured(self, managed):
+        path = managed / "labctl.db"
+        path.write_bytes(b"SQLite data")
+        path.chmod(0o644)
+        admin_files.create(str(path), USER, GROUP, 0o664)
+        assert path.read_bytes() == b"SQLite data"
+        assert stat.S_IMODE(path.stat().st_mode) == 0o664
+
+    def test_symlink_not_followed(self, managed, victim):
+        (managed / "labctl.db").symlink_to(victim)
+        with pytest.raises(admin_files.UnsafeFileError):
+            admin_files.create(str(managed / "labctl.db"), USER, GROUP, 0o664)
+        assert stat.S_IMODE(victim.stat().st_mode) == 0o600
+        assert victim.read_text() == "secret\n"
+
+    def test_dangling_symlink_not_created_through(self, managed, tmp_path):
+        target = tmp_path / "elsewhere"
+        (managed / "labctl.db").symlink_to(target)
+        with pytest.raises(admin_files.UnsafeFileError):
+            admin_files.create(str(managed / "labctl.db"), USER, GROUP, 0o664)
+        assert not target.exists()
+
+    def test_hard_link_refused(self, managed, victim):
+        os.link(victim, managed / "labctl.db")
+        with pytest.raises(admin_files.UnsafeFileError):
+            admin_files.create(str(managed / "labctl.db"), USER, GROUP, 0o664)
+        assert stat.S_IMODE(victim.stat().st_mode) == 0o600
+
+    def test_cli(self, managed):
+        path = managed / "labctl.db"
+        assert admin_files.main(["create", str(path), USER, GROUP, "664"]) == 0
+        assert stat.S_IMODE(path.stat().st_mode) == 0o664
+
+
 class TestSecureDir:
     def test_creates_with_mode(self, managed):
         admin_files.secure_dir(str(managed / "images"), USER, GROUP, 0o2775)

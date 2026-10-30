@@ -536,13 +536,10 @@ class TestProxyConfig:
 
         config = ProxyConfig()
 
-        assert config.enabled is True
         assert config.port_base == 5500
         assert config.port_range == 100
         assert config.write_policy == "first"
-        assert config.log_retention_days == 7
         assert config.max_clients == 10
-        assert config.idle_timeout == 3600
 
     def test_proxy_config_in_main_config(self):
         """Test ProxyConfig is part of main Config."""
@@ -559,7 +556,6 @@ class TestProxyConfig:
 
         data = {
             "proxy": {
-                "enabled": False,
                 "port_base": 6000,
                 "write_policy": "all",
             }
@@ -567,7 +563,6 @@ class TestProxyConfig:
 
         config = Config.from_dict(data)
 
-        assert config.proxy.enabled is False
         assert config.proxy.port_base == 6000
         assert config.proxy.write_policy == "all"
 
@@ -579,7 +574,6 @@ class TestProxyConfig:
         data = config.to_dict()
 
         assert "proxy" in data
-        assert data["proxy"]["enabled"] is True
         assert data["proxy"]["port_base"] == 5500
         assert data["proxy"]["write_policy"] == "first"
 

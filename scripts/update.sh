@@ -241,6 +241,37 @@ if [ -n "$MISSING_UPLOAD" ]; then
     echo "         upload_dir: /var/lib/labctl/images"
 fi
 
+# 3c. The services' database: when database_path is in $LABCTL_HOME/db
+# (where install-services.sh puts a new install's), keep that directory setgid
+# 2775 and the database (and any -wal/-shm) 664, so labctl group members
+# can write it from the CLI. A database elsewhere is left alone.
+LABCTL_DB_DIR="$LABCTL_HOME/db"
+# Root reads only root's own /etc/labctl/config.yaml here.
+DB_PATH=$("$LABCTL_VENV/bin/python" -I -c '
+import sys, yaml
+with open(sys.argv[1]) as f:
+    data = yaml.safe_load(f)
+print(data.get("database_path", "") if isinstance(data, dict) else "")
+' "$SYSTEM_CONFIG_FILE")
+if [ "$DB_PATH" = "$LABCTL_DB_DIR/labctl.db" ]; then
+    if [ -L "$LABCTL_DB_DIR" ]; then
+        echo "[ok] $LABCTL_DB_DIR is a symlink; leaving it (and its permissions) as is"
+    else
+        "${ADMIN_FILES[@]}" secure-dir "$LABCTL_DB_DIR" labctl labctl 2775
+        "${ADMIN_FILES[@]}" create "$DB_PATH" labctl labctl 664
+        for extra in "$DB_PATH-wal" "$DB_PATH-shm"; do
+            if [ "$("${ADMIN_FILES[@]}" state "$extra")" = regular ]; then
+                "${ADMIN_FILES[@]}" secure "$extra" labctl labctl 664
+            fi
+        done
+        echo "[ok] Database $DB_PATH (labctl:labctl, 664; group-writable directory)"
+    fi
+else
+    echo "[--] The services' database (${DB_PATH:-database_path unset}) isn't in"
+    echo "     $LABCTL_DB_DIR, so labctl group members can't write it from the CLI."
+    echo "     To move it there, see \"Moving the database\" in README.md."
+fi
+
 # 4. Verify install
 VERSION=$("$LABCTL_VENV/bin/labctl" --version 2>&1 || true)
 echo "[ok] $VERSION"

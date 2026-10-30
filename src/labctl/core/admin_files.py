@@ -19,6 +19,8 @@ elsewhere) is already resolved. Command line::
     python -m labctl.core.admin_files secure PATH USER GROUP MODE
     python -m labctl.core.admin_files secure-dir PATH USER GROUP MODE
         (creates the directory if missing)
+    python -m labctl.core.admin_files create PATH USER GROUP MODE
+        creates an empty file if missing, then secures it like `secure`
     python -m labctl.core.admin_files copy SRC DST MODE [OLD_LINE NEW_LINE]...
         DST must not exist; lines equal to OLD_LINE are replaced
 """
@@ -135,6 +137,32 @@ def secure_dir(path: str, user: str, group: str, mode: int) -> None:
         os.close(fd)
 
 
+def create(path: str, user: str, group: str, mode: int) -> None:
+    """Create an empty file (``O_EXCL``, no symlinks) unless a regular one
+    is there, then chown/chmod it like :func:`secure`."""
+    parent = _nofollow(path, open_dir_nofollow, os.path.dirname(path))
+    name = os.path.basename(path)
+    try:
+        try:
+            fd = _nofollow(
+                path,
+                os.open,
+                name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=parent,
+            )
+        except OSError as e:
+            if e.errno != errno.EEXIST:
+                raise
+            # secure() below refuses anything but a regular file.
+        else:
+            os.close(fd)
+    finally:
+        os.close(parent)
+    secure(path, user, group, mode)
+
+
 def copy(src: str, dst: str, mode: int, replace: dict[str, str] | None = None) -> None:
     """Copy a regular file to a new file (``O_EXCL``), neither via symlinks.
 
@@ -196,6 +224,8 @@ def main(argv: list[str]) -> int:
             secure(args[0], args[1], args[2], int(args[3], 8))
         elif cmd == "secure-dir" and len(args) == 4:
             secure_dir(args[0], args[1], args[2], int(args[3], 8))
+        elif cmd == "create" and len(args) == 4:
+            create(args[0], args[1], args[2], int(args[3], 8))
         elif cmd == "copy" and len(args) >= 3 and len(args) % 2 == 1:
             pairs = args[3:]
             copy(args[0], args[1], int(args[2], 8), dict(zip(pairs[::2], pairs[1::2])))

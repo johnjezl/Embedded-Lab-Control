@@ -200,7 +200,7 @@ This document outlines the phased implementation of the Lab Controller System. E
   - ✅ Generate complete config
 - ✅ Implement `labctl ser2net generate`
   - ✅ Output to stdout or file
-  - ✅ `--install` flag to copy to `/etc/ser2net.yaml`
+  - ✅ `--install` flag to write `ser2net.config_file` (default `/etc/ser2net.yaml`)
 - ✅ Implement `labctl ser2net reload`
   - ✅ Restart ser2net service
 
@@ -876,7 +876,7 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
   REST, boot-test, post-flash reboots, recovery), including boards sharing
   the outlet; relays checked before switching (#36, PR #37)
 - ⏸️ Phase 8 live hardware validation on a Jetson Orin Nano + LCUS-1
-- ⏸️ `post_power` phase (stored, not acted on), relay probes in health
+- ⏸️ `post_power` phase (new bindings refused; stored ones shown inactive), relay probes in health
   checks, other drivers, web UI
 
 ## Fixes after Phase 1 WS4 (PRs #24–#40)
@@ -898,3 +898,11 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
 - ✅ #40 SD card never switched away from a board that may be running
   (closes #23); strict `allow_admin_actuator_ops`; stored cycle delay
   range-checked; udev rules `root:dialout 0660`
+- ☐ #41 Code gaps from the audit. Behaviour part (not merged yet):
+  `serial.base_tcp_port` (also the `ser2net generate` fallback),
+  `ser2net.config_file` honoured by `--install`,
+  `health.status_retention_days` pruning, `claims.require_agent_name`
+  enforced, MCP `claim_sbc` duration default from config, `post_power`
+  refused, `ports --all`, unused proxy/health keys removed, no-terminal
+  prompts need `--yes`, group-writable `/var/lib/labctl/db`, REST power
+  400 for a bad `action`

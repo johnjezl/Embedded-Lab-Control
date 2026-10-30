@@ -516,8 +516,9 @@ class TestRoundOneFixes:
         assert "This overrides 'agent-x's claim on 'pi-a'." in result.output
         assert result.output.index("This overrides") < result.output.index("Continue?")
 
-    def test_remove_prompt_says_which_claim_is_overridden(self, lab):
+    def test_remove_prompt_says_which_claim_is_overridden(self, lab, monkeypatch):
         run, manager, _ = lab
+        monkeypatch.setattr("labctl.cli._stdin_is_tty", lambda: True)
         result = run("remove", "pi-a", "--override-claim", input="n\n")
         assert "This overrides 'agent-x's claim on 'pi-a'." in result.output
         assert manager.get_sbc_by_name("pi-a") is not None
