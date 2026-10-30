@@ -1113,11 +1113,11 @@ class TestPowerHelpers:
 
     @pytest.mark.parametrize(
         "delay",
-        [-1, "3", None, True, float("nan"), float("inf"), 1e20, 10**400, 3601],
+        [-1, "3", None, True, float("nan"), float("inf"), 1e20, 10**400, 86401],
     )
     def test_cycle_bad_delay_refused_before_anything(self, lab, controller, delay):
         with pytest.raises(
-            ValueError, match="delay must be a number of seconds from 0 to 3600"
+            ValueError, match="delay must be a number of seconds from 0 to 86400"
         ):
             runtime.power_cycle_with_bindings(
                 lab.manager, lab.sbc, controller, delay, sleep_fn=lambda s: None

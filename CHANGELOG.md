@@ -116,7 +116,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   tools report that the power cycle failed and why, and `boot-test`
   records the run as failed. A strap that fails after power-off leaves the
   board off, and the error says so. A REST power cycle with a `delay`
-  outside 0–3600 seconds is now refused with a 400 before power-off (it
+  outside 0–86400 seconds is now refused with a 400 before power-off (it
   used to switch the board off, then fail).
 - A relay that labctl can't open no longer crashes `power on`/`power
   cycle` (and the binding verbs and recovery composites) with a

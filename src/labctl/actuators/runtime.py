@@ -711,7 +711,7 @@ def boards_on_plug(manager, sbc) -> list:
     return boards
 
 
-MAX_CYCLE_DELAY_SECONDS = 3600.0
+MAX_CYCLE_DELAY_SECONDS = 86400.0
 
 
 def validate_cycle_delay(delay_s) -> None:
