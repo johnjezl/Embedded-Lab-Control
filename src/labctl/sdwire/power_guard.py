@@ -34,23 +34,30 @@ def deploy_to_card(manager, sbc, ctrl, write) -> None:
     hand the card back to the board.
 
     Raises RuntimeError for any failure. Once the board is off, the error
-    says it was left off (the card is handed back to the board first, as
-    far as that still works).
+    says it was left off, and whether the card is still on the host.
     """
+    from labctl.actuators.runtime import _left_off, boards_on_plug
+
     power_off_before_host_switch(sbc)
     try:
         ctrl.switch_to_host()
         time.sleep(2)
         write()
-        ctrl.switch_to_dut()
     except Exception as e:
         try:
             ctrl.switch_to_dut()
+            card = ""
         except Exception:
-            pass
-        from labctl.actuators.runtime import _left_off, boards_on_plug
-
+            card = " (its SD card may still be on the host)"
         raise RuntimeError(
             f"deploy to {sbc.name!r} failed: {e}; "
+            f"{_left_off(sbc, boards_on_plug(manager, sbc))}{card}"
+        ) from e
+    try:
+        ctrl.switch_to_dut()
+    except Exception as e:
+        raise RuntimeError(
+            f"deployed to {sbc.name!r}, but its SD card could not be switched "
+            f"back to the board: {e}; the card is still on the host and "
             f"{_left_off(sbc, boards_on_plug(manager, sbc))}"
         ) from e

@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from labctl.serial.boot_test import BootRunResult, BootTestResult, run_boot_test
 
 
@@ -225,6 +227,26 @@ class TestRunBootTest:
         mock_deploy.assert_called_once()
         assert result.passed_count == 1
         assert result.image == "test.bin"
+
+    def test_output_dir_created_before_deploy(self, tmp_path):
+        """The deploy powers the board off: an output dir that can't be
+        created must stop the test before that, not after."""
+        blocker = tmp_path / "file"
+        blocker.write_text("")
+        deploy, power = MagicMock(), MagicMock()
+        with pytest.raises(OSError):
+            run_boot_test(
+                sbc_name="pi",
+                expect_pattern="ok",
+                tcp_host="localhost",
+                tcp_port=4000,
+                power_cycle_fn=power,
+                runs=1,
+                deploy_fn=deploy,
+                output_dir=str(blocker / "out"),
+            )
+        deploy.assert_not_called()
+        power.assert_not_called()
 
     def test_with_output_dir(self, tmp_path):
         """Test boot test saves per-run output."""
