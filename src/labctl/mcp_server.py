@@ -1930,8 +1930,10 @@ def sdwire_to_dut(sbc_name: str) -> str:
 def sdwire_to_host(sbc_name: str, force: bool = False) -> str:
     """Switch an SBC's SD card to host mode (dev machine can read/write the SD card).
 
-    Refuses if the SBC is powered on to prevent SD card bus contention.
-    Use force=True to override (e.g., if SBC is halted but power relay is on).
+    Refuses if the SBC's plug reports it powered on, to prevent SD card bus
+    contention. The check is skipped when the SBC has no power plug or its
+    state can't be read: make sure the board is off yourself then. Use
+    force=True to override (e.g., if SBC is halted but power relay is on).
 
     Args:
         sbc_name: Name of the SBC with an assigned SDWire device
@@ -1985,7 +1987,8 @@ def sdwire_update(
 ) -> str:
     """Copy, rename, and/or delete files on a partition on an SBC's SD card.
 
-    Atomic operation: powers the SBC off (if it has a power plug), switches
+    Atomic operation: powers the SBC off (if it has a power plug; refuses,
+    writing nothing, if it can't be switched off), switches
     SD to host, mounts partition, performs operations (copies first, then
     renames, then deletes), unmounts, switches back to DUT. The SBC is left
     powered off unless reboot=true, which power cycles it (3 s delay).
@@ -2400,8 +2403,9 @@ def flash_image(
     verifies block device size, ensures no partitions are mounted, and
     resolves the device from SDWire config (never accepts raw /dev paths).
 
-    Powers the SBC off first (if it has a power plug) and leaves it off
-    unless reboot=true.
+    Powers the SBC off first (if it has a power plug; refuses, writing
+    nothing, if it can't be switched off) and leaves it off unless
+    reboot=true.
 
     Args:
         sbc_name: Name of the SBC with an assigned SDWire device
@@ -2755,7 +2759,8 @@ def boot_test(
 ) -> str:
     """Automated boot reliability testing.
 
-    Optionally deploys an image, then reboots the SBC multiple times,
+    Optionally deploys an image (the SBC is powered off first; nothing is
+    deployed if it can't be), then reboots the SBC multiple times,
     capturing serial output each time. Reports how many boots
     successfully reached the expected pattern.
 

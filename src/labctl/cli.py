@@ -1719,9 +1719,10 @@ def sdwire_flash_cmd(
     """Flash an SD card image to an SBC's SDWire.
 
     Supports .img, .img.xz, and .img.gz formats. Powers the SBC off (if it
-    has a plug), switches to host, writes the image, optionally copies
-    files to partition 1, switches back to DUT, and power-cycles (setting
-    pre_power relays first). With --no-reboot the SBC is left powered off.
+    has a plug; refuses, writing nothing, if it can't), switches to host,
+    writes the image, optionally copies files to partition 1, switches back
+    to DUT, and power-cycles (setting pre_power relays first). With
+    --no-reboot the SBC is left powered off.
 
     \b
     Examples:
@@ -1945,7 +1946,8 @@ def sdwire_update_cmd(
 ) -> None:
     """Copy, rename, and/or delete files on a partition on an SBC's SD card.
 
-    Powers the SBC off (if it has a plug), switches to host, mounts the
+    Powers the SBC off (if it has a plug; refuses, writing nothing, if it
+    can't), switches to host, mounts the
     partition, performs operations (copies first, then renames, then
     deletes), unmounts, and switches back to DUT. With --reboot it then
     power-cycles (setting pre_power relays first); without it the SBC is
@@ -3482,10 +3484,11 @@ def _resolve_cycle_delay(sbc, requested: float | None) -> tuple[float, str | Non
     type=float,
     default=None,
     help=(
-        "Delay between off and on (seconds, 0-86400). If omitted, the SBC's "
-        "stored value (`edit --cycle-delay`) is used; otherwise "
+        "Delay between off and on (seconds, at most 86400). If omitted, the "
+        "SBC's stored value (`edit --cycle-delay`) is used; otherwise "
         f"{DEFAULT_POWER_CYCLE_DELAY_SECONDS}s. That value is also the "
-        "minimum: smaller values are raised to it with a warning."
+        "minimum: smaller values (including 0 or negative) are raised to it "
+        "with a warning."
     ),
 )
 @click.option(
@@ -6091,7 +6094,8 @@ def boot_test_cmd(
     """Automated boot reliability testing.
 
     Copies --image to --dest on the SD card (both required unless
-    --no-deploy), then power-cycles the SBC --runs times, counting the
+    --no-deploy; the SBC is powered off first, and nothing is deployed if
+    it can't be), then power-cycles the SBC --runs times, counting the
     boots whose serial output matches --expect within --timeout. Each
     cycle waits 3 s between off and on and sets the pre_power relays
     first.

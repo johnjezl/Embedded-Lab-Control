@@ -399,8 +399,9 @@ call. `power_on` and `power_cycle` also check and set those boards'
 | `sdwire_discover` | | Scan for connected SDWire devices |
 | `flash_image` | `sbc_name`, `image_path`, `reboot`, `post_flash_copies` | Flash raw disk image (.img/.img.xz/.img.gz) to SD card with safety checks. Host paths must be allowlisted (see [Host file access](#host-file-access-allowlist)) |
 
-`sdwire_update` and `flash_image` power the SBC off first (best effort,
-when it has a power plug) and **leave it off** unless `reboot=true`:
+`sdwire_update` and `flash_image` power the SBC off first (when it has a
+power plug; if it can't be switched off they refuse and write nothing)
+and **leave it off** unless `reboot=true`:
 `sdwire_update` then power-cycles it (3 s delay), `flash_image` powers it
 on. With `reboot=true` the `pre_power` relays are checked before anything
 is switched.
