@@ -4259,6 +4259,12 @@ def bind(
         phase = SamplePhase(sample_phase)
     except ValueError as e:
         return f"Error: {e}"
+    # Refused before the claim checks below, which heartbeat the caller's
+    # claim; ResourceManager.create_binding refuses it too.
+    if phase is SamplePhase.POST_POWER:
+        from labctl.core.models import POST_POWER_REFUSED
+
+        return f"Error: {POST_POWER_REFUSED}"
 
     if shape_mode is ShapeMode.MOMENTARY and pulse_ms is None:
         return "Error: pulse_ms is required when mode='momentary'"

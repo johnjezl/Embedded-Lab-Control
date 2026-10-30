@@ -251,6 +251,30 @@ def write_ser2net_config(path: str, content: str) -> None:
         os.close(dir_fd)
 
 
+def check_ser2net_config_writable(path: str) -> None:
+    """Raise as :func:`write_ser2net_config` would if it couldn't write
+    ``path``, changing nothing: the directory opens with no symlink on the
+    way, an existing file is a single-link regular file, and either the
+    directory takes new files (the atomic replace) or the file can be
+    opened for writing (the in-place rewrite)."""
+    from labctl.core.safe_open import open_dir_nofollow, open_regular_nonblocking
+
+    if not os.path.isabs(path):
+        raise ValueError(f"ser2net config path must be absolute: {path!r}")
+    directory, name = os.path.split(path)
+    dir_fd = open_dir_nofollow(directory)
+    try:
+        existing = _existing_single_link(name, dir_fd, path, open_regular_nonblocking)
+        if os.access(directory, os.W_OK | os.X_OK):
+            return
+        if existing is None:
+            raise PermissionError(errno.EACCES, f"can't create {path}")
+        fd = open_regular_nonblocking(name, os.O_WRONLY, dir_fd=dir_fd)
+        os.close(fd)
+    finally:
+        os.close(dir_fd)
+
+
 def _existing_single_link(name, dir_fd, path, opener):
     """The existing file's stat (None if missing); refuses a symlink, a
     non-regular file or one with more than one hard link."""

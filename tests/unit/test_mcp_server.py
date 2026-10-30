@@ -3466,6 +3466,32 @@ class TestMcpBindingTools:
         sbc = mock_manager.get_sbc_by_name("test-sbc-1")
         assert mock_manager.get_binding_by_target(sbc.id, "recovery_mode") is None
 
+    def test_bind_post_power_refused_before_claim_check(self, mock_manager):
+        """A refused post_power call doesn't reach the claim checks (which
+        would heartbeat the caller's claim) or the manager."""
+        from labctl.core.models import ChannelState, DriverName
+        from labctl.mcp_server import bind
+
+        a = mock_manager.create_actuator("relay-early", DriverName.LCUS1_SERIAL)
+        mock_manager.add_actuator_channel(a.id, 1, default_state=ChannelState.OPEN)
+        with (
+            patch("labctl.mcp_server._check_claim") as check,
+            patch("labctl.mcp_server._check_bound_claims") as bound,
+            patch.object(mock_manager, "create_binding") as create,
+        ):
+            result = bind(
+                sbc_name="test-sbc-1",
+                purpose="recovery_mode",
+                actuator="relay-early",
+                channel=1,
+                mode="latch",
+                sample_phase="post_power",
+            )
+        assert result.startswith("Error: post-power bindings aren't implemented")
+        check.assert_not_called()
+        bound.assert_not_called()
+        create.assert_not_called()
+
     def test_bind_polarity_validation(self, mock_manager):
         from labctl.core.models import ChannelState, DriverName
         from labctl.mcp_server import bind

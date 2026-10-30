@@ -22,8 +22,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   writes nothing (leaving the port out would change that board's
   console), listing them; `--override-claim` (new; recorded in the
   activity log) assigns them anyway. Claimed boards whose ports already
-  have a TCP port are written as before. A port whose save fails is left
-  out and reported; the config is still written and the command exits 1.
+  have a TCP port are written as before. Nothing is saved unless the
+  config file can be written (checked first), and each save repeats
+  `port assign`'s check, so a claim taken meanwhile still refuses; any
+  failure after a save lists the TCP ports already saved. A port whose
+  save fails is left out and reported; the config is still written and
+  the command exits 1.
   Without `--install` nothing is saved: those ports are left out of the
   output and the number each would get is shown (stderr).
 - `ser2net generate --install` writes `ser2net.config_file` (default
@@ -33,10 +37,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   renamed over it), and otherwise rewritten in place (e.g. a labctl group
   member, who can write `/etc/ser2net.yaml` but not `/etc`); a symlink on
   the path or a hard-linked file is refused, since it may run as root. The
-  permission-denied message names the configured path; when the file
-  doesn't exist yet it says to create it with `sudo labctl ser2net
-  generate --install` (and, for `/etc/ser2net.yaml`, then rerun
-  `install-services.sh` or `update.sh` to make it group-writable).
+  permission-denied message names the configured path; when the file is
+  really absent from a directory labctl can reach, it says to create it
+  with `sudo labctl ser2net generate --install` (and, for
+  `/etc/ser2net.yaml`, then rerun `install-services.sh` or `update.sh`
+  to make it group-writable); when the path can't be reached, it says so.
   `install-services.sh`, and now `update.sh` (for a file created after the
   install), make only `/etc/ser2net.yaml` group-writable (`root:labctl
   664`; a symlink there is left alone).
@@ -68,7 +73,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `claims.default_duration_minutes`, like the CLI and REST (it was 30).
 - `post-power` bindings can no longer be created: nothing acts on them
   yet. `bind --phase` no longer offers `post-power`, and labctl
-  (`ResourceManager`) refuses `post_power` (MCP `bind` reports its error). Bindings
+  (`ResourceManager`) refuses `post_power`; MCP `bind` refuses it before
+  its claim checks. Bindings
   stored with it before are kept and listed as inactive (`bindings list`
   marks them `*`, `bindings status` says so, MCP output carries
   `sample_phase_note`).

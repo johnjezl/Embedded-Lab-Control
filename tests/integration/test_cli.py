@@ -2279,46 +2279,94 @@ class TestSer2netGenerate:
         assert f"permission denied writing {target}" in result.output
         assert "install-services.sh" not in result.output
 
-    def test_permission_message_for_etc_path(self, runner, tmp_path):
-        cfg, _, _ = self._lab(tmp_path)
-        cfg.write_text(
-            cfg.read_text().replace(str(tmp_path / "ser2net.yaml"), "/etc/ser2net.yaml")
-        )
-        with (
-            patch(
-                "labctl.cli.write_ser2net_config",
-                side_effect=PermissionError(13, "no"),
-            ),
-            patch("labctl.cli.os.path.lexists", return_value=True),
-        ):
+    def test_unwritable_config_saves_nothing(self, runner, tmp_path):
+        """The config's writability is checked before any TCP port is
+        saved: a refused write leaves the database as it was."""
+        cfg, target, manager = self._lab(tmp_path, base=5100)
+        self._drop_tcp_ports(manager)
+        etc = tmp_path / "etc"
+        etc.mkdir()
+        cfg.write_text(cfg.read_text().replace(str(target), str(etc / "ser2net.yaml")))
+        etc.chmod(0o555)
+        try:
             result = runner.invoke(
                 main, ["-c", str(cfg), "ser2net", "generate", "--install"]
             )
-        assert result.exit_code == 1
-        assert "permission denied writing /etc/ser2net.yaml" in result.output
-        assert "install-services.sh and update.sh make it writable" in result.output
-        assert "created after the install" in result.output
-
-    @pytest.mark.parametrize("etc", [True, False])
-    def test_permission_message_when_file_missing(self, runner, tmp_path, etc):
-        """No file yet and an unwritable directory: create it with sudo."""
-        cfg, target, _ = self._lab(tmp_path)
-        path = "/etc/ser2net.yaml" if etc else str(target)
-        cfg.write_text(cfg.read_text().replace(str(target), path))
-        with (
-            patch(
-                "labctl.cli.write_ser2net_config",
-                side_effect=PermissionError(13, "no"),
-            ),
-            patch("labctl.cli.os.path.lexists", return_value=False),
-        ):
-            result = runner.invoke(
-                main, ["-c", str(cfg), "ser2net", "generate", "--install"]
-            )
+        finally:
+            etc.chmod(0o755)
         assert result.exit_code == 1
         assert "doesn't exist yet" in result.output
-        assert "sudo labctl ser2net generate --install" in result.output
-        assert ("rerun install-services.sh or update.sh" in result.output) is etc
+        assert "Assigned" not in result.output
+        assert self._tcp_ports(manager)["/dev/lab/b"] is None
+
+    def test_failure_after_saving_lists_saved_ports(self, runner, tmp_path):
+        cfg, target, manager = self._lab(tmp_path, base=5100)
+        self._drop_tcp_ports(manager)
+        with patch(
+            "labctl.cli.write_ser2net_config", side_effect=OSError(28, "disk full")
+        ):
+            result = runner.invoke(
+                main, ["-c", str(cfg), "ser2net", "generate", "--install"]
+            )
+        assert result.exit_code == 1
+        assert f"not writing {target}: disk full" in result.output
+        assert (
+            "These TCP ports were already saved (kept in the database): "
+            "b console (/dev/lab/b) -> 5101, c console (/dev/lab/c) -> 5102"
+        ) in result.output
+
+
+class TestSer2netWriteHint:
+    """_ser2net_write_hint: what to do about a refused write."""
+
+    def test_missing_in_reachable_dir(self, tmp_path):
+        from labctl.cli import _ser2net_write_hint
+
+        hint = _ser2net_write_hint(str(tmp_path / "ser2net.yaml"))
+        assert "doesn't exist yet" in hint
+        assert "sudo labctl ser2net generate --install" in hint
+        assert "make it writable for you" in hint
+
+    def test_missing_etc_file_mentions_scripts(self, monkeypatch):
+        from labctl import cli
+
+        def absent(path):
+            raise FileNotFoundError(2, "absent")
+
+        monkeypatch.setattr(cli.os, "lstat", absent)
+        monkeypatch.setattr(cli.os.path, "isdir", lambda p: True)
+        hint = cli._ser2net_write_hint("/etc/ser2net.yaml")
+        assert "doesn't exist yet" in hint
+        assert "rerun install-services.sh or update.sh" in hint
+
+    def test_unreachable_path(self, tmp_path):
+        from labctl.cli import _ser2net_write_hint
+
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        (locked / "ser2net.yaml").write_text("x")
+        locked.chmod(0o000)
+        try:
+            hint = _ser2net_write_hint(str(locked / "ser2net.yaml"))
+        finally:
+            locked.chmod(0o755)
+        assert "couldn't be reached" in hint
+        assert "doesn't exist" not in hint
+
+    def test_missing_directory(self, tmp_path):
+        from labctl.cli import _ser2net_write_hint
+
+        hint = _ser2net_write_hint(str(tmp_path / "nope" / "ser2net.yaml"))
+        assert "directory couldn't be reached" in hint
+
+    def test_existing_file(self, tmp_path):
+        from labctl.cli import _ser2net_write_hint
+
+        path = tmp_path / "ser2net.yaml"
+        path.write_text("x")
+        assert _ser2net_write_hint(str(path)) == (
+            "make it writable for you, or use sudo"
+        )
 
 
 class TestSer2netGenerateClaims:
@@ -2422,6 +2470,33 @@ class TestSer2netGenerateClaims:
         assert result.exit_code == 0, result.output
         text = target.read_text()
         assert "localhost,5200\n" in text and "/dev/lab/free" in text
+
+    def test_claim_taken_after_probe_refuses_at_save(self, runner, tmp_path):
+        """A claim appearing between the probe and the saves still refuses
+        (the same check as `port assign`); ports saved before it are named."""
+        from labctl import cli as cli_mod
+
+        cfg, target, manager = self._lab(tmp_path)
+        real = cli_mod._port_assign_claim_check
+
+        def probe_clear(ctx, sbc_name, override=False, **kw):
+            if kw.get("probe"):
+                return None  # nothing claimed at probe time ...
+            if sbc_name == "held":
+                self._claim(manager)  # ... then claimed before its save
+            return real(ctx, sbc_name, override, **kw)
+
+        with patch.object(cli_mod, "_port_assign_claim_check", probe_clear):
+            result = self._install(runner, cfg)
+        assert result.exit_code == 1
+        assert "'held' is claimed by 'agent-x'" in result.output
+        assert (
+            "These TCP ports were already saved (kept in the database): "
+            "free console (/dev/lab/free) -> 5100"
+        ) in result.output
+        ports = {p.device_path: p.tcp_port for p in manager.list_serial_ports()}
+        assert ports == {"/dev/lab/free": 5100, "/dev/lab/held": None}
+        assert not target.exists()
 
     def test_own_cli_claim_not_refused(self, runner, tmp_path):
         from labctl.cli import _cli_session_id
