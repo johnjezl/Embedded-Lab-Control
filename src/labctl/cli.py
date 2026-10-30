@@ -1384,15 +1384,19 @@ def edit_cmd(
 
     status_enum = Status(status) if status else None
 
-    manager.update_sbc(
-        sbc.id,
-        name=new_name,
-        project=project,
-        description=description,
-        ssh_user=ssh_user,
-        status=status_enum,
-        power_cycle_delay_seconds=cycle_delay,
-    )
+    try:
+        manager.update_sbc(
+            sbc.id,
+            name=new_name,
+            project=project,
+            description=description,
+            ssh_user=ssh_user,
+            status=status_enum,
+            power_cycle_delay_seconds=cycle_delay,
+        )
+    except ValueError as e:
+        click.echo(f"Error: --cycle-delay: {e}. Nothing changed.", err=True)
+        sys.exit(1)
     if new_name:
         click.echo(f"Renamed SBC: {name} -> {new_name}")
     else:
@@ -6026,6 +6030,7 @@ def boot_test_cmd(
     # Build deploy function
     deploy_fn = None
     if not no_deploy and image and dest:
+        from labctl.serial.boot_test import power_off_for_deploy
 
         def _deploy():
             from labctl.sdwire.controller import SDWireController
@@ -6034,6 +6039,11 @@ def boot_test_cmd(
                 raise RuntimeError(f"No SDWire assigned to '{sbc_name}'")
 
             ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+
+            # The card must not leave a running board (bus contention):
+            # switch the board off first, and deploy nothing if that fails.
+            # The first run powers it back on.
+            power_off_for_deploy(sbc)
 
             click.echo("Deploying image...")
             ctrl.switch_to_host()

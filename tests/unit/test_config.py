@@ -221,6 +221,36 @@ class TestMcpConfirmConfig:
         assert "non-string" in caplog.text
 
 
+class TestMcpAdminActuatorOpsConfig:
+    """mcp.allow_admin_actuator_ops grants privileged actuator tools: only
+    an explicit boolean true turns it on."""
+
+    def test_default_off(self):
+        assert Config.from_dict({}).mcp.allow_admin_actuator_ops is False
+
+    def test_explicit_true(self):
+        config = Config.from_dict({"mcp": {"allow_admin_actuator_ops": True}})
+        assert config.mcp.allow_admin_actuator_ops is True
+
+    @pytest.mark.parametrize("value", ['"false"', '"no"', '"true"', "1", "maybe"])
+    def test_non_boolean_stays_off_with_warning(self, tmp_path, caplog, value):
+        """A quoted "false" used to turn the gate on (bool("false"))."""
+        from labctl.core.config import load_config
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(f"mcp:\n  allow_admin_actuator_ops: {value}\n")
+        with caplog.at_level(logging.WARNING):
+            assert load_config(cfg).mcp.allow_admin_actuator_ops is False
+        assert "allow_admin_actuator_ops must be true or false" in caplog.text
+
+    def test_blank_stays_off(self, tmp_path):
+        from labctl.core.config import load_config
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text("mcp:\n  allow_admin_actuator_ops:\n")
+        assert load_config(cfg).mcp.allow_admin_actuator_ops is False
+
+
 class TestExclusiveConfigEnv:
     """Review #8 of #14: `labctl -c FILE mcp` exports FILE via LABCTL_CONFIG;
     with LABCTL_CONFIG_EXCLUSIVE=1 a missing/broken FILE must give defaults

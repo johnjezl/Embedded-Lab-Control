@@ -301,8 +301,9 @@ class ResourceManager:
     ) -> Optional[SBC]:
         """Update SBC fields.
 
-        ``power_cycle_delay_seconds`` accepts a positive float to set, or
-        a negative value as the sentinel for "clear back to default".
+        ``power_cycle_delay_seconds`` accepts 0 to ``MAX_CYCLE_DELAY_SECONDS``
+        to set (ValueError otherwise, before anything is written), or a
+        negative value as the sentinel for "clear back to default".
         """
         sbc = self.get_sbc(sbc_id)
         if not sbc:
@@ -345,6 +346,11 @@ class ResourceManager:
                 params.append(None)
                 changes.append("cycle_delay=cleared")
             else:
+                from labctl.actuators.runtime import validate_cycle_delay
+
+                # Refuse what a power cycle would refuse: a stored delay is
+                # its default and floor, so it would block every cycle.
+                validate_cycle_delay(power_cycle_delay_seconds)
                 value = float(power_cycle_delay_seconds)
                 params.append(value)
                 changes.append(f"cycle_delay={value}s")

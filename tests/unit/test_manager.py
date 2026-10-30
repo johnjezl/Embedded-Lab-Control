@@ -153,6 +153,28 @@ class TestSBCOperations:
 
         assert cleared.power_cycle_delay_seconds is None
 
+    @pytest.mark.parametrize("bad", [86400.5, 1e9, float("nan"), float("inf")])
+    def test_update_sbc_refuses_a_cycle_delay_no_power_cycle_accepts(
+        self, manager, bad
+    ):
+        """The stored delay is a power cycle's default and floor: one out of
+        range would make every cycle of the board fail. Nothing is written,
+        including the other fields of the same call."""
+        sbc = manager.create_sbc(name="cycle-bad")
+        manager.update_sbc(sbc.id, power_cycle_delay_seconds=6.0)
+
+        with pytest.raises(ValueError, match="0 to 86400"):
+            manager.update_sbc(sbc.id, project="changed", power_cycle_delay_seconds=bad)
+
+        after = manager.get_sbc(sbc.id)
+        assert after.power_cycle_delay_seconds == 6.0
+        assert after.project != "changed"
+
+    def test_update_sbc_accepts_the_cycle_delay_limit(self, manager):
+        sbc = manager.create_sbc(name="cycle-max")
+        updated = manager.update_sbc(sbc.id, power_cycle_delay_seconds=86400)
+        assert updated.power_cycle_delay_seconds == 86400.0
+
     def test_update_sbc_audit_detail_lists_changed_fields(self, manager):
         """Audit detail string names the fields that changed."""
         sbc = manager.create_sbc(name="audit-detail")

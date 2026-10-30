@@ -641,7 +641,10 @@ class Config:
             logger.warning("Config: %s", w)
 
         mcp = McpConfig(
-            allow_admin_actuator_ops=mcp_data.get("allow_admin_actuator_ops", False),
+            # A grant, not a protection: only an explicit true turns it on.
+            allow_admin_actuator_ops=_safety_flag(
+                mcp_data, "allow_admin_actuator_ops", default=False
+            ),
             allowed_read_paths=_path_list(mcp_data, "allowed_read_paths"),
             allowed_write_paths=_path_list(mcp_data, "allowed_write_paths"),
             confirm_destructive=_safety_flag(mcp_data, "confirm_destructive"),

@@ -47,6 +47,29 @@ def _write_run_file(path: Path | str, text: str, dir_fd: Optional[int] = None) -
         os.close(fd)
 
 
+def power_off_for_deploy(sbc) -> None:
+    """Switch the board off before its SD card goes to the host.
+
+    Raises RuntimeError, before anything is deployed, when the board can't
+    be switched off: moving the card away from a running board risks bus
+    contention and a corrupted card.
+    """
+    from labctl.power import PowerController
+
+    try:
+        ok = PowerController.from_plug(sbc.power_plug).power_off()
+    except Exception as e:
+        ok, why = False, f": {e}"
+    else:
+        why = ""
+    if not ok:
+        raise RuntimeError(
+            f"could not power off {sbc.name!r} before switching its SD card "
+            f"to the host{why}; nothing was deployed"
+        )
+    time.sleep(1)
+
+
 @dataclass
 class BootRunResult:
     """Result of a single boot run."""
