@@ -125,7 +125,7 @@ class TestCli:
         result = lab.run("power", "cycle", "board", "--delay", "nan", "--yes")
         assert result.exit_code == 1
         assert (
-            "Error: delay must be a number of seconds from 0 to 3600" in result.output
+            "Error: delay must be a number of seconds from 0 to 86400" in result.output
         )
         assert "Traceback" not in result.output
         lab.controller.power_off.assert_not_called()
@@ -155,6 +155,14 @@ class TestCli:
         ((_, log),) = [e for e in lab.events if isinstance(e, tuple)]
         assert STRAP_CLOSED in log
         assert (2, True, WriteOutcome.OK) in log
+
+    def test_power_cycle_dry_run_refuses_a_delay_the_real_run_would(self, lab):
+        result = lab.run(
+            "power", "cycle", "board", "--delay", "nan", "--dry-run", "--yes"
+        )
+        assert result.exit_code == 1
+        assert "Error: delay must be a number of seconds" in result.output
+        assert "Dry run" not in result.output
 
     def test_power_all_on(self, lab):
         result = lab.run("power-all", "on", "--yes")

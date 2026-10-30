@@ -3446,9 +3446,21 @@ def power_cycle_cmd(
     manager = _get_manager(ctx)
     controller, sbc = _get_power_controller(manager, sbc_name)
 
+    from labctl.actuators.runtime import (
+        ActuationError,
+        PrePowerCheckError,
+        power_cycle_with_bindings,
+        validate_cycle_delay,
+    )
+
     effective_delay, warning = _resolve_cycle_delay(sbc, delay)
     if warning:
         click.echo(f"Warning: {warning}", err=True)
+    try:
+        validate_cycle_delay(effective_delay)
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
 
     if dry_run:
         plug = sbc.power_plug
@@ -3460,18 +3472,6 @@ def power_cycle_cmd(
         return
 
     click.echo(f"Power cycling {sbc_name} (delay: {effective_delay}s)...")
-    from labctl.actuators.runtime import (
-        ActuationError,
-        PrePowerCheckError,
-        power_cycle_with_bindings,
-        validate_cycle_delay,
-    )
-
-    try:
-        validate_cycle_delay(effective_delay)
-    except ValueError as e:
-        click.echo(f"Error: {e}", err=True)
-        sys.exit(1)
     try:
         ok = power_cycle_with_bindings(manager, sbc, controller, effective_delay)
     except PrePowerCheckError as e:
