@@ -568,3 +568,209 @@ class TestWeb:
         assert b"permission denied" in resp.data
         unopenable.controller.power_on.assert_not_called()
         unopenable.controller.power_off.assert_not_called()
+
+
+# --- The stored cycle delay on every path (#41) ---
+
+
+class TestStoredCycleDelay:
+    """The board's stored cycle delay is the default and the minimum of
+    every power cycle, and an out-of-range one (stored before `edit
+    --cycle-delay` checked the range) is refused before anything is
+    switched or written."""
+
+    @pytest.fixture
+    def slept(self, lab, monkeypatch):
+        waits = []
+        monkeypatch.setattr("labctl.actuators.runtime.time.sleep", waits.append)
+        return waits
+
+    @staticmethod
+    def _store(lab, value):
+        import sqlite3
+
+        with sqlite3.connect(lab.db_path) as db:
+            db.execute("UPDATE sbcs SET power_cycle_delay_seconds = ?", (value,))
+
+    @pytest.fixture
+    def sdwire(self, lab):
+        device = lab.manager.create_sdwire_device("sdw-1", "bdgrd_sdwirec_001")
+        lab.manager.assign_sdwire(lab.manager.get_sbc_by_name("board").id, device.id)
+        ctrl = MagicMock()
+        ctrl.get_block_device.return_value = "/dev/sdb"
+        ctrl.flash_image.return_value = {
+            "bytes_written": 3,
+            "elapsed_seconds": 0.1,
+            "block_device": "/dev/sdb",
+        }
+        ctrl.update_files.return_value = {
+            "copied": ["kernel.img"],
+            "renamed": [],
+            "deleted": [],
+        }
+        with (
+            patch("labctl.sdwire.controller.SDWireController", return_value=ctrl),
+            patch("time.sleep"),
+        ):
+            yield ctrl
+
+    @pytest.fixture
+    def console(self):
+        from labctl.serial.capture import CaptureResult
+
+        with patch(
+            "labctl.serial.boot_test.capture_serial_output",
+            return_value=CaptureResult(output="login:", lines=1, pattern_matched=True),
+        ):
+            yield
+
+    @pytest.fixture
+    def image(self, tmp_path):
+        path = tmp_path / "image.img"
+        path.write_bytes(b"img")
+        return path
+
+    def test_sdwire_flash_reboot_waits_stored_delay(self, lab, sdwire, image, slept):
+        self._store(lab, 8.0)
+        result = lab.run("sdwire", "flash", "board", str(image), "--yes")
+        assert result.exit_code == 0, result.output
+        # time.sleep is patched process-wide; the others are settle waits.
+        assert 8.0 in slept and 3.0 not in slept
+
+    def test_sdwire_flash_dry_run_shows_delay(self, lab, sdwire, image):
+        self._store(lab, 8.0)
+        result = lab.run("sdwire", "flash", "board", str(image), "--dry-run")
+        assert result.exit_code == 0, result.output
+        assert "power-cycle board (waiting 8.0s between off and on)" in result.output
+
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_sdwire_flash_refuses_bad_stored_delay(self, lab, sdwire, image, dry_run):
+        self._store(lab, 1e9)
+        args = ["sdwire", "flash", "board", str(image), "--yes"]
+        result = lab.run(*args, *(["--dry-run"] if dry_run else []))
+        assert result.exit_code == 1
+        assert "the cycle delay stored for 'board'" in result.output
+        assert "labctl edit board --cycle-delay -1. Nothing changed." in result.output
+        lab.controller.power_off.assert_not_called()
+        sdwire.switch_to_host.assert_not_called()
+        sdwire.flash_image.assert_not_called()
+
+    def test_sdwire_flash_no_reboot_ignores_bad_stored_delay(self, lab, sdwire, image):
+        """No power cycle, so no delay to check."""
+        self._store(lab, 1e9)
+        result = lab.run("sdwire", "flash", "board", str(image), "--no-reboot", "-y")
+        assert result.exit_code == 0, result.output
+
+    def test_sdwire_update_reboot_waits_stored_delay(self, lab, sdwire, slept):
+        self._store(lab, 6.0)
+        result = lab.run(
+            "sdwire", "update", "board", "-p", "1", "-d", "x", "--reboot", "--yes"
+        )
+        assert result.exit_code == 0, result.output
+        assert 6.0 in slept and 3.0 not in slept
+
+    def test_sdwire_update_dry_run_shows_delay(self, lab, sdwire):
+        result = lab.run(
+            "sdwire", "update", "board", "-p", "1", "-d", "x", "--reboot", "--dry-run"
+        )
+        assert result.exit_code == 0, result.output
+        assert "power-cycle board (waiting 3.0s between off and on)" in result.output
+
+    def test_sdwire_update_refuses_bad_stored_delay(self, lab, sdwire):
+        self._store(lab, -5.0)
+        result = lab.run(
+            "sdwire", "update", "board", "-p", "1", "-d", "x", "--reboot", "--yes"
+        )
+        assert result.exit_code == 1
+        assert "the cycle delay stored for 'board'" in result.output
+        lab.controller.power_off.assert_not_called()
+        sdwire.update_files.assert_not_called()
+
+    def test_boot_test_waits_stored_delay(self, lab, console, slept):
+        self._store(lab, 4.5)
+        result = lab.run("boot-test", "board", "-e", "login", "--no-deploy", "-r", "2")
+        assert result.exit_code == 0, result.output
+        assert slept.count(4.5) == 2 and 3.0 not in slept
+
+    def test_boot_test_refuses_bad_stored_delay(self, lab, sdwire, console, image):
+        self._store(lab, 1e9)
+        result = lab.run(
+            "boot-test", "board", "-i", str(image), "-d", "k.img", "-e", "login"
+        )
+        assert result.exit_code == 1
+        assert "the cycle delay stored for 'board'" in result.output
+        assert "Nothing changed." in result.output
+        lab.controller.power_off.assert_not_called()
+        sdwire.update_files.assert_not_called()
+
+    @pytest.mark.parametrize("command", ["enter-recovery", "exit-recovery"])
+    def test_recovery_refuses_bad_stored_delay(self, lab, slept, command):
+        self._store(lab, 1e9)
+        result = lab.run(command, "board", "--yes")
+        assert result.exit_code == 1
+        assert "labctl edit board --cycle-delay -1" in result.output
+        assert "Traceback" not in result.output
+        lab.controller.power_off.assert_not_called()
+        assert slept == []
+
+    def test_power_cycle_bad_stored_delay_is_one_error_line(self, lab):
+        self._store(lab, 1e9)
+        result = lab.run("power", "cycle", "board", "--delay", "5", "-y")
+        assert result.exit_code == 1
+        errors = [line for line in result.output.splitlines() if "Error" in line]
+        assert errors == [
+            "Error: the cycle delay stored for 'board' (1000000000.0) is out of "
+            "range (0 to 86400 seconds); clear it with: labctl edit board "
+            "--cycle-delay -1"
+        ]
+        lab.controller.power_off.assert_not_called()
+
+    def test_mcp_power_cycle_waits_stored_minimum(self, lab, slept):
+        from labctl import mcp_server
+
+        self._store(lab, 5.0)
+        with (
+            patch.object(mcp_server, "_get_manager", return_value=lab.manager),
+            patch.object(mcp_server, "_confirmation_required", return_value=False),
+            patch.object(mcp_server, "_check_claim", return_value=None),
+        ):
+            result = mcp_server.power_cycle(sbc_name="board", delay=0.5)
+        assert result.startswith("Power cycled: board (delay: 5.0s)")
+        assert slept == [5.0]
+
+    def test_api_cycle_defaults_to_stored_delay(self, lab, client, slept):
+        self._store(lab, 2.5)
+        resp = client.post("/api/sbcs/board/power", json={"action": "cycle"})
+        assert resp.status_code == 200, resp.get_json()
+        assert resp.get_json()["delay_seconds"] == 2.5
+        assert slept == [2.5]
+
+    def test_api_cycle_raises_delay_to_stored_minimum(self, lab, client, slept):
+        self._store(lab, 2.5)
+        resp = client.post(
+            "/api/sbcs/board/power", json={"action": "cycle", "delay": 1}
+        )
+        assert resp.status_code == 200, resp.get_json()
+        assert resp.get_json()["delay_seconds"] == 2.5
+        assert slept == [2.5]
+
+    def test_api_cycle_refuses_bad_stored_delay(self, lab, client, slept):
+        self._store(lab, 1e9)
+        resp = client.post("/api/sbcs/board/power", json={"action": "cycle"})
+        assert resp.status_code == 400
+        assert "labctl edit board --cycle-delay -1" in resp.get_json()["error"]
+        lab.controller.power_off.assert_not_called()
+        assert slept == []
+
+    def test_view_cycle_waits_stored_delay(self, lab, client, slept):
+        self._store(lab, 3.5)
+        resp = client.post("/sbc/board/power/cycle")
+        assert resp.status_code == 302
+        assert slept == [3.5]
+
+    def test_view_cycle_refuses_bad_stored_delay(self, lab, client, slept):
+        self._store(lab, 1e9)
+        resp = client.post("/sbc/board/power/cycle")
+        assert resp.status_code == 302
+        lab.controller.power_off.assert_not_called()
+        assert slept == []

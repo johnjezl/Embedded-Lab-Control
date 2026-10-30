@@ -710,12 +710,104 @@ class TestSdwireReadSafety:
             with patch(
                 "labctl.sdwire.controller.SDWireController", return_value=mock_ctrl
             ):
-                result = runner.invoke(main, ["sdwire", "host", "test-sbc-1"])
+                result = runner.invoke(
+                    main, ["sdwire", "host", "test-sbc-1", "--force"]
+                )
 
         assert result.exit_code == 0, result.output
         mock_ctrl.switch_to_host.assert_called_once()
         mock_ctrl.wait_for_host.assert_called_once()
         assert expected in result.output
+
+    def _host(self, runner, plug, state=None, error=None, args=()):
+        """Run `sdwire host` on a board with ``plug`` (None: no plug) whose
+        controller reports ``state`` or raises ``error``."""
+        sbc = MagicMock()
+        sbc.name = "test-sbc-1"
+        sbc.power_plug = plug
+        manager = MagicMock()
+        manager.get_sbc_by_name.return_value = sbc
+        mock_ctrl = MagicMock()
+        mock_ctrl.wait_for_host.return_value = "/dev/sdx"
+        power = MagicMock()
+        if error is not None:
+            power.get_state.side_effect = error
+        else:
+            power.get_state.return_value = state
+        with (
+            patch("labctl.cli._get_manager", return_value=manager),
+            patch("labctl.sdwire.controller.SDWireController", return_value=mock_ctrl),
+            patch("labctl.power.PowerController.from_plug", return_value=power),
+        ):
+            result = runner.invoke(main, ["sdwire", "host", "test-sbc-1", *args])
+        return result, mock_ctrl
+
+    def test_sdwire_host_refuses_without_plug(self, runner):
+        """Fails closed (#41): with no plug labctl can't confirm it's off."""
+        result, ctrl = self._host(runner, plug=None)
+        assert result.exit_code == 1
+        assert "Error: test-sbc-1 has no power plug" in result.output
+        assert "Use --force to override" in result.output
+        ctrl.switch_to_host.assert_not_called()
+
+    def test_sdwire_host_refuses_unreadable_plug(self, runner):
+        result, ctrl = self._host(
+            runner, plug=MagicMock(), error=RuntimeError("plug unreachable")
+        )
+        assert result.exit_code == 1
+        assert "could not read the power state of test-sbc-1" in result.output
+        assert "plug unreachable" in result.output
+        ctrl.switch_to_host.assert_not_called()
+
+    def test_sdwire_host_refuses_unknown_state(self, runner):
+        from labctl.power.base import PowerState
+
+        result, ctrl = self._host(runner, plug=MagicMock(), state=PowerState.UNKNOWN)
+        assert result.exit_code == 1
+        assert "power state of test-sbc-1 is unknown" in result.output
+        ctrl.switch_to_host.assert_not_called()
+
+    def test_sdwire_host_refuses_powered_on(self, runner):
+        from labctl.power.base import PowerState
+
+        result, ctrl = self._host(runner, plug=MagicMock(), state=PowerState.ON)
+        assert result.exit_code == 1
+        assert "test-sbc-1 is powered on" in result.output
+        ctrl.switch_to_host.assert_not_called()
+
+    def test_sdwire_host_proceeds_when_off(self, runner):
+        from labctl.power.base import PowerState
+
+        result, ctrl = self._host(runner, plug=MagicMock(), state=PowerState.OFF)
+        assert result.exit_code == 0, result.output
+        ctrl.switch_to_host.assert_called_once()
+
+    @pytest.mark.parametrize("unreadable", [False, True])
+    def test_sdwire_host_force_skips_the_check(self, runner, unreadable):
+        from labctl.power.base import PowerState
+
+        result, ctrl = self._host(
+            runner,
+            plug=MagicMock(),
+            state=PowerState.ON,
+            error=RuntimeError("x") if unreadable else None,
+            args=["--force"],
+        )
+        assert result.exit_code == 0, result.output
+        ctrl.switch_to_host.assert_called_once()
+
+    def test_sdwire_ls_guard_still_lenient(self):
+        """The CLI read commands keep the ON-only check (only `host` changed)."""
+        from labctl.cli import _sdwire_host_switch_guard_cli
+
+        sbc = MagicMock()
+        sbc.power_plug = None
+        assert _sdwire_host_switch_guard_cli("b", sbc) is None
+        sbc.power_plug = MagicMock()
+        with patch(
+            "labctl.power.PowerController.from_plug", side_effect=RuntimeError("x")
+        ):
+            assert _sdwire_host_switch_guard_cli("b", sbc) is None
 
     def test_sdwire_cat_reports_cleanup_failure(self, runner):
         sbc = MagicMock()

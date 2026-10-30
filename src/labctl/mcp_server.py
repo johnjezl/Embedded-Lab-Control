@@ -887,37 +887,57 @@ def _structured_claim_advisory(manager, sbc_name: str) -> list[dict]:
 def _sdwire_host_switch_guard_mcp(
     sbc_name: str, sbc, force: bool = False, allow_force_override: bool = False
 ) -> str | None:
-    """Refuse host-mode switching when the SBC is still powered on."""
-    if force or not sbc.power_plug:
+    """Refuse host-mode switching unless the SBC's plug reports it OFF.
+
+    Fails closed, like the read-only SD tools: no power plug, a plug that
+    can't be read, or a state other than OFF all refuse (pulling the card
+    from a running board can corrupt it), unless ``force``.
+    """
+    if force:
         return None
+    override = (
+        " Use force=true to override (risks SD card corruption)."
+        if allow_force_override
+        else ""
+    )
+    if not sbc.power_plug:
+        return (
+            f"Error: {sbc_name} has no power plug, so labctl can't confirm it "
+            f"is off. Make sure the board is off first.{override}"
+        )
+
+    from labctl.power import PowerController
+    from labctl.power.base import PowerState
 
     try:
-        from labctl.power import PowerController
-        from labctl.power.base import PowerState
-
-        power_ctrl = PowerController.from_plug(sbc.power_plug)
-        state = power_ctrl.get_state()
-        if state == PowerState.ON:
-            message = (
-                f"Error: {sbc_name} is powered on. Power off before "
-                f"switching SD to host mode."
-            )
-            if allow_force_override:
-                message += " Use force=true to override (risks SD card corruption)."
-            return message
-    except Exception:
-        return None
-
+        state = PowerController.from_plug(sbc.power_plug).get_state()
+    except Exception as e:
+        return (
+            f"Error: could not read the power state of {sbc_name}: {e}. Make "
+            f"sure the board is off first.{override}"
+        )
+    if state == PowerState.ON:
+        return (
+            f"Error: {sbc_name} is powered on. Power off before "
+            f"switching SD to host mode.{override}"
+        )
+    if state != PowerState.OFF:
+        return (
+            f"Error: the power state of {sbc_name} is {state.value}, so labctl "
+            f"can't confirm it is off. Make sure the board is off first."
+            f"{override}"
+        )
     return None
 
 
 def _sdwire_read_power_refusal(sbc_name: str, sbc) -> str | None:
     """Strict power check for the read-only SD tools: proceed only on OFF.
 
-    Unlike ``_sdwire_host_switch_guard_mcp`` (used by the explicit, destructive
-    ``sdwire_to_host``), this fails closed: no power plug, an unreadable plug,
-    or an UNKNOWN state all refuse, because pulling the card from a running
-    board can corrupt it. Returns a ``_sdwire_read_error`` payload or None.
+    Like ``_sdwire_host_switch_guard_mcp`` (used by the explicit, destructive
+    ``sdwire_to_host``, which also takes force=true), this fails closed: no
+    power plug, an unreadable plug, or an UNKNOWN state all refuse, because
+    pulling the card from a running board can corrupt it. Returns a
+    ``_sdwire_read_error`` payload or None.
     """
     from labctl.power import PowerController
     from labctl.power.base import PowerState
@@ -1238,7 +1258,7 @@ def power_off(sbc_name: str) -> str:
 
 @mcp.tool(annotations=TOOL_ANNOTATIONS["power_cycle"])
 @_with_mcp_activity
-def power_cycle(sbc_name: str, delay: float = 3.0) -> str:
+def power_cycle(sbc_name: str, delay: Optional[float] = None) -> str:
     """Power cycle an SBC (turn off, wait, turn on).
 
     Relays bound with sample_phase=pre_power are set to their desired
@@ -1251,12 +1271,11 @@ def power_cycle(sbc_name: str, delay: float = 3.0) -> str:
 
     Args:
         sbc_name: Name of the SBC to power cycle
-        delay: Seconds to wait between off and on, 0 to 86400 (default
-            3.0; the board's stored cycle delay is not used here)
+        delay: Seconds to wait between off and on, 0 to 86400. Omitted:
+            the board's stored cycle delay, or 3.0 if none is set. The
+            stored delay is also the minimum: a smaller value is raised
+            to it.
     """
-    if delay < 0:
-        return "Error: delay must be non-negative"
-
     from labctl.power import PowerController
 
     manager = _get_manager()
@@ -1269,12 +1288,22 @@ def power_cycle(sbc_name: str, delay: float = 3.0) -> str:
     if not sbc.power_plug:
         return f"Error: No power plug assigned to '{sbc_name}'"
 
-    from labctl.actuators.runtime import ActuationError, power_cycle_with_bindings
+    from labctl.actuators.runtime import (
+        ActuationError,
+        board_cycle_delay,
+        power_cycle_with_bindings,
+    )
 
     try:
+        effective = board_cycle_delay(sbc, delay)
+    except ValueError as e:  # nothing switched
+        return f"Error: {e}"
+    try:
         controller = PowerController.from_plug(sbc.power_plug)
-        if power_cycle_with_bindings(manager, sbc, controller, delay):
-            result = f"Power cycled: {sbc_name} (delay: {delay}s)"
+        if power_cycle_with_bindings(manager, sbc, controller, effective):
+            result = f"Power cycled: {sbc_name} (delay: {effective}s)"
+            if delay is not None and effective > delay:
+                result += f"; {delay}s was raised to the board's minimum"
             advisory = _claim_advisory(manager, sbc_name)
             return f"{result}\n\n{advisory}" if advisory else result
         return f"Failed to power cycle {sbc_name}"
@@ -1930,14 +1959,15 @@ def sdwire_to_dut(sbc_name: str) -> str:
 def sdwire_to_host(sbc_name: str, force: bool = False) -> str:
     """Switch an SBC's SD card to host mode (dev machine can read/write the SD card).
 
-    Refuses if the SBC's plug reports it powered on, to prevent SD card bus
-    contention. The check is skipped when the SBC has no power plug or its
-    state can't be read: make sure the board is off yourself then. Use
-    force=True to override (e.g., if SBC is halted but power relay is on).
+    Proceeds only when the SBC's plug reports it off, to prevent SD card bus
+    contention: it refuses when the plug reports it on, when the SBC has no
+    power plug, or when its state can't be read or is unknown. Use
+    force=True to override (e.g. the board is halted but the plug is on,
+    or it has no plug and you know it is off).
 
     Args:
         sbc_name: Name of the SBC with an assigned SDWire device
-        force: Override power-on safety check
+        force: Override the power-off check
     """
     from labctl.sdwire import SDWireController
 
@@ -1991,7 +2021,8 @@ def sdwire_update(
     writing nothing, if it can't be switched off), switches
     SD to host, mounts partition, performs operations (copies first, then
     renames, then deletes), unmounts, switches back to DUT. The SBC is left
-    powered off unless reboot=true, which power cycles it (3 s delay).
+    powered off unless reboot=true, which power cycles it (the board's
+    stored cycle delay, or 3 s if none is set).
 
     Args:
         sbc_name: Name of the SBC with an assigned SDWire device
@@ -2042,14 +2073,21 @@ def sdwire_update(
     ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
 
     try:
-        # The relays the reboot will need are checked before the board is
-        # switched off, not after the card has been written.
+        # The relays and the cycle delay the reboot will need are checked
+        # before the board is switched off, not after the card has been
+        # written.
+        reboot_delay = None
         if reboot and sbc.power_plug:
-            from labctl.actuators.runtime import ActuationError, check_power_on
+            from labctl.actuators.runtime import (
+                ActuationError,
+                board_cycle_delay,
+                check_power_on,
+            )
 
             try:
+                reboot_delay = board_cycle_delay(sbc)
                 check_power_on(manager, sbc)
-            except ActuationError as e:
+            except (ActuationError, ValueError) as e:
                 return f"Error: {e}. Nothing changed."
 
         # The card must not leave a running board (bus contention):
@@ -2092,7 +2130,7 @@ def sdwire_update(
 
             power_ctrl = PowerController.from_plug(sbc.power_plug)
             try:
-                ok = power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
+                ok = power_cycle_with_bindings(manager, sbc, power_ctrl, reboot_delay)
                 failure = None if ok else f"power_on failed on {sbc_name!r}"
             except (ActuationError, RuntimeError) as e:
                 failure = str(e)
@@ -2650,6 +2688,33 @@ def _serial_send_preview(arguments: dict) -> dict:
 _CONFIRM_PREVIEWS["serial_send"] = _serial_send_preview
 
 
+def _cycle_delay_preview(arguments: dict) -> dict | None:
+    """The delay a power-cycling call will wait, for its confirmation.
+
+    The board's stored delay is the minimum (board_cycle_delay); an
+    out-of-range stored or requested delay refuses the call (ValueError).
+    None when the call doesn't power-cycle or the board isn't found (the
+    tool reports that)."""
+    if arguments.get("reboot") is False:
+        return None
+    sbc = _get_manager().get_sbc_by_name(arguments.get("sbc_name"))
+    if sbc is None or not sbc.power_plug:
+        return None
+    from labctl.actuators.runtime import board_cycle_delay
+
+    return {"cycle_delay_seconds": board_cycle_delay(sbc, arguments.get("delay"))}
+
+
+for _tool in (
+    "power_cycle",
+    "enter_recovery",
+    "exit_recovery",
+    "sdwire_update",
+    "boot_test",
+):
+    _CONFIRM_PREVIEWS[_tool] = _cycle_delay_preview
+
+
 @mcp.tool(annotations=TOOL_ANNOTATIONS["serial_send"])
 @_with_mcp_activity
 def serial_send(
@@ -2756,7 +2821,8 @@ def boot_test(
     """Automated boot reliability testing.
 
     Optionally deploys an image (the SBC is powered off first; nothing is
-    deployed if it can't be), then reboots the SBC multiple times,
+    deployed if it can't be), then reboots the SBC multiple times
+    (waiting the board's stored cycle delay, or 3 s, between off and on),
     capturing serial output each time. Reports how many boots
     successfully reached the expected pattern.
 
@@ -2795,13 +2861,18 @@ def boot_test(
     if image and not dest:
         return "Error: dest is required when image is specified"
 
-    # Every run power-cycles through the pre_power relays: check them
-    # before deploying anything.
-    from labctl.actuators.runtime import ActuationError, check_power_on
+    # Every run power-cycles through the pre_power relays and waits the
+    # board's cycle delay: check both before deploying anything.
+    from labctl.actuators.runtime import (
+        ActuationError,
+        board_cycle_delay,
+        check_power_on,
+    )
 
     try:
+        cycle_delay = board_cycle_delay(sbc)
         check_power_on(manager, sbc)
-    except ActuationError as e:
+    except (ActuationError, ValueError) as e:
         return f"Error: {e}. Nothing changed."
 
     # Host paths: the image is read, per-run output is written (D012).
@@ -2855,7 +2926,7 @@ def boot_test(
 
         power_ctrl = PowerController.from_plug(sbc.power_plug)
         try:
-            ok = power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
+            ok = power_cycle_with_bindings(manager, sbc, power_ctrl, cycle_delay)
         except ActuationError as e:
             # Recorded as a failed run, like a plug failure.
             raise RuntimeError(str(e)) from e
@@ -4228,7 +4299,7 @@ def actuation_status(sbc_name: str, purpose: str) -> str:
 
 
 def _run_recovery_composite(sbc_name: str, fn_name: str, fn) -> str:
-    from labctl.actuators.runtime import ActuationError
+    from labctl.actuators.runtime import ActuationError, board_cycle_delay
     from labctl.power import PowerController
 
     manager = _get_manager()
@@ -4241,11 +4312,10 @@ def _run_recovery_composite(sbc_name: str, fn_name: str, fn) -> str:
     if not sbc.power_plug:
         return f"Error: no power plug on '{sbc_name}'"
 
-    delay = float(
-        sbc.power_cycle_delay_seconds
-        if sbc.power_cycle_delay_seconds is not None
-        else 3.0
-    )
+    try:
+        delay = board_cycle_delay(sbc)
+    except ValueError as e:  # an out-of-range stored delay; nothing touched
+        return f"Error: {fn_name} refused: {e}"
     try:
         controller = PowerController.from_plug(sbc.power_plug)
         fn(manager, sbc, controller, delay_s=delay)

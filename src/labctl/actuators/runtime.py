@@ -733,6 +733,54 @@ def validate_cycle_delay(delay_s) -> None:
         )
 
 
+DEFAULT_CYCLE_DELAY_SECONDS = 3.0
+
+
+class StoredCycleDelayError(ValueError):
+    """The cycle delay stored for a board is out of range (it was stored
+    before ``edit --cycle-delay`` checked the range)."""
+
+
+def stored_cycle_delay(sbc) -> Optional[float]:
+    """The board's stored power-cycle delay, or None when none is set.
+
+    Raises :class:`StoredCycleDelayError` (a ValueError) when the stored
+    value is out of range, so no path ever sleeps on it."""
+    value = getattr(sbc, "power_cycle_delay_seconds", None)
+    if value is None:
+        return None
+    try:
+        validate_cycle_delay(value)
+    except ValueError:
+        raise StoredCycleDelayError(
+            f"the cycle delay stored for {sbc.name!r} ({value!r}) is out of "
+            f"range (0 to {MAX_CYCLE_DELAY_SECONDS:g} seconds); clear it with: "
+            f"labctl edit {sbc.name} --cycle-delay -1"
+        ) from None
+    return float(value)
+
+
+def board_cycle_delay(
+    sbc, requested=None, *, default: float = DEFAULT_CYCLE_DELAY_SECONDS
+) -> float:
+    """The delay a power cycle of ``sbc`` waits between off and on.
+
+    The board's stored delay is the minimum: a smaller ``requested``
+    value is raised to it. With ``requested`` None, the stored delay is
+    used, or ``default`` when none is set. Raises ValueError for a
+    ``requested`` value out of range, and :class:`StoredCycleDelayError`
+    for an out-of-range stored one.
+    """
+    if requested is not None:
+        validate_cycle_delay(requested)
+    stored = stored_cycle_delay(sbc)
+    if requested is None:
+        return stored if stored is not None else float(default)
+    if stored is not None and requested < stored:
+        return stored
+    return float(requested)
+
+
 def check_power_on(manager, sbc) -> list:
     """Check the pre_power relays of ``sbc`` and of every board sharing
     its plug outlet; return those boards. Raises
@@ -801,14 +849,19 @@ def power_cycle_with_bindings(
     manager,
     sbc,
     controller,
-    delay_s: float,
+    delay_s: Optional[float] = None,
     *,
     sleep_fn=None,
 ) -> bool:
     """Power-cycle ``sbc``: off, wait, drive pre_power bindings (its own
     and those of any board sharing its plug outlet), on.
 
-    Before anything is switched: a bad ``delay_s`` raises ValueError, and
+    The wait is :func:`board_cycle_delay` of ``delay_s``: the board's
+    stored delay is the minimum, and None means the stored delay (or the
+    default). Callers that report the delay compute it the same way.
+
+    Before anything is switched: a bad ``delay_s`` or stored delay raises
+    ValueError, and
     a pre_power relay that can't be opened or is busy raises
     :class:`PrePowerCheckError`, so the board keeps running. After
     power-off, a strap that can't be applied raises :class:`ActuationError`
@@ -816,7 +869,7 @@ def power_cycle_with_bindings(
     strap). A plug failure raises RuntimeError. Returns the result of
     power_on.
     """
-    validate_cycle_delay(delay_s)
+    delay_s = board_cycle_delay(sbc, delay_s)
     boards = check_power_on(manager, sbc)
     if not controller.power_off():
         raise RuntimeError(f"power_off failed on {sbc.name!r}")
@@ -830,7 +883,7 @@ def enter_recovery(
     sbc,
     controller,
     *,
-    delay_s: float,
+    delay_s: Optional[float] = None,
     sleep_fn=time.sleep,
 ) -> None:
     """Power-aware "enter USB Force Recovery (or equivalent)" composite.
@@ -840,11 +893,16 @@ def enter_recovery(
       0. Pre-flight probe every actuator we'll touch — abort BEFORE
          power_off if any is unreachable.
       1. power_off
-      2. sleep(delay_s)
+      2. sleep(board_cycle_delay(sbc, delay_s)): the board's stored
+         delay is the minimum (ValueError before step 0 if it or
+         ``delay_s`` is out of range)
       3. actuate recovery_mode  → desired=asserted, strap engaged
       4. power_on (consults pre_power bindings; idempotent for the
          strap we just engaged)
     """
+    # The board's stored delay is the minimum; an out-of-range one raises
+    # ValueError before anything is touched.
+    delay_s = board_cycle_delay(sbc, delay_s)
     binding = manager.get_binding_by_target(sbc.id, "recovery_mode")
     if binding is None:
         raise ActuationError(f"no 'recovery_mode' binding on {sbc.name!r}")
@@ -879,13 +937,16 @@ def exit_recovery(
     sbc,
     controller,
     *,
-    delay_s: float,
+    delay_s: Optional[float] = None,
     sleep_fn=time.sleep,
 ) -> None:
     """Power-aware "leave recovery" composite.
 
     Same shape as :func:`enter_recovery` but releases the strap.
     """
+    # The board's stored delay is the minimum; an out-of-range one raises
+    # ValueError before anything is touched.
+    delay_s = board_cycle_delay(sbc, delay_s)
     binding = manager.get_binding_by_target(sbc.id, "recovery_mode")
     if binding is None:
         raise ActuationError(f"no 'recovery_mode' binding on {sbc.name!r}")

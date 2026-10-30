@@ -10,6 +10,7 @@ from labctl import __version__
 from labctl.actuators.runtime import (
     ActuationError,
     PrePowerCheckError,
+    board_cycle_delay,
     power_cycle_with_bindings,
     power_on_with_bindings,
     validate_cycle_delay,
@@ -201,10 +202,15 @@ def control_power(name: str):
     if action not in ["on", "off", "cycle"]:
         return jsonify({"error": "action must be on, off, or cycle"}), 400
 
-    delay = data.get("delay", 3.0)
+    delay = None
     if action == "cycle":
+        # Omitted: the board's stored delay (or 3 s); the stored delay is
+        # also the minimum. An out-of-range value, or an out-of-range
+        # stored one, is refused before anything is switched.
         try:
-            validate_cycle_delay(delay)
+            if "delay" in data:  # an explicit null is refused, not omitted
+                validate_cycle_delay(data["delay"])
+            delay = board_cycle_delay(sbc, data.get("delay"))
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
 
@@ -243,14 +249,15 @@ def control_power(name: str):
 
         if success:
             state = controller.get_state()
-            return jsonify(
-                {
-                    "name": name,
-                    "action": action,
-                    "success": True,
-                    "state": state.value,
-                }
-            )
+            body = {
+                "name": name,
+                "action": action,
+                "success": True,
+                "state": state.value,
+            }
+            if action == "cycle":
+                body["delay_seconds"] = delay
+            return jsonify(body)
         else:
             return (
                 jsonify(

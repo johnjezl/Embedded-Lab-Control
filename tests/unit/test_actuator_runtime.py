@@ -1113,7 +1113,7 @@ class TestPowerHelpers:
 
     @pytest.mark.parametrize(
         "delay",
-        [-1, "3", None, True, float("nan"), float("inf"), 1e20, 10**400, 86401],
+        [-1, "3", True, float("nan"), float("inf"), 1e20, 10**400, 86401],
     )
     def test_cycle_bad_delay_refused_before_anything(self, lab, controller, delay):
         with pytest.raises(
@@ -1262,3 +1262,99 @@ class TestPowerHelpers:
             "were left powered off"
         )
         controller.power_on.assert_not_called()
+
+
+def _store_delay(lab, value):
+    """Store a cycle delay directly, as rows saved before edit --cycle-delay
+    checked the range could hold; return the reloaded SBC."""
+    lab.manager.db.execute_modify(
+        "UPDATE sbcs SET power_cycle_delay_seconds = ? WHERE id = ?",
+        (value, lab.sbc.id),
+    )
+    return lab.manager.get_sbc_by_name(lab.sbc.name)
+
+
+class TestBoardCycleDelay:
+    """The stored per-board delay is the default and the minimum of every
+    cycle, and an out-of-range stored one is never slept on (#41)."""
+
+    @pytest.fixture
+    def controller(self):
+        ctrl = MagicMock()
+        ctrl.power_off.return_value = True
+        ctrl.power_on.return_value = True
+        return ctrl
+
+    def test_default_without_stored_delay(self, lab):
+        assert runtime.board_cycle_delay(lab.sbc) == 3.0
+        assert runtime.board_cycle_delay(lab.sbc, 0) == 0.0
+        assert runtime.board_cycle_delay(lab.sbc, 10) == 10.0
+
+    def test_stored_delay_is_default_and_minimum(self, lab):
+        sbc = _store_delay(lab, 5.0)
+        assert runtime.board_cycle_delay(sbc) == 5.0
+        assert runtime.board_cycle_delay(sbc, 1) == 5.0
+        assert runtime.board_cycle_delay(sbc, 8) == 8.0
+
+    def test_stored_delay_below_default_is_used_when_omitted(self, lab):
+        sbc = _store_delay(lab, 1.0)
+        assert runtime.board_cycle_delay(sbc) == 1.0
+
+    @pytest.mark.parametrize("stored", [1e9, -5.0, float("inf"), 86401.0])
+    def test_out_of_range_stored_delay_refused(self, lab, stored):
+        sbc = _store_delay(lab, stored)
+        with pytest.raises(runtime.StoredCycleDelayError) as exc:
+            runtime.board_cycle_delay(sbc, 3.0)
+        assert isinstance(exc.value, ValueError)
+        assert "labctl edit jetson-nano-2 --cycle-delay -1" in str(exc.value)
+
+    def test_bad_requested_delay_reported_before_stored(self, lab):
+        sbc = _store_delay(lab, 1e9)
+        with pytest.raises(ValueError, match="delay must be a number") as exc:
+            runtime.board_cycle_delay(sbc, -1)
+        assert not isinstance(exc.value, runtime.StoredCycleDelayError)
+
+    def test_cycle_waits_stored_minimum(self, lab, controller):
+        sbc = _store_delay(lab, 7.5)
+        slept = []
+        assert runtime.power_cycle_with_bindings(
+            lab.manager, sbc, controller, 3.0, sleep_fn=slept.append
+        )
+        assert slept == [7.5]
+
+    def test_cycle_none_uses_stored_delay(self, lab, controller):
+        sbc = _store_delay(lab, 2.0)
+        slept = []
+        runtime.power_cycle_with_bindings(
+            lab.manager, sbc, controller, sleep_fn=slept.append
+        )
+        assert slept == [2.0]
+
+    def test_cycle_refuses_out_of_range_stored_delay(self, lab, controller):
+        sbc = _store_delay(lab, 1e9)
+        slept = []
+        with pytest.raises(runtime.StoredCycleDelayError):
+            runtime.power_cycle_with_bindings(
+                lab.manager, sbc, controller, 3.0, sleep_fn=slept.append
+            )
+        controller.power_off.assert_not_called()
+        assert slept == []
+
+    @pytest.mark.parametrize("fn", [runtime.enter_recovery, runtime.exit_recovery])
+    def test_recovery_refuses_out_of_range_stored_delay(self, lab, controller, fn):
+        _make_binding(lab, purpose="recovery_mode")
+        sbc = _store_delay(lab, 1e9)
+        slept = []
+        with pytest.raises(runtime.StoredCycleDelayError):
+            fn(lab.manager, sbc, controller, delay_s=3.0, sleep_fn=slept.append)
+        controller.power_off.assert_not_called()
+        assert slept == []
+        assert lab.driver.write_log == []
+
+    @pytest.mark.parametrize("fn", [runtime.enter_recovery, runtime.exit_recovery])
+    def test_recovery_waits_stored_minimum(self, lab, controller, fn):
+        _make_binding(lab, purpose="recovery_mode")
+        sbc = _store_delay(lab, 6.0)
+        slept = []
+        fn(lab.manager, sbc, controller, delay_s=1.0, sleep_fn=slept.append)
+        assert slept == [6.0]

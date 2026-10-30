@@ -342,7 +342,7 @@ Tools perform mutations — the AI assistant calls these to take action.
 |------|------------|-------------|
 | `power_on` | `sbc_name` | Turn on power to an SBC, after setting its `pre_power` relay bindings |
 | `power_off` | `sbc_name` | Turn off power to an SBC |
-| `power_cycle` | `sbc_name`, `delay` (seconds, 0-86400, default 3.0) | Power cycle (off, wait, set `pre_power` bindings, on); refuses before power-off if a relay can't be opened. The default does not use the board's stored cycle delay (the CLI's `power cycle` does) |
+| `power_cycle` | `sbc_name`, `delay` (seconds, 0-86400; default the board's stored cycle delay, or 3.0) | Power cycle (off, wait, set `pre_power` bindings, on); refuses before power-off if a relay can't be opened. The board's stored cycle delay is also the minimum: a smaller `delay` is raised to it |
 
 Power tools switch the plug outlet, so boards sharing the SBC's outlet are
 switched too, and a claim someone else holds on one of them refuses the
@@ -387,7 +387,7 @@ call. `power_on` and `power_cycle` also check and set those boards'
 | Tool | Parameters | Description |
 |------|------------|-------------|
 | `sdwire_to_dut` | `sbc_name` | Switch SD card to SBC (boot from SD) |
-| `sdwire_to_host` | `sbc_name`, `force` (default false) | Switch SD card to host (for flashing). Refuses while the SBC's plug reports it on; `force=true` overrides (risks SD card corruption) |
+| `sdwire_to_host` | `sbc_name`, `force` (default false) | Switch SD card to host (for flashing). Proceeds only when the SBC's plug reports it off: refuses when it reports on, when the SBC has no plug, or when its state can't be read; `force=true` overrides (risks SD card corruption) |
 | `sdwire_update` | `sbc_name`, `partition`, `copies`, `renames`, `deletes`, `reboot` | Copy, rename, or delete files on SD card partition (atomic: power off, mount, operate, unmount, back to DUT). Host `copies` sources must be allowlisted |
 | `sdwire_ls` | `sbc_name`, `partition`, `path` (default `/`), `recursive` (default false), `max_entries` (default 1000) | List directory contents on an SD card partition using a read-only mount |
 | `sdwire_cat` | `sbc_name`, `partition`, `path`, `max_bytes` (default 1 MiB), `encoding` (`text` default, `base64`, `hex`) | Read a file from an SD card partition with size and encoding guards; symlinks are not followed |
@@ -402,7 +402,8 @@ call. `power_on` and `power_cycle` also check and set those boards'
 `sdwire_update` and `flash_image` power the SBC off first (when it has a
 power plug; if it can't be switched off they refuse and write nothing)
 and **leave it off** unless `reboot=true`:
-`sdwire_update` then power-cycles it (3 s delay), `flash_image` powers it
+`sdwire_update` then power-cycles it (the board's stored cycle delay, or
+3 s), `flash_image` powers it
 on. With `reboot=true` the `pre_power` relays are checked before anything
 is switched.
 
@@ -686,6 +687,11 @@ tools) is a two-step call:
    ```
    `action` is the tool's title. `serial_send` adds a `will_do` object
    with the exact bytes it will write (`bytes_hex`, `byte_count`).
+   `power_cycle`, `enter_recovery`, `exit_recovery`, `boot_test` and
+   `sdwire_update` with `reboot=true` add `will_do.cycle_delay_seconds`,
+   the delay they will wait between off and on (the board's stored cycle
+   delay is the default and the minimum). An out-of-range `delay` or
+   stored delay refuses the call here, with no token.
 2. Called again with **the same arguments** plus `confirm_token`, it acts.
 
 Tokens are random, single-use, expire after 120 s, and are bound to the tool

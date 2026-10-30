@@ -149,7 +149,7 @@ Every command has `--help`. This section lists the commands; see
 
 | Flag | Description |
 |------|-------------|
-| `-y`, `--yes` | Skip the confirmation on destructive commands. The question is asked only when stdin is a terminal, so cron, CI, pipes and agents are never prompted. `remove`, `power-all`, `sdwire remove`, `serial remove` and `actuator remove` ask whenever `-y` is missing, so pass `-y` in scripts. |
+| `-y`, `--yes` | Skip the confirmation on destructive commands. The question is asked only when stdin is a terminal, so cron, CI, pipes and agents are never prompted. `remove`, `power-all`, `sdwire remove` and `actuator remove` ask whenever `-y` is missing, so pass `-y` in scripts. |
 | `--override-claim` | Act on a board another user has claimed (or that shares hardware with one). The override is recorded in the activity log. Without it, such commands refuse. |
 | `--dry-run` | On `power cycle`, `sdwire flash` and `sdwire update`: print the plan and change nothing |
 
@@ -162,7 +162,7 @@ Every command has `--help`. This section lists the commands; see
 | `labctl list` | List all SBCs |
 | `labctl info <name>` | Show SBC details |
 | `labctl edit <name>` | Edit SBC properties (--rename, --project, etc.) |
-| `labctl edit <name> --cycle-delay N` | Per-SBC off→on delay in seconds; the default and minimum for `power cycle` (negative clears it) |
+| `labctl edit <name> --cycle-delay N` | Per-SBC off→on delay in seconds (0–86400); the default and minimum for every power cycle of the board: `power cycle`, the reboot after `sdwire flash`/`update`, `boot-test`, recovery, and MCP/REST/web cycles (negative clears it) |
 | `labctl network set <sbc> ethernet\|wifi <ip>` | Set an SBC's IP address (`-m` MAC, `-h` hostname); `network remove` deletes it |
 | `labctl ssh <sbc>` | SSH to the SBC's configured IP (`-u` user) |
 | `labctl status` | Show status overview |
@@ -209,7 +209,7 @@ Every command has `--help`. This section lists the commands; see
 | `labctl sdwire assign <sbc> <device>` | Assign SDWire to an SBC |
 | `labctl sdwire unassign <sbc>` | Remove SDWire assignment |
 | `labctl sdwire dut <sbc>` | Switch SD card to SBC (boot from SD) |
-| `labctl sdwire host <sbc>` | Switch SD card to host (for flashing) |
+| `labctl sdwire host <sbc>` | Switch SD card to host (for flashing). Only when the plug reports the board off: refuses when it's on, has no plug, or its state can't be read (`--force` skips the check) |
 | `labctl sdwire flash <sbc> <image>` | Power off, flash full image to SD card, power-cycle (`--no-reboot` leaves the SBC off) |
 | `labctl sdwire update <sbc> -p N -c src:dest -r old:new -d file` | Power off, then copy, rename, or delete files on a partition (`--reboot` to power-cycle; without it the SBC is left off) |
 | `labctl sdwire ls <sbc> -p N [--path /] [--recursive]` | List directory contents on a partition |
@@ -241,10 +241,10 @@ the point here is to allow SDWire workflows without granting broader root access
 |---------|-------------|
 | `labctl serial discover` | Scan for connected USB-serial adapters |
 | `labctl serial add <name> <usb_path>` | Register a USB-serial adapter |
-| `labctl serial remove <name>` | Unregister an adapter |
+| `labctl serial remove <name>` | Unregister an adapter (refused when a board someone else has claimed has a port on it; `--override-claim`) |
 | `labctl serial list` | List all registered adapters |
 | `labctl serial rename <name> <new>` | Rename an adapter |
-| `labctl serial udev --install --reload` | Generate and apply udev rules |
+| `labctl serial udev --install --reload` | Generate and apply udev rules (refused when they would remove or re-point a `/dev/lab` link a board someone else has claimed uses; `--override-claim`) |
 | `labctl serial repair [--apply]` | Re-link port assignments to registered adapters (dry run by default) |
 | `labctl serial capture <port> --timeout N --until <pattern>` | Capture serial output |
 | `labctl serial send <port> <data> --capture N` | Send data (plus CRLF unless `--raw`) to a serial port |
@@ -550,15 +550,17 @@ Key activity and claims endpoints:
 | `/health` | GET | Service liveness and version (always open, no auth required) |
 
 `POST /sbcs/<name>/power` takes `{"action": "on"|"off"|"cycle"}`, plus an
-optional `delay` for a cycle (seconds, 0–86400, default 3.0) and
+optional `delay` for a cycle (seconds, 0–86400; default the board's
+stored cycle delay, or 3.0 if none is set; a smaller value is raised to
+the stored delay) and
 `"override_claim": true` to act on a board another user has claimed.
 Power-on and cycle set the pre_power relays first
 (see [Relays, Bindings and Recovery](#relays-bindings-and-recovery)). Responses:
 
 | Status | Meaning |
 |--------|---------|
-| 200 | Done; the body includes the new `state` |
-| 400 | Bad `action` or `delay`, or no plug assigned |
+| 200 | Done; the body includes the new `state` (and `delay_seconds` for a cycle) |
+| 400 | Bad `action` or `delay`, an out-of-range stored cycle delay, or no plug assigned |
 | 403 | An `agent`-role user tried `override_claim` (`not_operator`) |
 | 404 | No such SBC |
 | 409 | Refused with nothing switched: the board is claimed (`sbc_claimed`) or must be claimed first (`claim_required`), or a pre_power relay couldn't be checked or set before power-on (`{"error": ..., "switched": false}`) |

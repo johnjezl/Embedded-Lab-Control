@@ -255,3 +255,61 @@ class TestSerialUdevInstallNote:
 
     def test_no_note_when_in_dialout(self, run):
         assert "dialout" not in run(missing=False).output
+
+
+class TestRuleLinks:
+    """Which /dev/lab links a rules file creates, and which an install
+    would change (the claim check of `serial udev --install`, #41)."""
+
+    def test_round_trips_generated_rules(self):
+        from labctl.serial.udev import rule_links
+
+        rules = generate_udev_rules(
+            [
+                SerialDevice(id=1, name="port-a", usb_path="1-1.1", vendor="FTDI"),
+                SerialDevice(id=2, name="port-b", usb_path="1-1.2"),
+            ]
+        )
+        assert rule_links(rules) == {"port-a": "1-1.1", "port-b": "1-1.2"}
+
+    def test_ignores_comments_and_other_rules(self):
+        from labctl.serial.udev import rule_links
+
+        text = (
+            '# SUBSYSTEM=="tty", KERNELS=="1-1.1", SYMLINK+="lab/old"\n'
+            'SUBSYSTEM=="tty", KERNELS=="1-1.2", SYMLINK+="other/x"\n'
+            'SUBSYSTEM=="tty", KERNELS=="1-1.3", SYMLINK+="lab/c", MODE="0660"\n'
+        )
+        assert rule_links(text) == {"c": "1-1.3"}
+
+    def test_changed_links(self):
+        from labctl.serial.udev import changed_links
+
+        old = {"kept": "1-1", "moved": "1-2", "gone": "1-3"}
+        new = {"kept": "1-1", "moved": "1-9", "added": "1-4"}
+        assert changed_links(old, new) == {"moved", "gone"}
+
+    def test_installed_rule_links(self, tmp_path):
+        from labctl.serial.udev import installed_rule_links
+
+        path = tmp_path / "99-lab-serial.rules"
+        assert installed_rule_links(path) == {}  # none installed yet
+        path.write_text(
+            generate_udev_rules([SerialDevice(id=1, name="a", usb_path="1-1.1")])
+        )
+        assert installed_rule_links(path) == {"a": "1-1.1"}
+
+    def test_unreadable_rules_file_is_none(self, tmp_path):
+        from labctl.serial.udev import installed_rule_links
+
+        path = tmp_path / "99-lab-serial.rules"
+        path.mkdir()
+        assert installed_rule_links(path) is None
+
+    def test_default_path_read_at_call_time(self, tmp_path, monkeypatch):
+        from labctl.serial import udev
+
+        path = tmp_path / "rules"
+        path.write_text('SUBSYSTEM=="tty", KERNELS=="1-2", SYMLINK+="lab/x"\n')
+        monkeypatch.setattr(udev, "UDEV_RULES_PATH", path)
+        assert udev.installed_rule_links() == {"x": "1-2"}

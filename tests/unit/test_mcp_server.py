@@ -594,20 +594,70 @@ class TestMcpSDWireTools:
 
         assert "switched to host" in result
 
-    def test_sdwire_to_host_allows_no_power_plug(self, mock_manager):
-        """Test that SBC without power plug can still switch to host."""
+    def _drop_plug(self, manager):
+        sbc = manager.get_sbc_by_name("test-sbc-1")
+        manager.db.execute_modify("DELETE FROM power_plugs WHERE sbc_id = ?", (sbc.id,))
+
+    def test_sdwire_to_host_refuses_no_power_plug(self, mock_manager):
+        """Fails closed (#41): with no plug labctl can't confirm it's off."""
         from labctl.mcp_server import sdwire_to_host
 
-        # test-sbc-2 has no power plug, but also no sdwire
-        # Use test-sbc-1 but mock out the power plug check
+        self._drop_plug(mock_manager)
         mock_ctrl = MagicMock()
-        mock_ctrl.get_block_device.return_value = None
+        with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl):
+            result = sdwire_to_host(sbc_name="test-sbc-1")
 
-        # Temporarily remove power plug from sbc
-        mock_manager.get_sbc_by_name("test-sbc-2")
-        # test-sbc-2 has no sdwire, so this will fail for a different reason
-        result = sdwire_to_host(sbc_name="test-sbc-2")
-        assert "No SDWire" in result
+        assert result.startswith("Error: test-sbc-1 has no power plug")
+        assert "force=true" in result
+        mock_ctrl.switch_to_host.assert_not_called()
+
+    def test_sdwire_to_host_force_without_power_plug(self, mock_manager):
+        from labctl.mcp_server import sdwire_to_host
+
+        self._drop_plug(mock_manager)
+        mock_ctrl = MagicMock()
+        mock_ctrl.wait_for_host.return_value = "/dev/sdb"
+        with patch("labctl.sdwire.SDWireController", return_value=mock_ctrl):
+            result = sdwire_to_host(sbc_name="test-sbc-1", force=True)
+
+        assert "switched to host" in result
+        mock_ctrl.switch_to_host.assert_called_once()
+
+    def test_sdwire_to_host_refuses_unreadable_plug(self, mock_manager):
+        from labctl.mcp_server import sdwire_to_host
+
+        mock_power = MagicMock()
+        mock_power.get_state.side_effect = RuntimeError("plug unreachable")
+        mock_ctrl = MagicMock()
+        with (
+            patch(
+                "labctl.power.base.PowerController.from_plug", return_value=mock_power
+            ),
+            patch("labctl.sdwire.SDWireController", return_value=mock_ctrl),
+        ):
+            result = sdwire_to_host(sbc_name="test-sbc-1")
+
+        assert "could not read the power state of test-sbc-1" in result
+        assert "plug unreachable" in result
+        mock_ctrl.switch_to_host.assert_not_called()
+
+    def test_sdwire_to_host_refuses_unknown_state(self, mock_manager):
+        from labctl.mcp_server import sdwire_to_host
+        from labctl.power.base import PowerState
+
+        mock_power = MagicMock()
+        mock_power.get_state.return_value = PowerState.UNKNOWN
+        mock_ctrl = MagicMock()
+        with (
+            patch(
+                "labctl.power.base.PowerController.from_plug", return_value=mock_power
+            ),
+            patch("labctl.sdwire.SDWireController", return_value=mock_ctrl),
+        ):
+            result = sdwire_to_host(sbc_name="test-sbc-1")
+
+        assert "power state of test-sbc-1 is unknown" in result
+        mock_ctrl.switch_to_host.assert_not_called()
 
     def test_sdwire_to_dut_runtime_error(self, mock_manager):
         from unittest.mock import MagicMock
@@ -3963,7 +4013,7 @@ class TestDestructiveConfirmation:
         power.power_on.assert_not_called()
 
     def test_defaults_are_part_of_the_binding(self, env):
-        """power_cycle(delay omitted) == power_cycle(delay=3.0): same call."""
+        """power_cycle(delay omitted) == power_cycle(delay=None): same call."""
         from labctl.mcp_server import power_cycle
 
         _, power = env
@@ -3971,7 +4021,7 @@ class TestDestructiveConfirmation:
         power.power_on.return_value = True
         token = self._plan(power_cycle(sbc_name="test-sbc-1"))["confirm_token"]
         with patch("labctl.actuators.runtime.time.sleep"):
-            power_cycle(sbc_name="test-sbc-1", delay=3.0, confirm_token=token)
+            power_cycle(sbc_name="test-sbc-1", delay=None, confirm_token=token)
 
         power.power_on.assert_called_once()
 
@@ -5047,3 +5097,197 @@ class TestHttpBind:
             mcp_server._wait_for_port("127.0.0.1", 8080)
         assert e.value.code == 1
         assert "can't listen on 127.0.0.1:8080" in capsys.readouterr().err
+
+
+class TestMcpCycleDelay:
+    """The board's stored cycle delay is the default and minimum of every
+    MCP power cycle, and an out-of-range stored one is refused before
+    anything is switched or written (#41)."""
+
+    @staticmethod
+    def _store(manager, value):
+        sbc = manager.get_sbc_by_name("test-sbc-1")
+        manager.db.execute_modify(
+            "UPDATE sbcs SET power_cycle_delay_seconds = ? WHERE id = ?",
+            (value, sbc.id),
+        )
+
+    @pytest.fixture
+    def power(self, mock_manager):
+        ctrl = MagicMock()
+        ctrl.power_off.return_value = True
+        ctrl.power_on.return_value = True
+        with patch("labctl.power.base.PowerController.from_plug", return_value=ctrl):
+            yield ctrl
+
+    def test_power_cycle_defaults_to_stored_delay(self, mock_manager, power):
+        from labctl.mcp_server import power_cycle
+
+        self._store(mock_manager, 7.0)
+        with patch("labctl.actuators.runtime.time.sleep") as sleep:
+            result = power_cycle(sbc_name="test-sbc-1")
+        sleep.assert_called_once_with(7.0)
+        assert "(delay: 7.0s)" in result
+
+    def test_power_cycle_raises_delay_to_stored_minimum(self, mock_manager, power):
+        from labctl.mcp_server import power_cycle
+
+        self._store(mock_manager, 7.0)
+        with patch("labctl.actuators.runtime.time.sleep") as sleep:
+            result = power_cycle(sbc_name="test-sbc-1", delay=1.0)
+        sleep.assert_called_once_with(7.0)
+        assert "1.0s was raised to the board's minimum" in result
+
+    def test_power_cycle_default_without_stored_delay(self, mock_manager, power):
+        from labctl.mcp_server import power_cycle
+
+        with patch("labctl.actuators.runtime.time.sleep") as sleep:
+            power_cycle(sbc_name="test-sbc-1")
+        sleep.assert_called_once_with(3.0)
+
+    @pytest.mark.parametrize("delay", [-1.0, float("nan"), 1e9])
+    def test_power_cycle_bad_delay_refused(self, mock_manager, power, delay):
+        from labctl.mcp_server import power_cycle
+
+        result = power_cycle(sbc_name="test-sbc-1", delay=delay)
+        assert result.startswith("Error: delay must be a number of seconds")
+        power.power_off.assert_not_called()
+
+    def test_power_cycle_refuses_out_of_range_stored_delay(self, mock_manager, power):
+        from labctl.mcp_server import power_cycle
+
+        self._store(mock_manager, 1e9)
+        with patch("labctl.actuators.runtime.time.sleep") as sleep:
+            result = power_cycle(sbc_name="test-sbc-1")
+        assert "the cycle delay stored for 'test-sbc-1'" in result
+        assert "labctl edit test-sbc-1 --cycle-delay -1" in result
+        power.power_off.assert_not_called()
+        sleep.assert_not_called()
+
+    @pytest.mark.parametrize("tool", ["enter_recovery", "exit_recovery"])
+    def test_recovery_refuses_out_of_range_stored_delay(
+        self, mock_manager, power, tool
+    ):
+        from labctl import mcp_server
+
+        self._store(mock_manager, 1e9)
+        with (
+            patch("labctl.mcp_server._check_claim", return_value=None),
+            patch("labctl.actuators.runtime.time.sleep") as sleep,
+        ):
+            result = getattr(mcp_server, tool)(sbc_name="test-sbc-1")
+        assert result.startswith(f"Error: {tool} refused: the cycle delay stored")
+        power.power_off.assert_not_called()
+        sleep.assert_not_called()
+
+    def test_sdwire_update_reboot_refuses_bad_stored_delay(self, mock_manager, power):
+        from labctl.mcp_server import sdwire_update
+
+        self._store(mock_manager, 1e9)
+        ctrl = MagicMock()
+        with patch("labctl.sdwire.SDWireController", return_value=ctrl):
+            result = sdwire_update(
+                sbc_name="test-sbc-1", partition=1, deletes=["x"], reboot=True
+            )
+        assert "the cycle delay stored for 'test-sbc-1'" in result
+        assert result.endswith("Nothing changed.")
+        power.power_off.assert_not_called()
+        ctrl.switch_to_host.assert_not_called()
+
+    def test_sdwire_update_reboot_waits_stored_delay(self, mock_manager, power):
+        from labctl.mcp_server import sdwire_update
+
+        self._store(mock_manager, 6.0)
+        ctrl = MagicMock()
+        ctrl.update_files.return_value = {"copied": [], "renamed": [], "deleted": ["x"]}
+        with (
+            patch("labctl.sdwire.SDWireController", return_value=ctrl),
+            patch("labctl.actuators.runtime.power_cycle_with_bindings") as cycle,
+            patch("time.sleep"),
+        ):
+            cycle.return_value = True
+            sdwire_update(
+                sbc_name="test-sbc-1", partition=1, deletes=["x"], reboot=True
+            )
+        assert cycle.call_args.args[3] == 6.0
+
+    def test_boot_test_refuses_bad_stored_delay(self, mock_manager, power):
+        from labctl.mcp_server import boot_test
+
+        self._store(mock_manager, 1e9)
+        with patch("labctl.serial.boot_test.run_boot_test") as run:
+            result = boot_test(sbc_name="test-sbc-1", expect_pattern="ok", runs=1)
+        assert "the cycle delay stored for 'test-sbc-1'" in result
+        assert result.endswith("Nothing changed.")
+        run.assert_not_called()
+
+    def test_boot_test_cycles_wait_stored_delay(self, mock_manager, power):
+        from labctl.mcp_server import boot_test
+        from labctl.serial.boot_test import BootTestResult
+
+        self._store(mock_manager, 9.0)
+
+        def fake_run(**kwargs):
+            kwargs["power_cycle_fn"]()
+            return BootTestResult(
+                sbc_name="test-sbc-1",
+                expect_pattern="ok",
+                total_runs=1,
+                timeout_per_run=1.0,
+            )
+
+        with (
+            patch("labctl.serial.boot_test.run_boot_test", side_effect=fake_run),
+            patch("labctl.actuators.runtime.power_cycle_with_bindings") as cycle,
+        ):
+            boot_test(sbc_name="test-sbc-1", expect_pattern="ok", runs=1)
+        assert cycle.call_args.args[3] == 9.0
+
+
+@pytest.mark.confirmation
+class TestMcpCycleDelayConfirmation:
+    """Confirmations of power-cycling tools show the delay they'll wait."""
+
+    @pytest.fixture
+    def confirm(self, mock_manager):
+        from labctl.core.config import Config
+
+        with (
+            patch("labctl.mcp_server._get_config", return_value=Config()),
+            patch("labctl.power.base.PowerController.from_plug") as from_plug,
+        ):
+            yield from_plug.return_value
+
+    def test_power_cycle_plan_shows_effective_delay(self, mock_manager, confirm):
+        from labctl.mcp_server import power_cycle
+
+        TestMcpCycleDelay._store(mock_manager, 5.0)
+        plan = json.loads(power_cycle(sbc_name="test-sbc-1", delay=1.0))
+        assert plan["status"] == "confirmation_required"
+        assert plan["will_do"] == {"cycle_delay_seconds": 5.0}
+        confirm.power_off.assert_not_called()
+
+    def test_plan_refuses_out_of_range_stored_delay(self, mock_manager, confirm):
+        from labctl.mcp_server import enter_recovery
+
+        TestMcpCycleDelay._store(mock_manager, 1e9)
+        result = enter_recovery(sbc_name="test-sbc-1")
+        assert result.startswith("Error: the cycle delay stored for 'test-sbc-1'")
+        assert "confirm_token" not in result
+
+    def test_sdwire_update_without_reboot_has_no_delay(self, mock_manager, confirm):
+        from labctl.mcp_server import sdwire_update
+
+        TestMcpCycleDelay._store(mock_manager, 1e9)
+        plan = json.loads(
+            sdwire_update(sbc_name="test-sbc-1", partition=1, deletes=["x"])
+        )
+        assert plan["status"] == "confirmation_required"
+        assert "will_do" not in plan
+
+    def test_boot_test_plan_shows_stored_delay(self, mock_manager, confirm):
+        from labctl.mcp_server import boot_test
+
+        TestMcpCycleDelay._store(mock_manager, 4.0)
+        plan = json.loads(boot_test(sbc_name="test-sbc-1", expect_pattern="ok"))
+        assert plan["will_do"] == {"cycle_delay_seconds": 4.0}

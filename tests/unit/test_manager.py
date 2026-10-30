@@ -1957,3 +1957,43 @@ class TestClaimMetrics:
         assert m["active"] == 0
         assert m["released"] == 1
         assert m["avg_duration_seconds"] is not None
+
+
+class TestSbcsUsingSerialLinks:
+    """Boards whose ports reach their adapter through /dev/lab links (#41)."""
+
+    @pytest.fixture
+    def boards(self, manager):
+        dev = manager.create_serial_device("port-a", "1-1.1")
+        manager.create_serial_device("port-b", "1-1.2")
+        a = manager.create_sbc(name="by-link")
+        b = manager.create_sbc(name="by-registration")
+        c = manager.create_sbc(name="by-node")
+        d = manager.create_sbc(name="legacy")
+        manager.assign_serial_port(a.id, PortType.CONSOLE, "/dev/lab/port-b", 4001)
+        manager.assign_serial_port(
+            b.id, PortType.CONSOLE, "/dev/lab/port-a", 4002, serial_device_id=dev.id
+        )
+        manager.assign_serial_port(c.id, PortType.CONSOLE, "/dev/ttyUSB3", 4003)
+        manager.db.execute_modify(
+            "INSERT INTO serial_ports (sbc_id, port_type, device_path, tcp_port,"
+            " baud_rate) VALUES (?, 'debug', 'port-c', 4004, 115200)",
+            (d.id,),
+        )
+        return manager
+
+    def test_by_name(self, boards):
+        assert boards.sbcs_using_serial_links({"port-a"}) == ["by-registration"]
+        assert boards.sbcs_using_serial_links({"port-b"}) == ["by-link"]
+        assert boards.sbcs_using_serial_links({"port-c"}) == ["legacy"]
+
+    def test_none_means_any_link(self, boards):
+        assert boards.sbcs_using_serial_links(None) == [
+            "by-link",
+            "by-registration",
+            "legacy",
+        ]
+
+    def test_empty_and_unused(self, boards):
+        assert boards.sbcs_using_serial_links(set()) == []
+        assert boards.sbcs_using_serial_links({"nope"}) == []

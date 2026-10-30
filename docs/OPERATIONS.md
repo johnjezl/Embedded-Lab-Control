@@ -55,7 +55,7 @@ the tool and its exact arguments. Configure with `mcp.confirm_destructive`
 | `get_claim` | read |  |  |
 | `list_claims` | read |  |  |
 | `list_images` | read |  | Uploading is not a tool: `PUT /images/<name>` on the HTTP port writes `mcp.upload_dir` (system-write; its uploader or an operator may replace an image) |
-| `power_cycle` | destructive | yes | Sets pre_power relays like `power_on`, after power-off; `delay` 0-86400 s, default 3.0 (the board's stored cycle delay is not used) |
+| `power_cycle` | destructive | yes | Sets pre_power relays like `power_on`, after power-off; `delay` 0-86400 s, default and minimum the board's stored cycle delay (3.0 if none) |
 | `power_off` | destructive | yes |  |
 | `power_on` | hardware |  | First sets the relays bound with `sample_phase: pre_power` (e.g. a strap) on this board and every board sharing its plug outlet; all are checked first, and power is not switched if one can't be set |
 | `press` | destructive | yes |  |
@@ -114,7 +114,7 @@ terminal**, i.e. when stdin is a terminal. Callers without one (cron, CI,
 systemd, pipes, agents' tool calls) are not asked. A shell script started
 from an interactive terminal inherits it and **is** asked, so add `--yes` to
 scripted destructive commands. The exceptions are the older `remove`,
-`sdwire remove`, `serial remove`, `actuator remove` and `power-all`, which
+`sdwire remove`, `actuator remove` and `power-all`, which
 also ask (and abort without `--yes`) when stdin is not a terminal.
 `power cycle`, `sdwire flash` and `sdwire update` also take `--dry-run`.
 
@@ -125,7 +125,12 @@ on/off/cycle`, `power-all`, `sdwire dut/host/flash/update/ls/cat/info`,
 `enter-/exit-recovery`, `boot-test`), those that change its records
 (`edit`, `remove`, `port`/`plug`/`network` assign/set/remove,
 `sdwire assign/unassign`, `bind`/`unbind`), `actuator set`/`remove` on
-channels bound to a claimed board, and `import` (checked for every board before anything changes).
+channels bound to a claimed board, `serial remove` of an adapter a claimed
+board has a port on (by any path that reaches it: `/dev/lab/<name>`, its
+registration, or a path resolving to the same device node), `serial udev
+--install` when the new rules remove or re-point a `/dev/lab/<name>` link
+a claimed board's port uses (every link, if the installed rules file can't
+be read), and `import` (checked for every board before anything changes).
 As over MCP, a claim covers hardware shared with other boards: operating
 a board that shares a plug outlet, SDWire, console adapter or relay
 channel with a claimed board is refused, as are assigning that hardware
@@ -146,14 +151,13 @@ logged (`remove` still refuses a board with an open claim unless
 `--override-claim`). Not checked: reading a console and shell access
 (`connect`, `console`, `serial capture`, `ssh`, `proxy start`), `log`, `health-check`,
 `monitor`, `actuator probe`, the `claims` commands, lab-wide serial setup
-(`ser2net`, `serial rename`/`repair`/`udev`), which affects every board's
-consoles at once, and the hardware inventory (`add`, `serial add`/`remove`,
-`sdwire add`/`remove`, `actuator add`). `sdwire remove` refuses a device
-that is still assigned. `serial remove` refuses an adapter still linked to
-a port. A port is linked when assigned with `--serial-device` or by a
-`/dev/lab/<name>` path naming a registered adapter; a port assigned by any
-other path isn't, so an adapter behind it can be removed from under a
-claimed board.
+(`ser2net`, `serial rename`/`repair`,`serial udev` without `--install`),
+which affects every board's consoles at once, and the hardware inventory
+(`add`, `serial add`, `sdwire add`/`remove`, `actuator add`). `sdwire
+remove` refuses a device that is still assigned. `serial remove` also
+refuses, whoever holds a claim, an adapter still linked to a port (assigned
+with `--serial-device` or by a `/dev/lab/<name>` path naming a registered
+adapter).
 The top-level aliases `off` (`power off`), `on` (`power on`),
 `rm`/`delete` (`remove`), `ls` (`list`) and `show` (`info`) behave
 exactly like the commands they stand for.
@@ -221,7 +225,7 @@ exactly like the commands they stand for.
 | `sdwire discover` | read |  |  |
 | `sdwire dut` | hardware |  |  |
 | `sdwire flash` | destructive | yes | Overwrites the whole SD card; `--dry-run` |
-| `sdwire host` | destructive | yes | Pulls the card from the board (`--force` skips the power check) |
+| `sdwire host` | destructive | yes | Pulls the card from the board; only when the plug reports it off (no plug or an unreadable plug refuses too); `--force` skips the power check |
 | `sdwire info` | hardware |  | As `sdwire cat` |
 | `sdwire list` | read |  |  |
 | `sdwire ls` | hardware |  | As `sdwire cat` |
@@ -250,8 +254,9 @@ exactly like the commands they stand for.
 | `user verify` | read |  |  |
 | `web` | server |  | Long-running web UI/API |
 
-**CLI vs MCP:** the CLI `sdwire ls`/`cat`/`info` don't have the MCP tools'
-strict power check. They refuse only when the plug reports the board ON,
+**CLI vs MCP:** `sdwire host` has the same strict power check as MCP
+`sdwire_to_host` (proceed only on OFF; `--force` skips it), but the CLI
+`sdwire ls`/`cat`/`info` don't have the MCP tools' strict power check. They refuse only when the plug reports the board ON,
 so they proceed when it has no power plug, when the plug can't be read, or
 when its state is unknown. They always switch the card to the host and
 then to the board, even if it was on the host to begin with. The MCP tools were hardened first because
@@ -300,24 +305,31 @@ checks, and the claims endpoints themselves.
 
 **Power over REST:** `POST /api/sbcs/<name>/power` takes `{"action":
 "on" | "off" | "cycle"}`, plus optional `"delay"` (seconds between off and
-on for `cycle`: a number from 0 to 86400, default 3.0) and
+on for `cycle`: a number from 0 to 86400; default the board's stored
+cycle delay, or 3.0 if none is set, and a smaller value is raised to the
+stored delay) and
 `"override_claim"`. In the order checked:
 
 | Status | When |
 |---|---|
 | `404` | No such SBC |
-| `400` | No power plug assigned, missing or bad `action`, or a bad `delay` for `cycle` (checked before claims) |
+| `400` | No power plug assigned, missing or bad `action`, or for `cycle` a bad `delay` or an out-of-range stored cycle delay (checked before claims) |
 | `409` / `403` | Claim refusals as above (`sbc_claimed`, `claim_required`, `not_operator`) |
 | `429` | A `cycle` within 5 s of this board's last successful cycle through this server |
 | `409` | `{"error": ..., "switched": false}`: a pre_power relay (on this board or one sharing its outlet) couldn't be checked, or, for `on`, couldn't be set; power was not switched |
 | `500` | The plug failed, or for `cycle` a strap couldn't be set after power-off (the board was left off) |
-| `200` | `{"name", "action", "success": true, "state"}` |
+| `200` | `{"name", "action", "success": true, "state"}`, plus `"delay_seconds"` (the delay used) for `cycle` |
 
 `on` and `cycle` set the pre_power relays first, as the CLI and MCP do.
 With several boards on one outlet, a `409` for `on` can follow relays that
 were already set: only power is guaranteed unswitched. REST, the web UI's
-power button, and MCP `power_cycle` don't use the board's stored cycle
-delay (`labctl edit --cycle-delay`). REST and MCP use the `delay` given
-or 3.0, and the web button always uses 3.0. Only the CLI's `power cycle`
-and the recovery commands (`enter-`/`exit-recovery`, CLI and MCP) honour
-the stored value.
+power button, and MCP `power_cycle` use the board's stored cycle delay
+(`labctl edit --cycle-delay`) like every other power cycle: it is the
+default when no `delay` is given, and the minimum when one is (a smaller
+value is raised to it; the CLI's `power cycle` also raises a value below
+3 s when no delay is stored). The same holds for the reboot after
+`sdwire flash`/`update` (CLI and MCP), `boot-test` (CLI and MCP) and the
+recovery commands. A stored delay outside 0-86400 s (stored before
+`edit --cycle-delay` checked the range) is refused on every path before
+anything is switched or written; clear it with `labctl edit <name>
+--cycle-delay -1`.
