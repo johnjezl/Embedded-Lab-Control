@@ -965,13 +965,14 @@ class ResourceManager:
         names: set[str] = set()
         if plug is not None:
             wanted = outlet_key(*plug)
-            # SQL narrows to the same plug (type, trimmed case-folded
-            # address, as outlet_key); outlets_overlap decides the index.
+            # SQL narrows to the plug type only: SQLite's trim()/lower()
+            # don't match str.strip()/lower() (tabs, newlines, non-ASCII),
+            # so the address is compared through outlet_key in Python.
             rows = self.db.execute(
                 "SELECT s.name, p.plug_type, p.address, p.plug_index"
                 " FROM power_plugs p JOIN sbcs s ON s.id = p.sbc_id"
-                " WHERE p.plug_type = ? AND lower(trim(p.address)) = ?",
-                (wanted[0], wanted[1]),
+                " WHERE p.plug_type = ?",
+                (wanted[0],),
             )
             names.update(
                 r["name"]

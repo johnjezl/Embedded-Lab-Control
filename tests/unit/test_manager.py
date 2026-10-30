@@ -2106,3 +2106,15 @@ class TestOneLinkParser:
         assert manager.sbcs_sharing_hardware(plug=("tasmota", " plug-1.local ", 1)) == [
             "a"
         ]
+
+    def test_plug_address_with_tab_or_newline_still_shares(self, manager):
+        """Addresses are compared as outlet_key does (str.strip), which SQLite
+        trim() alone would not match."""
+        a = manager.create_sbc(name="a")
+        b = manager.create_sbc(name="b")
+        manager.assign_power_plug(a.id, PlugType.TASMOTA, "pdu1\n", 1)
+        manager.assign_power_plug(b.id, PlugType.TASMOTA, "\tPDU1", 1)
+        assert manager.sbcs_sharing_hardware(plug=("tasmota", "pdu1", 1)) == [
+            "a",
+            "b",
+        ]
