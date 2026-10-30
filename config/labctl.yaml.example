@@ -5,13 +5,14 @@
 # -c FILE, $LABCTL_CONFIG, ~/.config/labctl/config.yaml,
 # /etc/labctl/config.yaml, built-in defaults.
 #
-# Only these environment variables override settings:
+# Only these environment variables override settings (keys marked
+# "not used yet" below are parsed but nothing acts on them):
 #   LABCTL_DEV_DIR            serial.dev_dir
-#   LABCTL_BASE_TCP_PORT      serial.base_tcp_port
+#   LABCTL_BASE_TCP_PORT      serial.base_tcp_port (not used yet)
 #   LABCTL_DATABASE_PATH      database_path
 #   LABCTL_DATABASE_TIMEOUT   database.timeout_seconds
 #   LABCTL_LOG_LEVEL          log_level
-#   LABCTL_PROXY_ENABLED      proxy.enabled
+#   LABCTL_PROXY_ENABLED      proxy.enabled (not used yet)
 #   LABCTL_PROXY_PORT_BASE    proxy.port_base
 #   LABCTL_PROXY_WRITE_POLICY proxy.write_policy
 #   LABCTL_PROXY_LOG_DIR      proxy.log_dir
@@ -23,7 +24,8 @@ serial:
   # Directory where udev creates symlinks for lab devices
   dev_dir: /dev/lab
 
-  # Base TCP port for ser2net connections (ports assigned sequentially)
+  # Base TCP port for ser2net connections. Not used yet: automatic port
+  # assignment always starts at 4000 (`port assign -t` picks one).
   base_tcp_port: 4000
 
   # Default baud rate for serial connections
@@ -39,14 +41,14 @@ ser2net:
 
 # Multi-client serial proxy (`labctl proxy start`); defaults shown.
 # proxy:
-#   enabled: true
+#   enabled: true              # not used yet: `proxy start` always runs
 #   port_base: 5500
 #   port_range: 100            # ports 5500-5599
 #   write_policy: first        # first, all or queue
 #   log_dir: ~/.local/share/labctl/logs   # default: $XDG_DATA_HOME/labctl/logs
-#   log_retention_days: 7
+#   log_retention_days: 7      # not used yet: logs are never pruned
 #   max_clients: 10
-#   idle_timeout: 3600         # seconds
+#   idle_timeout: 3600         # not used yet: idle clients stay connected
 
 # Health checks and the monitor daemon (`labctl monitor`); defaults shown.
 # health:
@@ -55,11 +57,11 @@ ser2net:
 #   min_sleep_seconds: 1.0
 #   ping_timeout: 2.0
 #   serial_timeout: 2.0
-#   status_retention_days: 30
+#   status_retention_days: 30  # not used yet: status history isn't pruned
 #   alert_log_path: ~/.local/share/labctl/alerts.log  # default: $XDG_DATA_HOME/labctl/alerts.log
 #   alert_on_offline: true
 #   alert_on_power_change: true
-#   update_status_on_check: true
+#   update_status_on_check: true  # not used yet: use `monitor --no-update`
 
 # Authentication (disabled by default). Also secures `labctl mcp --http`:
 # with auth enabled, MCP HTTP clients must send
@@ -106,7 +108,9 @@ ser2net:
 #   default_duration_minutes: 30
 #   min_duration_minutes: 1
 #   max_duration_minutes: 1440
-#   # An expired claim stays its holder's for this long before it is freed.
+#   # After a claim expires, only its holder can claim the board again for
+#   # this long. The expired claim no longer protects the board or can be
+#   # renewed: renew before it expires.
 #   grace_period_seconds: 60
 #   # Released claims older than this are pruned by `labctl claims expire`
 #   # and by the MCP server's periodic sweep (which also prunes activity
