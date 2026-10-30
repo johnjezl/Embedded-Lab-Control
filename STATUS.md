@@ -5,21 +5,21 @@
 - **Milestone**: Public PyPI release (`embedded-lab-control`)
 - **Sub-task**: next is P2 (PyPI release); Phase 0 and Phase 1 (safety)
   are done
-- **Status**: `main` @ `e02a2f3` has everything merged through PR #37
-  (2026-10-29), and all of it is deployed to tarrasque (2026-10-29).
+- **Status**: `main` has everything merged through PR #40 (2026-10-29).
+  Everything through PR #37 is deployed to tarrasque (2026-10-29); the
+  docs audit (#39) and its bug fixes (#40) are not deployed yet.
   Phase 1 (WS1–WS5, PRs #13–#18), claim enforcement on every surface
   (D013, PRs #22/#24/#25), image uploads + MCP TLS (D014, PR #26) and
-  the fixes since (PRs #28–#37) are in. See `docs/IMPLEMENTATION.md`.
+  the fixes since (PRs #28–#40) are in. See `docs/IMPLEMENTATION.md`.
 - **Open follow-ups**: #19 (remaining by-path root operations in the
-  install/update scripts), #23 (`flash_image`/`sdwire_update` switch the
-  SD card to the host even if power-off failed), #38 (BoardPower
-  refactor: one board-level power operation with a structured result).
+  install/update scripts), #38 (BoardPower refactor: one board-level
+  power operation with a structured result).
 
 ## Last Session
 
 - **Date**: 2026-10-29
-- **Branch**: `main` @ `e02a2f3`
-- **Completed** (PRs #28–#37, all deployed):
+- **Branch**: `main`
+- **Completed** (PRs #28–#37 deployed; #39, #40 not yet):
   - #28: tests never load the machine's real config or database;
     schema v11 repairs a pre-release `images` table
   - #29: `labctl mcp --http` waits for a busy port; `update.sh` waits
@@ -31,7 +31,14 @@
   - #35: relay open failures reported cleanly, with a group hint
   - #37: `pre_power` bindings applied on every power-on path (#36),
     including boards sharing an outlet; relays checked before switching
-- **Pending**: P2 (PyPI release); follow-ups #19, #23, #38
+  - #39: docs, README, CLI help and MCP tool descriptions audited
+    against the code
+  - #40: the SD card never leaves a board that may be running (`sdwire
+    flash`/`update`, `boot-test` deploy; closes #23); strict
+    `allow_admin_actuator_ops`; stored cycle delay range-checked; udev
+    rules `root:dialout 0660`
+- **Pending**: deploy #39/#40 (then `labctl serial udev --install
+  --reload`); P2 (PyPI release); follow-ups #19, #38
 
 ## Earlier Session (Activity Stream)
 

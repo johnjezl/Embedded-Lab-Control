@@ -62,6 +62,7 @@ from the adapters you register:
 labctl serial discover                 # find adapters and their USB paths
 labctl serial add sbc1-console 1-10.1.3
 labctl serial udev > 99-lab-serial.rules   # generate the rules
+cat 99-lab-serial.rules                    # check: rules, not a message
 sudo install -m 644 99-lab-serial.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
@@ -532,7 +533,7 @@ Key activity and claims endpoints:
 | `/sbcs/<name>/uptime` | GET | Uptime statistics |
 | `/ports` | GET | List all serial port assignments |
 | `/status` | GET | Status overview of all SBCs |
-| `/health/check` | GET, POST | GET: last health-check results; POST: run a new check |
+| `/health/check` | GET, POST | Run a health check now (both methods; nothing is cached): pings, opens console ports and queries plugs |
 | `/health` | GET | Service liveness and version (always open, no auth required) |
 
 `POST /sbcs/<name>/power` takes `{"action": "on"|"off"|"cycle"}`, plus an

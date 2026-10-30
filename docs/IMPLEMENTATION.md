@@ -879,7 +879,7 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
 - ⏸️ `post_power` phase (stored, not acted on), relay probes in health
   checks, other drivers, web UI
 
-## Fixes after Phase 1 WS4 (PRs #24–#37)
+## Fixes after Phase 1 WS4 (PRs #24–#40)
 
 - ✅ #24, #25 Claim enforcement parts 2/3 (CLI; web UI / REST)
 - ✅ #26 Image uploads over MCP HTTP + MCP TLS (schema v10)
@@ -893,3 +893,8 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
 - ✅ #32 `list_images` guidance for stdio sessions
 - ✅ #34 MCP `serial_send` `keys` / `data_hex`
 - ✅ #35, #37 Actuator fixes (see Feature: Actuators)
+- ✅ #39 Docs, README, CLI help and MCP descriptions audited against the
+  code
+- ✅ #40 SD card never switched away from a board that may be running
+  (closes #23); strict `allow_admin_actuator_ops`; stored cycle delay
+  range-checked; udev rules `root:dialout 0660`
