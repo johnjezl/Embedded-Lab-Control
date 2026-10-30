@@ -25,7 +25,10 @@ are credited unless they ask not to be.
   without authentication on a non-loopback address, or when
   `mcp.allowed_hosts`/`allowed_origins` accept non-loopback names. With
   `auth.enabled`, clients send `Authorization: Bearer <api_key>`.
-  `Host`/`Origin` headers are checked (DNS rebinding). TLS is available
+  `Host`/`Origin` headers are checked against DNS rebinding: on a
+  loopback bind always (loopback names plus `mcp.allowed_hosts`), on
+  another address only when `mcp.allowed_hosts` is set (the server warns
+  when it isn't). TLS is available
   with `--cert`/`--key` or `mcp.cert_file`/`key_file`, and the server
   warns when keys would cross the network unencrypted.
 - **Web UI / REST API:** login sessions and `X-API-Key`. These are only

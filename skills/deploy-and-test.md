@@ -61,8 +61,9 @@ The MCP server runs on the lab host and cannot read paths on your machine, and i
 - **Upload it** (HTTP transport; needs `mcp.upload_dir` on the server). Use the same API key as the MCP connection:
   ```bash
   curl --fail-with-body -T <binary> -H "Authorization: Bearer $LABCTL_API_KEY" \
-    "https://<lab-host>:8080/images/<name>?sha256=$(sha256sum <binary> | cut -d' ' -f1)"
+    "<mcp-url>/images/<name>?sha256=$(sha256sum <binary> | cut -d' ' -f1)"
   ```
+  `<mcp-url>` is the base of the MCP server's URL (its `/mcp` endpoint without `/mcp`): `http://127.0.0.1:8080` on the lab host with the shipped service, or `https://<lab-host>:<port>` when TLS and a non-loopback `--host` are set up.
   Then pass the bare `<name>` (no `/`) as the source. `list_images` shows what is uploaded.
 - **Absolute host path** (when the server runs on the same machine as the build): pass the binary's absolute path. It must be inside a directory listed in `mcp.allowed_read_paths`.
 
