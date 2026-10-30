@@ -82,10 +82,15 @@ generated from it:
    ```
 
 **Legacy:** before adapters were tracked in the database, rules were
-generated from a mapping file with
-`scripts/generate-udev-rules.py --mapping config/udev/port-mapping.yaml`
-and installed with `scripts/install-udev.sh`. These scripts still exist
-but are not needed with the flow above.
+generated from a mapping file and installed with:
+
+```bash
+scripts/generate-udev-rules.py --mapping config/udev/port-mapping.yaml \
+    --output config/udev/99-lab-serial.rules
+sudo scripts/install-udev.sh   # installs config/udev/99-lab-serial.rules
+```
+
+These scripts still exist but are not needed with the flow above.
 
 ## Troubleshooting
 
