@@ -1130,12 +1130,18 @@ class TestSerialAdapters:
         assert "Continue?" not in result.output
         assert manager.get_serial_device_by_name("port-a") is not None
 
-    def test_serial_remove_asks_only_on_a_terminal(self, lab):
+    def test_serial_remove_without_a_terminal_needs_yes(self, lab):
+        """Asked only on a terminal; without one it isn't asked but needs
+        --yes (the stricter rule for commands that delete records, D012)."""
         run, manager, _ = lab
         manager.create_serial_device("port-c", "1-1.3")
         result = run("serial", "remove", "port-c")
-        assert result.exit_code == 0, result.output
+        assert result.exit_code == 1
         assert "Continue?" not in result.output
+        assert "pass --yes" in result.output
+        assert manager.get_serial_device_by_name("port-c") is not None
+        result = run("serial", "remove", "port-c", "--yes")
+        assert result.exit_code == 0, result.output
         assert manager.get_serial_device_by_name("port-c") is None
 
     @pytest.fixture
