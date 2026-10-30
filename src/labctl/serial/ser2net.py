@@ -7,6 +7,7 @@ Supports ser2net 4.0+ YAML configuration format.
 
 import errno
 import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -204,6 +205,11 @@ def write_ser2net_config(path: str, content: str) -> None:
     dir_fd = open_dir_nofollow(directory)
     try:
         existing = _existing_single_link(name, dir_fd, path, open_regular_nonblocking)
+        if existing is not None and _owner_change_refused(existing, dir_fd):
+            # A temporary file couldn't be given the existing file's owner
+            # (not root, and it is someone else's): rewrite it in place.
+            _rewrite_in_place(name, dir_fd, path, data, open_regular_nonblocking)
+            return
         tmp_name = f".{name}.labctl-{secrets.token_hex(4)}"
         try:
             tmp = os.open(
@@ -225,7 +231,7 @@ def write_ser2net_config(path: str, content: str) -> None:
                 ) != (existing.st_uid, existing.st_gid):
                     os.fchown(tmp, existing.st_uid, existing.st_gid)
             except PermissionError:
-                # Not root, and the file is someone else's: keep it theirs.
+                # Predicted above; kept as a backstop.
                 os.close(tmp)
                 tmp = None
                 os.unlink(tmp_name, dir_fd=dir_fd)
@@ -265,7 +271,14 @@ def check_ser2net_config_writable(path: str) -> None:
     dir_fd = open_dir_nofollow(directory)
     try:
         existing = _existing_single_link(name, dir_fd, path, open_regular_nonblocking)
-        if os.access(directory, os.W_OK | os.X_OK):
+        # The same choice write_ser2net_config makes: the atomic replace
+        # when the directory takes new files and the temporary file can be
+        # given the existing file's owner; otherwise the in-place rewrite,
+        # which needs the file itself writable.
+        atomic = os.access(directory, os.W_OK | os.X_OK) and not (
+            existing is not None and _owner_change_refused(existing, dir_fd)
+        )
+        if atomic:
             return
         if existing is None:
             raise PermissionError(errno.EACCES, f"can't create {path}")
@@ -273,6 +286,23 @@ def check_ser2net_config_writable(path: str) -> None:
         os.close(fd)
     finally:
         os.close(dir_fd)
+
+
+def _owner_change_refused(existing: os.stat_result, dir_fd: int) -> bool:
+    """Whether a new file in the directory couldn't be given ``existing``'s
+    owner and group: it would be ours (and the directory's group if it is
+    setgid, else our group), and only root may give a file away or to a
+    group it isn't in."""
+    euid = os.geteuid()
+    if euid == 0:
+        return False
+    dir_st = os.fstat(dir_fd)
+    new_gid = dir_st.st_gid if dir_st.st_mode & stat.S_ISGID else os.getegid()
+    if (existing.st_uid, existing.st_gid) == (euid, new_gid):
+        return False
+    if existing.st_uid != euid:
+        return True
+    return existing.st_gid not in set(os.getgroups()) | {os.getegid()}
 
 
 def _existing_single_link(name, dir_fd, path, opener):
