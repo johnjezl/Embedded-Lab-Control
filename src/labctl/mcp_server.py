@@ -2042,16 +2042,14 @@ def sdwire_update(
             except ActuationError as e:
                 return f"Error: {e}. Nothing changed."
 
-        # Auto power-off to prevent SD card bus contention
-        if sbc.power_plug:
-            try:
-                from labctl.power import PowerController
+        # The card must not leave a running board (bus contention):
+        # nothing is written if the board can't be switched off.
+        from labctl.sdwire.power_guard import power_off_before_host_switch
 
-                power_ctrl = PowerController.from_plug(sbc.power_plug)
-                power_ctrl.power_off()
-                time.sleep(1)
-            except Exception:
-                pass  # Best effort — continue even if power off fails
+        try:
+            power_off_before_host_switch(sbc)
+        except RuntimeError as e:
+            return f"Error: {e}."
 
         ctrl.switch_to_host()
         time.sleep(2)
@@ -2393,16 +2391,14 @@ def flash_image(
             except ActuationError as e:
                 return f"Error: {e}. Nothing changed."
 
-        # Power off (best effort)
-        if sbc.power_plug:
-            try:
-                from labctl.power import PowerController
+        # The card must not leave a running board (bus contention):
+        # nothing is flashed if the board can't be switched off.
+        from labctl.sdwire.power_guard import power_off_before_host_switch
 
-                power_ctrl = PowerController.from_plug(sbc.power_plug)
-                power_ctrl.power_off()
-                time_mod.sleep(1)
-            except Exception:
-                pass  # Continue even if power off fails
+        try:
+            power_off_before_host_switch(sbc)
+        except RuntimeError as e:
+            return f"Error: {e}."
 
         # Switch SD to host and wait for device
         ctrl.switch_to_host()
@@ -2718,8 +2714,6 @@ def boot_test(
     if timeout <= 0:
         return "Error: timeout must be positive"
 
-    import time as time_mod
-
     from labctl.serial.boot_test import run_boot_test
 
     manager = _get_manager()
@@ -2770,21 +2764,21 @@ def boot_test(
 
             if not sbc.sdwire:
                 raise RuntimeError(f"No SDWire assigned to '{sbc_name}'")
-            from labctl.serial.boot_test import power_off_for_deploy
+            from labctl.sdwire.power_guard import deploy_to_card
 
             ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
             # The card must not leave a running board (bus contention):
-            # switch the board off first, and deploy nothing if that fails.
-            # The first run powers it back on.
-            power_off_for_deploy(sbc)
-            ctrl.switch_to_host()
-            time_mod.sleep(2)
-            ctrl.update_files(
-                partition,
-                [(image_fd, dest)],
-                source_names=[os.path.basename(image)],
+            # the board is switched off first, and nothing is deployed if
+            # that fails. The first run powers it back on.
+            deploy_to_card(
+                sbc,
+                ctrl,
+                lambda: ctrl.update_files(
+                    partition,
+                    [(image_fd, dest)],
+                    source_names=[os.path.basename(image)],
+                ),
             )
-            ctrl.switch_to_dut()
 
         deploy_fn = _deploy
 

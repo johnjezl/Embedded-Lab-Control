@@ -46,6 +46,22 @@ def generate_udev_rules(devices: list["SerialDevice"]) -> str:
     return "\n".join(lines)
 
 
+def missing_device_group(group: str = "dialout") -> bool:
+    """True when this process (not root) isn't in ``group``, so it can't
+    open the root:<group> 0660 devices the rules create. False when the
+    group doesn't exist on this system."""
+    import grp
+    import os
+
+    if os.geteuid() == 0:
+        return False
+    try:
+        gid = grp.getgrnam(group).gr_gid
+    except KeyError:
+        return False
+    return gid != os.getegid() and gid not in os.getgroups()
+
+
 def install_udev_rules(
     rules_text: str,
     rules_path: Path = UDEV_RULES_PATH,

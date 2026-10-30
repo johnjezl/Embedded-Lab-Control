@@ -71,6 +71,17 @@ def _reset_mcp_upload_security():
         server._http_tls = False
 
 
+@pytest.fixture(autouse=True)
+def _fresh_config_warnings():
+    """Config warnings are logged once per process (labctl.core.config
+    _warn_once); start every test with a clean slate so it sees its own."""
+    from labctl.core import config
+
+    config._warned.clear()
+    yield
+    config._warned.clear()
+
+
 @pytest.fixture
 def sdwire_stub(monkeypatch):
     """Install a hardware-free stand-in for the optional ``sdwire`` package.

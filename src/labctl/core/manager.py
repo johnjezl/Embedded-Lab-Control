@@ -6,6 +6,7 @@ Provides CRUD operations for SBCs, serial ports, network addresses, and power pl
 
 import json
 import logging
+import math
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -341,8 +342,9 @@ class ResourceManager:
 
         if power_cycle_delay_seconds is not None:
             updates.append("power_cycle_delay_seconds = ?")
-            # A negative sentinel clears the per-SBC override.
-            if power_cycle_delay_seconds < 0:
+            # A negative sentinel clears the per-SBC override (-inf isn't one:
+            # it is refused with the other non-finite values).
+            if -math.inf < power_cycle_delay_seconds < 0:
                 params.append(None)
                 changes.append("cycle_delay=cleared")
             else:

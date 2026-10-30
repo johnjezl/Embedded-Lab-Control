@@ -1640,7 +1640,7 @@ class TestHostPathEnforcementInTools:
             ctrl.update_files.assert_called_once()
         else:
             assert result.startswith("Error: could not power off 'test-sbc-1'")
-            assert "nothing was deployed" in result
+            assert "nothing was written to the card" in result
             assert events == ["off"]
             ctrl.update_files.assert_not_called()
 

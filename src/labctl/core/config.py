@@ -154,7 +154,7 @@ def _safety_flag(section: dict, key: str, default: bool = True) -> bool:
         return default
     if isinstance(value, bool):
         return value
-    logger.warning(
+    _warn_once(
         "Config: %s must be true or false, got %r; keeping %s", key, value, default
     )
     return default

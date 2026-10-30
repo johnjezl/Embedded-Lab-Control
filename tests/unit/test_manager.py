@@ -153,7 +153,9 @@ class TestSBCOperations:
 
         assert cleared.power_cycle_delay_seconds is None
 
-    @pytest.mark.parametrize("bad", [86400.5, 1e9, float("nan"), float("inf")])
+    @pytest.mark.parametrize(
+        "bad", [86400.5, 1e9, float("nan"), float("inf"), float("-inf")]
+    )
     def test_update_sbc_refuses_a_cycle_delay_no_power_cycle_accepts(
         self, manager, bad
     ):

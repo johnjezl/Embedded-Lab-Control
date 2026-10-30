@@ -12,7 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `root:dialout 0660`. They were world-writable (`0666`), so any local
   user could open a console or drive a relay. The labctl services are in
   `dialout` and ser2net runs as root; a user who drives relays from the
-  CLI must now be in `dialout`. Installed rules change on the next
+  CLI must now be in `dialout` (`labctl serial udev --install` says so
+  when the user isn't). Installed rules change on the next
   `labctl serial udev --install --reload`.
 - `install-services.sh` and `update.sh` make the service copy of the config
   (`/var/lib/labctl/.config/labctl/config.yaml`, which holds the same API
@@ -104,19 +105,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   follow-up read doesn't misjudge the mux position.
 
 ### Fixed
-- `boot-test` (CLI and MCP) with an image no longer switches the SD card
-  to the host while the board may be running (risking bus contention and
-  a corrupted card): it powers the board off first, and if the board
-  can't be switched off it deploys nothing and says so. `sdwire flash`,
-  `sdwire update` and `sdwire host` already guarded this.
+- The SD card is no longer switched to the host while the board may be
+  running (bus contention can corrupt the card). `boot-test` with an image
+  (CLI and MCP) didn't power the board off at all; `sdwire flash` and
+  `sdwire update` (CLI and MCP) powered it off on a best-effort basis and
+  carried on when that failed. All of them now refuse, writing nothing,
+  when the board can't be switched off. A `boot-test` deploy that fails
+  once the board is off hands the card back to the board and says the
+  board was left off (it used to be a traceback for errors other than
+  RuntimeError).
 - `mcp.allow_admin_actuator_ops` turns on only for a YAML boolean `true`.
   It was read with `bool()`, so a quoted `"false"` (or any other string)
   enabled `actuator_add`/`actuator_remove`/`actuator_set` over MCP; any
   non-boolean value now leaves them off, with a warning.
 - `labctl edit --cycle-delay` refuses a delay over 86400 seconds, NaN or
-  infinity (nothing is written). The stored delay is the default and the
-  floor of `power cycle`, so such a value made every later cycle of the
-  board fail, with no `--delay` able to get round it.
+  infinity (nothing is written; `-inf` no longer counts as "clear"). The
+  stored delay is the default and the floor of `power cycle`, so such a
+  value made every later cycle of the board fail, with no `--delay` able
+  to get round it; `power cycle` now says how to clear one stored
+  earlier.
 
 - `pre_power` relay bindings (e.g. a `recovery_mode` strap) are now set
   before power-on on every path, not just CLI `power on`/`power cycle` and
