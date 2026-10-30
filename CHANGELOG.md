@@ -16,12 +16,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   4000. With `--install` each such port is assigned one and saved, as
   `port assign` without `-t` would (one above the highest in use, at
   least `serial.base_tcp_port`; refused past 65535), and the command
-  says which. A port is skipped (left out of the config, named, with a
-  pointer to `port assign --override-claim`) when `port assign` would
-  refuse it: another user has claimed its board, or a board sharing its
-  console device. A port whose assignment fails is skipped and reported
-  too; the config is still written, and the command exits 1. Without `--install` nothing is saved: those ports are left
-  out of the output and the number each would get is shown (stderr).
+  says which, with `port assign`'s claim checks (one shared helper). If
+  any such port is on a board another user has claimed, or one sharing
+  a claimed board's console device, `--install` refuses and saves and
+  writes nothing (leaving the port out would change that board's
+  console), listing them; `--override-claim` (new; recorded in the
+  activity log) assigns them anyway. Claimed boards whose ports already
+  have a TCP port are written as before. A port whose save fails is left
+  out and reported; the config is still written and the command exits 1.
+  Without `--install` nothing is saved: those ports are left out of the
+  output and the number each would get is shown (stderr).
 - `ser2net generate --install` writes `ser2net.config_file` (default
   `/etc/ser2net.yaml`, unchanged); it always wrote `/etc/ser2net.yaml`.
   The write is atomic when labctl can create files in the directory (a
@@ -29,7 +33,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   renamed over it), and otherwise rewritten in place (e.g. a labctl group
   member, who can write `/etc/ser2net.yaml` but not `/etc`); a symlink on
   the path or a hard-linked file is refused, since it may run as root. The
-  permission-denied message names the configured path.
+  permission-denied message names the configured path; when the file
+  doesn't exist yet it says to create it with `sudo labctl ser2net
+  generate --install` (and, for `/etc/ser2net.yaml`, then rerun
+  `install-services.sh` or `update.sh` to make it group-writable).
   `install-services.sh`, and now `update.sh` (for a file created after the
   install), make only `/etc/ser2net.yaml` group-writable (`root:labctl
   664`; a symlink there is left alone).
@@ -38,8 +45,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   Each board's newest entry per status, and the one in effect at the
   cutoff, are always kept, so a board stable for longer than the
   retention keeps its uptime. Schema v12 indexes `status_log(logged_at)`.
-  An hourly run is two cheap lookups (rows past the cutoff, newest row)
-  and prunes only when either changed since the monitor's last prune.
+  An hourly run is cheap lookups (newest row, rows past the cutoff, all
+  rows) and prunes only when one changed since the monitor's last prune.
+  Pruning deletes in transactions of at most 5,000 rows, so the first
+  prune of a long history doesn't hold the write lock for long.
 - Uptime (`GET /api/sbcs/<name>/uptime`): the 24-hour figure starts from
   the status in effect 24 hours ago, so a board up the whole day shows
   100% (it showed 0% with no status change in the window), and times are

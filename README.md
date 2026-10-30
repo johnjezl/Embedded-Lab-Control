@@ -249,7 +249,7 @@ the point here is to allow SDWire workflows without granting broader root access
 | `labctl serial repair [--apply]` | Re-link port assignments to registered adapters (dry run by default) |
 | `labctl serial capture <port> --timeout N --until <pattern>` | Capture serial output |
 | `labctl serial send <port> <data> --capture N` | Send data (plus CRLF unless `--raw`) to a serial port |
-| `labctl ser2net generate [--install]` | Generate the ser2net config from the database. `--install` first assigns and saves a TCP port for any port without one, then writes `ser2net.config_file` (default `/etc/ser2net.yaml`): atomically when labctl can create files in its directory (e.g. with sudo), otherwise rewritten in place; without it such ports are left out and the port each would get is shown |
+| `labctl ser2net generate [--install] [--override-claim]` | Generate the ser2net config from the database. Without `--install`, ports with no TCP port are left out and the port each would get is shown; nothing is saved. `--install` first assigns and saves a TCP port for each such port (with `port assign`'s claim checks), then writes `ser2net.config_file` (default `/etc/ser2net.yaml`): atomically when labctl can create files in its directory (e.g. with sudo), otherwise rewritten in place. It refuses, saving and writing nothing, if such a port's board (or one sharing its console device) is claimed by another user, unless `--override-claim`; a port whose save fails is left out of the config and the command exits 1 |
 | `labctl ser2net reload` | Restart the ser2net service |
 
 ### Boot Testing
