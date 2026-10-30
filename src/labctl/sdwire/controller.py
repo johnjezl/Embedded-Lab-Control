@@ -68,6 +68,10 @@ class SDWireController:
             "Is it connected?"
         )
 
+    def ensure_present(self) -> None:
+        """Raise RuntimeError unless the SDWire is connected."""
+        self._get_device()
+
     def switch_to_dut(self) -> None:
         """Switch SD card to the DUT (target SBC boots from it)."""
         logger.debug("Switching SDWire %s to DUT", self.serial_number)
