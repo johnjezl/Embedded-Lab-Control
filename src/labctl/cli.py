@@ -32,6 +32,7 @@ from labctl.core.models import (
 from labctl.power import PowerController, PowerState
 from labctl.serial.ser2net import (
     Ser2NetPort,
+    check_ser2net_config_writable,
     generate_ser2net_config,
     write_ser2net_config,
 )
@@ -3394,6 +3395,62 @@ def ser2net_group() -> None:
     pass
 
 
+def _ser2net_write_hint(path: str) -> str:
+    """What to do about a permission error writing the ser2net config."""
+    etc = path == "/etc/ser2net.yaml"
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        if os.path.isdir(os.path.dirname(path)):
+            # Really absent, in a directory we reach but can't add to.
+            return (
+                "it doesn't exist yet and you can't create files in its "
+                "directory: create it with `sudo labctl ser2net generate "
+                "--install`, then "
+                + (
+                    "rerun install-services.sh or update.sh to make it "
+                    "group-writable"
+                    if etc
+                    else "make it writable for you"
+                )
+            )
+        return "its directory couldn't be reached: fix access to it, or use sudo"
+    except OSError:
+        # EACCES on the way: whether it exists can't be told.
+        return "the path couldn't be reached: fix access to it, or use sudo"
+    if etc:
+        return (
+            "join the labctl group, which install-services.sh and update.sh "
+            "make it writable by (rerun one if the file was created after the "
+            "install), or use sudo"
+        )
+    return "make it writable for you, or use sudo"
+
+
+def _ser2net_install_failed(path: str, e: Exception, saved: list[str]) -> None:
+    """Report a failure to write the ser2net config (and any TCP ports
+    already saved), then exit 1."""
+    if isinstance(e, PermissionError):
+        click.echo(
+            f"Error: permission denied writing {path}; {_ser2net_write_hint(path)}.",
+            err=True,
+        )
+    else:
+        why = getattr(e, "strerror", None) or e
+        click.echo(f"Error: not writing {path}: {why}", err=True)
+    _report_saved_ports(saved)
+    sys.exit(1)
+
+
+def _report_saved_ports(saved: list[str]) -> None:
+    if saved:
+        click.echo(
+            "These TCP ports were already saved (kept in the database): "
+            + ", ".join(saved),
+            err=True,
+        )
+
+
 @ser2net_group.command("generate")
 @override_claim_option
 @click.option(
@@ -3457,6 +3514,7 @@ def ser2net_generate_cmd(
     # isn't saved ends up in a config.
     missing = [p for p in db_ports if not p.tcp_port]
     failed = 0  # ports left out after a failed save
+    saved_ports: list[str] = []  # "<port> -> <tcp port>", for error reports
     if install:
         # Saving a TCP port changes the board's configuration: the checks
         # `port assign` makes. A claimed board's port can't just be left
@@ -3474,6 +3532,13 @@ def ser2net_generate_cmd(
                 serial_device_id=db_port.serial_device_id,
                 probe=probe,
             )
+
+        # Nothing is saved unless the config can then be written.
+        ser2net_path = str(config.ser2net.config_file)
+        try:
+            check_ser2net_config_writable(ser2net_path)
+        except (OSError, ValueError) as e:
+            _ser2net_install_failed(ser2net_path, e, [])
 
         blocked = [(p, c) for p in missing if (c := check(p, probe=True))]
         if blocked and not override_claim:
@@ -3499,8 +3564,14 @@ def ser2net_generate_cmd(
             )
             sys.exit(1)
         for db_port in missing:
-            if any(db_port is p for p, _ in blocked):
-                check(db_port, probe=False)  # announces and records the override
+            # The full `port assign` check at save time too: a claim taken
+            # since the probe above still refuses (and an override is
+            # announced and recorded). A refusal stops here.
+            try:
+                check(db_port, probe=False)
+            except SystemExit:
+                _report_saved_ports(saved_ports)
+                raise
             try:
                 saved = manager.assign_serial_port(
                     sbc_id=db_port.sbc_id,
@@ -3517,6 +3588,7 @@ def ser2net_generate_cmd(
                 )
                 failed += 1
                 continue
+            saved_ports.append(f"{label(db_port)} -> {saved.tcp_port}")
             click.echo(f"Assigned TCP port {saved.tcp_port} to {label(db_port)}")
         if missing:
             db_ports = manager.list_serial_ports()
@@ -3555,38 +3627,8 @@ def ser2net_generate_cmd(
         ser2net_path = str(config.ser2net.config_file)
         try:
             write_ser2net_config(ser2net_path, config_content)
-        except PermissionError:
-            etc = ser2net_path == "/etc/ser2net.yaml"
-            if not os.path.lexists(ser2net_path):
-                # Only a new file needs its directory writable.
-                hint = (
-                    "it doesn't exist yet and you can't create files in its "
-                    "directory: create it with `sudo labctl ser2net generate "
-                    "--install`, then "
-                    + (
-                        "rerun install-services.sh or update.sh to make it "
-                        "group-writable"
-                        if etc
-                        else "make it writable for you"
-                    )
-                )
-            elif etc:
-                hint = (
-                    "join the labctl group, which install-services.sh and "
-                    "update.sh make it writable by (rerun one if the file was "
-                    "created after the install), or use sudo"
-                )
-            else:
-                hint = "make it writable for you, or use sudo"
-            click.echo(
-                f"Error: permission denied writing {ser2net_path}; {hint}.",
-                err=True,
-            )
-            sys.exit(1)
         except (OSError, ValueError) as e:
-            why = getattr(e, "strerror", None) or e
-            click.echo(f"Error: not writing {ser2net_path}: {why}", err=True)
-            sys.exit(1)
+            _ser2net_install_failed(ser2net_path, e, saved_ports)
         click.echo(f"Installed ser2net config to {ser2net_path}")
         click.echo("Run 'labctl ser2net reload' to apply changes")
         if failed:

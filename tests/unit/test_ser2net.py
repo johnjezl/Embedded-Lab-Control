@@ -305,3 +305,60 @@ class TestWriteSer2netConfig:
 
         with pytest.raises(ValueError):
             write_ser2net_config("ser2net.yaml", "x\n")
+
+
+class TestCheckSer2netConfigWritable:
+    """The pre-check `ser2net generate --install` runs before saving."""
+
+    def test_writable_dir_ok(self, tmp_path):
+        from labctl.serial.ser2net import check_ser2net_config_writable
+
+        check_ser2net_config_writable(str(tmp_path / "ser2net.yaml"))
+        assert not (tmp_path / "ser2net.yaml").exists()  # nothing created
+
+    def test_unwritable_dir_missing_file_refused(self, tmp_path):
+        from labctl.serial.ser2net import check_ser2net_config_writable
+
+        etc = tmp_path / "etc"
+        etc.mkdir()
+        etc.chmod(0o555)
+        try:
+            with pytest.raises(PermissionError):
+                check_ser2net_config_writable(str(etc / "ser2net.yaml"))
+        finally:
+            etc.chmod(0o755)
+
+    def test_unwritable_dir_writable_file_ok(self, tmp_path):
+        from labctl.serial.ser2net import check_ser2net_config_writable
+
+        etc = tmp_path / "etc"
+        etc.mkdir()
+        (etc / "ser2net.yaml").write_text("old\n")
+        etc.chmod(0o555)
+        try:
+            check_ser2net_config_writable(str(etc / "ser2net.yaml"))
+        finally:
+            etc.chmod(0o755)
+        assert (etc / "ser2net.yaml").read_text() == "old\n"
+
+    def test_unwritable_dir_readonly_file_refused(self, tmp_path):
+        from labctl.serial.ser2net import check_ser2net_config_writable
+
+        etc = tmp_path / "etc"
+        etc.mkdir()
+        (etc / "ser2net.yaml").write_text("old\n")
+        (etc / "ser2net.yaml").chmod(0o444)
+        etc.chmod(0o555)
+        try:
+            with pytest.raises(PermissionError):
+                check_ser2net_config_writable(str(etc / "ser2net.yaml"))
+        finally:
+            etc.chmod(0o755)
+
+    def test_symlink_refused(self, tmp_path):
+        from labctl.serial.ser2net import check_ser2net_config_writable
+
+        (tmp_path / "victim").write_text("x")
+        (tmp_path / "ser2net.yaml").symlink_to(tmp_path / "victim")
+        with pytest.raises(OSError):
+            check_ser2net_config_writable(str(tmp_path / "ser2net.yaml"))
