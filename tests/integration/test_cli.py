@@ -2227,8 +2227,45 @@ class TestSer2netGenerate:
         )
         assert result.exit_code == 1
         assert "No TCP port left to auto-assign" in result.output
-        assert not target.exists()
+        assert "skipped b console (/dev/lab/b): no TCP port saved" in result.output
+        assert "2 port(s) skipped after an error" in result.output
+        # The config is still written, with the ports that have one.
+        text = target.read_text()
+        assert "localhost,65535\n" in text
+        assert "/dev/lab/b" not in text
         assert self._tcp_ports(manager)["/dev/lab/b"] is None
+
+    def test_install_error_on_one_port_keeps_going(self, runner, tmp_path):
+        """A failure saving one port skips it (reported like a claimed
+        port); the others are saved and written, and the exit is 1."""
+        from labctl.core.manager import ResourceManager
+
+        cfg, target, manager = self._lab(tmp_path, base=5100)
+        self._drop_tcp_ports(manager)
+        real = ResourceManager.assign_serial_port
+
+        def flaky(self, *args, **kwargs):
+            if kwargs.get("device_path") == "/dev/lab/b":
+                raise ValueError("disk on fire")
+            return real(self, *args, **kwargs)
+
+        with patch.object(ResourceManager, "assign_serial_port", flaky):
+            result = runner.invoke(
+                main, ["-c", str(cfg), "ser2net", "generate", "--install"]
+            )
+        assert result.exit_code == 1
+        assert (
+            "skipped b console (/dev/lab/b): no TCP port saved: disk on fire"
+        ) in result.output
+        assert "Assigned TCP port 5101 to c console (/dev/lab/c)" in result.output
+        assert "1 port(s) skipped after an error" in result.output
+        assert self._tcp_ports(manager) == {
+            "/dev/lab/a": 5100,
+            "/dev/lab/b": None,
+            "/dev/lab/c": 5101,
+        }
+        text = target.read_text()
+        assert "localhost,5101\n" in text and "/dev/lab/b" not in text
 
     def test_permission_message_names_configured_path(self, runner, tmp_path):
         cfg, target, _ = self._lab(tmp_path)

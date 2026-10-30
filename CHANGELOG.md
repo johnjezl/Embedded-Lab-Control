@@ -19,7 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   says which. A port is skipped (left out of the config, named, with a
   pointer to `port assign --override-claim`) when `port assign` would
   refuse it: another user has claimed its board, or a board sharing its
-  console device. Without `--install` nothing is saved: those ports are left
+  console device. A port whose assignment fails is skipped and reported
+  too; the config is still written, and the command exits 1. Without `--install` nothing is saved: those ports are left
   out of the output and the number each would get is shown (stderr).
 - `ser2net generate --install` writes `ser2net.config_file` (default
   `/etc/ser2net.yaml`, unchanged); it always wrote `/etc/ser2net.yaml`.
@@ -36,8 +37,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   deletes older entries at startup and then hourly; `0` keeps all of it.
   Each board's newest entry per status, and the one in effect at the
   cutoff, are always kept, so a board stable for longer than the
-  retention keeps its uptime. Schema v12 indexes `status_log(logged_at)`;
-  an hourly run with nothing past the cutoff is one indexed lookup.
+  retention keeps its uptime. Schema v12 indexes `status_log(logged_at)`.
+  An hourly run is two cheap lookups (rows past the cutoff, newest row)
+  and prunes only when either changed since the monitor's last prune.
 - Uptime (`GET /api/sbcs/<name>/uptime`): the 24-hour figure starts from
   the status in effect 24 hours ago, so a board up the whole day shows
   100% (it showed 0% with no status change in the window), and times are

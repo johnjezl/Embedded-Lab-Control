@@ -1226,7 +1226,7 @@ class TestStatusHistoryPruningKeepsUptime:
         assert result["uptime_24h_percent"] == 0.0
 
     def test_nothing_due_skips_the_delete(self, manager):
-        """Only the cheap EXISTS check runs when nothing is past the cutoff."""
+        """Only the cheap state check runs when nothing is past the cutoff."""
         from unittest.mock import patch
 
         sbc = manager.create_sbc(name="fresh")
@@ -1237,6 +1237,35 @@ class TestStatusHistoryPruningKeepsUptime:
             assert manager.cleanup_old_status_logs(30) == 0
         modify.assert_not_called()
 
+    def test_second_prune_skipped_when_nothing_changed(self, manager):
+        """The kept rows are past the cutoff, so "anything old?" stays true
+        after the first prune; the DELETE still only runs again when a row
+        could have become deletable."""
+        from unittest.mock import patch
+
+        sbc = manager.create_sbc(name="steady")
+        self._row(manager, sbc.id, "offline", 90)
+        self._row(manager, sbc.id, "online", 80, 5)
+        self._row(manager, sbc.id, "online", 80)
+        assert manager.cleanup_old_status_logs(30) == 1
+
+        def delete_calls(run):
+            with patch.object(
+                manager.db, "execute_modify", wraps=manager.db.execute_modify
+            ) as modify:
+                deleted = run()
+            return deleted, modify.call_count
+
+        # Nothing new: skipped, though kept rows are past the cutoff.
+        assert delete_calls(lambda: manager.cleanup_old_status_logs(30)) == (0, 0)
+        # A new row may make a kept one deletable: the DELETE runs, and the
+        # old offline row (no longer its status's newest, nor the row in
+        # effect at the cutoff) goes.
+        manager.log_status(sbc.id, Status.OFFLINE, "again")
+        assert delete_calls(lambda: manager.cleanup_old_status_logs(30)) == (1, 1)
+        # A different retention is a different question: it runs.
+        assert delete_calls(lambda: manager.cleanup_old_status_logs(60))[1] == 1
+
     def test_due_check_uses_index(self, manager):
         plan = " ".join(
             str(tuple(r))
@@ -1246,6 +1275,37 @@ class TestStatusHistoryPruningKeepsUptime:
             )
         )
         assert "idx_status_log_logged_at" in plan
+
+    def test_same_second_transitions_decided_by_id(self, manager):
+        """CURRENT_TIMESTAMP has one-second resolution: an online and an
+        offline row in the same second are ordered by id (logging order)."""
+        up = manager.create_sbc(name="came-up")
+        manager.update_sbc(up.id, status=Status.ONLINE)
+        manager.db.execute_insert(
+            "INSERT INTO status_log (sbc_id, status, logged_at)"
+            " VALUES (?, 'offline', datetime('now', '-1 hours'))",
+            (up.id,),
+        )
+        manager.db.execute_insert(
+            "INSERT INTO status_log (sbc_id, status, logged_at)"
+            " VALUES (?, 'online', datetime('now', '-1 hours'))",
+            (up.id,),
+        )
+        assert manager.get_uptime(up.id)["current_uptime_seconds"] >= 3600 - 5
+
+        down = manager.create_sbc(name="went-down")
+        manager.update_sbc(down.id, status=Status.ONLINE)
+        manager.db.execute_insert(
+            "INSERT INTO status_log (sbc_id, status, logged_at)"
+            " VALUES (?, 'online', datetime('now', '-1 hours'))",
+            (down.id,),
+        )
+        manager.db.execute_insert(
+            "INSERT INTO status_log (sbc_id, status, logged_at)"
+            " VALUES (?, 'offline', datetime('now', '-1 hours'))",
+            (down.id,),
+        )
+        assert manager.get_uptime(down.id)["current_uptime_seconds"] == 0
 
     def test_other_boards_unaffected(self, manager):
         a = manager.create_sbc(name="a")

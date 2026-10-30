@@ -96,6 +96,9 @@ class ResourceManager:
         """
         self.db = db
         self.base_tcp_port = base_tcp_port
+        # cleanup_old_status_logs: what status_log looked like after the
+        # last prune, so an hourly call with nothing new to prune is cheap.
+        self._prune_state: Optional[tuple] = None
 
     # --- SBC Operations ---
 
@@ -1323,19 +1326,21 @@ class ResourceManager:
             Number of deleted entries
         """
         cutoff = f"-{int(retention_days)} days"
-        # The monitor calls this hourly: a cheap check on the logged_at
-        # index first, so the window-function DELETE below only runs when
-        # something is past the cutoff.
-        due = self.db.execute_one(
-            "SELECT EXISTS (SELECT 1 FROM status_log"
-            " WHERE logged_at < datetime('now', ?)) AS due",
-            (cutoff,),
-        )
-        if not due or not due["due"]:
+        # The monitor calls this hourly, and the rows always kept are past
+        # the cutoff, so "anything past the cutoff?" is nearly always yes.
+        # Instead: the number of rows past the cutoff (an index count) and
+        # the newest row id. If neither changed since this manager's last
+        # prune with the same retention, nothing can have become
+        # deletable: no row has aged past the cutoff, and no new row has
+        # replaced a kept one as its board's newest for its status. Then
+        # the window-function DELETE below is skipped.
+        state = self._status_log_state(cutoff)
+        if state[1] == 0 or (retention_days, state) == self._prune_state:
+            self._prune_state = (retention_days, state)
             return 0
         # A plain DELETE (not WITH ... DELETE): sqlite3 reports rowcount
         # only for statements that start with DELETE.
-        return self.db.execute_modify(
+        deleted = self.db.execute_modify(
             """
             DELETE FROM status_log
             WHERE logged_at < datetime('now', ?)
@@ -1359,6 +1364,18 @@ class ResourceManager:
             """,
             (cutoff, cutoff),
         )
+        self._prune_state = (retention_days, self._status_log_state(cutoff))
+        return deleted
+
+    def _status_log_state(self, cutoff: str) -> tuple:
+        """(newest id, number of rows older than ``cutoff``)."""
+        row = self.db.execute_one(
+            "SELECT (SELECT MAX(id) FROM status_log) AS top,"
+            " (SELECT COUNT(*) FROM status_log"
+            "  WHERE logged_at < datetime('now', ?)) AS old",
+            (cutoff,),
+        )
+        return (row["top"], row["old"])
 
     def get_uptime(self, sbc_id: int) -> Optional[dict]:
         """
@@ -1383,9 +1400,9 @@ class ResourceManager:
         # Get last online transition
         last_online_row = self.db.execute_one(
             """
-            SELECT logged_at FROM status_log
+            SELECT id, logged_at FROM status_log
             WHERE sbc_id = ? AND status = 'online'
-            ORDER BY logged_at DESC
+            ORDER BY logged_at DESC, id DESC
             LIMIT 1
             """,
             (sbc_id,),
@@ -1394,9 +1411,9 @@ class ResourceManager:
         # Get last offline transition
         last_offline_row = self.db.execute_one(
             """
-            SELECT logged_at FROM status_log
+            SELECT id, logged_at FROM status_log
             WHERE sbc_id = ? AND status IN ('offline', 'error')
-            ORDER BY logged_at DESC
+            ORDER BY logged_at DESC, id DESC
             LIMIT 1
             """,
             (sbc_id,),
@@ -1424,7 +1441,13 @@ class ResourceManager:
             # Check if we went offline after going online
             if last_offline_row:
                 last_offline = parse(last_offline_row["logged_at"])
-                if last_offline > last_online:
+                # Same second (CURRENT_TIMESTAMP's resolution): the row
+                # logged later, i.e. with the higher id, is the newer one.
+                offline_is_newer = (last_offline, last_offline_row["id"]) > (
+                    last_online,
+                    last_online_row["id"],
+                )
+                if offline_is_newer:
                     # We're currently offline
                     result["current_uptime_seconds"] = 0
                 else:

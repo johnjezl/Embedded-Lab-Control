@@ -3386,8 +3386,10 @@ def ser2net_group() -> None:
     help=(
         "Write the config to ser2net.config_file (default /etc/ser2net.yaml): "
         "atomically when labctl can create files in its directory, otherwise "
-        "rewritten in place; refuses a symlink or hard link there. Saves a "
-        "TCP port for any port that has none first."
+        "rewritten in place; refuses a symlink or hard link there. First "
+        "saves a TCP port for any port that has none, except on a board "
+        "another user has claimed or one sharing a claimed board's device "
+        "(those ports are skipped and left out)."
     ),
 )
 @click.pass_context
@@ -3401,8 +3403,10 @@ def ser2net_generate_cmd(
     highest in use, at least serial.base_tcp_port), unless `port assign`
     would refuse it (another user's claim on its board or on a board
     sharing its console device): that port is skipped (left out of the
-    config) and named. Without --install the port is left out of the config and the
-    number it would get is shown.
+    config) and named. A port whose assignment fails is skipped the same
+    way; the config is still written, and the command then exits 1.
+    Without --install the port is left out of the config and the number it
+    would get is shown.
     """
     config: Config = ctx.obj["config"]
     manager = _get_manager(ctx)
@@ -3427,6 +3431,7 @@ def ser2net_generate_cmd(
     # assign` with --install; otherwise only reported, so no number that
     # isn't saved ends up in a config.
     missing = [p for p in db_ports if not p.tcp_port]
+    failed = 0  # ports skipped for an error rather than a claim
     if install:
         for db_port in missing:
             # Saving a TCP port changes the board's configuration, so the
@@ -3463,9 +3468,12 @@ def ser2net_generate_cmd(
                     alias=db_port.alias,
                     serial_device_id=db_port.serial_device_id,
                 )
-            except ValueError as e:
-                click.echo(f"Error: {label(db_port)}: {e}", err=True)
-                sys.exit(1)
+            except Exception as e:  # noqa: BLE001 - one port, keep going
+                click.echo(
+                    f"skipped {label(db_port)}: no TCP port saved: {e}", err=True
+                )
+                failed += 1
+                continue
             click.echo(f"Assigned TCP port {saved.tcp_port} to {label(db_port)}")
         if missing:
             db_ports = manager.list_serial_ports()
@@ -3523,6 +3531,13 @@ def ser2net_generate_cmd(
             sys.exit(1)
         click.echo(f"Installed ser2net config to {ser2net_path}")
         click.echo("Run 'labctl ser2net reload' to apply changes")
+        if failed:
+            click.echo(
+                f"Error: {failed} port(s) skipped after an error (above); the "
+                "config was written without them.",
+                err=True,
+            )
+            sys.exit(1)
     elif output:
         output.write_text(config_content)
         click.echo(f"Wrote ser2net config to {output}")
