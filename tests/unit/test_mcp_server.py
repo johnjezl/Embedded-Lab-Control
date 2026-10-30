@@ -5512,3 +5512,43 @@ class TestMcpRound3:
             "'test-sbc-2' (on the same outlet))"
         )
         assert fn.call_args.kwargs["delay_s"].seconds == 12.0
+
+
+class TestMcpPowerCycleNamesOutletSource:
+    """The result names the board an outlet-wide minimum came from even
+    when no delay was requested (#41 review 5)."""
+
+    def test_unrequested_delay_from_a_sharer(self, mock_manager):
+        from labctl.core.models import PlugType
+        from labctl.mcp_server import power_cycle
+
+        other = mock_manager.get_sbc_by_name("test-sbc-2")
+        mock_manager.assign_power_plug(other.id, PlugType.TASMOTA, "192.168.1.200")
+        mock_manager.db.execute_modify(
+            "UPDATE sbcs SET power_cycle_delay_seconds = 12 WHERE name = 'test-sbc-2'"
+        )
+        ctrl = MagicMock()
+        ctrl.power_off.return_value = True
+        ctrl.power_on.return_value = True
+        with (
+            patch("labctl.power.base.PowerController.from_plug", return_value=ctrl),
+            patch("labctl.actuators.runtime.time.sleep"),
+        ):
+            result = power_cycle(sbc_name="test-sbc-1")
+        assert result.startswith(
+            "Power cycled: test-sbc-1 (delay: 12.0s); the minimum of 'test-sbc-2' "
+            "(on the same outlet)"
+        )
+
+    def test_own_delay_not_annotated(self, mock_manager):
+        from labctl.mcp_server import power_cycle
+
+        ctrl = MagicMock()
+        ctrl.power_off.return_value = True
+        ctrl.power_on.return_value = True
+        with (
+            patch("labctl.power.base.PowerController.from_plug", return_value=ctrl),
+            patch("labctl.actuators.runtime.time.sleep"),
+        ):
+            result = power_cycle(sbc_name="test-sbc-1")
+        assert result.splitlines()[0] == "Power cycled: test-sbc-1 (delay: 3.0s)"

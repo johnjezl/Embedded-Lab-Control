@@ -1316,6 +1316,9 @@ def power_cycle(sbc_name: str, delay: Optional[float] = None) -> str:
             note = effective.raised_note()
             if note:
                 result += f"; {note}, so it was raised"
+            elif effective.from_other_board(sbc_name):
+                # A board sharing the outlet sets the wait: say which.
+                result += f"; the {effective.source}"
             advisory = _claim_advisory(manager, sbc_name)
             return f"{result}\n\n{advisory}" if advisory else result
         return f"Failed to power cycle {sbc_name}"

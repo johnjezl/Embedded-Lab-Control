@@ -339,7 +339,7 @@ class TestResolveCycleDelay:
     def test_no_request_no_override_uses_default(self):
         from labctl.cli import DEFAULT_POWER_CYCLE_DELAY_SECONDS, _resolve_cycle_delay
 
-        sbc = SimpleNamespace(power_cycle_delay_seconds=None)
+        sbc = SimpleNamespace(name="sbc", power_cycle_delay_seconds=None)
         delay, warn = _resolve_cycle_delay(MagicMock(), sbc, None)
         assert delay.seconds == DEFAULT_POWER_CYCLE_DELAY_SECONDS
         assert warn is None
@@ -347,7 +347,7 @@ class TestResolveCycleDelay:
     def test_no_request_uses_sbc_value(self):
         from labctl.cli import _resolve_cycle_delay
 
-        sbc = SimpleNamespace(power_cycle_delay_seconds=5.0)
+        sbc = SimpleNamespace(name="sbc", power_cycle_delay_seconds=5.0)
         delay, warn = _resolve_cycle_delay(MagicMock(), sbc, None)
         assert delay.seconds == 5.0
         assert warn is None
@@ -355,7 +355,7 @@ class TestResolveCycleDelay:
     def test_request_below_default_floor_warns(self):
         from labctl.cli import DEFAULT_POWER_CYCLE_DELAY_SECONDS, _resolve_cycle_delay
 
-        sbc = SimpleNamespace(power_cycle_delay_seconds=None)
+        sbc = SimpleNamespace(name="sbc", power_cycle_delay_seconds=None)
         delay, warn = _resolve_cycle_delay(MagicMock(), sbc, 1.0)
         assert delay.seconds == DEFAULT_POWER_CYCLE_DELAY_SECONDS
         assert warn is not None
@@ -364,7 +364,7 @@ class TestResolveCycleDelay:
     def test_request_below_sbc_floor_warns(self):
         from labctl.cli import _resolve_cycle_delay
 
-        sbc = SimpleNamespace(power_cycle_delay_seconds=5.0)
+        sbc = SimpleNamespace(name="sbc", power_cycle_delay_seconds=5.0)
         delay, warn = _resolve_cycle_delay(MagicMock(), sbc, 2.0)
         assert delay.seconds == 5.0
         assert warn is not None
@@ -373,7 +373,7 @@ class TestResolveCycleDelay:
     def test_request_above_floor_passes_through(self):
         from labctl.cli import _resolve_cycle_delay
 
-        sbc = SimpleNamespace(power_cycle_delay_seconds=3.0)
+        sbc = SimpleNamespace(name="sbc", power_cycle_delay_seconds=3.0)
         delay, warn = _resolve_cycle_delay(MagicMock(), sbc, 10.0)
         assert delay.seconds == 10.0
         assert warn is None

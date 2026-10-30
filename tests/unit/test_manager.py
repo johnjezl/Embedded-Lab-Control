@@ -2078,3 +2078,31 @@ class TestOutletRule:
             "b",
             "whole",
         ]
+
+
+class TestOneLinkParser:
+    """_lab_link_name and _resolve_serial_device_id parse paths the same
+    way (#41 review 5)."""
+
+    @pytest.mark.parametrize(
+        "path",
+        ["/dev/lab/port-x", "/dev//lab/port-x", "//dev/lab/./port-x", "port-x"],
+    )
+    def test_same_device_for_every_spelling(self, manager, path):
+        device = manager.create_serial_device("port-x", "1-1.1")
+        assert manager._lab_link_name(path) == "port-x"
+        assert manager._resolve_serial_device_id(path) == device.id
+
+    @pytest.mark.parametrize("path", ["/dev/ttyUSB0", "/dev/lab/sub/port-x", ""])
+    def test_other_paths_resolve_to_nothing(self, manager, path):
+        manager.create_serial_device("port-x", "1-1.1")
+        assert manager._resolve_serial_device_id(path) is None
+
+    def test_plug_prefilter_matches_case_and_spaces(self, manager):
+        a = manager.create_sbc(name="a")
+        b = manager.create_sbc(name="b")
+        manager.assign_power_plug(a.id, PlugType.TASMOTA, "Plug-1.Local", 1)
+        manager.assign_power_plug(b.id, PlugType.KASA, "plug-1.local", 1)
+        assert manager.sbcs_sharing_hardware(plug=("tasmota", " plug-1.local ", 1)) == [
+            "a"
+        ]

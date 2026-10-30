@@ -1303,3 +1303,37 @@ class TestSudoIdentity:
         result = run("serial", "udev", "--install")
         assert result.exit_code == 0, result.output
         assert len(installed) == 1
+
+
+class TestEditCycleDelayClaims:
+    """A stored delay is the floor of every board on the outlet, so
+    `edit --cycle-delay` checks the outlet-mates' claims (#41 review 5)."""
+
+    def test_cycle_delay_on_a_claimed_boards_outlet_refused(self, lab):
+        run, manager, _ = lab
+        _share_plug(manager, "pi-b")  # pi-b shares claimed pi-a's outlet
+        result = run("edit", "pi-b", "--cycle-delay", "30")
+        assert result.exit_code == 1
+        assert "'pi-a' is claimed by 'agent-x'" in result.output
+        assert manager.get_sbc_by_name("pi-b").power_cycle_delay_seconds is None
+
+    def test_clearing_is_checked_too(self, lab):
+        run, manager, _ = lab
+        _share_plug(manager, "pi-b")
+        result = run("edit", "pi-b", "--cycle-delay", "-1")
+        assert result.exit_code == 1
+        assert "'pi-a' is claimed by 'agent-x'" in result.output
+
+    def test_override_sets_it_and_logs(self, lab):
+        run, manager, _ = lab
+        _share_plug(manager, "pi-b")
+        result = run("edit", "pi-b", "--cycle-delay", "30", "--override-claim")
+        assert result.exit_code == 0, result.output
+        assert manager.get_sbc_by_name("pi-b").power_cycle_delay_seconds == 30.0
+        assert len(_overrides(manager, "pi-a")) == 1
+
+    def test_other_edits_check_the_board_alone(self, lab):
+        run, manager, _ = lab
+        _share_plug(manager, "pi-b")
+        result = run("edit", "pi-b", "--description", "x")
+        assert result.exit_code == 0, result.output

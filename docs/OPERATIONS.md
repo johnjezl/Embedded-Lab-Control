@@ -137,6 +137,10 @@ registration, or a path resolving to the same device node), `serial udev
 --install` when the new rules remove or re-point a `/dev/lab/<name>` link
 a claimed board's port uses (every link, if the installed rules file can't
 be read), and `import` (checked for every board before anything changes).
+`edit` checks only the board itself, except `edit --cycle-delay`: a
+stored delay is the minimum of every board on the plug outlet, so setting
+or clearing it is also refused when a board sharing its hardware is
+claimed by someone else.
 As over MCP, a claim covers hardware shared with other boards: operating
 a board that shares a plug outlet, SDWire, console adapter or relay
 channel with a claimed board is refused, as are assigning that hardware
@@ -197,7 +201,7 @@ exactly like the commands they stand for.
 | `completion` | read |  |  |
 | `connect` | shared-resource |  | Interactive console; what you type reaches the board |
 | `console` | shared-resource |  | As `connect` |
-| `edit` | db-write |  |  |
+| `edit` | db-write |  | `--cycle-delay` also claim-checks boards sharing its hardware |
 | `enter-recovery` | destructive | yes | Power off, assert strap, power on |
 | `exit-recovery` | destructive | yes | Power cycle with the strap released |
 | `export` | read |  | Writes a file only with `-o` |
@@ -349,6 +353,9 @@ before `edit --cycle-delay` checked the range) is refused on every path
 before anything is switched or written; clear it with `labctl edit <name>
 --cycle-delay -1`. The web UI's power buttons follow the same
 outlet rules as REST (a cycle in progress refuses another cycle and
-on/off). A REST or web-UI cycle request returns only after the
+on/off). That guard covers REST and the web UI of one server process
+only: a power operation from the CLI, MCP, an `sdwire` reboot or
+`boot-test` isn't seen by it, nor refused by it (a lab-wide outlet lock is
+tracked in #38). A REST or web-UI cycle request returns only after the
 whole off-wait-on sequence, so behind a reverse proxy set its read timeout
 above the longest delay you store (plus a few seconds for the plug).

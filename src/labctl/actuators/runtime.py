@@ -767,12 +767,18 @@ class CycleDelay:
     :func:`board_cycle_delay` (or :func:`cycle_delay_floor`): ``seconds``,
     and ``source`` naming the floor it came from (``"SBC minimum"``,
     ``"default minimum"``, or ``"minimum of '<board>' (on the same
-    outlet)"``). ``requested`` is the caller's value (None: omitted), and
-    ``raised`` says it was below the floor."""
+    outlet)"``). ``board`` names the board whose minimum it is (None when
+    the requested value is used). ``requested`` is the caller's value
+    (None: omitted), and ``raised`` says it was below the floor."""
 
     seconds: float
     source: str
     requested: Optional[float] = None
+    board: Optional[str] = None
+
+    def from_other_board(self, sbc_name: str) -> bool:
+        """Whether the delay is another outlet board's minimum."""
+        return self.board is not None and self.board != sbc_name
 
     @property
     def raised(self) -> bool:
@@ -821,7 +827,7 @@ def cycle_delay_floor(manager, sbc) -> CycleDelay:
         else:
             source = f"{kind} of {board.name!r} (on the same outlet)"
         if best is None or floor > best.seconds:
-            best = CycleDelay(floor, source)
+            best = CycleDelay(floor, source, board=board.name)
     return best
 
 
@@ -840,7 +846,7 @@ def board_cycle_delay(manager, sbc, requested=None) -> CycleDelay:
         validate_cycle_delay(requested)
     floor = cycle_delay_floor(manager, sbc)
     if requested is None or float(requested) <= floor.seconds:
-        return CycleDelay(floor.seconds, floor.source, requested)
+        return CycleDelay(floor.seconds, floor.source, requested, floor.board)
     return CycleDelay(float(requested), "requested", requested)
 
 
