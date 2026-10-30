@@ -20,17 +20,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   out of the output and the number each would get is shown (stderr).
 - `ser2net generate --install` writes `ser2net.config_file` (default
   `/etc/ser2net.yaml`, unchanged); it always wrote `/etc/ser2net.yaml`.
-  The file is replaced atomically (a temporary file in the same
-  directory, given the old file's owner and mode, fsynced and renamed
-  over it); a symlink on the path or a hard-linked file is refused, since
-  it may run as root. A labctl group member, who can write
-  `/etc/ser2net.yaml` but not `/etc`, gets it rewritten in place. The
+  The write is atomic when labctl can create files in the directory (a
+  temporary file there, given the old file's owner and mode, fsynced and
+  renamed over it), and otherwise rewritten in place (e.g. a labctl group
+  member, who can write `/etc/ser2net.yaml` but not `/etc`); a symlink on
+  the path or a hard-linked file is refused, since it may run as root. The
   permission-denied message names the configured path.
   `install-services.sh` still makes only `/etc/ser2net.yaml`
   group-writable.
 - `health.status_retention_days` now prunes status history: the monitor
   deletes older entries at startup and then hourly; `0` keeps all of it.
-  Schema v12 indexes `status_log(logged_at)` for this.
+  Each board's newest entry per status, and the one in effect at the
+  cutoff, are always kept, so a board stable for longer than the
+  retention keeps its uptime. Schema v12 indexes `status_log(logged_at)`.
+- Uptime (`GET /api/sbcs/<name>/uptime`): the 24-hour figure starts from
+  the status in effect 24 hours ago, so a board up the whole day shows
+  100% (it showed 0% with no status change in the window), and times are
+  compared in the database's clock (UTC), not local time.
 - `claims.require_agent_name` is enforced: MCP `claim_sbc` and
   `POST /api/claims/<sbc>` refuse (`agent_name_required`) a claim that
   would be recorded under a placeholder name: no `agent_name` and no
@@ -63,7 +69,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `/var/lib/labctl/db` (setgid `2775`; the file, created empty if
   missing, and any `-wal`/`-shm` are `664`; SQLite gives new `-wal`/`-shm`
   files the database's mode). A database configured elsewhere is left
-  alone, with a note. Both scripts run the same root-safe step,
+  alone, with a note. `database_path` is compared with the directory
+  resolved (a symlinked `/var/lib/labctl` still matches; the database file
+  itself is never followed). The labctl home gets group search (`g+x`,
+  nothing else) when it belongs to the `labctl` group and lacks it; if
+  group members still can't traverse it, the scripts warn. Both scripts
+  run the same root-safe step,
   `python -m labctl.core.admin_files shared-db` (new; also new: `create`),
   and a problem there (a symlinked database file, a non-regular `-wal`, a
   config that won't parse) is a warning: the scripts carry on, and

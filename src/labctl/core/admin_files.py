@@ -23,7 +23,8 @@ elsewhere) is already resolved. Command line::
         creates an empty file if missing, then secures it like `secure`
     python -m labctl.core.admin_files shared-db SYSTEM_CONFIG DB_DIR USER GROUP
         when SYSTEM_CONFIG's database_path is DB_DIR/labctl.db, makes DB_DIR
-        setgid 2775 and the database (and any -wal/-shm) 664; prints what
+        setgid 2775, the database (and any -wal/-shm) 664 and DB_DIR's parent
+        searchable by GROUP (g+x if missing); prints what
         it did; exit 2 after a warning, never stopping half-way silently
     python -m labctl.core.admin_files copy SRC DST MODE [OLD_LINE NEW_LINE]...
         DST must not exist; lines equal to OLD_LINE are replaced
@@ -35,6 +36,7 @@ import errno
 import grp
 import os
 import pwd
+import stat
 import sys
 
 from labctl.core.safe_open import open_dir_nofollow, open_file_nofollow
@@ -180,6 +182,54 @@ def _configured_database_path(system_config: str) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _is_db_in(configured: str, db_dir: str) -> bool:
+    """Whether ``configured`` (database_path) names ``db_dir/labctl.db``.
+
+    Its directory part is compared resolved, so a symlinked
+    /var/lib/labctl (or a path written through one) still matches the
+    resolved ``db_dir``; the file name is compared literally and the
+    database file itself is never resolved or followed.
+    """
+    if not configured or not os.path.isabs(configured):
+        return False
+    directory, name = os.path.split(configured)
+    if name != DB_NAME:
+        return False
+    resolved = os.path.realpath(directory)
+    return resolved in (os.path.normpath(db_dir), os.path.realpath(db_dir))
+
+
+def _ensure_group_search(home: str, gid: int) -> str | None:
+    """Make sure members of group ``gid`` can traverse ``home`` (the
+    labctl home, already resolved, in root-owned /var/lib).
+
+    If ``home`` belongs to that group and lacks group execute, add it (only
+    ``g+x``, through a descriptor opened without following symlinks).
+    Returns a reason when group members still can't search it (e.g. it
+    belongs to another group), else None.
+    """
+    fd = open_dir_nofollow(home)
+    try:
+        st = os.fstat(fd)
+        mode = stat.S_IMODE(st.st_mode)
+        if st.st_gid == gid and not mode & stat.S_IXGRP:
+            os.fchmod(fd, mode | stat.S_IXGRP)
+            print(f"[ok] {home}: added group search (g+x) for the database")
+            mode |= stat.S_IXGRP
+    finally:
+        os.close(fd)
+    if (st.st_gid == gid and mode & stat.S_IXGRP) or mode & stat.S_IXOTH:
+        return None
+    try:
+        owner_group = grp.getgrgid(st.st_gid).gr_name
+    except KeyError:
+        owner_group = str(st.st_gid)
+    return (
+        f"{home} (mode {mode:04o}, group {owner_group}) can't be traversed by "
+        "the group's members, so they can't reach the database"
+    )
+
+
 def shared_db(system_config: str, db_dir: str, user: str, group: str) -> int:
     """Keep the services' database writable by ``group`` (install-services.sh
     and update.sh both call this).
@@ -188,10 +238,11 @@ def shared_db(system_config: str, db_dir: str, user: str, group: str) -> int:
     ``db_dir`` setgid ``2775`` (the -wal/-shm files SQLite creates are then
     in the group, with the database's mode; not sticky, so whichever
     process closes the database last can remove them), the database
-    (created empty if missing) and any existing -wal/-shm ``664``. A
-    symlinked ``db_dir`` (an admin's relocation) is left alone. Prints one
-    line per outcome; returns 0, or 2 after printing a warning, so the
-    calling script carries on.
+    (created empty if missing) and any existing -wal/-shm ``664``, and the
+    labctl home (``db_dir``'s parent) searchable by the group (``g+x``
+    added if missing, nothing else). A symlinked ``db_dir`` (an admin's
+    relocation) is left alone. Prints one line per outcome; returns 0, or
+    2 after printing a warning, so the calling script carries on.
     """
     import yaml
 
@@ -204,7 +255,7 @@ def shared_db(system_config: str, db_dir: str, user: str, group: str) -> int:
             f"database_path from {system_config}: {e}"
         )
         return 2
-    if configured != db_path:
+    if not _is_db_in(configured, db_dir):
         print(f"[--] The services' database ({configured or 'database_path unset'})")
         print(f"     isn't {db_path}, so {group} group members can't write it from")
         print('     the CLI. To move it there, see "Moving the database" in README.md.')
@@ -216,18 +267,23 @@ def shared_db(system_config: str, db_dir: str, user: str, group: str) -> int:
     try:
         secure_dir(db_dir, user, group, 0o2775)
         create(db_path, user, group, 0o664)
+        unreachable = _ensure_group_search(
+            os.path.dirname(db_dir), grp.getgrnam(group).gr_gid
+        )
     except (OSError, KeyError) as e:
         print(f"[!!] Database {db_path} not made group-writable: {_reason(e)}")
         return 2
+    if unreachable:
+        problems.append(unreachable)
     for extra in (db_path + "-wal", db_path + "-shm"):
         try:
             if state(extra) == "regular":
                 secure(extra, user, group, 0o664)
         except OSError as e:
-            problems.append(f"{extra}: {_reason(e)}")
+            problems.append(f"Left as is: {extra}: {_reason(e)}")
     if problems:
         for problem in problems:
-            print(f"[!!] Left as is: {problem}")
+            print(f"[!!] {problem}")
         return 2
     print(f"[ok] Database {db_path} ({user}:{group}, 664; group-writable directory)")
     return 0

@@ -1158,6 +1158,89 @@ class TestStatusHistory:
         assert deleted >= 0
 
 
+class TestStatusHistoryPruningKeepsUptime:
+    """Pruning (health.status_retention_days) keeps what get_uptime reads:
+    each board's newest row per status and the row in effect at the
+    cutoff, so a board stable for longer than the retention keeps its
+    uptime figures."""
+
+    def _row(self, manager, sbc_id, status, days_ago, hours_ago=0):
+        manager.db.execute_insert(
+            "INSERT INTO status_log (sbc_id, status, logged_at) VALUES"
+            " (?, ?, datetime('now', ?, ?))",
+            (sbc_id, status, f"-{days_ago} days", f"-{hours_ago} hours"),
+        )
+
+    def _rows(self, manager, sbc_id):
+        return [
+            r["status"]
+            for r in manager.db.execute(
+                "SELECT status FROM status_log WHERE sbc_id = ?"
+                " ORDER BY logged_at, id",
+                (sbc_id,),
+            )
+        ]
+
+    def test_board_stable_longer_than_retention(self, manager):
+        sbc = manager.create_sbc(name="stable")
+        manager.update_sbc(sbc.id, status=Status.ONLINE)
+        self._row(manager, sbc.id, "offline", 101)
+        self._row(manager, sbc.id, "online", 100)
+
+        before = manager.get_uptime(sbc.id)
+        assert manager.cleanup_old_status_logs(30) == 0
+        after = manager.get_uptime(sbc.id)
+
+        assert self._rows(manager, sbc.id) == ["offline", "online"]
+        assert after["current_uptime_seconds"] >= 100 * 86400 - 5
+        assert (
+            abs(after["current_uptime_seconds"] - before["current_uptime_seconds"]) < 5
+        )
+        assert after["uptime_24h_percent"] == 100.0
+
+    def test_flapping_history_pruned_but_uptime_unchanged(self, manager):
+        sbc = manager.create_sbc(name="flappy")
+        manager.update_sbc(sbc.id, status=Status.ONLINE)
+        for days in range(60, 40, -1):  # old flapping, all past the cutoff
+            self._row(manager, sbc.id, "offline", days, 12)
+            self._row(manager, sbc.id, "online", days, 6)
+        self._row(manager, sbc.id, "offline", 0, 10)  # within 24 h
+        self._row(manager, sbc.id, "online", 0, 4)
+
+        before = manager.get_uptime(sbc.id)
+        deleted = manager.cleanup_old_status_logs(30)
+        after = manager.get_uptime(sbc.id)
+
+        assert deleted == 40 - 1  # all but the newest pre-cutoff row (online)
+        assert self._rows(manager, sbc.id) == ["online", "offline", "online"]
+        assert after["uptime_24h_percent"] == before["uptime_24h_percent"]
+        assert 74 < after["uptime_24h_percent"] < 76  # down 6 h of 24
+        assert (
+            abs(after["current_uptime_seconds"] - before["current_uptime_seconds"]) < 5
+        )
+
+    def test_offline_board_keeps_its_last_online(self, manager):
+        sbc = manager.create_sbc(name="dead")
+        manager.update_sbc(sbc.id, status=Status.OFFLINE)
+        self._row(manager, sbc.id, "online", 90)
+        self._row(manager, sbc.id, "offline", 80)
+        manager.cleanup_old_status_logs(30)
+        assert self._rows(manager, sbc.id) == ["online", "offline"]
+        result = manager.get_uptime(sbc.id)
+        assert result["current_uptime_seconds"] == 0
+        assert result["uptime_24h_percent"] == 0.0
+
+    def test_other_boards_unaffected(self, manager):
+        a = manager.create_sbc(name="a")
+        b = manager.create_sbc(name="b")
+        self._row(manager, a.id, "online", 90)
+        self._row(manager, a.id, "online", 80)
+        self._row(manager, b.id, "online", 1)
+        assert manager.cleanup_old_status_logs(30) == 1
+        assert self._rows(manager, a.id) == ["online"]
+        assert self._rows(manager, b.id) == ["online"]
+
+
 class TestSBCToDict:
     """Tests for SBC.to_dict() serialization."""
 

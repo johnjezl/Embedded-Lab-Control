@@ -67,8 +67,10 @@ are credited unless they ask not to be.
   file `664`) writable by the `labctl` group, so members can use the CLI
   against it. A member can therefore change any record directly, outside
   claim checks: membership is trusted, as it already is for reading
-  `/etc/labctl/config.yaml` and its API keys. A database configured
-  elsewhere is left as it is.
+  `/etc/labctl/config.yaml` and its API keys. To let members reach it,
+  the scripts add group search (`g+x`) to the labctl home when it belongs
+  to the `labctl` group; they never add group write or open other bits.
+  A database configured elsewhere is left as it is.
 
 ### Web UI exposure
 

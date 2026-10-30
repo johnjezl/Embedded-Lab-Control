@@ -33,8 +33,9 @@ serial:
 # ser2net integration
 ser2net:
   # Path to ser2net configuration file: `ser2net generate --install`
-  # replaces it atomically (in place for a user who can write the file
-  # but not its directory; a symlink or hard link there is refused) and
+  # writes it, atomically when labctl can create files in its directory
+  # and otherwise rewritten in place (a symlink or hard link there is
+  # refused), and
   # `ports`/`connect` read TCP ports from it. install-services.sh makes
   # only /etc/ser2net.yaml group-writable; for another path, set that up.
   config_file: /etc/ser2net.yaml

@@ -1307,18 +1307,45 @@ class ResourceManager:
         """
         Delete status log entries older than retention period.
 
+        Rows that readers still need are kept whatever their age: for each
+        SBC, the newest row of each status (``get_uptime``'s "last online"
+        and "last offline", so a board stable for longer than the retention
+        keeps its uptime) and the newest row before the cutoff (the status
+        in effect when the kept history starts, which the 24-hour uptime
+        figure starts from).
+
         Args:
             retention_days: Number of days to retain status logs
 
         Returns:
             Number of deleted entries
         """
+        cutoff = f"-{int(retention_days)} days"
+        # A plain DELETE (not WITH ... DELETE): sqlite3 reports rowcount
+        # only for statements that start with DELETE.
         return self.db.execute_modify(
             """
             DELETE FROM status_log
-            WHERE logged_at < datetime('now', ? || ' days')
+            WHERE logged_at < datetime('now', ?)
+              AND id NOT IN (
+                SELECT id FROM (
+                    SELECT id, ROW_NUMBER() OVER (
+                        PARTITION BY sbc_id, status
+                        ORDER BY logged_at DESC, id DESC
+                    ) AS rn
+                    FROM status_log
+                ) WHERE rn = 1
+                UNION
+                SELECT id FROM (
+                    SELECT id, ROW_NUMBER() OVER (
+                        PARTITION BY sbc_id ORDER BY logged_at DESC, id DESC
+                    ) AS rn
+                    FROM status_log
+                    WHERE logged_at < datetime('now', ?)
+                ) WHERE rn = 1
+              )
             """,
-            (f"-{retention_days}",),
+            (cutoff, cutoff),
         )
 
     def get_uptime(self, sbc_id: int) -> Optional[dict]:
@@ -1335,6 +1362,11 @@ class ResourceManager:
             Dictionary with uptime statistics, or None if no history
         """
         from datetime import datetime, timedelta
+
+        # status_log.logged_at is SQLite's CURRENT_TIMESTAMP: UTC, as
+        # "YYYY-MM-DD HH:MM:SS". Compute in the same clock and format.
+        def parse(ts: str) -> datetime:
+            return datetime.fromisoformat(ts)
 
         # Get last online transition
         last_online_row = self.db.execute_one(
@@ -1372,14 +1404,14 @@ class ResourceManager:
             "uptime_24h_percent": 0.0,
         }
 
-        now = datetime.now()
+        now = parse(self.db.execute_one("SELECT datetime('now') AS t")["t"])
 
         # Calculate current uptime if online
         if sbc.status == Status.ONLINE and last_online_row:
-            last_online = datetime.fromisoformat(last_online_row["logged_at"])
+            last_online = parse(last_online_row["logged_at"])
             # Check if we went offline after going online
             if last_offline_row:
-                last_offline = datetime.fromisoformat(last_offline_row["logged_at"])
+                last_offline = parse(last_offline_row["logged_at"])
                 if last_offline > last_online:
                     # We're currently offline
                     result["current_uptime_seconds"] = 0
@@ -1396,26 +1428,38 @@ class ResourceManager:
                 result["current_uptime_seconds"]
             )
 
-        # Calculate 24h uptime percentage
+        # Calculate 24h uptime percentage, starting from the status in
+        # effect 24 hours ago (the newest row before then), so a board that
+        # has been stable for longer counts as up or down the whole time.
         day_ago = now - timedelta(hours=24)
+        day_ago_text = day_ago.strftime("%Y-%m-%d %H:%M:%S")
+        before = self.db.execute_one(
+            """
+            SELECT status FROM status_log
+            WHERE sbc_id = ? AND logged_at < ?
+            ORDER BY logged_at DESC, id DESC
+            LIMIT 1
+            """,
+            (sbc_id, day_ago_text),
+        )
         rows = self.db.execute(
             """
             SELECT status, logged_at FROM status_log
             WHERE sbc_id = ? AND logged_at >= ?
-            ORDER BY logged_at ASC
+            ORDER BY logged_at ASC, id ASC
             """,
-            (sbc_id, day_ago.isoformat()),
+            (sbc_id, day_ago_text),
         )
 
-        if rows:
+        if rows or before:
             online_seconds = 0
-            prev_status = None
+            prev_status = before["status"] if before else None
             prev_time = day_ago
 
             for row in rows:
                 status = row["status"]
                 time_str = row["logged_at"]
-                log_time = datetime.fromisoformat(time_str)
+                log_time = parse(time_str)
 
                 if prev_status == "online":
                     online_seconds += (log_time - prev_time).total_seconds()

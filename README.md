@@ -249,7 +249,7 @@ the point here is to allow SDWire workflows without granting broader root access
 | `labctl serial repair [--apply]` | Re-link port assignments to registered adapters (dry run by default) |
 | `labctl serial capture <port> --timeout N --until <pattern>` | Capture serial output |
 | `labctl serial send <port> <data> --capture N` | Send data (plus CRLF unless `--raw`) to a serial port |
-| `labctl ser2net generate [--install]` | Generate the ser2net config from the database. `--install` first assigns and saves a TCP port for any port without one, then atomically replaces `ser2net.config_file` (default `/etc/ser2net.yaml`); without it such ports are left out and the port each would get is shown |
+| `labctl ser2net generate [--install]` | Generate the ser2net config from the database. `--install` first assigns and saves a TCP port for any port without one, then writes `ser2net.config_file` (default `/etc/ser2net.yaml`): atomically when labctl can create files in its directory (e.g. with sudo), otherwise rewritten in place; without it such ports are left out and the port each would get is shown |
 | `labctl ser2net reload` | Restart the ser2net service |
 
 ### Boot Testing
@@ -690,9 +690,13 @@ To update an existing install after `git pull` (keeps config and database):
 sudo ./scripts/update.sh
 ```
 
-When the configured database is `/var/lib/labctl/db/labctl.db`, both
-scripts keep it (and its directory) writable by the `labctl` group;
-otherwise they print a note and leave it alone.
+When the configured database is `/var/lib/labctl/db/labctl.db` (also when
+written through a symlinked `/var/lib/labctl`), both scripts keep it (and
+its directory) writable by the `labctl` group, and make sure group members
+can traverse `/var/lib/labctl`: they add group search (`g+x`) when it
+belongs to the `labctl` group, and warn when members still can't reach it
+(e.g. it belongs to another group). Otherwise they print a note and leave
+the database alone.
 
 ### Moving the database
 

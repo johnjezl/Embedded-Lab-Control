@@ -346,3 +346,114 @@ class TestSharedDb:
         cfg = self._config(tmp_path, db_dir / "labctl.db")
         argv = ["shared-db", str(cfg), str(db_dir), USER, GROUP]
         assert admin_files.main(argv) == 0
+
+
+class TestSharedDbHomeSearch:
+    """shared_db makes sure labctl group members can traverse the labctl
+    home (db_dir's parent): g+x only, and a warning when they still can't."""
+
+    def _setup(self, tmp_path, home_mode):
+        home = tmp_path / "home"
+        home.mkdir()
+        home.chmod(home_mode)
+        db_dir = home / "db"
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(f"database_path: {db_dir / 'labctl.db'}\n")
+        return home, db_dir, cfg
+
+    def test_adds_only_group_search(self, tmp_path, capsys):
+        home, db_dir, cfg = self._setup(tmp_path, 0o700)
+        assert admin_files.shared_db(str(cfg), str(db_dir), USER, GROUP) == 0
+        assert stat.S_IMODE(home.stat().st_mode) == 0o710  # no g+w, no o+x
+        out = capsys.readouterr().out
+        assert "added group search (g+x)" in out
+        assert "[ok] Database" in out
+
+    def test_keeps_other_bits(self, tmp_path):
+        home, db_dir, cfg = self._setup(tmp_path, 0o2750)
+        assert admin_files.shared_db(str(cfg), str(db_dir), USER, GROUP) == 0
+        assert stat.S_IMODE(home.stat().st_mode) == 0o2750
+
+    def test_other_group_without_search_warns(self, tmp_path, capsys):
+        home, db_dir, _ = self._setup(tmp_path, 0o700)
+        other_gid = os.getgid() + 54321  # not the home's group
+        reason = admin_files._ensure_group_search(str(home), other_gid)
+        assert "can't be traversed" in reason
+        assert stat.S_IMODE(home.stat().st_mode) == 0o700  # untouched
+
+    def test_other_group_but_world_search_ok(self, tmp_path):
+        home, _, _ = self._setup(tmp_path, 0o701)
+        assert admin_files._ensure_group_search(str(home), os.getgid() + 54321) is None
+
+    def test_unreachable_home_is_a_warning_not_ok(self, tmp_path, capsys, monkeypatch):
+        home, db_dir, cfg = self._setup(tmp_path, 0o700)
+        monkeypatch.setattr(
+            admin_files, "_ensure_group_search", lambda h, g: f"{h} unreachable"
+        )
+        assert admin_files.shared_db(str(cfg), str(db_dir), USER, GROUP) == 2
+        out = capsys.readouterr().out
+        assert "[!!]" in out and "unreachable" in out
+        assert "[ok] Database" not in out
+
+    def test_symlinked_home_refused_for_chmod(self, tmp_path, monkeypatch):
+        real = tmp_path / "real"
+        real.mkdir(mode=0o700)
+        link = tmp_path / "home"
+        link.symlink_to(real)
+        with pytest.raises(OSError):
+            admin_files._ensure_group_search(str(link), os.getgid())
+        assert stat.S_IMODE(real.stat().st_mode) == 0o700
+
+
+class TestSharedDbResolvedPaths:
+    """database_path is compared with db_dir resolved, so a symlinked
+    /var/lib/labctl still matches; the database file is never followed."""
+
+    def test_path_through_symlinked_home_matches(self, tmp_path):
+        real_home = tmp_path / "data" / "labctl"
+        real_home.mkdir(parents=True)
+        (tmp_path / "varlib").mkdir()
+        (tmp_path / "varlib" / "labctl").symlink_to(real_home)
+        db_dir = real_home / "db"  # the scripts pass the resolved home
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(f"database_path: {tmp_path / 'varlib/labctl/db/labctl.db'}\n")
+        assert admin_files.shared_db(str(cfg), str(db_dir), USER, GROUP) == 0
+        assert stat.S_IMODE((db_dir / "labctl.db").stat().st_mode) == 0o664
+
+    @pytest.mark.parametrize(
+        "configured,expected",
+        [
+            ("{db}/labctl.db", True),
+            ("{db}/../db/labctl.db", True),
+            ("{db}/other.db", False),
+            ("relative/db/labctl.db", False),
+            ("", False),
+        ],
+    )
+    def test_is_db_in(self, tmp_path, configured, expected):
+        db_dir = tmp_path / "db"
+        db_dir.mkdir()
+        assert (
+            admin_files._is_db_in(configured.format(db=db_dir), str(db_dir)) is expected
+        )
+
+    def test_symlinked_database_file_not_followed(self, tmp_path, victim, capsys):
+        """A database_path naming the right file matches by name; a symlink
+        planted as that file is refused, not resolved or chmodded."""
+        db_dir = tmp_path / "db"
+        db_dir.mkdir()
+        (db_dir / "labctl.db").symlink_to(victim)
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(f"database_path: {db_dir / 'labctl.db'}\n")
+        assert admin_files.shared_db(str(cfg), str(db_dir), USER, GROUP) == 2
+        assert stat.S_IMODE(victim.stat().st_mode) == 0o600
+
+    def test_symlink_named_like_db_elsewhere_doesnt_match(self, tmp_path, victim):
+        """database_path pointing at a symlink outside db_dir whose target is
+        db_dir/labctl.db is still "elsewhere": the file isn't resolved."""
+        db_dir = tmp_path / "db"
+        db_dir.mkdir()
+        other = tmp_path / "other"
+        other.mkdir()
+        (other / "labctl.db").symlink_to(db_dir / "labctl.db")
+        assert not admin_files._is_db_in(str(other / "labctl.db"), str(db_dir))
