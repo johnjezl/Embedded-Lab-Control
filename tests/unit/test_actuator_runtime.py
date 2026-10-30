@@ -1111,9 +1111,14 @@ class TestPowerHelpers:
         )
         assert controller.events == ["off", ("on", [])]
 
-    @pytest.mark.parametrize("delay", [-1, "3", None, True, float("nan"), float("inf")])
+    @pytest.mark.parametrize(
+        "delay",
+        [-1, "3", None, True, float("nan"), float("inf"), 1e20, 10**400, 3601],
+    )
     def test_cycle_bad_delay_refused_before_anything(self, lab, controller, delay):
-        with pytest.raises(ValueError, match="delay must be a non-negative number"):
+        with pytest.raises(
+            ValueError, match="delay must be a number of seconds from 0 to 3600"
+        ):
             runtime.power_cycle_with_bindings(
                 lab.manager, lab.sbc, controller, delay, sleep_fn=lambda s: None
             )
@@ -1125,7 +1130,10 @@ class TestPowerHelpers:
         binding = _make_binding(lab)
         lab.manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
         with runtime._channel_lock(lab.channel.id):
-            with pytest.raises(runtime.PrePowerCheckError, match="busy"):
+            with pytest.raises(
+                runtime.PrePowerCheckError,
+                match="actuator 'relay-1' channel 1 for 'recovery_mode' is busy",
+            ):
                 runtime.power_on_with_bindings(lab.manager, lab.sbc, controller)
             with pytest.raises(runtime.PrePowerCheckError, match="busy"):
                 runtime.power_cycle_with_bindings(
@@ -1170,3 +1178,64 @@ class TestPowerHelpers:
             runtime.power_on_with_bindings(lab.manager, lab.sbc, controller)
         assert lab.driver.write_log == []
         controller.power_on.assert_not_called()
+
+    def _sharer(self, lab, *, desired=DesiredState.ASSERTED):
+        """A second board on the same plug outlet, strapped on channel 2."""
+        from labctl.core.models import PlugType
+
+        lab.manager.assign_power_plug(lab.sbc.id, PlugType.TASMOTA, "10.0.0.5", 1)
+        other = lab.manager.create_sbc(name="board-b")
+        lab.manager.assign_power_plug(other.id, PlugType.TASMOTA, "10.0.0.5", 1)
+        ch2 = lab.manager.add_actuator_channel(
+            lab.actuator.id, 2, default_state=ChannelState.OPEN
+        )
+        b2 = lab.manager.create_binding(
+            other.id,
+            "recovery_mode",
+            ch2.id,
+            shape_mode=ShapeMode.LATCH,
+            shape_active=ChannelState.CLOSED,
+            sample_phase=SamplePhase.PRE_POWER,
+        )
+        lab.manager.update_binding_desired_state(b2.id, desired)
+        lab.driver._configured_count = 2
+        lab.sbc = lab.manager.get_sbc_by_name(lab.sbc.name)
+        return other
+
+    def test_sharer_refusal_names_the_sharer(self, lab, controller, monkeypatch):
+        self._sharer(lab)  # only the sharer has a strap
+        monkeypatch.setattr(
+            runtime,
+            "probe_actuator",
+            lambda a: runtime.ProbeOutcome(
+                result=ProbeResult.UNREACHABLE, detail="gone"
+            ),
+        )
+        with pytest.raises(runtime.PrePowerCheckError) as exc:
+            runtime.power_on_with_bindings(lab.manager, lab.sbc, controller)
+        assert str(exc.value).endswith(
+            "('board-b' shares 'jetson-nano-2''s power outlet)"
+        )
+
+    def test_left_off_message_names_sharers(self, lab, controller):
+        _make_binding(lab)
+        self._sharer(lab)
+        lab.driver.next_write_outcome = WriteOutcome.WRITE_FAILED
+        with pytest.raises(runtime.ActuationError) as exc:
+            runtime.power_cycle_with_bindings(
+                lab.manager, lab.sbc, controller, 0, sleep_fn=lambda s: None
+            )
+        assert str(exc.value).endswith(
+            "'jetson-nano-2' and the boards sharing its outlet ('board-b') "
+            "were left powered off"
+        )
+
+    def test_recovery_sets_sharers_straps(self, lab, controller):
+        _make_binding(lab)
+        self._sharer(lab)
+        runtime.enter_recovery(
+            lab.manager, lab.sbc, controller, delay_s=0, sleep_fn=lambda s: None
+        )
+        ((_, log),) = [e for e in controller.events if isinstance(e, tuple)]
+        assert (1, True, WriteOutcome.OK) in log
+        assert (2, True, WriteOutcome.OK) in log

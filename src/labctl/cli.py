@@ -1767,6 +1767,17 @@ def sdwire_flash_cmd(
     flash_ok = False
 
     try:
+        # The relays the reboot will need are checked before the board is
+        # switched off, not after the card has been written.
+        if not no_reboot and sbc.power_plug:
+            from labctl.actuators.runtime import ActuationError, check_power_on
+
+            try:
+                check_power_on(manager, sbc)
+            except ActuationError as e:
+                click.echo(f"Error: {e}. Nothing changed.", err=True)
+                sys.exit(1)
+
         # Power off (best effort)
         if sbc.power_plug:
             click.echo("Powering off SBC...")
@@ -1988,6 +1999,17 @@ def sdwire_update_cmd(
     ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
 
     try:
+        # The relays the reboot will need are checked before the board is
+        # switched off, not after the card has been written.
+        if reboot and sbc.power_plug:
+            from labctl.actuators.runtime import ActuationError, check_power_on
+
+            try:
+                check_power_on(manager, sbc)
+            except ActuationError as e:
+                click.echo(f"Error: {e}. Nothing changed.", err=True)
+                sys.exit(1)
+
         # Step 0: Auto power-off to prevent SD card bus contention
         if sbc.power_plug:
             click.echo(f"Powering off {sbc_name}...")
