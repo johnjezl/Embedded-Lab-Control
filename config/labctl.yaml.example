@@ -179,6 +179,10 @@ mcp:
 # runs labctl: in /etc/labctl/config.yaml use an absolute path (e.g.
 # /var/lib/labctl/.config/labctl/labctl.db, which install-services.sh
 # writes), or each user and the services get a database of their own.
+# For CLI users to write the services' database, the file and its
+# directory must also be writable by the labctl group (e.g. a setgid 2775
+# directory and a 664 file); install-services.sh doesn't set that up, so
+# otherwise run CLI writes as `sudo -u labctl labctl ...`.
 database_path: ~/.config/labctl/labctl.db
 
 # Logging level (DEBUG, INFO, WARNING, ERROR); WARNING when unset

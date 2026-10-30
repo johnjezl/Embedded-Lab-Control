@@ -78,7 +78,10 @@ For a shared, system-wide install with systemd services, see
 
 ### Config file search order
 
-labctl uses the first config file it finds:
+labctl uses the first of these that loads. A file in the search path that
+exists but can't be loaded (bad YAML or a bad value) is skipped with a
+warning, and the next one is used; a file named with `-c` or
+`$LABCTL_CONFIG` is refused instead.
 
 1. `-c/--config PATH` (only that file)
 2. `$LABCTL_CONFIG`
@@ -93,7 +96,10 @@ labctl uses the first config file it finds:
 > you must be in the `labctl` group: `install-services.sh` makes
 > `/etc/labctl` readable only by it (`sudo usermod -aG labctl $USER`, then
 > log in again). Without that, labctl can't read the shared config and falls
-> back to the built-in defaults and a personal database.
+> back to the built-in defaults and a personal database. To write the
+> services' database too, its file and directory must be writable by the
+> group (see `database_path` in `config/labctl.yaml.example`), or run
+> commands as `sudo -u labctl labctl ...`.
 
 ## Quick Start
 
