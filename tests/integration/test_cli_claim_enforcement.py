@@ -1244,3 +1244,62 @@ class TestSerialAdapters:
         result = run("serial", "udev")
         assert result.exit_code == 0, result.output
         assert 'SYMLINK+="lab/port-a"' in result.output
+
+
+class TestSudoIdentity:
+    """Under sudo the CLI acts for SUDO_USER (#41 review 4)."""
+
+    def test_sudo_user_is_the_identity(self, monkeypatch):
+        from labctl import cli
+
+        monkeypatch.setattr("os.geteuid", lambda: 0)
+        monkeypatch.setenv("SUDO_USER", "alice")
+        assert cli._cli_user() == "alice"
+        assert cli._cli_session_id().startswith("cli-alice@")
+        assert cli._default_agent_name() == "alice"
+
+    @pytest.mark.parametrize("euid, sudo_user", [(1000, "alice"), (0, "root"), (0, "")])
+    def test_sudo_user_ignored_otherwise(self, monkeypatch, euid, sudo_user):
+        """Only a real root process honours SUDO_USER (a user can set it)."""
+        import getpass
+
+        from labctl import cli
+
+        monkeypatch.setattr("os.geteuid", lambda: euid)
+        monkeypatch.setenv("SUDO_USER", sudo_user)
+        monkeypatch.setattr(getpass, "getuser", lambda: "bob")
+        assert cli._cli_user() == "bob"
+
+    def test_own_claim_kept_under_sudo(self, lab, tmp_path, monkeypatch):
+        """`sudo labctl serial udev --install` doesn't refuse on the
+        invoking user's own CLI claim."""
+        import getpass
+
+        run, manager, _ = lab
+        monkeypatch.setattr(getpass, "getuser", lambda: "alice")
+        assert run("claim", "pi-b", "-r", "mine").exit_code == 0
+
+        path = tmp_path / "99-lab-serial.rules"
+        device = manager.create_serial_device("port-s", "1-1.1")
+        from labctl.serial.udev import generate_udev_rules
+
+        path.write_text(generate_udev_rules([device]))
+        manager.db.execute_modify(
+            "UPDATE serial_devices SET usb_path = '1-9.9' WHERE id = ?", (device.id,)
+        )
+        manager.assign_serial_port(
+            manager.get_sbc_by_name("pi-b").id, PortType.CONSOLE, "/dev/lab/port-s"
+        )
+        installed = []
+        monkeypatch.setattr("labctl.serial.udev.UDEV_RULES_PATH", path)
+        monkeypatch.setattr(
+            "labctl.serial.udev.install_udev_rules", lambda t: installed.append(t)
+        )
+
+        # Now "sudo": root, with SUDO_USER=alice.
+        monkeypatch.setattr(getpass, "getuser", lambda: "root")
+        monkeypatch.setattr("os.geteuid", lambda: 0)
+        monkeypatch.setenv("SUDO_USER", "alice")
+        result = run("serial", "udev", "--install")
+        assert result.exit_code == 0, result.output
+        assert len(installed) == 1

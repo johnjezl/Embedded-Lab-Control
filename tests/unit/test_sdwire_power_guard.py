@@ -25,9 +25,13 @@ def power():
         yield controller
 
 
-def test_no_plug_is_left_alone():
+def test_no_plug_ok_is_left_alone():
+    """With no_plug_ok a board with no plug isn't touched (it has nothing
+    to switch); without it, see TestNoPlugFailsClosed."""
     with patch("labctl.power.base.PowerController.from_plug") as from_plug:
-        power_off_before_host_switch(SimpleNamespace(name="b", power_plug=None))
+        power_off_before_host_switch(
+            SimpleNamespace(name="b", power_plug=None), no_plug_ok=True
+        )
     from_plug.assert_not_called()
 
 
@@ -228,3 +232,40 @@ def test_problem_text_never_recases_the_board_name():
             "pi-lower", BoardOffCheck(problem), sentence_start=True
         )
         assert text.startswith("pi-lower ")
+
+
+class TestNoPlugFailsClosed:
+    """A board with no plug can't be switched off before its card is
+    taken: refused unless no_plug_ok (#41 review 4)."""
+
+    def test_no_plug_refused(self):
+        from labctl.sdwire.power_guard import NoPlugError
+
+        with pytest.raises(NoPlugError, match="'b' has no power plug"):
+            power_off_before_host_switch(SimpleNamespace(name="b", power_plug=None))
+
+    def test_no_plug_ok(self):
+        power_off_before_host_switch(
+            SimpleNamespace(name="b", power_plug=None), no_plug_ok=True
+        )
+
+    def test_no_plug_ok_doesnt_skip_or_excuse_a_plug(self, board):
+        power = MagicMock()
+        power.power_off.return_value = False
+        with (
+            patch("labctl.power.PowerController.from_plug", return_value=power),
+            pytest.raises(RuntimeError, match="could not power off 'board'"),
+        ):
+            power_off_before_host_switch(board, no_plug_ok=True)
+        power.power_off.assert_called_once()
+
+    def test_deploy_to_card_refuses_no_plug(self):
+        ctrl = MagicMock()
+        with pytest.raises(RuntimeError, match="has no power plug"):
+            deploy_to_card(
+                MagicMock(),
+                SimpleNamespace(name="b", power_plug=None),
+                ctrl,
+                MagicMock(),
+            )
+        ctrl.switch_to_host.assert_not_called()

@@ -2037,11 +2037,13 @@ def sdwire_update(
     renames: list[str] = [],
     deletes: list[str] = [],
     reboot: bool = False,
+    no_plug_ok: bool = False,
 ) -> str:
     """Copy, rename, and/or delete files on a partition on an SBC's SD card.
 
-    Atomic operation: powers the SBC off (if it has a power plug; refuses,
-    writing nothing, if it can't be switched off), switches
+    Atomic operation: powers the SBC off (refusing, writing nothing, if it
+    can't be switched off; a board with no power plug is refused unless
+    no_plug_ok=true), switches
     SD to host, mounts partition, performs operations (copies first, then
     renames, then deletes), unmounts, switches back to DUT. The SBC is left
     powered off unless reboot=true, which power cycles it (waiting the
@@ -2058,6 +2060,10 @@ def sdwire_update(
         deletes: List of filenames to delete (relative to partition root)
         reboot: Power cycle the SBC after updating (default false: it
             stays off)
+        no_plug_ok: The SBC has no power plug and you've made sure it is
+            off: write the card anyway (refused otherwise). A board with a
+            plug is always switched off first; a failed power-off still
+            refuses.
     """
     import time
 
@@ -2075,6 +2081,9 @@ def sdwire_update(
         return f"Error: SBC '{sbc_name}' not found"
     if not sbc.sdwire:
         return f"Error: No SDWire assigned to '{sbc_name}'"
+    no_plug_err = _no_plug_refusal_mcp(sbc, no_plug_ok)
+    if no_plug_err:
+        return no_plug_err
 
     for spec in copies:
         if ":" not in spec:
@@ -2119,7 +2128,7 @@ def sdwire_update(
         from labctl.sdwire.power_guard import power_off_before_host_switch
 
         try:
-            power_off_before_host_switch(sbc)
+            power_off_before_host_switch(sbc, no_plug_ok=no_plug_ok)
         except RuntimeError as e:
             return f"Error: {e}."
 
@@ -2456,6 +2465,7 @@ def flash_image(
     image_path: str,
     reboot: bool = False,
     post_flash_copies: list[str] = [],
+    no_plug_ok: bool = False,
 ) -> str:
     """Flash a raw disk image to an SBC's SD card via SDWire.
 
@@ -2463,9 +2473,9 @@ def flash_image(
     verifies block device size, ensures no partitions are mounted, and
     resolves the device from SDWire config (never accepts raw /dev paths).
 
-    Powers the SBC off first (if it has a power plug; refuses, writing
-    nothing, if it can't be switched off) and leaves it off unless
-    reboot=true.
+    Powers the SBC off first (refusing, writing nothing, if it can't be
+    switched off; a board with no power plug is refused unless
+    no_plug_ok=true) and leaves it off unless reboot=true.
 
     Args:
         sbc_name: Name of the SBC with an assigned SDWire device
@@ -2476,6 +2486,10 @@ def flash_image(
             off)
         post_flash_copies: Optional "source:dest" pairs to copy to boot partition after flash;
             sources as for image_path
+        no_plug_ok: The SBC has no power plug and you've made sure it is
+            off: write the card anyway (refused otherwise). A board with a
+            plug is always switched off first; a failed power-off still
+            refuses.
     """  # noqa: E501
     import time as time_mod
 
@@ -2490,6 +2504,9 @@ def flash_image(
         return f"Error: SBC '{sbc_name}' not found"
     if not sbc.sdwire:
         return f"Error: No SDWire assigned to '{sbc_name}'"
+    no_plug_err = _no_plug_refusal_mcp(sbc, no_plug_ok)
+    if no_plug_err:
+        return no_plug_err
 
     # Host paths must be in mcp.allowed_read_paths. Checked and opened
     # before powering off or switching the mux, so a refusal touches
@@ -2521,7 +2538,7 @@ def flash_image(
         from labctl.sdwire.power_guard import power_off_before_host_switch
 
         try:
-            power_off_before_host_switch(sbc)
+            power_off_before_host_switch(sbc, no_plug_ok=no_plug_ok)
         except RuntimeError as e:
             return f"Error: {e}."
 
@@ -2712,6 +2729,47 @@ def _serial_send_preview(arguments: dict) -> dict:
 _CONFIRM_PREVIEWS["serial_send"] = _serial_send_preview
 
 
+def _no_plug_refusal_mcp(sbc, no_plug_ok: bool) -> str | None:
+    """The refusal for writing the card of a board with no power plug
+    (power_guard.power_off_before_host_switch fails closed), unless the
+    caller passed no_plug_ok=true."""
+    if sbc.power_plug or no_plug_ok:
+        return None
+    from labctl.sdwire.power_guard import no_plug_refusal
+
+    return (
+        f"Error: {no_plug_refusal(sbc)}. Once you've made sure it is off, "
+        "call again with no_plug_ok=true."
+    )
+
+
+def _sdwire_write_preview(arguments: dict) -> dict | None:
+    """The plan of a call that writes a board's SD card (sdwire_update,
+    flash_image): whether the board is switched off first, and for a
+    rebooting sdwire_update the cycle delay. A board with no plug refuses
+    the call here unless no_plug_ok (ValueError: no token)."""
+    manager = _get_manager()
+    claim_err = _check_claim(manager, arguments.get("sbc_name"), mutating=True)
+    if claim_err:
+        raise _PreviewRefusal(claim_err)
+    sbc = manager.get_sbc_by_name(arguments.get("sbc_name"))
+    if sbc is None or not sbc.sdwire:
+        return None  # the tool reports it
+    no_plug_err = _no_plug_refusal_mcp(sbc, bool(arguments.get("no_plug_ok")))
+    if no_plug_err:
+        raise ValueError(no_plug_err[len("Error: ") :])
+    plan = {
+        "power_off": (
+            f"switch {sbc.name} off before taking its card"
+            if sbc.power_plug
+            else "not switched off: no power plug (no_plug_ok)"
+        )
+    }
+    delay = _cycle_delay_preview(arguments) if "partition" in arguments else None
+    plan.update(delay or {})
+    return plan
+
+
 def _cycle_delay_preview(arguments: dict) -> dict | None:
     """The delay a power-cycling call will wait, for its confirmation.
 
@@ -2741,10 +2799,11 @@ for _tool in (
     "power_cycle",
     "enter_recovery",
     "exit_recovery",
-    "sdwire_update",
     "boot_test",
 ):
     _CONFIRM_PREVIEWS[_tool] = _cycle_delay_preview
+_CONFIRM_PREVIEWS["sdwire_update"] = _sdwire_write_preview
+_CONFIRM_PREVIEWS["flash_image"] = _sdwire_write_preview
 
 
 @mcp.tool(annotations=TOOL_ANNOTATIONS["serial_send"])

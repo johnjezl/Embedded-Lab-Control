@@ -731,11 +731,9 @@ def main(
       on     -> power on
       off    -> power off
     """
-    import getpass
-
     from labctl.core import audit
 
-    audit.set_context(actor=f"cli:{getpass.getuser()}", source="cli")
+    audit.set_context(actor=f"cli:{_cli_user()}", source="cli")
 
     ctx.obj = _CliState(ctx.obj or {})
     ctx.obj["verbose"] = verbose
@@ -1738,6 +1736,13 @@ def sdwire_host_cmd(ctx: click.Context, sbc_name: str, force: bool) -> None:
     help="Copy file to partition 1 after flash (source:dest; repeatable)",
 )
 @click.option(
+    "--no-plug-ok",
+    is_flag=True,
+    help="The SBC has no power plug and you've made sure it is off: write "
+    "the card anyway (refused otherwise). A board with a plug is always "
+    "switched off first, and a failed power-off still refuses.",
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help="Show what would happen and change nothing.",
@@ -1749,12 +1754,14 @@ def sdwire_flash_cmd(
     image: Path,
     no_reboot: bool,
     post_copies: tuple[str, ...],
+    no_plug_ok: bool,
     dry_run: bool,
 ) -> None:
     """Flash an SD card image to an SBC's SDWire.
 
-    Supports .img, .img.xz, and .img.gz formats. Powers the SBC off (if it
-    has a plug; refuses, writing nothing, if it can't), switches to host,
+    Supports .img, .img.xz, and .img.gz formats. Powers the SBC off
+    (refusing, writing nothing, if it can't; a board with no plug is
+    refused unless --no-plug-ok), switches to host,
     writes the image, optionally copies files to partition 1, switches back
     to DUT, and power-cycles (setting pre_power relays first). With
     --no-reboot the SBC is left powered off.
@@ -1793,6 +1800,7 @@ def sdwire_flash_cmd(
             sys.exit(1)
         post_pairs.append((src, dest))
 
+    _require_plug_or_ok(sbc, no_plug_ok)
     reboot_delay = None
     if not no_reboot and sbc.power_plug:
         reboot_delay = _reboot_cycle_delay(manager, sbc)
@@ -1805,9 +1813,7 @@ def sdwire_flash_cmd(
         except RuntimeError as e:
             click.echo(f"Error: {e}", err=True)
             sys.exit(1)
-        steps = []
-        if sbc.power_plug:
-            steps.append(f"power off {sbc_name}")
+        steps = [_power_off_step(sbc)]
         steps.append(f"switch SDWire {sbc.sdwire.serial_number} to host")
         steps.append(
             f"overwrite the whole SD card with {image} "
@@ -1846,7 +1852,7 @@ def sdwire_flash_cmd(
         if sbc.power_plug:
             click.echo("Powering off SBC...")
         try:
-            power_off_before_host_switch(sbc)
+            power_off_before_host_switch(sbc, no_plug_ok=no_plug_ok)
         except RuntimeError as e:
             click.echo(f"Error: {e}.", err=True)
             sys.exit(1)
@@ -1970,6 +1976,13 @@ def sdwire_flash_cmd(
     help="Power cycle the SBC after updating (otherwise it is left off)",
 )
 @click.option(
+    "--no-plug-ok",
+    is_flag=True,
+    help="The SBC has no power plug and you've made sure it is off: write "
+    "the card anyway (refused otherwise). A board with a plug is always "
+    "switched off first, and a failed power-off still refuses.",
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help="Show what would happen and change nothing.",
@@ -1983,12 +1996,13 @@ def sdwire_update_cmd(
     renames: tuple[str, ...],
     deletes: tuple[str, ...],
     reboot: bool,
+    no_plug_ok: bool,
     dry_run: bool,
 ) -> None:
     """Copy, rename, and/or delete files on a partition on an SBC's SD card.
 
-    Powers the SBC off (if it has a plug; refuses, writing nothing, if it
-    can't), switches to host, mounts the
+    Powers the SBC off (refusing, writing nothing, if it can't; a board
+    with no plug is refused unless --no-plug-ok), switches to host, mounts the
     partition, performs operations (copies first, then renames, then
     deletes), unmounts, and switches back to DUT. With --reboot it then
     power-cycles (setting pre_power relays first); without it the SBC is
@@ -2050,14 +2064,13 @@ def sdwire_update_cmd(
     # Deletes are just filenames, no parsing needed
     delete_list = list(deletes)
 
+    _require_plug_or_ok(sbc, no_plug_ok)
     reboot_delay = None
     if reboot and sbc.power_plug:
         reboot_delay = _reboot_cycle_delay(manager, sbc)
 
     if dry_run:
-        steps = []
-        if sbc.power_plug:
-            steps.append(f"power off {sbc_name}")
+        steps = [_power_off_step(sbc)]
         steps.append(
             f"switch SDWire {sbc.sdwire.serial_number} to host and mount "
             f"partition {partition}"
@@ -2095,7 +2108,7 @@ def sdwire_update_cmd(
         if sbc.power_plug:
             click.echo(f"Powering off {sbc_name}...")
         try:
-            power_off_before_host_switch(sbc)
+            power_off_before_host_switch(sbc, no_plug_ok=no_plug_ok)
         except RuntimeError as e:
             click.echo(f"Error: {e}.", err=True)
             sys.exit(1)
@@ -3565,6 +3578,28 @@ def _resolve_cycle_delay(manager, sbc, requested: float | None):
     return delay, (f"--delay {note}; using {delay.seconds}s" if note else None)
 
 
+def _require_plug_or_ok(sbc, no_plug_ok: bool) -> None:
+    """Exit, before anything changes (dry run too), when ``sbc`` has no
+    power plug and --no-plug-ok wasn't given: its card would be taken from
+    a board that may be running."""
+    from labctl.sdwire.power_guard import no_plug_refusal
+
+    if not sbc.power_plug and not no_plug_ok:
+        click.echo(
+            f"Error: {no_plug_refusal(sbc)}. Once you've made sure it is off, "
+            "rerun with --no-plug-ok.",
+            err=True,
+        )
+        sys.exit(1)
+
+
+def _power_off_step(sbc) -> str:
+    """The dry-run step for the power-off before the card is taken."""
+    if sbc.power_plug:
+        return f"power off {sbc.name}"
+    return f"skip the power-off of {sbc.name} (no power plug; --no-plug-ok)"
+
+
 def _reboot_cycle_delay(manager, sbc):
     """The delay (a runtime CycleDelay) a reboot (power cycle) of ``sbc``
     will wait, checked before anything is changed: an out-of-range stored
@@ -4422,7 +4457,9 @@ def enter_recovery_cmd(ctx: click.Context, sbc_name: str) -> None:
       1. Probe the recovery_mode actuator and check the pre_power relays
          (read-only; abort before switching anything if one fails).
       2. power_off
-      3. sleep(power_cycle_delay_seconds; default 3s)
+      3. sleep: the largest stored cycle delay (`edit --cycle-delay`)
+         among the boards on the SBC's plug outlet, a board without one
+         counting as 3 s
       4. Engage the recovery_mode strap (desired=asserted).
       5. Set the pre_power relays, then power_on.
     """
@@ -4907,19 +4944,31 @@ def status_cmd(
 # --- Claim Commands ---
 
 
-def _cli_session_id() -> str:
-    """CLI sessions are scoped to user@host so release-by-claimant works across
-    invocations from the same user on the same machine."""
+def _cli_user() -> str:
+    """The user a CLI invocation acts for: the login user, or under sudo
+    the user who ran sudo (SUDO_USER), so a command that needs root (e.g.
+    `sudo labctl serial udev --install`) keeps that user's claims, claim
+    identity and activity-log name instead of becoming root. SUDO_USER
+    counts only when the process really runs as root, as sudo sets it."""
     import getpass
+
+    sudo_user = os.environ.get("SUDO_USER")
+    if os.geteuid() == 0 and sudo_user and sudo_user != "root":
+        return sudo_user
+    return getpass.getuser()
+
+
+def _cli_session_id() -> str:
+    """CLI sessions are scoped to user@host (see _cli_user) so
+    release-by-claimant works across invocations from the same user on the
+    same machine, with or without sudo."""
     import socket
 
-    return f"cli-{getpass.getuser()}@{socket.gethostname()}"
+    return f"cli-{_cli_user()}@{socket.gethostname()}"
 
 
 def _default_agent_name() -> str:
-    import getpass
-
-    return getpass.getuser()
+    return _cli_user()
 
 
 def _parse_duration(raw: str) -> int:
@@ -6207,7 +6256,9 @@ def boot_test_cmd(
     --no-deploy; the SBC is powered off first, and nothing is deployed if
     it can't be), then power-cycles the SBC --runs times, counting the
     boots whose serial output matches --expect within --timeout. Each
-    cycle waits 3 s between off and on and sets the pre_power relays
+    cycle waits the largest stored cycle delay (`edit --cycle-delay`)
+    among the boards on the SBC's plug outlet, a board without one
+    counting as 3 s, between off and on, and sets the pre_power relays
     first.
 
     \b

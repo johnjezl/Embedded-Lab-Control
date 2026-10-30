@@ -210,8 +210,8 @@ Every command has `--help`. This section lists the commands; see
 | `labctl sdwire unassign <sbc>` | Remove SDWire assignment |
 | `labctl sdwire dut <sbc>` | Switch SD card to SBC (boot from SD) |
 | `labctl sdwire host <sbc>` | Switch SD card to host (for flashing). Only when the plug reports the board off: refuses when it's on, has no plug, or its state can't be read (`--force` skips the check) |
-| `labctl sdwire flash <sbc> <image>` | Power off, flash full image to SD card, power-cycle (`--no-reboot` leaves the SBC off) |
-| `labctl sdwire update <sbc> -p N -c src:dest -r old:new -d file` | Power off, then copy, rename, or delete files on a partition (`--reboot` to power-cycle; without it the SBC is left off) |
+| `labctl sdwire flash <sbc> <image>` | Power off, flash full image to SD card, power-cycle (`--no-reboot` leaves the SBC off). A board with no power plug is refused unless `--no-plug-ok` (you've made sure it is off) |
+| `labctl sdwire update <sbc> -p N -c src:dest -r old:new -d file` | Power off, then copy, rename, or delete files on a partition (`--reboot` to power-cycle; without it the SBC is left off). No plug: as `flash` (`--no-plug-ok`) |
 | `labctl sdwire ls <sbc> -p N [--path /] [--recursive] [--force]` | List directory contents on a partition. A card already on the host is read in place; otherwise the board must be confirmed off, as for `sdwire host` (`--force` skips the check) |
 | `labctl sdwire cat <sbc> -p N --path /file [--encoding text|base64|hex] [--force]` | Read a file from a partition (as `ls`) |
 | `labctl sdwire info <sbc> [--force]` | Show partition table and filesystem metadata (as `ls`) |
@@ -550,8 +550,9 @@ Key activity and claims endpoints:
 | `/health` | GET | Service liveness and version (always open, no auth required) |
 
 `POST /sbcs/<name>/power` takes `{"action": "on"|"off"|"cycle"}`, plus an
-optional `delay` for a cycle (seconds, 0–86400; the board's stored cycle
-delay, or 3.0 if none is set, is the default and the minimum) and
+optional `delay` for a cycle (seconds, 0–86400; the default and the
+minimum are the largest stored cycle delay among the boards on the plug
+outlet, a board without one counting as 3.0) and
 `"override_claim": true` to act on a board another user has claimed.
 Power-on and cycle set the pre_power relays first
 (see [Relays, Bindings and Recovery](#relays-bindings-and-recovery)). Responses:

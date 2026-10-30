@@ -323,7 +323,8 @@ labctl enter-recovery jetson-nano-2
     #    relay of this board and of boards sharing its outlet
     #    (read-only)                                      ← pre-flight
     # 1. power_off
-    # 2. sleep(power_cycle_delay_seconds, 3.0 s if unset)
+    # 2. sleep: the largest power_cycle_delay_seconds among the boards
+    #    on its plug outlet (3.0 s for a board with none)
     # 3. actuate recovery_mode  → desired=asserted
     # 4. apply pre_power bindings (this board and outlet sharers)
     # 5. power_on

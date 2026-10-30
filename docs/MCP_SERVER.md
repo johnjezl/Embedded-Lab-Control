@@ -388,7 +388,7 @@ call. `power_on` and `power_cycle` also check and set those boards'
 |------|------------|-------------|
 | `sdwire_to_dut` | `sbc_name` | Switch SD card to SBC (boot from SD) |
 | `sdwire_to_host` | `sbc_name`, `force` (default false) | Switch SD card to host (for flashing). Proceeds only when the SBC's plug reports it off: refuses when it reports on, when the SBC has no plug, or when its state can't be read; `force=true` overrides (risks SD card corruption) |
-| `sdwire_update` | `sbc_name`, `partition`, `copies`, `renames`, `deletes`, `reboot` | Copy, rename, or delete files on SD card partition (atomic: power off, mount, operate, unmount, back to DUT). Host `copies` sources must be allowlisted |
+| `sdwire_update` | `sbc_name`, `partition`, `copies`, `renames`, `deletes`, `reboot`, `no_plug_ok` | Copy, rename, or delete files on SD card partition (atomic: power off, mount, operate, unmount, back to DUT). Host `copies` sources must be allowlisted |
 | `sdwire_ls` | `sbc_name`, `partition`, `path` (default `/`), `recursive` (default false), `max_entries` (default 1000) | List directory contents on an SD card partition using a read-only mount |
 | `sdwire_cat` | `sbc_name`, `partition`, `path`, `max_bytes` (default 1 MiB), `encoding` (`text` default, `base64`, `hex`) | Read a file from an SD card partition with size and encoding guards; symlinks are not followed |
 | `sdwire_info` | `sbc_name` | Return partition-table and filesystem metadata for the SD card |
@@ -397,13 +397,15 @@ call. `power_on` and `power_cycle` also check and set those boards'
 | `sdwire_assign` | `sbc_name`, `device_name` | Assign SDWire device to SBC |
 | `sdwire_unassign` | `sbc_name` | Remove SDWire assignment from SBC |
 | `sdwire_discover` | | Scan for connected SDWire devices |
-| `flash_image` | `sbc_name`, `image_path`, `reboot`, `post_flash_copies` | Flash raw disk image (.img/.img.xz/.img.gz) to SD card with safety checks. Host paths must be allowlisted (see [Host file access](#host-file-access-allowlist)) |
+| `flash_image` | `sbc_name`, `image_path`, `reboot`, `post_flash_copies`, `no_plug_ok` | Flash raw disk image (.img/.img.xz/.img.gz) to SD card with safety checks. Host paths must be allowlisted (see [Host file access](#host-file-access-allowlist)) |
 
-`sdwire_update` and `flash_image` power the SBC off first (when it has a
-power plug; if it can't be switched off they refuse and write nothing)
-and **leave it off** unless `reboot=true`:
-`sdwire_update` then power-cycles it (the board's stored cycle delay, or
-3 s), `flash_image` powers it
+`sdwire_update` and `flash_image` power the SBC off first (if it can't
+be switched off they refuse and write nothing; a board with no power plug
+is refused unless `no_plug_ok=true`, once you've made sure it is off) and
+**leave it off** unless `reboot=true`. Their confirmation plan says
+whether the board is switched off (`will_do.power_off`):
+`sdwire_update` then power-cycles it (waiting the outlet's minimum, as
+for `power_cycle`), `flash_image` powers it
 on. With `reboot=true` the `pre_power` relays are checked before anything
 is switched.
 

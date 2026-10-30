@@ -257,9 +257,11 @@ def control_power(name: str):
 
     delay = None
     if action == "cycle":
-        # Omitted: the board's stored delay (or 3 s), which is also the
-        # minimum. An out-of-range value, or an out-of-range stored one,
-        # is refused before anything is switched.
+        # Omitted: the outlet's minimum (runtime.board_cycle_delay: the
+        # largest of the boards' stored delays, 3 s for one with none),
+        # which is also the minimum of a given delay. An out-of-range
+        # value, or an out-of-range stored one, is refused before anything
+        # is switched.
         if "delay" in data and data["delay"] is None:
             return (
                 jsonify({"error": "delay must be a number of seconds, not null"}),

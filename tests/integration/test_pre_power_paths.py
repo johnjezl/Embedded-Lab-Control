@@ -1022,3 +1022,130 @@ class TestOutletFloorPerBoard:
         result = lab.run("power", "cycle", "board", "-y")
         assert result.exit_code == 0, result.output
         assert waits == [3.0]
+
+
+class TestNoPlugWrites:
+    """Writing the card of a board with no plug is refused unless
+    --no-plug-ok / no_plug_ok (#41 review 4)."""
+
+    @pytest.fixture
+    def unplugged(self, lab):
+        manager = lab.manager
+        sbc = manager.create_sbc(name="loose", project="test")
+        device = manager.create_sdwire_device("sdw-2", "bdgrd_sdwirec_002")
+        manager.assign_sdwire(sbc.id, device.id)
+        ctrl = MagicMock()
+        ctrl.get_block_device.return_value = "/dev/sdb"
+        ctrl.flash_image.return_value = {
+            "bytes_written": 3,
+            "elapsed_seconds": 0.1,
+            "block_device": "/dev/sdb",
+        }
+        ctrl.update_files.return_value = {"copied": [], "renamed": [], "deleted": ["x"]}
+        with (
+            patch("labctl.sdwire.controller.SDWireController", return_value=ctrl),
+            patch("labctl.sdwire.SDWireController", return_value=ctrl),
+            patch("time.sleep"),
+        ):
+            yield ctrl
+
+    @pytest.fixture
+    def image(self, tmp_path):
+        path = tmp_path / "image.img"
+        path.write_bytes(b"img")
+        return path
+
+    @pytest.mark.parametrize("dry_run", [False, True])
+    def test_cli_flash_refused(self, lab, unplugged, image, dry_run):
+        args = ["sdwire", "flash", "loose", str(image), "-y"]
+        result = lab.run(*args, *(["--dry-run"] if dry_run else []))
+        assert result.exit_code == 1
+        assert "'loose' has no power plug" in result.output
+        assert "rerun with --no-plug-ok" in result.output
+        unplugged.switch_to_host.assert_not_called()
+
+    def test_cli_flash_no_plug_ok(self, lab, unplugged, image):
+        result = lab.run("sdwire", "flash", "loose", str(image), "-y", "--no-plug-ok")
+        assert result.exit_code == 0, result.output
+        unplugged.flash_image.assert_called_once()
+
+    def test_cli_flash_dry_run_says_power_off_skipped(self, lab, unplugged, image):
+        result = lab.run(
+            "sdwire", "flash", "loose", str(image), "--no-plug-ok", "--dry-run"
+        )
+        assert result.exit_code == 0, result.output
+        assert "skip the power-off of loose (no power plug; --no-plug-ok)" in (
+            result.output
+        )
+
+    def test_cli_update_refused(self, lab, unplugged):
+        result = lab.run("sdwire", "update", "loose", "-p", "1", "-d", "x", "-y")
+        assert result.exit_code == 1
+        assert "'loose' has no power plug" in result.output
+        unplugged.update_files.assert_not_called()
+
+    def test_cli_update_no_plug_ok(self, lab, unplugged):
+        result = lab.run(
+            "sdwire", "update", "loose", "-p", "1", "-d", "x", "-y", "--no-plug-ok"
+        )
+        assert result.exit_code == 0, result.output
+        unplugged.update_files.assert_called_once()
+
+    def _mcp(self, lab):
+        from labctl import mcp_server
+
+        return (
+            patch.object(mcp_server, "_get_manager", return_value=lab.manager),
+            patch.object(mcp_server, "_check_claim", return_value=None),
+        )
+
+    def test_mcp_update_refused_and_ok(self, lab, unplugged):
+        from labctl import mcp_server
+
+        a, b = self._mcp(lab)
+        with (
+            a,
+            b,
+            patch.object(mcp_server, "_confirmation_required", return_value=False),
+        ):
+            result = mcp_server.sdwire_update(
+                sbc_name="loose", partition=1, deletes=["x"]
+            )
+            assert result.startswith("Error: 'loose' has no power plug")
+            assert "no_plug_ok=true" in result
+            unplugged.update_files.assert_not_called()
+            result = mcp_server.sdwire_update(
+                sbc_name="loose", partition=1, deletes=["x"], no_plug_ok=True
+            )
+        assert result.startswith("Partition 1: Deleted: x"), result
+
+    def test_mcp_flash_refused(self, lab, unplugged):
+        from labctl import mcp_server
+
+        a, b = self._mcp(lab)
+        with (
+            a,
+            b,
+            patch.object(mcp_server, "_confirmation_required", return_value=False),
+        ):
+            result = mcp_server.flash_image(sbc_name="loose", image_path="/nope.img")
+        assert result.startswith("Error: 'loose' has no power plug")
+        unplugged.flash_image.assert_not_called()
+
+    def test_mcp_plan_refuses_without_token(self, lab, unplugged):
+        from labctl import mcp_server
+        from labctl.core.config import Config
+
+        a, b = self._mcp(lab)
+        with a, b, patch.object(mcp_server, "_get_config", return_value=Config()):
+            result = mcp_server.flash_image(sbc_name="loose", image_path="/x.img")
+            assert result.startswith("Error: 'loose' has no power plug")
+            assert "confirm_token" not in result
+            plan = json.loads(
+                mcp_server.sdwire_update(
+                    sbc_name="loose", partition=1, deletes=["x"], no_plug_ok=True
+                )
+            )
+        assert plan["will_do"] == {
+            "power_off": "not switched off: no power plug (no_plug_ok)"
+        }
