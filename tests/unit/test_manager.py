@@ -2030,3 +2030,51 @@ class TestLabLinkName:
             (sbc.id,),
         )
         assert manager.sbcs_using_serial_links({"port-a"}) == ["odd-path"]
+
+
+class TestOutletRule:
+    """One outlet-sharing rule for the manager and the REST/web guard
+    (#41 review 3)."""
+
+    def test_outlet_key_normalises_address(self):
+        from labctl.core.manager import outlet_key
+
+        assert outlet_key(PlugType.TASMOTA, " 10.0.0.5 ", 2) == outlet_key(
+            "tasmota", "10.0.0.5", 2
+        )
+        assert outlet_key("kasa", "Plug.Local", None) == ("kasa", "plug.local", 1)
+
+    @pytest.mark.parametrize(
+        "a, b, overlap",
+        [
+            (("tasmota", "h", 1), ("tasmota", "h", 1), True),
+            (("tasmota", "h", 1), ("tasmota", "h", 2), False),
+            (("tasmota", "h", 0), ("tasmota", "h", 2), True),
+            (("tasmota", "h", 2), ("tasmota", "h", 0), True),
+            (("tasmota", "h", 1), ("tasmota", "g", 1), False),
+            (("tasmota", "h", 1), ("shelly", "h", 1), False),
+        ],
+    )
+    def test_outlets_overlap(self, a, b, overlap):
+        from labctl.core.manager import outlets_overlap
+
+        assert outlets_overlap(a, b) is overlap
+
+    def test_sharing_hardware_uses_the_rule(self, manager):
+        a = manager.create_sbc(name="a")
+        b = manager.create_sbc(name="b")
+        c = manager.create_sbc(name="c")
+        whole = manager.create_sbc(name="whole")
+        manager.assign_power_plug(a.id, PlugType.TASMOTA, "10.0.0.5", 1)
+        manager.assign_power_plug(b.id, PlugType.TASMOTA, " 10.0.0.5", 1)
+        manager.assign_power_plug(c.id, PlugType.TASMOTA, "10.0.0.5", 2)
+        manager.db.execute_modify(
+            "INSERT INTO power_plugs (sbc_id, plug_type, address, plug_index)"
+            " VALUES (?, 'tasmota', '10.0.0.5', 0)",
+            (whole.id,),
+        )
+        assert manager.sbcs_sharing_hardware(plug=("tasmota", "10.0.0.5", 1)) == [
+            "a",
+            "b",
+            "whole",
+        ]

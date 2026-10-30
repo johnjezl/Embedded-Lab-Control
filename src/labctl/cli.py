@@ -625,25 +625,11 @@ def _display_recent_activity(manager, *, limit: int = 5) -> None:
         click.echo("  " + _format_activity_row(row, compact=True))
 
 
-def _sdwire_host_switch_guard_cli(
-    sbc_name: str, sbc, force: bool = False, *, read: bool = False
-) -> str | None:
-    """Refuse taking the SD card from the board unless its plug reports it
-    OFF (power_guard.check_board_off: no plug, a plug that can't be read,
-    or another state refuse too, as in the MCP tools). ``force`` (the
-    commands' --force) skips the check. ``read`` words the hint for
-    ``sdwire ls``/``cat``/``info``."""
-    if force:
-        return None
-    from labctl.sdwire.power_guard import (
-        POWERED_ON,
-        board_off_problem_text,
-        check_board_off,
-    )
+def _sdwire_off_refusal_cli(sbc_name: str, check, *, read: bool = False) -> str:
+    """The CLI's wording of a failed power_guard.BoardOffCheck. ``read``
+    words the hint for ``sdwire ls``/``cat``/``info``."""
+    from labctl.sdwire.power_guard import POWERED_ON, board_off_problem_text
 
-    check = check_board_off(sbc)
-    if check.is_off:
-        return None
     if check.problem == POWERED_ON:
         advice = "Power off before switching SD to host mode."
     elif read:
@@ -660,24 +646,33 @@ def _sdwire_host_switch_guard_cli(
     )
 
 
+def _sdwire_host_switch_guard_cli(
+    sbc_name: str, sbc, force: bool = False
+) -> str | None:
+    """Refuse `sdwire host` unless the board's plug reports it OFF
+    (power_guard.check_board_off: no plug, a plug that can't be read, or
+    another state refuse too, as in the MCP tools); --force skips it."""
+    if force:
+        return None
+    from labctl.sdwire.power_guard import check_board_off
+
+    check = check_board_off(sbc)
+    return None if check.is_off else _sdwire_off_refusal_cli(sbc_name, check)
+
+
 def _sdwire_read_needs_switch(sbc_name: str, sbc, ctrl, force: bool) -> bool:
-    """How ``sdwire ls``/``cat``/``info`` reach the card (as the MCP read
-    tools do): a card already on the host is read in place and left there
-    (the board isn't using it, so its power doesn't matter); otherwise the
-    card is switched to the host and back, only when the board is confirmed
-    off (or --force). Exits with the refusal."""
-    if ctrl.card_on_host():
-        return False
-    # A card switched to the host moments ago may still be initialising
-    # and probe as "no medium": look once more before deciding.
-    time.sleep(1.0)
-    if ctrl.card_on_host():
-        return False
-    guard_err = _sdwire_host_switch_guard_cli(sbc_name, sbc, force=force, read=True)
-    if guard_err:
-        click.echo(guard_err, err=True)
+    """How ``sdwire ls``/``cat``/``info`` reach the card
+    (power_guard.read_access, shared with the MCP read tools): a card on
+    the host is read in place; otherwise it is switched to the host and
+    back only when the board is confirmed off (or --force). Exits with the
+    refusal."""
+    from labctl.sdwire.power_guard import read_access
+
+    needs_switch, check = read_access(sbc, ctrl, force=force)
+    if check is not None:
+        click.echo(_sdwire_off_refusal_cli(sbc_name, check, read=True), err=True)
         sys.exit(1)
-    return True
+    return needs_switch
 
 
 class _CliState(dict):
@@ -1383,10 +1378,12 @@ def info_cmd(ctx: click.Context, name: str) -> None:
         "Per-SBC power-cycle off→on delay (seconds, 0-86400). The default "
         "and the minimum for every power cycle of the board: `power cycle`, "
         "the reboot after `sdwire flash`/`update`, `boot-test`, "
-        "`enter-recovery`/`exit-recovery`, and MCP/REST/web cycles; boards "
-        "sharing a plug outlet use the largest stored delay among them. Pass "
-        "a negative number (e.g. -1) to clear the override and fall back to "
-        f"the default and minimum of {DEFAULT_POWER_CYCLE_DELAY_SECONDS}s."
+        "`enter-recovery`/`exit-recovery`, and MCP/REST/web cycles. Boards "
+        "sharing a plug outlet are cycled together, so the largest of their "
+        f"minimums applies (a board without one counts as "
+        f"{DEFAULT_POWER_CYCLE_DELAY_SECONDS}s). Pass a negative number (e.g. "
+        "-1) to clear the override and fall back to the default and minimum "
+        f"of {DEFAULT_POWER_CYCLE_DELAY_SECONDS}s."
     ),
 )
 @click.pass_context
@@ -1822,8 +1819,8 @@ def sdwire_flash_cmd(
         steps.append("switch the card back to the board")
         if not no_reboot and sbc.power_plug:
             steps.append(
-                f"power-cycle {sbc_name} (waiting {reboot_delay}s between off "
-                "and on)"
+                f"power-cycle {sbc_name} (waiting {reboot_delay.seconds}s between "
+                f"off and on: the {reboot_delay.source})"
             )
         click.echo("Dry run: would " + "; ".join(steps) + ". Nothing changed.")
         return
@@ -2071,8 +2068,8 @@ def sdwire_update_cmd(
         steps.append("unmount and switch the card back to the board")
         if reboot and sbc.power_plug:
             steps.append(
-                f"power-cycle {sbc_name} (waiting {reboot_delay}s between off "
-                "and on)"
+                f"power-cycle {sbc_name} (waiting {reboot_delay.seconds}s between "
+                f"off and on: the {reboot_delay.source})"
             )
         click.echo("Dry run: would " + "; ".join(steps) + ". Nothing changed.")
         return
@@ -3549,36 +3546,29 @@ def power_off_cmd(ctx: click.Context, sbc_name: str) -> None:
         sys.exit(1)
 
 
-def _resolve_cycle_delay(
-    manager, sbc, requested: float | None
-) -> tuple[float, str | None]:
+def _resolve_cycle_delay(manager, sbc, requested: float | None):
     """The effective power-cycle delay for an SBC: runtime's
-    board_cycle_delay (the floor is the largest stored delay among the
-    boards on its outlet, or ``DEFAULT_POWER_CYCLE_DELAY_SECONDS``;
-    omitted means the floor).
+    board_cycle_delay (a CycleDelay: the floor is the largest of the floors
+    of the boards on its outlet, each its stored delay or
+    ``DEFAULT_POWER_CYCLE_DELAY_SECONDS``; omitted means the floor).
 
     Returns ``(delay, warning)``; ``warning`` says when the requested
-    value was raised to the floor, else None. Raises ValueError for a
-    requested value out of range (negative included) and
-    StoredCycleDelayError (a ValueError saying how to clear it) for an
-    out-of-range stored one.
+    value was raised to the floor (naming the board it came from), else
+    None. Raises ValueError for a requested value out of range (negative
+    included) and StoredCycleDelayError (a ValueError saying how to clear
+    it) for an out-of-range stored one.
     """
-    from labctl.actuators.runtime import board_cycle_delay, cycle_delay_floor
+    from labctl.actuators.runtime import board_cycle_delay
 
     delay = board_cycle_delay(manager, sbc, requested)
-    if requested is None or delay <= requested:
-        return delay, None
-    _floor, source = cycle_delay_floor(manager, sbc)
-    return (
-        delay,
-        f"--delay {float(requested)}s is below the {source} of {delay}s; "
-        f"using {delay}s",
-    )
+    note = delay.raised_note()
+    return delay, (f"--delay {note}; using {delay.seconds}s" if note else None)
 
 
-def _reboot_cycle_delay(manager, sbc) -> float:
-    """The delay a reboot (power cycle) of ``sbc`` will wait, checked
-    before anything is changed: an out-of-range stored delay exits."""
+def _reboot_cycle_delay(manager, sbc):
+    """The delay (a runtime CycleDelay) a reboot (power cycle) of ``sbc``
+    will wait, checked before anything is changed: an out-of-range stored
+    delay exits."""
     from labctl.actuators.runtime import board_cycle_delay
 
     try:
@@ -3599,11 +3589,12 @@ def _reboot_cycle_delay(manager, sbc) -> float:
     default=None,
     help=(
         "Delay between off and on (seconds, 0-86400). If omitted, the "
-        "SBC's stored value (`edit --cycle-delay`) is used (the largest "
-        "among boards sharing its plug outlet); otherwise "
-        f"{DEFAULT_POWER_CYCLE_DELAY_SECONDS}s. That value is also the "
-        "minimum: smaller values (including 0) are raised to it with a "
-        "warning; a negative value is an error."
+        "SBC's stored value (`edit --cycle-delay`) is used, or "
+        f"{DEFAULT_POWER_CYCLE_DELAY_SECONDS}s without one; with boards "
+        "sharing its plug outlet, the largest of their values (each "
+        f"{DEFAULT_POWER_CYCLE_DELAY_SECONDS}s without one). That value is "
+        "also the minimum: smaller values (including 0) are raised to it with "
+        "a warning naming its board; a negative value is an error."
     ),
 )
 @click.option(
@@ -3643,11 +3634,12 @@ def power_cycle_cmd(
         click.echo(
             f"Dry run: would power-cycle {sbc_name} via {plug.plug_type.value} "
             f"plug {plug.address} (index {plug.plug_index}): off, wait "
-            f"{effective_delay}s, apply pre-power bindings, on. Nothing changed."
+            f"{effective_delay.seconds}s ({effective_delay.source}), apply "
+            "pre-power bindings, on. Nothing changed."
         )
         return
 
-    click.echo(f"Power cycling {sbc_name} (delay: {effective_delay}s)...")
+    click.echo(f"Power cycling {sbc_name} (delay: {effective_delay.seconds}s)...")
     try:
         ok = power_cycle_with_bindings(manager, sbc, controller, effective_delay)
     except PrePowerCheckError as e:
@@ -3661,7 +3653,7 @@ def power_cycle_cmd(
             "power_cycle",
             False,
             error=str(e),
-            extra={"delay_seconds": effective_delay},
+            extra={"delay_seconds": effective_delay.seconds},
         )
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -3671,7 +3663,7 @@ def power_cycle_cmd(
         sbc,
         "power_cycle",
         ok,
-        extra={"delay_seconds": effective_delay},
+        extra={"delay_seconds": effective_delay.seconds},
     )
     if ok:
         click.echo(f"Power cycled: {sbc_name}")
@@ -4390,7 +4382,7 @@ def _run_composite(ctx, sbc_name: str, fn_name: str, fn) -> None:
             fn_name,
             False,
             error=str(e),
-            extra={"delay_seconds": delay},
+            extra={"delay_seconds": delay.seconds},
         )
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -4401,7 +4393,7 @@ def _run_composite(ctx, sbc_name: str, fn_name: str, fn) -> None:
             fn_name,
             False,
             error=str(e),
-            extra={"delay_seconds": delay},
+            extra={"delay_seconds": delay.seconds},
         )
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -4411,7 +4403,7 @@ def _run_composite(ctx, sbc_name: str, fn_name: str, fn) -> None:
         sbc,
         fn_name,
         True,
-        extra={"delay_seconds": delay},
+        extra={"delay_seconds": delay.seconds},
     )
 
 

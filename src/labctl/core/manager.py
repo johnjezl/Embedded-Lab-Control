@@ -59,6 +59,28 @@ def _norm_usb_id(value: str) -> str:
         return value.lower()
 
 
+def outlet_key(plug_type, address: str, plug_index: int) -> tuple:
+    """A plug outlet as the sharing rule compares it: type, address text
+    (trimmed, case-folded) and outlet index. Two different addresses for
+    one plug (a hostname and its IP) are not recognised as the same."""
+    plug_type = getattr(plug_type, "value", plug_type)
+    index = plug_index if plug_index is not None else 1
+    return (plug_type, (address or "").strip().lower(), index)
+
+
+def outlets_overlap(a: tuple, b: tuple) -> bool:
+    """Whether switching outlet ``a`` switches outlet ``b`` (keys from
+    :func:`outlet_key`). An index below 1 (rows saved before assignment
+    refused it) addresses the whole device on Tasmota (Power0), so it
+    overlaps every outlet on that address."""
+    return a[:2] == b[:2] and (a[2] == b[2] or a[2] < 1 or b[2] < 1)
+
+
+def plug_outlet_key(plug) -> tuple:
+    """:func:`outlet_key` of a PowerPlug."""
+    return outlet_key(plug.plug_type, plug.address, plug.plug_index)
+
+
 class ResourceManager:
     """Manager for lab resources (SBCs, ports, etc.)."""
 
@@ -949,17 +971,18 @@ class ResourceManager:
         has to cover the boards that have it already (D013)."""
         names: set[str] = set()
         if plug is not None:
-            plug_type, address, plug_index = plug
-            # An index below 1 (rows saved before assignment refused it)
-            # addresses the whole device on Tasmota (Power0), so it
-            # shares every outlet on that address.
+            wanted = outlet_key(*plug)
             rows = self.db.execute(
-                "SELECT s.name FROM power_plugs p JOIN sbcs s ON s.id = p.sbc_id"
-                " WHERE p.plug_type = ? AND lower(trim(p.address)) = lower(?)"
-                " AND (p.plug_index = ? OR p.plug_index < 1 OR ? < 1)",
-                (plug_type, address.strip(), plug_index, plug_index),
+                "SELECT s.name, p.plug_type, p.address, p.plug_index"
+                " FROM power_plugs p JOIN sbcs s ON s.id = p.sbc_id"
             )
-            names.update(r["name"] for r in rows)
+            names.update(
+                r["name"]
+                for r in rows
+                if outlets_overlap(
+                    wanted, outlet_key(r["plug_type"], r["address"], r["plug_index"])
+                )
+            )
         if sdwire_device_id is not None:
             rows = self.db.execute(
                 "SELECT s.name FROM sdwire_assignments a"

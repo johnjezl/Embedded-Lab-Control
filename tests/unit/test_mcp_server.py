@@ -2362,7 +2362,7 @@ class TestMcpRemoveTools:
             boot_test(sbc_name="test-sbc-1", expect_pattern="ok", runs=1)
 
         manager, sbc, controller, delay = cycle.call_args.args
-        assert (manager, sbc.name, controller, delay) == (
+        assert (manager, sbc.name, controller, delay.seconds) == (
             mock_manager,
             "test-sbc-1",
             from_plug.return_value,
@@ -5136,7 +5136,7 @@ class TestMcpCycleDelay:
         with patch("labctl.actuators.runtime.time.sleep") as sleep:
             result = power_cycle(sbc_name="test-sbc-1", delay=1.0)
         sleep.assert_called_once_with(7.0)
-        assert "1.0s was raised to the board's minimum" in result
+        assert "1.0s is below the SBC minimum of 7.0s, so it was raised" in result
 
     def test_power_cycle_default_without_stored_delay(self, mock_manager, power):
         from labctl.mcp_server import power_cycle
@@ -5209,7 +5209,7 @@ class TestMcpCycleDelay:
             sdwire_update(
                 sbc_name="test-sbc-1", partition=1, deletes=["x"], reboot=True
             )
-        assert cycle.call_args.args[3] == 6.0
+        assert cycle.call_args.args[3].seconds == 6.0
 
     def test_boot_test_refuses_bad_stored_delay(self, mock_manager, power):
         from labctl.mcp_server import boot_test
@@ -5241,7 +5241,7 @@ class TestMcpCycleDelay:
             patch("labctl.actuators.runtime.power_cycle_with_bindings") as cycle,
         ):
             boot_test(sbc_name="test-sbc-1", expect_pattern="ok", runs=1)
-        assert cycle.call_args.args[3] == 9.0
+        assert cycle.call_args.args[3].seconds == 9.0
 
 
 @pytest.mark.confirmation
@@ -5264,7 +5264,10 @@ class TestMcpCycleDelayConfirmation:
         TestMcpCycleDelay._store(mock_manager, 5.0)
         plan = json.loads(power_cycle(sbc_name="test-sbc-1", delay=1.0))
         assert plan["status"] == "confirmation_required"
-        assert plan["will_do"] == {"cycle_delay_seconds": 5.0}
+        assert plan["will_do"] == {
+            "cycle_delay_seconds": 5.0,
+            "cycle_delay_source": "SBC minimum",
+        }
         confirm.power_off.assert_not_called()
 
     def test_plan_refuses_out_of_range_stored_delay(self, mock_manager, confirm):
@@ -5290,7 +5293,10 @@ class TestMcpCycleDelayConfirmation:
 
         TestMcpCycleDelay._store(mock_manager, 4.0)
         plan = json.loads(boot_test(sbc_name="test-sbc-1", expect_pattern="ok"))
-        assert plan["will_do"] == {"cycle_delay_seconds": 4.0}
+        assert plan["will_do"] == {
+            "cycle_delay_seconds": 4.0,
+            "cycle_delay_source": "SBC minimum",
+        }
 
 
 class TestMcpRemoveSerialDeviceClaims:
@@ -5373,7 +5379,10 @@ class TestConfirmationBindsPlan:
         power, sleep = env
         TestMcpCycleDelay._store(mock_manager, 5.0)
         plan = json.loads(power_cycle(sbc_name="test-sbc-1"))
-        assert plan["will_do"] == {"cycle_delay_seconds": 5.0}
+        assert plan["will_do"] == {
+            "cycle_delay_seconds": 5.0,
+            "cycle_delay_source": "SBC minimum",
+        }
 
         TestMcpCycleDelay._store(mock_manager, 600.0)
         result = json.loads(
@@ -5432,3 +5441,72 @@ class TestMcpReadHintAndClaimOrder:
         data = json.loads(getattr(mcp_server, tool)(**kwargs))
         assert data["error"] == "sbc_claimed"
         assert "confirm_token" not in data
+
+
+class TestMcpRound3:
+    """#41 review 3: board names keep their case in read refusals, and
+    results name the board an outlet-wide minimum came from."""
+
+    def test_read_refusal_keeps_board_name_case(self, mock_manager):
+        from labctl.mcp_server import _sdwire_read_power_refusal
+
+        sbc = MagicMock()
+        sbc.power_plug = None
+        data = json.loads(_sdwire_read_power_refusal("pi-5-lower", sbc))
+        assert data["message"].startswith("pi-5-lower has no power plug")
+
+    def test_read_refusal_capitalises_generic_text(self, mock_manager):
+        from labctl.mcp_server import _sdwire_read_power_refusal
+
+        sbc = MagicMock()
+        with patch(
+            "labctl.power.PowerController.from_plug", side_effect=RuntimeError("x")
+        ):
+            data = json.loads(_sdwire_read_power_refusal("pi-5-lower", sbc))
+        assert data["message"].startswith(
+            "Could not read the power state of pi-5-lower: x."
+        )
+
+    @pytest.fixture
+    def sharer(self, mock_manager):
+        from labctl.core.models import PlugType
+
+        other = mock_manager.get_sbc_by_name("test-sbc-2")
+        mock_manager.assign_power_plug(other.id, PlugType.TASMOTA, "192.168.1.200")
+        mock_manager.db.execute_modify(
+            "UPDATE sbcs SET power_cycle_delay_seconds = 12 WHERE name = 'test-sbc-2'"
+        )
+        return other
+
+    @pytest.fixture
+    def power(self, mock_manager):
+        ctrl = MagicMock()
+        ctrl.power_off.return_value = True
+        ctrl.power_on.return_value = True
+        with (
+            patch("labctl.power.base.PowerController.from_plug", return_value=ctrl),
+            patch("labctl.actuators.runtime.time.sleep") as sleep,
+        ):
+            yield sleep
+
+    def test_power_cycle_names_the_sharer(self, mock_manager, sharer, power):
+        from labctl.mcp_server import power_cycle
+
+        result = power_cycle(sbc_name="test-sbc-1", delay=4.0)
+        assert result.startswith("Power cycled: test-sbc-1 (delay: 12.0s); 4.0s is ")
+        assert "minimum of 'test-sbc-2' (on the same outlet) of 12.0s" in result
+        power.assert_called_once_with(12.0)
+
+    def test_recovery_names_the_sharer(self, mock_manager, sharer, power):
+        from labctl import mcp_server
+
+        with (
+            patch("labctl.mcp_server._check_claim", return_value=None),
+            patch("labctl.actuators.runtime.enter_recovery") as fn,
+        ):
+            result = mcp_server.enter_recovery(sbc_name="test-sbc-1")
+        assert result == (
+            "OK: enter_recovery test-sbc-1 (waited 12.0s: the minimum of "
+            "'test-sbc-2' (on the same outlet))"
+        )
+        assert fn.call_args.kwargs["delay_s"].seconds == 12.0

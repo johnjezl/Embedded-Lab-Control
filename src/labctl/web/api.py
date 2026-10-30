@@ -16,6 +16,7 @@ from labctl.actuators.runtime import (
     power_on_with_bindings,
 )
 from labctl.core import audit
+from labctl.core.manager import outlets_overlap, plug_outlet_key
 from labctl.core.models import PortType, Status
 from labctl.power import PowerController
 from labctl.web import claims
@@ -33,15 +34,7 @@ _power_cycle_lock = threading.Lock()
 
 
 def _outlet_key(sbc) -> tuple:
-    plug = sbc.power_plug
-    plug_type = getattr(plug.plug_type, "value", plug.plug_type)
-    return (plug_type, plug.address.strip().lower(), plug.plug_index)
-
-
-def _same_outlet(a: tuple, b: tuple) -> bool:
-    # An index below 1 addresses the whole device (as in
-    # ResourceManager.sbcs_sharing_hardware), so it overlaps every outlet.
-    return a[:2] == b[:2] and (a[2] == b[2] or a[2] < 1 or b[2] < 1)
+    return plug_outlet_key(sbc.power_plug)
 
 
 def outlet_cycle_in_progress(sbc) -> bool:
@@ -49,7 +42,7 @@ def outlet_cycle_in_progress(sbc) -> bool:
     this server (``on``/``off`` are refused meanwhile)."""
     key = _outlet_key(sbc)
     with _power_cycle_lock:
-        return any(_same_outlet(key, k) for k in _power_cycles_in_progress)
+        return any(outlets_overlap(key, k) for k in _power_cycles_in_progress)
 
 
 def begin_power_cycle(sbc) -> str | None:
@@ -60,13 +53,13 @@ def begin_power_cycle(sbc) -> str | None:
     key = _outlet_key(sbc)
     now = time.monotonic()
     with _power_cycle_lock:
-        if any(_same_outlet(key, k) for k in _power_cycles_in_progress):
+        if any(outlets_overlap(key, k) for k in _power_cycles_in_progress):
             return (
                 f"a power cycle of {sbc.name!r}'s power outlet is already in "
                 "progress"
             )
         last = max(
-            (t for k, t in _power_cycle_times.items() if _same_outlet(key, k)),
+            (t for k, t in _power_cycle_times.items() if outlets_overlap(key, k)),
             default=float("-inf"),
         )
         elapsed = now - last
@@ -323,7 +316,8 @@ def control_power(name: str):
                 "state": state.value,
             }
             if action == "cycle":
-                body["delay_seconds"] = delay
+                body["delay_seconds"] = delay.seconds
+                body["delay_source"] = delay.source
             return jsonify(body)
         else:
             return (

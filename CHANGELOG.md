@@ -56,12 +56,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `boot-test` run (CLI and MCP). A smaller requested delay is raised to
   it, so MCP and REST no longer allow less than 3 s on a board without a
   stored delay. Boards sharing a plug outlet are cycled together, so the
-  largest stored delay among them applies (and an out-of-range one on any
-  of them refuses). A negative requested delay is an error everywhere (CLI
+  largest of their minimums applies (each board's stored delay, or 3 s
+  without one; an out-of-range one on any of them refuses), and the CLI
+  warning, MCP results and REST `delay_source` name the board it came
+  from. A negative requested delay is an error everywhere (CLI
   `power cycle --delay` used to raise it to the minimum). The `--dry-run` plans of
   `sdwire flash`/`update` and the MCP confirmations of `power_cycle`,
   `enter_/exit_recovery`, `boot_test` and `sdwire_update` (with
-  `reboot=true`) show the delay (`will_do.cycle_delay_seconds`).
+  `reboot=true`) show the delay and where it came from
+  (`will_do.cycle_delay_seconds`, `cycle_delay_source`).
 - Generated udev rules (`labctl serial udev`, and the legacy
   `scripts/generate-udev-rules.py`) make `/dev/lab/*` devices
   `root:dialout 0660`. They were world-writable (`0666`), so any local

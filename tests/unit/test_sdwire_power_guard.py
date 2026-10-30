@@ -154,3 +154,77 @@ class TestCheckBoardOff:
         assert "power state of b is unknown" in power_guard.board_off_problem_text(
             "b", check
         )
+
+
+class TestReadAccess:
+    """The one read-access decision for the CLI and MCP read tools (#41
+    review 3): on host -> second look -> power check."""
+
+    @pytest.fixture(autouse=True)
+    def no_sleep(self):
+        with patch("labctl.sdwire.power_guard.time.sleep") as sleep:
+            yield sleep
+
+    def _ctrl(self, *on_host):
+        ctrl = MagicMock()
+        ctrl.card_on_host.side_effect = list(on_host)
+        return ctrl
+
+    def test_on_host_read_in_place(self, no_sleep):
+        from labctl.sdwire.power_guard import read_access
+
+        assert read_access(MagicMock(power_plug=None), self._ctrl(True)) == (
+            False,
+            None,
+        )
+        no_sleep.assert_not_called()
+
+    def test_second_look_finds_it_on_host(self, no_sleep):
+        from labctl.sdwire.power_guard import READ_RECHECK_SECONDS, read_access
+
+        assert read_access(MagicMock(power_plug=None), self._ctrl(False, True)) == (
+            False,
+            None,
+        )
+        no_sleep.assert_called_once_with(READ_RECHECK_SECONDS)
+
+    def test_on_board_without_plug_refused(self):
+        from labctl.sdwire.power_guard import NO_PLUG, read_access
+
+        needs_switch, check = read_access(
+            MagicMock(power_plug=None), self._ctrl(False, False)
+        )
+        assert needs_switch is False and check.problem == NO_PLUG
+
+    def test_force_switches_without_checking(self):
+        from labctl.sdwire.power_guard import read_access
+
+        with patch("labctl.sdwire.power_guard.check_board_off") as check:
+            assert read_access(
+                MagicMock(power_plug=None), self._ctrl(False, False), force=True
+            ) == (True, None)
+        check.assert_not_called()
+
+    def test_board_off_switches(self):
+        from labctl.power.base import PowerState
+        from labctl.sdwire.power_guard import read_access
+
+        power = MagicMock()
+        power.get_state.return_value = PowerState.OFF
+        with patch("labctl.power.PowerController.from_plug", return_value=power):
+            assert read_access(MagicMock(), self._ctrl(False, False)) == (True, None)
+
+
+def test_problem_text_never_recases_the_board_name():
+    from labctl.sdwire.power_guard import (
+        NO_PLUG,
+        POWERED_ON,
+        BoardOffCheck,
+        board_off_problem_text,
+    )
+
+    for problem in (NO_PLUG, POWERED_ON):
+        text = board_off_problem_text(
+            "pi-lower", BoardOffCheck(problem), sentence_start=True
+        )
+        assert text.startswith("pi-lower ")

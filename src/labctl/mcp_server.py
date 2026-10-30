@@ -967,11 +967,12 @@ def _sdwire_host_switch_guard_mcp(
     return f"Error: {board_off_problem_text(sbc_name, check)}. {advice}{override}"
 
 
-def _sdwire_read_power_refusal(sbc_name: str, sbc) -> str | None:
+def _sdwire_read_power_refusal(sbc_name: str, sbc, check=None) -> str | None:
     """Strict power check for the read-only SD tools: proceed only on OFF
     (power_guard.check_board_off, as ``sdwire_to_host``), because pulling
-    the card from a running board can corrupt it. Returns a
-    ``_sdwire_read_error`` payload or None.
+    the card from a running board can corrupt it. ``check`` is a
+    BoardOffCheck already made. Returns a ``_sdwire_read_error`` payload
+    or None.
     """
     from labctl.sdwire.power_guard import (
         POWERED_ON,
@@ -979,11 +980,11 @@ def _sdwire_read_power_refusal(sbc_name: str, sbc) -> str | None:
         check_board_off,
     )
 
-    check = check_board_off(sbc)
+    if check is None:
+        check = check_board_off(sbc)
     if check.is_off:
         return None
-    text = board_off_problem_text(sbc_name, check)
-    text = text[0].upper() + text[1:]
+    text = board_off_problem_text(sbc_name, check, sentence_start=True)
     if check.problem == POWERED_ON:
         return _sdwire_read_error(
             "powered_on", f"{text}. Power off before switching SD to host mode."
@@ -996,37 +997,19 @@ def _sdwire_read_power_refusal(sbc_name: str, sbc) -> str | None:
     )
 
 
-# Second look before treating the card as on the DUT (see below).
-_HOST_RECHECK_SECONDS = 1.0
-
-
 def _sdwire_read_access(sbc_name: str, sbc, ctrl) -> tuple[bool, str | None]:
-    """Decide how a read-only SD tool may reach the card without side effects.
-
-    Returns ``(needs_switch, refusal)``:
-    - Card already on the host (``ctrl.card_on_host()``, which re-checks the
-      reader for media rather than trusting a possibly stale size): read it
-      in place and leave the mux alone; the DUT is not using the card, so
-      its power state doesn't matter.
-    - Card on the DUT: switch to host and back only if the board is known to
-      be OFF (see ``_sdwire_read_power_refusal``); otherwise refuse.
-    Callers hold the hardware lock, so detection and switching aren't raced
-    by other calls in this MCP server. Other processes (the CLI, another
-    MCP server) are not covered; claims are the cross-process guard.
+    """How a read-only SD tool reaches the card (power_guard.read_access,
+    shared with the CLI): ``(needs_switch, refusal)``. Callers hold the
+    hardware lock, so detection and switching aren't raced by other calls
+    in this MCP server. Other processes (the CLI, another MCP server) are
+    not covered; claims are the cross-process guard.
     """
-    if ctrl.card_on_host():
-        return False, None
-    # A card switched to the host moments ago by another process (CLI,
-    # another session) may still be initialising and probe as "no medium".
-    # Concluding "on DUT" would make the cleanup switch it there, so check
-    # once more before deciding. (The mux can't be read back directly.)
-    _time_mod.sleep(_HOST_RECHECK_SECONDS)
-    if ctrl.card_on_host():
-        return False, None
-    refusal = _sdwire_read_power_refusal(sbc_name, sbc)
-    if refusal:
-        return False, refusal
-    return True, None
+    from labctl.sdwire.power_guard import read_access
+
+    needs_switch, check = read_access(sbc, ctrl)
+    if check is not None:
+        return False, _sdwire_read_power_refusal(sbc_name, sbc, check)
+    return needs_switch, None
 
 
 # ---------------------------------------------------------------------------
@@ -1299,9 +1282,10 @@ def power_cycle(sbc_name: str, delay: Optional[float] = None) -> str:
     Args:
         sbc_name: Name of the SBC to power cycle
         delay: Seconds to wait between off and on, 0 to 86400. Omitted:
-            the board's stored cycle delay, or 3.0 if none is set. That
-            is also the minimum: a smaller value is raised to it (a
-            negative one is an error).
+            the largest stored cycle delay among the boards sharing the
+            plug outlet (each counts as 3.0 if it has none). That is also
+            the minimum: a smaller value is raised to it, and the result
+            names the board it came from (a negative one is an error).
     """
     from labctl.power import PowerController
 
@@ -1328,9 +1312,10 @@ def power_cycle(sbc_name: str, delay: Optional[float] = None) -> str:
     try:
         controller = PowerController.from_plug(sbc.power_plug)
         if power_cycle_with_bindings(manager, sbc, controller, effective):
-            result = f"Power cycled: {sbc_name} (delay: {effective}s)"
-            if delay is not None and effective > delay:
-                result += f"; {delay}s was raised to the board's minimum"
+            result = f"Power cycled: {sbc_name} (delay: {effective.seconds}s)"
+            note = effective.raised_note()
+            if note:
+                result += f"; {note}, so it was raised"
             advisory = _claim_advisory(manager, sbc_name)
             return f"{result}\n\n{advisory}" if advisory else result
         return f"Failed to power cycle {sbc_name}"
@@ -2059,8 +2044,9 @@ def sdwire_update(
     writing nothing, if it can't be switched off), switches
     SD to host, mounts partition, performs operations (copies first, then
     renames, then deletes), unmounts, switches back to DUT. The SBC is left
-    powered off unless reboot=true, which power cycles it (the board's
-    stored cycle delay, or 3 s if none is set).
+    powered off unless reboot=true, which power cycles it (waiting the
+    largest stored cycle delay among the boards on its plug outlet, each
+    counting as 3 s if it has none).
 
     Args:
         sbc_name: Name of the SBC with an assigned SDWire device
@@ -2729,7 +2715,8 @@ _CONFIRM_PREVIEWS["serial_send"] = _serial_send_preview
 def _cycle_delay_preview(arguments: dict) -> dict | None:
     """The delay a power-cycling call will wait, for its confirmation.
 
-    The board's stored delay, or 3 s, is the minimum (board_cycle_delay); an
+    The largest of the floors of the boards on its outlet (each its stored
+    delay, or 3 s) is the minimum (board_cycle_delay); an
     out-of-range stored or requested delay refuses the call (ValueError).
     None when the call doesn't power-cycle or the board isn't found (the
     tool reports that)."""
@@ -2746,9 +2733,8 @@ def _cycle_delay_preview(arguments: dict) -> dict | None:
         return None
     from labctl.actuators.runtime import board_cycle_delay
 
-    return {
-        "cycle_delay_seconds": board_cycle_delay(manager, sbc, arguments.get("delay"))
-    }
+    delay = board_cycle_delay(manager, sbc, arguments.get("delay"))
+    return {"cycle_delay_seconds": delay.seconds, "cycle_delay_source": delay.source}
 
 
 for _tool in (
@@ -2868,7 +2854,8 @@ def boot_test(
 
     Optionally deploys an image (the SBC is powered off first; nothing is
     deployed if it can't be), then reboots the SBC multiple times
-    (waiting the board's stored cycle delay, or 3 s, between off and on),
+    (waiting the largest stored cycle delay among the boards on its plug
+    outlet, each counting as 3 s if it has none, between off and on),
     capturing serial output each time. Reports how many boots
     successfully reached the expected pattern.
 
@@ -4367,7 +4354,7 @@ def _run_recovery_composite(sbc_name: str, fn_name: str, fn) -> str:
         fn(manager, sbc, controller, delay_s=delay)
     except (ActuationError, RuntimeError) as e:
         return f"Error: {fn_name} failed: {e}"
-    return f"OK: {fn_name} {sbc_name}"
+    return f"OK: {fn_name} {sbc_name} (waited {delay.seconds}s: the {delay.source})"
 
 
 @mcp.tool(annotations=TOOL_ANNOTATIONS["enter_recovery"])
@@ -4377,8 +4364,10 @@ def enter_recovery(sbc_name: str) -> str:
 
     Pre-flight probes the recovery_mode actuator, then power_off →
     sleep → engage strap → power_on. Aborts before any power
-    transition if the actuator is unreachable. The sleep is the SBC's
-    stored power-cycle delay (3.0 s if none is set).
+    transition if the actuator is unreachable. The sleep is the largest
+    stored power-cycle delay among the boards sharing the SBC's plug
+    outlet (each counts as 3.0 s if it has none); the result names the
+    board it came from.
 
     Args:
         sbc_name: Target SBC.
@@ -4394,8 +4383,9 @@ def exit_recovery(sbc_name: str) -> str:
     """Power-aware "leave recovery mode" composite (release strap, normal boot).
 
     Like enter_recovery: probes the recovery_mode actuator, then
-    power_off → sleep → release strap → power_on. The sleep is the SBC's
-    stored power-cycle delay (3.0 s if none is set).
+    power_off → sleep → release strap → power_on. The sleep is as for
+    enter_recovery: the largest stored delay among the boards on the
+    outlet (3.0 s for one with none).
 
     Args:
         sbc_name: Target SBC.
