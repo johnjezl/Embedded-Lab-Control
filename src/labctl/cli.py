@@ -178,6 +178,7 @@ def _get_manager(ctx: click.Context) -> ResourceManager:
         ctx.obj["manager"] = get_manager(
             config.database_path,
             timeout_seconds=config.database.timeout_seconds,
+            base_tcp_port=config.serial.base_tcp_port,
         )
     return ctx.obj["manager"]
 
@@ -360,6 +361,22 @@ def _check_claims_of_cli(
             ctx, name, override, direct=False, for_sbc=for_sbc, probe=probe
         )
     return found
+
+
+def _port_assign_claim_conflict(ctx: click.Context, sbc_name: str, port):
+    """The claim that would stop `port assign` re-saving ``port`` (a
+    SerialPort of ``sbc_name``), or None: the same checks, in the same
+    order, as port_assign_cmd (boards sharing its console device, then the
+    board's own claim), but probing, so nothing exits or is heartbeated."""
+    others = _get_manager(ctx).sbcs_sharing_hardware(
+        serial_device_path=port.device_path,
+        serial_device_id=port.serial_device_id,
+    )
+    for name in sorted(n for n in others if n and n != sbc_name):
+        claim = _cli_claim_conflict(ctx, name, direct=False, probe=True)
+        if claim is not None:
+            return claim
+    return _cli_claim_conflict(ctx, sbc_name, shared=False, probe=True)
 
 
 def _check_shared_hardware_cli(
@@ -3181,7 +3198,6 @@ def port_assign_cmd(
             baud_rate=baud,
             alias=alias,
             serial_device_id=serial_device_id,
-            base_tcp_port=ctx.obj["config"].serial.base_tcp_port,
         )
         alias_str = f" as '{alias}'" if alias else ""
         click.echo(
@@ -3382,9 +3398,10 @@ def ser2net_generate_cmd(
 
     A port with no TCP port recorded: with --install it is assigned one
     and saved, exactly as `port assign` without -t would (one above the
-    highest in use, at least serial.base_tcp_port), unless another user has
-    claimed its board: that port is skipped (left out of the config) and
-    named. Without --install the port is left out of the config and the
+    highest in use, at least serial.base_tcp_port), unless `port assign`
+    would refuse it (another user's claim on its board or on a board
+    sharing its console device): that port is skipped (left out of the
+    config) and named. Without --install the port is left out of the config and the
     number it would get is shown.
     """
     config: Config = ctx.obj["config"]
@@ -3413,13 +3430,25 @@ def ser2net_generate_cmd(
     if install:
         for db_port in missing:
             # Saving a TCP port changes the board's configuration, so the
-            # same claim check as `port assign` (the board's own claim).
+            # checks `port assign` makes, without exiting: other users'
+            # claims on boards sharing this console device, then on the
+            # board itself. A port either blocks is skipped.
             sbc_name = sbc_names.get(db_port.sbc_id)
-            claimed = _all_conflicts(ctx, sbc_name, shared=False) if sbc_name else []
-            if claimed:
+            claim = (
+                _port_assign_claim_conflict(ctx, sbc_name, db_port)
+                if sbc_name
+                else None
+            )
+            if claim is not None:
+                holder_board = claim.sbc_name or sbc_name
+                via = (
+                    ""
+                    if holder_board == sbc_name
+                    else f" (it shares hardware with '{sbc_name}')"
+                )
                 click.echo(
-                    f"skipped {label(db_port)}: '{sbc_name}' is claimed by "
-                    f"'{_holder(claimed[0])}'; assign a TCP port with "
+                    f"skipped {label(db_port)}: '{holder_board}' is claimed by "
+                    f"'{_holder(claim)}'{via}; assign a TCP port with "
                     "`labctl port assign --override-claim`",
                     err=True,
                 )
@@ -3433,7 +3462,6 @@ def ser2net_generate_cmd(
                     baud_rate=db_port.baud_rate,
                     alias=db_port.alias,
                     serial_device_id=db_port.serial_device_id,
-                    base_tcp_port=config.serial.base_tcp_port,
                 )
             except ValueError as e:
                 click.echo(f"Error: {label(db_port)}: {e}", err=True)
@@ -3442,7 +3470,7 @@ def ser2net_generate_cmd(
         if missing:
             db_ports = manager.list_serial_ports()
     elif missing:
-        would = manager.next_tcp_port(config.serial.base_tcp_port)
+        would = manager.next_tcp_port()
         for db_port in missing:
             note = f"TCP port {would}" if would <= 65535 else "no TCP port (none left)"
             click.echo(
@@ -3478,8 +3506,9 @@ def ser2net_generate_cmd(
             write_ser2net_config(ser2net_path, config_content)
         except PermissionError:
             hint = (
-                "join the labctl group (install-services.sh makes it "
-                "group-writable) or use sudo"
+                "join the labctl group, which install-services.sh and "
+                "update.sh make it writable by (rerun one if the file was "
+                "created after the install), or use sudo"
                 if ser2net_path == "/etc/ser2net.yaml"
                 else "make it writable for you, or use sudo"
             )
@@ -5835,7 +5864,6 @@ def import_cmd(
                     baud_rate=port_data.get("baud_rate", 115200),
                     alias=port_data.get("alias"),
                     serial_device_id=sd_id,
-                    base_tcp_port=ctx.obj["config"].serial.base_tcp_port,
                 )
             except ValueError as e:  # e.g. TCP port or alias already in use
                 click.echo(

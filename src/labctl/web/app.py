@@ -109,6 +109,7 @@ def create_app(config: Config | None = None) -> Flask:
         g.manager = get_manager(
             config.database_path,
             timeout_seconds=config.database.timeout_seconds,
+            base_tcp_port=config.serial.base_tcp_port,
         )
         g.config = config
 

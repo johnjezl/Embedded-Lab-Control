@@ -16,9 +16,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   4000. With `--install` each such port is assigned one and saved, as
   `port assign` without `-t` would (one above the highest in use, at
   least `serial.base_tcp_port`; refused past 65535), and the command
-  says which. A port whose board another user has claimed is skipped
-  (left out of the config, named, with a pointer to `port assign
-  --override-claim`). Without `--install` nothing is saved: those ports are left
+  says which. A port is skipped (left out of the config, named, with a
+  pointer to `port assign --override-claim`) when `port assign` would
+  refuse it: another user has claimed its board, or a board sharing its
+  console device. Without `--install` nothing is saved: those ports are left
   out of the output and the number each would get is shown (stderr).
 - `ser2net generate --install` writes `ser2net.config_file` (default
   `/etc/ser2net.yaml`, unchanged); it always wrote `/etc/ser2net.yaml`.
@@ -28,13 +29,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   member, who can write `/etc/ser2net.yaml` but not `/etc`); a symlink on
   the path or a hard-linked file is refused, since it may run as root. The
   permission-denied message names the configured path.
-  `install-services.sh` still makes only `/etc/ser2net.yaml`
-  group-writable.
+  `install-services.sh`, and now `update.sh` (for a file created after the
+  install), make only `/etc/ser2net.yaml` group-writable (`root:labctl
+  664`; a symlink there is left alone).
 - `health.status_retention_days` now prunes status history: the monitor
   deletes older entries at startup and then hourly; `0` keeps all of it.
   Each board's newest entry per status, and the one in effect at the
   cutoff, are always kept, so a board stable for longer than the
-  retention keeps its uptime. Schema v12 indexes `status_log(logged_at)`.
+  retention keeps its uptime. Schema v12 indexes `status_log(logged_at)`;
+  an hourly run with nothing past the cutoff is one indexed lookup.
 - Uptime (`GET /api/sbcs/<name>/uptime`): the 24-hour figure starts from
   the status in effect 24 hours ago, so a board up the whole day shows
   100% (it showed 0% with no status change in the window), and times are
@@ -53,8 +56,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - MCP `claim_sbc` defaults `duration_minutes` to
   `claims.default_duration_minutes`, like the CLI and REST (it was 30).
 - `post-power` bindings can no longer be created: nothing acts on them
-  yet. `bind --phase` no longer offers `post-power`, and the database
-  layer refuses `post_power` (MCP `bind` reports its error). Bindings
+  yet. `bind --phase` no longer offers `post-power`, and labctl
+  (`ResourceManager`) refuses `post_power` (MCP `bind` reports its error). Bindings
   stored with it before are kept and listed as inactive (`bindings list`
   marks them `*`, `bindings status` says so, MCP output carries
   `sample_phase_note`).

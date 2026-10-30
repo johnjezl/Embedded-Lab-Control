@@ -175,8 +175,10 @@ chmod 664 /etc/udev/rules.d/99-lab-serial.rules
 echo "[ok] /etc/udev/rules.d/99-lab-serial.rules (group-writable by labctl)"
 
 # Allow labctl group to reload udev without password
-# Make ser2net config group-writable
-if [ -f /etc/ser2net.yaml ]; then
+# Make ser2net config group-writable (also done by update.sh, for a file
+# created after the install). /etc is root's, so by path is safe; a
+# symlink there is left alone.
+if [ -f /etc/ser2net.yaml ] && [ ! -L /etc/ser2net.yaml ]; then
     chown root:labctl /etc/ser2net.yaml
     chmod 664 /etc/ser2net.yaml
     echo "[ok] /etc/ser2net.yaml (group-writable by labctl)"

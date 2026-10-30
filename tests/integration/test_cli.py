@@ -2143,12 +2143,10 @@ class TestSer2netGenerate:
             f"serial:\n  base_tcp_port: {base}\n"
             f"ser2net:\n  config_file: {target}\n"
         )
-        manager = get_manager(db_path)
+        manager = get_manager(db_path, base_tcp_port=base)
         for name in ("a", "b", "c"):
             sbc = manager.create_sbc(name=name)
-            manager.assign_serial_port(
-                sbc.id, PortType.CONSOLE, f"/dev/lab/{name}", base_tcp_port=base
-            )
+            manager.assign_serial_port(sbc.id, PortType.CONSOLE, f"/dev/lab/{name}")
         return cfg, target, manager
 
     def test_install_writes_configured_path(self, runner, tmp_path):
@@ -2257,7 +2255,8 @@ class TestSer2netGenerate:
             )
         assert result.exit_code == 1
         assert "permission denied writing /etc/ser2net.yaml" in result.output
-        assert "install-services.sh makes it group-writable" in result.output
+        assert "install-services.sh and update.sh make it writable" in result.output
+        assert "created after the install" in result.output
 
 
 class TestSer2netGenerateClaims:
@@ -2275,12 +2274,10 @@ class TestSer2netGenerateClaims:
             "serial:\n  base_tcp_port: 5100\n"
             f"ser2net:\n  config_file: {target}\n"
         )
-        manager = get_manager(db_path)
+        manager = get_manager(db_path, base_tcp_port=5100)
         for name in ("free", "held"):
             sbc = manager.create_sbc(name=name)
-            manager.assign_serial_port(
-                sbc.id, PortType.CONSOLE, f"/dev/lab/{name}", base_tcp_port=5100
-            )
+            manager.assign_serial_port(sbc.id, PortType.CONSOLE, f"/dev/lab/{name}")
         manager.db.execute_modify("UPDATE serial_ports SET tcp_port = NULL")
         return cfg, target, manager
 
@@ -2311,6 +2308,36 @@ class TestSer2netGenerateClaims:
         text = target.read_text()
         assert "/dev/lab/free" in text
         assert "/dev/lab/held" not in text
+
+    def test_board_sharing_a_claimed_boards_device_skipped(self, runner, tmp_path):
+        """As `port assign` checks: a board wired to the same console device
+        as a board another user has claimed is skipped too."""
+        cfg, target, manager = self._lab(tmp_path)
+        sharer = manager.create_sbc(name="sharer")
+        manager.assign_serial_port(sharer.id, PortType.CONSOLE, "/dev/lab/held")
+        manager.db.execute_modify("UPDATE serial_ports SET tcp_port = NULL")
+        manager.claim_sbc(
+            sbc_name="held",
+            agent_name="agent-x",
+            session_id="other-session",
+            session_kind="mcp-stdio",
+            duration_seconds=600,
+            reason="testing",
+        )
+        result = runner.invoke(
+            main, ["-c", str(cfg), "ser2net", "generate", "--install"]
+        )
+        assert result.exit_code == 0, result.output
+        assert (
+            "skipped sharer console (/dev/lab/held): 'held' is claimed by "
+            "'agent-x' (it shares hardware with 'sharer'); assign a TCP port "
+            "with `labctl port assign --override-claim`"
+        ) in result.output
+        ports = {
+            (p.sbc_id, p.device_path): p.tcp_port for p in manager.list_serial_ports()
+        }
+        assert ports[(sharer.id, "/dev/lab/held")] is None
+        assert "Assigned TCP port 5100 to free console" in result.output
 
     def test_own_cli_claim_not_skipped(self, runner, tmp_path):
         from labctl.cli import _cli_session_id

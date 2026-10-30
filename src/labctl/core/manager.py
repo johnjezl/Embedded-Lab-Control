@@ -85,14 +85,17 @@ def plug_outlet_key(plug) -> tuple:
 class ResourceManager:
     """Manager for lab resources (SBCs, ports, etc.)."""
 
-    def __init__(self, db: Database):
+    def __init__(self, db: Database, *, base_tcp_port: int = 4000):
         """
         Initialize resource manager.
 
         Args:
             db: Initialized database instance
+            base_tcp_port: Lowest TCP port auto-assignment gives a serial
+                port (``serial.base_tcp_port``)
         """
         self.db = db
+        self.base_tcp_port = base_tcp_port
 
     # --- SBC Operations ---
 
@@ -604,7 +607,6 @@ class ResourceManager:
         baud_rate: int = 115200,
         alias: Optional[str] = None,
         serial_device_id: Optional[int] = None,
-        base_tcp_port: int = 4000,
     ) -> SerialPort:
         """
         Assign a serial port to an SBC.
@@ -614,12 +616,11 @@ class ResourceManager:
             port_type: Type of port (console, jtag, debug)
             device_path: Path to device (e.g., /dev/lab/port-1)
             tcp_port: TCP port for ser2net (auto-assigned if None: one
-                above the highest port in use, and at least base_tcp_port)
+                above the highest port in use, and at least the manager's
+                base_tcp_port)
             baud_rate: Baud rate (default: 115200)
             alias: Human-friendly name for this assignment
             serial_device_id: FK to serial_devices table
-            base_tcp_port: Lowest TCP port to auto-assign
-                (``serial.base_tcp_port``)
         """
         sbc = self.get_sbc(sbc_id)
         if not sbc:
@@ -656,7 +657,7 @@ class ResourceManager:
 
         # Auto-assign TCP port if not specified
         if tcp_port is None:
-            tcp_port = self.next_tcp_port(base_tcp_port)
+            tcp_port = self.next_tcp_port()
             if not 1 <= tcp_port <= 65535:
                 # Re-assigning a port that holds the highest TCP port: keep it.
                 own = self.db.execute_one(
@@ -769,9 +770,10 @@ class ResourceManager:
         self._load_serial_device(port)
         return port
 
-    def next_tcp_port(self, base_port: int = 4000) -> int:
+    def next_tcp_port(self) -> int:
         """Next TCP port to auto-assign: one above the highest in use, and
-        never below ``base_port``."""
+        never below ``base_tcp_port``."""
+        base_port = self.base_tcp_port
         row = self.db.execute_one("SELECT MAX(tcp_port) as max_port FROM serial_ports")
         if row and row["max_port"]:
             return max(row["max_port"] + 1, base_port)
@@ -1321,6 +1323,16 @@ class ResourceManager:
             Number of deleted entries
         """
         cutoff = f"-{int(retention_days)} days"
+        # The monitor calls this hourly: a cheap check on the logged_at
+        # index first, so the window-function DELETE below only runs when
+        # something is past the cutoff.
+        due = self.db.execute_one(
+            "SELECT EXISTS (SELECT 1 FROM status_log"
+            " WHERE logged_at < datetime('now', ?)) AS due",
+            (cutoff,),
+        )
+        if not due or not due["due"]:
+            return 0
         # A plain DELETE (not WITH ... DELETE): sqlite3 reports rowcount
         # only for statements that start with DELETE.
         return self.db.execute_modify(
@@ -2699,6 +2711,7 @@ def get_manager(
     db_path: Path,
     *,
     timeout_seconds: float = DEFAULT_DB_TIMEOUT,
+    base_tcp_port: int = 4000,
 ) -> ResourceManager:
     """
     Get a resource manager instance.
@@ -2707,9 +2720,10 @@ def get_manager(
         db_path: Path to database file.
         timeout_seconds: SQLite busy-wait passed to the underlying
             ``Database`` (default matches Database default).
+        base_tcp_port: Lowest auto-assigned TCP port (``serial.base_tcp_port``).
 
     Returns:
         Initialized ResourceManager instance.
     """
     db = get_database(db_path, timeout_seconds=timeout_seconds)
-    return ResourceManager(db)
+    return ResourceManager(db, base_tcp_port=base_tcp_port)

@@ -401,7 +401,6 @@ def assign_port(name: str):
             baud_rate=data.get("baud_rate", 115200),
             alias=data.get("alias"),
             serial_device_id=serial_device_id,
-            base_tcp_port=g.config.serial.base_tcp_port,
         )
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
