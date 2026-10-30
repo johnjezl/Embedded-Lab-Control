@@ -23,6 +23,7 @@ import logging
 import threading
 import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import Optional
 
 from labctl.actuators import get_driver
@@ -760,25 +761,51 @@ def stored_cycle_delay(sbc) -> Optional[float]:
     return float(value)
 
 
-def cycle_delay_floor(manager, sbc) -> tuple[float, str]:
-    """The minimum delay of a power cycle of ``sbc`` and where it comes
-    from.
+@dataclass(frozen=True)
+class CycleDelay:
+    """The delay a power cycle waits between off and on, from
+    :func:`board_cycle_delay` (or :func:`cycle_delay_floor`): ``seconds``,
+    and ``source`` naming the floor it came from (``"SBC minimum"``,
+    ``"default minimum"``, or ``"minimum of '<board>' (on the same
+    outlet)"``). ``requested`` is the caller's value (None: omitted), and
+    ``raised`` says it was below the floor."""
 
-    A cycle switches the board's plug outlet, so every board on that
-    outlet is cycled: the floor is the largest stored delay among them
-    (``"SBC minimum"`` for ``sbc``'s own, or ``"minimum of '<other>'
-    (on the same outlet)"``), or :data:`DEFAULT_CYCLE_DELAY_SECONDS` when
-    none of them has one (``"default minimum"``). Raises
-    :class:`StoredCycleDelayError` when any of their stored delays is out
-    of range.
+    seconds: float
+    source: str
+    requested: Optional[float] = None
+
+    @property
+    def raised(self) -> bool:
+        return self.requested is not None and self.seconds > self.requested
+
+    def raised_note(self) -> Optional[str]:
+        """``"<requested>s is below the <source> of <seconds>s"`` when the
+        requested value was raised, else None."""
+        if not self.raised:
+            return None
+        return (
+            f"{float(self.requested)}s is below the {self.source} of "
+            f"{self.seconds}s"
+        )
+
+
+def cycle_delay_floor(manager, sbc) -> CycleDelay:
+    """The minimum delay of a power cycle of ``sbc``.
+
+    Each board's own floor is its stored delay, or
+    :data:`DEFAULT_CYCLE_DELAY_SECONDS` if it has none. A cycle switches
+    the board's plug outlet, so every board on it is cycled: the floor is
+    the largest of their floors (``sbc``'s own on a tie), with ``source``
+    naming it. Raises :class:`StoredCycleDelayError` when any of their
+    stored delays is out of range.
     """
     boards = (
         boards_on_plug(manager, sbc)
         if getattr(sbc, "power_plug", None) is not None
         else [sbc]
     )
-    best: tuple[float, str] | None = None
-    for board in boards:
+    best: Optional[CycleDelay] = None
+    for board in boards:  # sbc first
         try:
             stored = stored_cycle_delay(board)
         except StoredCycleDelayError as e:
@@ -787,35 +814,43 @@ def cycle_delay_floor(manager, sbc) -> tuple[float, str]:
             raise StoredCycleDelayError(
                 f"{e} ({board.name!r} shares {sbc.name!r}'s power outlet)"
             ) from None
-        if stored is None:
-            continue
-        source = (
-            "SBC minimum"
-            if board is sbc
-            else f"minimum of {board.name!r} (on the same outlet)"
-        )
-        if best is None or stored > best[0]:
-            best = (stored, source)
-    return best or (DEFAULT_CYCLE_DELAY_SECONDS, "default minimum")
+        kind = "minimum" if stored is not None else "default minimum"
+        floor = stored if stored is not None else DEFAULT_CYCLE_DELAY_SECONDS
+        if board is sbc:
+            source = "SBC minimum" if stored is not None else "default minimum"
+        else:
+            source = f"{kind} of {board.name!r} (on the same outlet)"
+        if best is None or floor > best.seconds:
+            best = CycleDelay(floor, source)
+    return best
 
 
-def board_cycle_delay(manager, sbc, requested=None) -> float:
+def board_cycle_delay(manager, sbc, requested=None) -> CycleDelay:
     """The delay a power cycle of ``sbc`` waits between off and on, the
-    same on every surface (CLI, MCP, REST, web).
+    same on every surface (CLI, MCP, REST, web), with its source.
 
-    The floor is the largest stored delay among the boards on ``sbc``'s
-    outlet, or :data:`DEFAULT_CYCLE_DELAY_SECONDS` when none is set
-    (:func:`cycle_delay_floor`). With ``requested`` None the delay is the
-    floor; otherwise ``requested`` raised to the floor. Raises ValueError
-    for a ``requested`` value out of range (negative included), and
-    :class:`StoredCycleDelayError` for an out-of-range stored one.
+    The floor is :func:`cycle_delay_floor` (the largest of the floors of
+    the boards on ``sbc``'s outlet, each its stored delay or 3 s). With
+    ``requested`` None the delay is the floor; otherwise ``requested``
+    raised to the floor. Raises ValueError for a ``requested`` value out
+    of range (negative included), and :class:`StoredCycleDelayError` for
+    an out-of-range stored one.
     """
     if requested is not None:
         validate_cycle_delay(requested)
-    floor, _source = cycle_delay_floor(manager, sbc)
-    if requested is None:
-        return floor
-    return max(float(requested), floor)
+    floor = cycle_delay_floor(manager, sbc)
+    if requested is None or float(requested) <= floor.seconds:
+        return CycleDelay(floor.seconds, floor.source, requested)
+    return CycleDelay(float(requested), "requested", requested)
+
+
+def _resolved_delay(manager, sbc, delay) -> float:
+    """Seconds to wait for ``delay``: a :class:`CycleDelay` the caller got
+    from :func:`board_cycle_delay` is used as is; anything else (a number
+    or None) goes through it here, so no path skips the rule."""
+    if isinstance(delay, CycleDelay):
+        return delay.seconds
+    return board_cycle_delay(manager, sbc, delay).seconds
 
 
 def check_power_on(manager, sbc) -> list:
@@ -886,17 +921,17 @@ def power_cycle_with_bindings(
     manager,
     sbc,
     controller,
-    delay_s: Optional[float] = None,
+    delay_s=None,
     *,
     sleep_fn=None,
 ) -> bool:
     """Power-cycle ``sbc``: off, wait, drive pre_power bindings (its own
     and those of any board sharing its plug outlet), on.
 
-    The wait is :func:`board_cycle_delay` of ``delay_s`` (a no-op for a
-    value that came from it): the board's stored delay, or 3 s, is the
-    minimum, and None means that minimum. Callers that report the delay
-    compute it with :func:`board_cycle_delay` and pass the result.
+    ``delay_s`` is a :class:`CycleDelay` from :func:`board_cycle_delay`
+    (used as is), or a number or None, which goes through it here: the
+    largest of the floors of the boards on the outlet (each its stored
+    delay, or 3 s) is the minimum, and None means that minimum.
 
     Before anything is switched: a bad ``delay_s`` or stored delay raises
     ValueError, and
@@ -907,7 +942,7 @@ def power_cycle_with_bindings(
     strap). A plug failure raises RuntimeError. Returns the result of
     power_on.
     """
-    delay_s = board_cycle_delay(manager, sbc, delay_s)
+    delay_s = _resolved_delay(manager, sbc, delay_s)
     boards = check_power_on(manager, sbc)
     if not controller.power_off():
         raise RuntimeError(f"power_off failed on {sbc.name!r}")
@@ -921,7 +956,7 @@ def enter_recovery(
     sbc,
     controller,
     *,
-    delay_s: Optional[float] = None,
+    delay_s=None,
     sleep_fn=time.sleep,
 ) -> None:
     """Power-aware "enter USB Force Recovery (or equivalent)" composite.
@@ -931,16 +966,17 @@ def enter_recovery(
       0. Pre-flight probe every actuator we'll touch — abort BEFORE
          power_off if any is unreachable.
       1. power_off
-      2. sleep(board_cycle_delay(manager, sbc, delay_s)): the largest
-         stored delay on its outlet, or 3 s, is the minimum (ValueError
-         before step 0 if it or ``delay_s`` is out of range)
+      2. sleep the delay: ``delay_s`` as for
+         :func:`power_cycle_with_bindings` (the largest floor among the
+         boards on the outlet is the minimum; ValueError before step 0 if a
+         stored delay or ``delay_s`` is out of range)
       3. actuate recovery_mode  → desired=asserted, strap engaged
       4. power_on (consults pre_power bindings; idempotent for the
          strap we just engaged)
     """
     # The board's stored delay is the minimum; an out-of-range one raises
     # ValueError before anything is touched.
-    delay_s = board_cycle_delay(manager, sbc, delay_s)
+    delay_s = _resolved_delay(manager, sbc, delay_s)
     binding = manager.get_binding_by_target(sbc.id, "recovery_mode")
     if binding is None:
         raise ActuationError(f"no 'recovery_mode' binding on {sbc.name!r}")
@@ -975,7 +1011,7 @@ def exit_recovery(
     sbc,
     controller,
     *,
-    delay_s: Optional[float] = None,
+    delay_s=None,
     sleep_fn=time.sleep,
 ) -> None:
     """Power-aware "leave recovery" composite.
@@ -984,7 +1020,7 @@ def exit_recovery(
     """
     # The board's stored delay is the minimum; an out-of-range one raises
     # ValueError before anything is touched.
-    delay_s = board_cycle_delay(manager, sbc, delay_s)
+    delay_s = _resolved_delay(manager, sbc, delay_s)
     binding = manager.get_binding_by_target(sbc.id, "recovery_mode")
     if binding is None:
         raise ActuationError(f"no 'recovery_mode' binding on {sbc.name!r}")

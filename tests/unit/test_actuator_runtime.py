@@ -1264,6 +1264,11 @@ class TestPowerHelpers:
         controller.power_on.assert_not_called()
 
 
+def _floor(manager, sbc):
+    floor = runtime.cycle_delay_floor(manager, sbc)
+    return (floor.seconds, floor.source)
+
+
 def _store_delay(lab, value):
     """Store a cycle delay directly, as rows saved before edit --cycle-delay
     checked the range could hold; return the reloaded SBC."""
@@ -1288,10 +1293,10 @@ class TestBoardCycleDelay:
     def test_default_without_stored_delay(self, lab):
         """With no stored delay, 3 s is the default and the floor on every
         surface (as the CLI always did)."""
-        assert runtime.board_cycle_delay(lab.manager, lab.sbc) == 3.0
-        assert runtime.board_cycle_delay(lab.manager, lab.sbc, 0) == 3.0
-        assert runtime.board_cycle_delay(lab.manager, lab.sbc, 10) == 10.0
-        assert runtime.cycle_delay_floor(lab.manager, lab.sbc) == (
+        assert runtime.board_cycle_delay(lab.manager, lab.sbc).seconds == 3.0
+        assert runtime.board_cycle_delay(lab.manager, lab.sbc, 0).seconds == 3.0
+        assert runtime.board_cycle_delay(lab.manager, lab.sbc, 10).seconds == 10.0
+        assert _floor(lab.manager, lab.sbc) == (
             3.0,
             "default minimum",
         )
@@ -1302,18 +1307,18 @@ class TestBoardCycleDelay:
 
     def test_floor_names_stored_delay(self, lab):
         sbc = _store_delay(lab, 0.5)
-        assert runtime.cycle_delay_floor(lab.manager, sbc) == (0.5, "SBC minimum")
-        assert runtime.board_cycle_delay(lab.manager, sbc, 0) == 0.5
+        assert _floor(lab.manager, sbc) == (0.5, "SBC minimum")
+        assert runtime.board_cycle_delay(lab.manager, sbc, 0).seconds == 0.5
 
     def test_stored_delay_is_default_and_minimum(self, lab):
         sbc = _store_delay(lab, 5.0)
-        assert runtime.board_cycle_delay(lab.manager, sbc) == 5.0
-        assert runtime.board_cycle_delay(lab.manager, sbc, 1) == 5.0
-        assert runtime.board_cycle_delay(lab.manager, sbc, 8) == 8.0
+        assert runtime.board_cycle_delay(lab.manager, sbc).seconds == 5.0
+        assert runtime.board_cycle_delay(lab.manager, sbc, 1).seconds == 5.0
+        assert runtime.board_cycle_delay(lab.manager, sbc, 8).seconds == 8.0
 
     def test_stored_delay_below_default_is_used_when_omitted(self, lab):
         sbc = _store_delay(lab, 1.0)
-        assert runtime.board_cycle_delay(lab.manager, sbc) == 1.0
+        assert runtime.board_cycle_delay(lab.manager, sbc).seconds == 1.0
 
     @pytest.mark.parametrize("stored", [1e9, -5.0, float("inf"), 86401.0])
     def test_out_of_range_stored_delay_refused(self, lab, stored):
@@ -1404,9 +1409,9 @@ class TestOutletCycleDelay:
         self._set(outlet, "sharer", 8.0)
         self._set(outlet, "elsewhere", 50.0)  # another outlet: ignored
         sbc = self._sbc(outlet)
-        assert runtime.board_cycle_delay(outlet.manager, sbc) == 8.0
-        assert runtime.board_cycle_delay(outlet.manager, sbc, 4) == 8.0
-        assert runtime.cycle_delay_floor(outlet.manager, sbc) == (
+        assert runtime.board_cycle_delay(outlet.manager, sbc).seconds == 8.0
+        assert runtime.board_cycle_delay(outlet.manager, sbc, 4).seconds == 8.0
+        assert _floor(outlet.manager, sbc) == (
             8.0,
             "minimum of 'sharer' (on the same outlet)",
         )
@@ -1414,14 +1419,59 @@ class TestOutletCycleDelay:
     def test_own_delay_when_largest(self, outlet):
         self._set(outlet, "jetson-nano-2", 9.0)
         self._set(outlet, "sharer", 8.0)
-        assert runtime.cycle_delay_floor(outlet.manager, self._sbc(outlet)) == (
+        assert _floor(outlet.manager, self._sbc(outlet)) == (
             9.0,
             "SBC minimum",
         )
 
-    def test_sharers_stored_delay_without_own(self, outlet):
+    def test_board_without_stored_delay_stays_at_3s(self, outlet):
+        """Each board's own floor is its stored delay, or 3 s: a sharer's
+        shorter stored delay doesn't take this board below 3 s (#41
+        review 3)."""
+        self._set(outlet, "sharer", 0.5)
+        sbc = self._sbc(outlet)
+        assert _floor(outlet.manager, sbc) == (3.0, "default minimum")
+        assert runtime.board_cycle_delay(outlet.manager, sbc, 1).seconds == 3.0
+
+    def test_sharer_without_stored_delay_keeps_the_outlet_at_3s(self, outlet):
+        self._set(outlet, "jetson-nano-2", 0.5)
+        assert _floor(outlet.manager, self._sbc(outlet)) == (
+            3.0,
+            "default minimum of 'sharer' (on the same outlet)",
+        )
+
+    def test_short_delays_on_every_board(self, outlet):
+        self._set(outlet, "jetson-nano-2", 0.5)
         self._set(outlet, "sharer", 1.0)
-        assert runtime.board_cycle_delay(outlet.manager, self._sbc(outlet)) == 1.0
+        assert _floor(outlet.manager, self._sbc(outlet)) == (
+            1.0,
+            "minimum of 'sharer' (on the same outlet)",
+        )
+
+    def test_raised_note_names_the_board(self, outlet):
+        self._set(outlet, "sharer", 8.0)
+        delay = runtime.board_cycle_delay(outlet.manager, self._sbc(outlet), 2)
+        assert delay.raised
+        assert delay.raised_note() == (
+            "2.0s is below the minimum of 'sharer' (on the same outlet) of 8.0s"
+        )
+
+    def test_requested_above_floor(self, outlet):
+        delay = runtime.board_cycle_delay(outlet.manager, self._sbc(outlet), 10)
+        assert (delay.seconds, delay.source, delay.raised) == (10.0, "requested", False)
+
+    def test_cycle_delay_object_is_used_as_is(self, outlet):
+        """A CycleDelay the caller already has isn't recomputed."""
+        delay = runtime.board_cycle_delay(outlet.manager, self._sbc(outlet))
+        self._set(outlet, "sharer", 1e9)  # would refuse a recomputation
+        controller = MagicMock()
+        controller.power_off.return_value = True
+        controller.power_on.return_value = True
+        slept = []
+        runtime.power_cycle_with_bindings(
+            outlet.manager, self._sbc(outlet), controller, delay, sleep_fn=slept.append
+        )
+        assert slept == [3.0]
 
     def test_sharers_out_of_range_delay_refuses(self, outlet):
         self._set(outlet, "sharer", 1e9)

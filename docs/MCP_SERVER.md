@@ -342,7 +342,7 @@ Tools perform mutations — the AI assistant calls these to take action.
 |------|------------|-------------|
 | `power_on` | `sbc_name` | Turn on power to an SBC, after setting its `pre_power` relay bindings |
 | `power_off` | `sbc_name` | Turn off power to an SBC |
-| `power_cycle` | `sbc_name`, `delay` (seconds, 0-86400; default the board's stored cycle delay, or 3.0) | Power cycle (off, wait, set `pre_power` bindings, on); refuses before power-off if a relay can't be opened. That default (the stored delay, or 3.0) is also the minimum: a smaller `delay` is raised to it. Boards sharing the outlet are cycled too, so the largest stored delay among them applies |
+| `power_cycle` | `sbc_name`, `delay` (seconds, 0-86400; default the board's minimum, see below) | Power cycle (off, wait, set `pre_power` bindings, on); refuses before power-off if a relay can't be opened. Each board's minimum is its stored cycle delay, or 3.0 without one; boards sharing the outlet are cycled too, so the largest of their minimums is the default and the minimum: a smaller `delay` is raised to it, and the result names the board it came from |
 
 Power tools switch the plug outlet, so boards sharing the SBC's outlet are
 switched too, and a claim someone else holds on one of them refuses the
@@ -469,7 +469,9 @@ set in the config (default off).
 | `exit_recovery` | `sbc_name` | The same sequence, releasing the strap (normal boot) |
 
 Both need a `recovery_mode` binding and a power plug on the SBC. The wait
-is the SBC's stored power-cycle delay (3.0 s if none is set).
+is the same minimum as `power_cycle`'s: the largest stored power-cycle
+delay among the boards on the SBC's plug outlet, each counting as 3.0 s if
+it has none. The result names the board it came from.
 
 ### Claims (Exclusive Access Coordination)
 
@@ -692,8 +694,9 @@ tools) is a two-step call:
    with the exact bytes it will write (`bytes_hex`, `byte_count`).
    `power_cycle`, `enter_recovery`, `exit_recovery`, `boot_test` and
    `sdwire_update` with `reboot=true` add `will_do.cycle_delay_seconds`,
-   the delay they will wait between off and on (the board's stored cycle
-   delay, or 3 s, is the default and the minimum). An out-of-range
+   the delay they will wait between off and on, and `cycle_delay_source`,
+   where it came from (the largest minimum among the boards on the
+   outlet, as for `power_cycle`, is the default and the minimum). An out-of-range
    `delay` or stored delay refuses the call here, with no token. The token
    is bound to that plan: if it differs when you confirm (say the stored
    delay was changed), the call is refused (`confirmation_failed`) and

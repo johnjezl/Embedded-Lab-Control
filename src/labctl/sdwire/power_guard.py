@@ -50,21 +50,62 @@ def check_board_off(sbc) -> BoardOffCheck:
     return BoardOffCheck(NOT_OFF, state=state)
 
 
-def board_off_problem_text(sbc_name: str, check: BoardOffCheck) -> str:
-    """One sentence (no final period, may start lower-case) saying why
-    ``check`` doesn't confirm ``sbc_name`` off; callers add their own
-    framing and hints."""
+def board_off_problem_text(
+    sbc_name: str, check: BoardOffCheck, *, sentence_start: bool = False
+) -> str:
+    """One sentence (no final period) saying why ``check`` doesn't confirm
+    ``sbc_name`` off; callers add their own framing and hints. Generic
+    leading words start lower-case unless ``sentence_start``; the board
+    name is never re-cased."""
+
+    def generic(text: str) -> str:
+        return text[0].upper() + text[1:] if sentence_start else text
+
     if check.problem == NO_PLUG:
         return f"{sbc_name} has no power plug, so labctl can't confirm it is off"
     if check.problem == UNREADABLE:
-        return f"could not read the power state of {sbc_name}: {check.error}"
+        return generic(f"could not read the power state of {sbc_name}: {check.error}")
     if check.problem == POWERED_ON:
         return f"{sbc_name} is powered on"
     state = getattr(check.state, "value", check.state)
-    return (
+    return generic(
         f"the power state of {sbc_name} is {state}, so labctl can't confirm "
         "it is off"
     )
+
+
+# Second look before treating the card as on the board (see read_access).
+READ_RECHECK_SECONDS = 1.0
+
+
+def read_access(sbc, ctrl, *, force: bool = False):
+    """How a read of the SD card (CLI ``sdwire ls``/``cat``/``info``, the
+    MCP read tools) reaches it. Returns ``(needs_switch, refusal)``:
+
+    - Card already on the host (``ctrl.card_on_host()`` probes the reader
+      for media): read it in place and leave the mux alone; the board isn't
+      using the card, so its power doesn't matter. ``(False, None)``.
+    - Card on the board: switch to the host and back only when
+      :func:`check_board_off` confirms it off (or ``force``):
+      ``(True, None)``; otherwise ``(False, check)`` with the failed
+      :class:`BoardOffCheck` for the caller to word.
+
+    A card switched to the host moments ago (by another process) may still
+    be initialising and probe as "no medium"; concluding "on the board"
+    would make the cleanup switch it there, so it is probed once more
+    after :data:`READ_RECHECK_SECONDS`. (The mux can't be read back.)
+    """
+    if ctrl.card_on_host():
+        return False, None
+    time.sleep(READ_RECHECK_SECONDS)
+    if ctrl.card_on_host():
+        return False, None
+    if force:
+        return True, None
+    check = check_board_off(sbc)
+    if not check.is_off:
+        return False, check
+    return True, None
 
 
 def power_off_before_host_switch(sbc) -> None:

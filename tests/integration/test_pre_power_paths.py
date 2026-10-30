@@ -644,7 +644,10 @@ class TestStoredCycleDelay:
         self._store(lab, 8.0)
         result = lab.run("sdwire", "flash", "board", str(image), "--dry-run")
         assert result.exit_code == 0, result.output
-        assert "power-cycle board (waiting 8.0s between off and on)" in result.output
+        assert (
+            "power-cycle board (waiting 8.0s between off and on: the SBC minimum)"
+            in result.output
+        )
 
     @pytest.mark.parametrize("dry_run", [False, True])
     def test_sdwire_flash_refuses_bad_stored_delay(self, lab, sdwire, image, dry_run):
@@ -677,7 +680,10 @@ class TestStoredCycleDelay:
             "sdwire", "update", "board", "-p", "1", "-d", "x", "--reboot", "--dry-run"
         )
         assert result.exit_code == 0, result.output
-        assert "power-cycle board (waiting 3.0s between off and on)" in result.output
+        assert (
+            "power-cycle board (waiting 3.0s between off and on: the default minimum)"
+            in result.output
+        )
 
     def test_sdwire_update_refuses_bad_stored_delay(self, lab, sdwire):
         self._store(lab, -5.0)
@@ -990,3 +996,29 @@ class TestOutletRules:
     def test_api_on_allowed_when_no_cycle_running(self, lab, client):
         resp = client.post("/api/sbcs/board/power", json={"action": "on"})
         assert resp.status_code == 200, resp.get_json()
+
+
+class TestOutletFloorPerBoard:
+    """Each board's floor is its stored delay or 3 s, and the outlet's is
+    the largest (#41 review 3)."""
+
+    @pytest.fixture
+    def sharer(self, lab):
+        other = lab.manager.create_sbc(name="board-b", project="test")
+        lab.manager.assign_power_plug(other.id, PlugType.TASMOTA, "10.0.0.5", 1)
+        return other
+
+    def test_sharers_short_delay_doesnt_lower_this_board(
+        self, lab, sharer, monkeypatch
+    ):
+        import sqlite3
+
+        with sqlite3.connect(lab.db_path) as db:
+            db.execute(
+                "UPDATE sbcs SET power_cycle_delay_seconds = 0.5 WHERE name = 'board-b'"
+            )
+        waits = []
+        monkeypatch.setattr("labctl.actuators.runtime.time.sleep", waits.append)
+        result = lab.run("power", "cycle", "board", "-y")
+        assert result.exit_code == 0, result.output
+        assert waits == [3.0]

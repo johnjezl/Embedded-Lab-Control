@@ -345,3 +345,16 @@ class TestRuleLinksAnyOrder:
         old = rule_links('SUBSYSTEM=="tty", ATTRS{serial}=="X1", SYMLINK+="lab/f"\n')
         assert old == {"f": None}
         assert changed_links(old, {"f": "1-1.4"}) == {"f"}
+
+
+def test_rule_links_allow_whitespace_around_operators():
+    """udev accepts `KERNELS == "..."` and `SYMLINK += "..."` (#41 review 3);
+    a SYMLINK comparison (==) isn't a link."""
+    from labctl.serial.udev import rule_links
+
+    text = (
+        'SUBSYSTEM=="tty", KERNELS == "1-2.1", SYMLINK += "lab/spaced"\n'
+        'KERNELS=="1-2.2",SYMLINK  =  "lab/tight"\n'
+        'KERNELS=="1-2.3", SYMLINK=="lab/compared"\n'
+    )
+    assert rule_links(text) == {"spaced": "1-2.1", "tight": "1-2.2"}

@@ -55,7 +55,7 @@ the tool and its exact arguments. Configure with `mcp.confirm_destructive`
 | `get_claim` | read |  |  |
 | `list_claims` | read |  |  |
 | `list_images` | read |  | Uploading is not a tool: `PUT /images/<name>` on the HTTP port writes `mcp.upload_dir` (system-write; its uploader or an operator may replace an image) |
-| `power_cycle` | destructive | yes | Sets pre_power relays like `power_on`, after power-off; `delay` 0-86400 s; default and minimum the board's stored cycle delay, or 3.0 if none |
+| `power_cycle` | destructive | yes | Sets pre_power relays like `power_on`, after power-off; `delay` 0-86400 s; default and minimum the largest stored cycle delay among the boards on the outlet (3.0 for one without) |
 | `power_off` | destructive | yes |  |
 | `power_on` | hardware |  | First sets the relays bound with `sample_phase: pre_power` (e.g. a strap) on this board and every board sharing its plug outlet; all are checked first, and power is not switched if one can't be set |
 | `press` | destructive | yes |  |
@@ -318,7 +318,7 @@ is raised to it; `null` is refused) and
 | `429` | A `cycle` while another REST or web-UI cycle of the same plug outlet (this board or one sharing it) is running in this server, or within 5 s of the outlet's last successful one |
 | `409` | `{"error": ..., "switched": false}`: `on`/`off` while a REST or web-UI cycle of the board's outlet is running; or a pre_power relay (on this board or one sharing its outlet) couldn't be checked, or, for `on`, couldn't be set; power was not switched |
 | `500` | The plug failed, or for `cycle` a strap couldn't be set after power-off (the board was left off) |
-| `200` | `{"name", "action", "success": true, "state"}`, plus `"delay_seconds"` (the delay used) for `cycle` |
+| `200` | `{"name", "action", "success": true, "state"}`, plus `"delay_seconds"` (the delay used) and `"delay_source"` (e.g. `"SBC minimum"`, `"minimum of 'b' (on the same outlet)"`, `"requested"`) for `cycle` |
 
 `on` and `cycle` set the pre_power relays first, as the CLI and MCP do.
 With several boards on one outlet, a `409` for `on` can follow relays that
@@ -328,8 +328,11 @@ other power cycle: the board's stored cycle delay (`labctl edit
 --cycle-delay`), or 3 s if none is set, is the default when no delay is
 given and the minimum when one is (a smaller value is raised to it; a
 negative one is an error). A cycle switches the whole plug outlet, so
-when boards share it the largest stored delay among them applies, and an
-out-of-range one on any of them refuses the cycle. The same holds for CLI `power cycle`, the
+when boards share it the largest of their minimums applies (a board
+without a stored delay counts as 3 s, so another board's shorter stored
+delay never takes it below 3 s), and an out-of-range one on any of them
+refuses the cycle. The CLI's warning, MCP results and the REST
+`delay_source` name the board the minimum came from. The same holds for CLI `power cycle`, the
 reboot after `sdwire flash`/`update` (CLI and MCP), `boot-test` (CLI and
 MCP) and the recovery commands. A stored delay outside 0-86400 s (stored
 before `edit --cycle-delay` checked the range) is refused on every path

@@ -48,8 +48,10 @@ def generate_udev_rules(devices: list["SerialDevice"]) -> str:
     return "\n".join(lines)
 
 
-_RULE_SYMLINK_RE = re.compile(r'SYMLINK\+?="([^"]*)"')
-_RULE_KERNELS_RE = re.compile(r'KERNELS=="([^"]*)"')
+# udev allows whitespace around operators (`SYMLINK += "lab/x"`). The
+# assignment pattern doesn't match the `SYMLINK=="..."` comparison.
+_RULE_SYMLINK_RE = re.compile(r'\bSYMLINK\s*\+?=\s*"([^"]*)"')
+_RULE_KERNELS_RE = re.compile(r'\bKERNELS\s*==\s*"([^"]*)"')
 
 
 def rule_links(rules_text: str) -> dict[str, str | None]:

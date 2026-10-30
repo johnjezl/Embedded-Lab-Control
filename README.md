@@ -162,7 +162,7 @@ Every command has `--help`. This section lists the commands; see
 | `labctl list` | List all SBCs |
 | `labctl info <name>` | Show SBC details |
 | `labctl edit <name>` | Edit SBC properties (--rename, --project, etc.) |
-| `labctl edit <name> --cycle-delay N` | Per-SBC off→on delay in seconds (0–86400); the default and minimum for every power cycle of the board: `power cycle`, the reboot after `sdwire flash`/`update`, `boot-test`, recovery, and MCP/REST/web cycles. Without one, 3 s is the default and minimum; boards sharing a plug outlet use the largest stored delay among them (negative clears it) |
+| `labctl edit <name> --cycle-delay N` | Per-SBC off→on delay in seconds (0–86400); the default and minimum for every power cycle of the board: `power cycle`, the reboot after `sdwire flash`/`update`, `boot-test`, recovery, and MCP/REST/web cycles. Without one, 3 s is the default and minimum. Boards sharing a plug outlet are cycled together, so the largest of their minimums applies, a board without a stored delay counting as 3 s (negative clears it) |
 | `labctl network set <sbc> ethernet\|wifi <ip>` | Set an SBC's IP address (`-m` MAC, `-h` hostname); `network remove` deletes it |
 | `labctl ssh <sbc>` | SSH to the SBC's configured IP (`-u` user) |
 | `labctl status` | Show status overview |
@@ -280,7 +280,7 @@ the point here is to allow SDWire workflows without granting broader root access
 | `labctl plug remove <sbc>` | Remove the plug assignment |
 | `labctl power on <sbc>` | Turn on (sets pre_power relays first; see below) |
 | `labctl power off <sbc>` | Turn off |
-| `labctl power cycle <sbc> [--delay N] [--dry-run]` | Off, wait, set pre_power relays, on. The delay is 0–86400 s (negative is an error); the default and minimum are the SBC's `--cycle-delay`, otherwise 3 s (smaller values are raised to it, with a warning). |
+| `labctl power cycle <sbc> [--delay N] [--dry-run]` | Off, wait, set pre_power relays, on. The delay is 0–86400 s (negative is an error); the default and minimum are the SBC's `--cycle-delay`, otherwise 3 s, or a larger one of a board sharing its plug outlet (smaller values are raised to it, with a warning naming that board). |
 | `labctl power status <sbc>` | Check power state |
 | `labctl power-all on/off` | Control all SBCs (claimed boards are skipped) |
 
