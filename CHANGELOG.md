@@ -156,10 +156,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   flash or file update the tools report that the power cycle failed and
   why, and `boot-test` records the run as failed. A strap that fails after
   power-off leaves the board off, and the error says so. A power-cycle
-  delay outside 0–86400 seconds (or not a finite number) is now refused
-  before power-off: by CLI `power cycle` (also with `--dry-run`, and when
-  the board's stored delay is out of range), by MCP `power_cycle`, and by
-  the REST API with a 400. It used to switch the board off, then fail.
+  delay over 86400 seconds, or not a number, is now refused before
+  power-off: by CLI `power cycle` (also with `--dry-run`, and when the
+  board's stored delay is out of range; a delay below the board's minimum
+  is still raised to it), and, with negative delays too, by MCP
+  `power_cycle` and by the REST API with a 400. It used to switch the
+  board off, then fail.
 - A relay that labctl can't open no longer crashes `power on`/`power
   cycle` (and the binding verbs and recovery composites) with a
   traceback; nor does an actuator whose driver isn't implemented. The
