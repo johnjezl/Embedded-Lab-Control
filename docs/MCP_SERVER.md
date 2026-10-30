@@ -342,7 +342,7 @@ Tools perform mutations — the AI assistant calls these to take action.
 |------|------------|-------------|
 | `power_on` | `sbc_name` | Turn on power to an SBC, after setting its `pre_power` relay bindings |
 | `power_off` | `sbc_name` | Turn off power to an SBC |
-| `power_cycle` | `sbc_name`, `delay` (seconds, 0-86400; default the board's stored cycle delay, or 3.0) | Power cycle (off, wait, set `pre_power` bindings, on); refuses before power-off if a relay can't be opened. The board's stored cycle delay is also the minimum: a smaller `delay` is raised to it |
+| `power_cycle` | `sbc_name`, `delay` (seconds, 0-86400; default the board's stored cycle delay, or 3.0) | Power cycle (off, wait, set `pre_power` bindings, on); refuses before power-off if a relay can't be opened. That default (the stored delay, or 3.0) is also the minimum: a smaller `delay` is raised to it |
 
 Power tools switch the plug outlet, so boards sharing the SBC's outlet are
 switched too, and a claim someone else holds on one of them refuses the
@@ -379,7 +379,7 @@ call. `power_on` and `power_cycle` also check and set those boards'
 | Tool | Parameters | Description |
 |------|------------|-------------|
 | `add_serial_device` | `name`, `usb_path`, `vendor`, `model`, `serial_number` | Register a USB-serial adapter |
-| `remove_serial_device` | `name` | Unregister a USB-serial adapter |
+| `remove_serial_device` | `name` | Unregister a USB-serial adapter (refused while a board someone else has claimed has a port on it) |
 | `serial_discover` | | Scan for connected USB-serial adapters |
 
 ### SDWire (SD Card Multiplexer)
@@ -490,7 +490,9 @@ operating it (`power_on/off/cycle`, `serial_send`, `serial_capture`
 its configuration (`update_sbc`, `remove_sbc`, `assign_serial_port`,
 `assign_power_plug`, `set_network_address`, the matching `remove_*` tools,
 `sdwire_assign`/`unassign`, `bind`/`unbind`), plus `actuator_set` and
-`actuator_remove` on channels bound to a claimed board. A claim also
+`actuator_remove` on channels bound to a claimed board, and
+`remove_serial_device` of an adapter a claimed board has a port on (by
+its link, its registration, or a path resolving to the same device). A claim also
 covers the board's hardware: if two boards share a plug outlet, SDWire,
 serial device or relay channel, a claim on either refuses other users'
 tools that operate the other (the error names the claimed board), and
@@ -690,8 +692,11 @@ tools) is a two-step call:
    `power_cycle`, `enter_recovery`, `exit_recovery`, `boot_test` and
    `sdwire_update` with `reboot=true` add `will_do.cycle_delay_seconds`,
    the delay they will wait between off and on (the board's stored cycle
-   delay is the default and the minimum). An out-of-range `delay` or
-   stored delay refuses the call here, with no token.
+   delay, or 3 s, is the default and the minimum). An out-of-range
+   `delay` or stored delay refuses the call here, with no token. The token
+   is bound to that plan: if it differs when you confirm (say the stored
+   delay was changed), the call is refused (`confirmation_failed`) and
+   you ask for a new plan.
 2. Called again with **the same arguments** plus `confirm_token`, it acts.
 
 Tokens are random, single-use, expire after 120 s, and are bound to the tool

@@ -48,23 +48,37 @@ def generate_udev_rules(devices: list["SerialDevice"]) -> str:
     return "\n".join(lines)
 
 
-_RULE_LINK_RE = re.compile(r'KERNELS=="([^"]*)".*?SYMLINK\+="lab/([^"]+)"')
+_RULE_SYMLINK_RE = re.compile(r'SYMLINK\+?="([^"]*)"')
+_RULE_KERNELS_RE = re.compile(r'KERNELS=="([^"]*)"')
 
 
-def rule_links(rules_text: str) -> dict[str, str]:
-    """The ``/dev/lab/<name>`` links a rules file creates: name -> USB path."""
-    links = {}
+def rule_links(rules_text: str) -> dict[str, str | None]:
+    """The ``/dev/lab/<name>`` links a rules file creates: name -> USB path
+    (KERNELS), or None when the rule's USB path can't be parsed. Every
+    ``SYMLINK`` / ``SYMLINK+`` value naming ``lab/<name>`` counts, in any
+    attribute order and among other link names."""
+    links: dict[str, str | None] = {}
     for line in rules_text.splitlines():
         line = line.strip()
-        if line.startswith("#"):
+        if not line or line.startswith("#"):
             continue
-        m = _RULE_LINK_RE.search(line)
-        if m:
-            links[m.group(2)] = m.group(1)
+        names = [
+            link[len("lab/") :]
+            for value in _RULE_SYMLINK_RE.findall(line)
+            for link in value.split()
+            if link.startswith("lab/") and len(link) > len("lab/")
+        ]
+        if not names:
+            continue
+        kernels = _RULE_KERNELS_RE.search(line)
+        for name in names:
+            links[name] = kernels.group(1) if kernels else None
     return links
 
 
-def installed_rule_links(rules_path: Path | None = None) -> dict[str, str] | None:
+def installed_rule_links(
+    rules_path: Path | None = None,
+) -> dict[str, str | None] | None:
     """The links the installed rules file creates ({} when there is none
     yet), or None when it exists but can't be read."""
     try:
@@ -75,10 +89,11 @@ def installed_rule_links(rules_path: Path | None = None) -> dict[str, str] | Non
         return None
 
 
-def changed_links(old: dict[str, str], new: dict[str, str]) -> set[str]:
+def changed_links(old: dict[str, str | None], new: dict[str, str]) -> set[str]:
     """Link names that installing ``new`` over ``old`` removes or points
-    at a different USB path. New names only add links, so they're not
-    included."""
+    at a different USB path; an old link whose USB path couldn't be
+    parsed (None) counts as changed. New names only add links, so they're
+    not included."""
     return {name for name, usb_path in old.items() if new.get(name) != usb_path}
 
 

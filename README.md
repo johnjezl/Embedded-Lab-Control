@@ -162,7 +162,7 @@ Every command has `--help`. This section lists the commands; see
 | `labctl list` | List all SBCs |
 | `labctl info <name>` | Show SBC details |
 | `labctl edit <name>` | Edit SBC properties (--rename, --project, etc.) |
-| `labctl edit <name> --cycle-delay N` | Per-SBC off→on delay in seconds (0–86400); the default and minimum for every power cycle of the board: `power cycle`, the reboot after `sdwire flash`/`update`, `boot-test`, recovery, and MCP/REST/web cycles (negative clears it) |
+| `labctl edit <name> --cycle-delay N` | Per-SBC off→on delay in seconds (0–86400); the default and minimum for every power cycle of the board: `power cycle`, the reboot after `sdwire flash`/`update`, `boot-test`, recovery, and MCP/REST/web cycles. Without one, 3 s is the default and minimum (negative clears it) |
 | `labctl network set <sbc> ethernet\|wifi <ip>` | Set an SBC's IP address (`-m` MAC, `-h` hostname); `network remove` deletes it |
 | `labctl ssh <sbc>` | SSH to the SBC's configured IP (`-u` user) |
 | `labctl status` | Show status overview |
@@ -212,9 +212,9 @@ Every command has `--help`. This section lists the commands; see
 | `labctl sdwire host <sbc>` | Switch SD card to host (for flashing). Only when the plug reports the board off: refuses when it's on, has no plug, or its state can't be read (`--force` skips the check) |
 | `labctl sdwire flash <sbc> <image>` | Power off, flash full image to SD card, power-cycle (`--no-reboot` leaves the SBC off) |
 | `labctl sdwire update <sbc> -p N -c src:dest -r old:new -d file` | Power off, then copy, rename, or delete files on a partition (`--reboot` to power-cycle; without it the SBC is left off) |
-| `labctl sdwire ls <sbc> -p N [--path /] [--recursive]` | List directory contents on a partition |
-| `labctl sdwire cat <sbc> -p N --path /file [--encoding text|base64|hex]` | Read a file from a partition |
-| `labctl sdwire info <sbc>` | Show partition table and filesystem metadata |
+| `labctl sdwire ls <sbc> -p N [--path /] [--recursive]` | List directory contents on a partition (the board must be off, as for `sdwire host`) |
+| `labctl sdwire cat <sbc> -p N --path /file [--encoding text|base64|hex]` | Read a file from a partition (board off) |
+| `labctl sdwire info <sbc>` | Show partition table and filesystem metadata (board off) |
 
 Partition numbers are 1-based (e.g., `-p 1` for the first partition, which maps to `/dev/sdb1`).
 `ls`, `cat` and `info` borrow the card: they switch it to the host and back,
@@ -280,7 +280,7 @@ the point here is to allow SDWire workflows without granting broader root access
 | `labctl plug remove <sbc>` | Remove the plug assignment |
 | `labctl power on <sbc>` | Turn on (sets pre_power relays first; see below) |
 | `labctl power off <sbc>` | Turn off |
-| `labctl power cycle <sbc> [--delay N] [--dry-run]` | Off, wait, set pre_power relays, on. The delay is at most 86400 s; the default and minimum are the SBC's `--cycle-delay`, otherwise 3 s (smaller values are raised to it). |
+| `labctl power cycle <sbc> [--delay N] [--dry-run]` | Off, wait, set pre_power relays, on. The delay is 0–86400 s (negative is an error); the default and minimum are the SBC's `--cycle-delay`, otherwise 3 s (smaller values are raised to it, with a warning). |
 | `labctl power status <sbc>` | Check power state |
 | `labctl power-all on/off` | Control all SBCs (claimed boards are skipped) |
 
@@ -550,9 +550,8 @@ Key activity and claims endpoints:
 | `/health` | GET | Service liveness and version (always open, no auth required) |
 
 `POST /sbcs/<name>/power` takes `{"action": "on"|"off"|"cycle"}`, plus an
-optional `delay` for a cycle (seconds, 0–86400; default the board's
-stored cycle delay, or 3.0 if none is set; a smaller value is raised to
-the stored delay) and
+optional `delay` for a cycle (seconds, 0–86400; the board's stored cycle
+delay, or 3.0 if none is set, is the default and the minimum) and
 `"override_claim": true` to act on a board another user has claimed.
 Power-on and cycle set the pre_power relays first
 (see [Relays, Bindings and Recovery](#relays-bindings-and-recovery)). Responses:
@@ -564,7 +563,7 @@ Power-on and cycle set the pre_power relays first
 | 403 | An `agent`-role user tried `override_claim` (`not_operator`) |
 | 404 | No such SBC |
 | 409 | Refused with nothing switched: the board is claimed (`sbc_claimed`) or must be claimed first (`claim_required`), or a pre_power relay couldn't be checked or set before power-on (`{"error": ..., "switched": false}`) |
-| 429 | A cycle requested within 5 s of the last one on this board |
+| 429 | A cycle requested while another cycle of this board is running, or within 5 s of the last one |
 | 500 | The plug failed, or a strap failed after a cycle's power-off (the board may be off) |
 
 See [docs/OPERATIONS.md](docs/OPERATIONS.md) for the full claim and REST

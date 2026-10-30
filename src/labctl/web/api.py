@@ -2,6 +2,7 @@
 REST API endpoints for lab controller.
 """
 
+import threading
 import time
 
 from flask import Blueprint, g, jsonify, request
@@ -13,7 +14,6 @@ from labctl.actuators.runtime import (
     board_cycle_delay,
     power_cycle_with_bindings,
     power_on_with_bindings,
-    validate_cycle_delay,
 )
 from labctl.core import audit
 from labctl.core.models import PortType, Status
@@ -25,6 +25,37 @@ api_bp = Blueprint("api", __name__)
 # Rate limiting: track last power cycle time per SBC to prevent hardware damage
 _power_cycle_times: dict[str, float] = {}
 POWER_CYCLE_MIN_INTERVAL = 5.0  # seconds
+# Boards with a REST or web-UI power cycle running in this server. A cycle
+# blocks its request for the whole delay, so the marker (not the time of
+# the last cycle) is what refuses an overlapping one.
+_power_cycles_in_progress: set[str] = set()
+_power_cycle_lock = threading.Lock()
+
+
+def begin_power_cycle(name: str) -> str | None:
+    """Mark a REST/web power cycle of ``name`` as started, before anything
+    is switched; return why it must not start instead (another cycle of
+    it is running, or the last one ended under POWER_CYCLE_MIN_INTERVAL
+    ago). Pair with :func:`end_power_cycle`."""
+    now = time.monotonic()
+    with _power_cycle_lock:
+        if name in _power_cycles_in_progress:
+            return f"a power cycle of '{name}' is already in progress"
+        elapsed = now - _power_cycle_times.get(name, float("-inf"))
+        if elapsed < POWER_CYCLE_MIN_INTERVAL:
+            wait = POWER_CYCLE_MIN_INTERVAL - elapsed
+            return f"Rate limited: wait {wait:.1f}s before next power cycle"
+        _power_cycles_in_progress.add(name)
+    return None
+
+
+def end_power_cycle(name: str, success: bool) -> None:
+    """The cycle begun with :func:`begin_power_cycle` is over; a
+    successful one starts the rate-limit interval."""
+    with _power_cycle_lock:
+        _power_cycles_in_progress.discard(name)
+        if success:
+            _power_cycle_times[name] = time.monotonic()
 
 
 def sbc_to_dict(sbc) -> dict:
@@ -204,12 +235,15 @@ def control_power(name: str):
 
     delay = None
     if action == "cycle":
-        # Omitted: the board's stored delay (or 3 s); the stored delay is
-        # also the minimum. An out-of-range value, or an out-of-range
-        # stored one, is refused before anything is switched.
+        # Omitted: the board's stored delay (or 3 s), which is also the
+        # minimum. An out-of-range value, or an out-of-range stored one,
+        # is refused before anything is switched.
+        if "delay" in data and data["delay"] is None:
+            return (
+                jsonify({"error": "delay must be a number of seconds, not null"}),
+                400,
+            )
         try:
-            if "delay" in data:  # an explicit null is refused, not omitted
-                validate_cycle_delay(data["delay"])
             delay = board_cycle_delay(sbc, data.get("delay"))
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
@@ -218,23 +252,15 @@ def control_power(name: str):
     if refusal:
         return _refused(refusal)
 
-    # Rate limit power cycles to prevent hardware damage
+    # Rate limit power cycles to prevent hardware damage. Marked before
+    # the cycle starts: it blocks for the whole delay, and an overlapping
+    # request must not start a second one.
     if action == "cycle":
-        last_cycle = _power_cycle_times.get(name, 0)
-        elapsed = time.monotonic() - last_cycle
-        if elapsed < POWER_CYCLE_MIN_INTERVAL:
-            wait = POWER_CYCLE_MIN_INTERVAL - elapsed
-            return (
-                jsonify(
-                    {
-                        "error": (
-                            f"Rate limited: wait {wait:.1f}s before next power cycle"
-                        ),
-                    }
-                ),
-                429,
-            )
+        busy = begin_power_cycle(name)
+        if busy:
+            return jsonify({"error": busy}), 429
 
+    success = False
     try:
         controller = PowerController.from_plug(sbc.power_plug)
 
@@ -244,8 +270,6 @@ def control_power(name: str):
             success = controller.power_off()
         else:
             success = power_cycle_with_bindings(g.manager, sbc, controller, delay)
-            if success:
-                _power_cycle_times[name] = time.monotonic()
 
         if success:
             state = controller.get_state()
@@ -279,6 +303,9 @@ def control_power(name: str):
         return jsonify({"error": str(e)}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    finally:
+        if action == "cycle":
+            end_power_cycle(name, success)
 
 
 # --- Port Endpoints ---

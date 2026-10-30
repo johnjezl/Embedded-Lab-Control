@@ -680,9 +680,13 @@ _DESTRUCTIVE_TOOLS = frozenset(
 )
 # Tool -> function(arguments) -> dict shown as "will_do" in its
 # confirmation (e.g. serial_send's exact bytes); ValueError refuses the call.
+# The token is bound to the plan too: if it differs when the token is
+# redeemed (e.g. the board's stored cycle delay changed), the call is
+# refused and the caller asked for a new plan.
 _CONFIRM_PREVIEWS: dict = {}
-# token -> (tool, call digest, expiry, user it was issued to; None = no auth)
-_pending_confirmations: dict[str, tuple[str, str, float, str | None]] = {}
+# token -> (tool, call digest, expiry, user it was issued to (None = no
+# auth), plan digest)
+_pending_confirmations: dict[str, tuple[str, str, float, str | None, str]] = {}
 _confirm_lock = threading.Lock()
 
 
@@ -713,7 +717,7 @@ def _issue_confirmation(
     with _confirm_lock:
         # Drop expired tokens so the table can't grow without bound.
         for stale in [
-            t for t, (_, _, exp, _) in _pending_confirmations.items() if exp < now
+            t for t, (_, _, exp, _, _) in _pending_confirmations.items() if exp < now
         ]:
             del _pending_confirmations[stale]
         _pending_confirmations[token] = (
@@ -721,6 +725,7 @@ def _issue_confirmation(
             _call_digest(tool_name, arguments),
             now + _CONFIRM_TTL_SECONDS,
             _authenticated_user(),
+            _plan_digest(preview),
         )
     title = TOOL_ANNOTATIONS[tool_name].title
     response = {
@@ -747,8 +752,33 @@ def _issue_confirmation(
     )
 
 
-def _redeem_confirmation(tool_name: str, arguments: dict, token: str) -> str | None:
+def _plan_digest(preview) -> str:
+    import hashlib
+
+    return hashlib.sha256(
+        json.dumps(preview, sort_keys=True, default=str).encode()
+    ).hexdigest()
+
+
+def _current_plan(tool_name: str, arguments: dict):
+    """The tool's "will_do" plan for these arguments now (None without a
+    preview); a call the preview refuses is a plan of its own."""
+    preview = _CONFIRM_PREVIEWS.get(tool_name)
+    if preview is None:
+        return None
+    try:
+        return preview(arguments)
+    except ValueError as e:
+        return {"refused": str(e)}
+
+
+def _redeem_confirmation(
+    tool_name: str, arguments: dict, token: str, plan=None
+) -> str | None:
     """Consume ``token``; return None if valid for this call, else an error.
+
+    ``plan`` is the call's "will_do" plan now; it must match the plan the
+    token was issued with.
 
     Over authenticated HTTP a token is only good for the user it was issued
     to: tokens are random, but they appear in tool output and transcripts.
@@ -761,7 +791,7 @@ def _redeem_confirmation(tool_name: str, arguments: dict, token: str) -> str | N
             del _pending_confirmations[token]
     if entry is None:
         return "unknown or already-used confirm_token"
-    issued_for, digest, expires, issued_to = entry
+    issued_for, digest, expires, issued_to, plan_digest = entry
     if issued_to != user:
         return "confirm_token was issued to a different user"
     if _time_mod.monotonic() > expires:
@@ -769,6 +799,12 @@ def _redeem_confirmation(tool_name: str, arguments: dict, token: str) -> str | N
     if issued_for != tool_name or digest != _call_digest(tool_name, arguments):
         return (
             "confirm_token was issued for a different call (tool or arguments differ)"
+        )
+    if plan_digest != _plan_digest(plan):
+        return (
+            "the plan changed since confirm_token was issued (now: "
+            f"{json.dumps(plan, sort_keys=True, default=str)}), e.g. the "
+            "board's stored cycle delay was changed"
         )
     return None
 
@@ -803,7 +839,9 @@ def _with_confirmation(func):
                 # a token for it.
                 return f"Error: {e}"
             return _issue_confirmation(name, arguments, extra)
-        problem = _redeem_confirmation(name, arguments, confirm_token)
+        problem = _redeem_confirmation(
+            name, arguments, confirm_token, _current_plan(name, arguments)
+        )
         if problem:
             return json.dumps(
                 {
@@ -887,86 +925,59 @@ def _structured_claim_advisory(manager, sbc_name: str) -> list[dict]:
 def _sdwire_host_switch_guard_mcp(
     sbc_name: str, sbc, force: bool = False, allow_force_override: bool = False
 ) -> str | None:
-    """Refuse host-mode switching unless the SBC's plug reports it OFF.
-
-    Fails closed, like the read-only SD tools: no power plug, a plug that
-    can't be read, or a state other than OFF all refuse (pulling the card
-    from a running board can corrupt it), unless ``force``.
-    """
+    """Refuse host-mode switching unless the SBC's plug reports it OFF
+    (power_guard.check_board_off: no plug, a plug that can't be read, or
+    another state refuse too), unless ``force``."""
     if force:
         return None
+    from labctl.sdwire.power_guard import (
+        POWERED_ON,
+        board_off_problem_text,
+        check_board_off,
+    )
+
+    check = check_board_off(sbc)
+    if check.is_off:
+        return None
+    advice = (
+        "Power off before switching SD to host mode."
+        if check.problem == POWERED_ON
+        else "Make sure the board is off first."
+    )
     override = (
         " Use force=true to override (risks SD card corruption)."
         if allow_force_override
         else ""
     )
-    if not sbc.power_plug:
-        return (
-            f"Error: {sbc_name} has no power plug, so labctl can't confirm it "
-            f"is off. Make sure the board is off first.{override}"
-        )
-
-    from labctl.power import PowerController
-    from labctl.power.base import PowerState
-
-    try:
-        state = PowerController.from_plug(sbc.power_plug).get_state()
-    except Exception as e:
-        return (
-            f"Error: could not read the power state of {sbc_name}: {e}. Make "
-            f"sure the board is off first.{override}"
-        )
-    if state == PowerState.ON:
-        return (
-            f"Error: {sbc_name} is powered on. Power off before "
-            f"switching SD to host mode.{override}"
-        )
-    if state != PowerState.OFF:
-        return (
-            f"Error: the power state of {sbc_name} is {state.value}, so labctl "
-            f"can't confirm it is off. Make sure the board is off first."
-            f"{override}"
-        )
-    return None
+    return f"Error: {board_off_problem_text(sbc_name, check)}. {advice}{override}"
 
 
 def _sdwire_read_power_refusal(sbc_name: str, sbc) -> str | None:
-    """Strict power check for the read-only SD tools: proceed only on OFF.
-
-    Like ``_sdwire_host_switch_guard_mcp`` (used by the explicit, destructive
-    ``sdwire_to_host``, which also takes force=true), this fails closed: no
-    power plug, an unreadable plug, or an UNKNOWN state all refuse, because
-    pulling the card from a running board can corrupt it. Returns a
+    """Strict power check for the read-only SD tools: proceed only on OFF
+    (power_guard.check_board_off, as ``sdwire_to_host``), because pulling
+    the card from a running board can corrupt it. Returns a
     ``_sdwire_read_error`` payload or None.
     """
-    from labctl.power import PowerController
-    from labctl.power.base import PowerState
-
-    hint = (
-        "Power the board off, or switch the card explicitly with "
-        "sdwire_to_host, then retry."
+    from labctl.sdwire.power_guard import (
+        POWERED_ON,
+        board_off_problem_text,
+        check_board_off,
     )
-    if not sbc.power_plug:
+
+    check = check_board_off(sbc)
+    if check.is_off:
+        return None
+    text = board_off_problem_text(sbc_name, check)
+    text = text[0].upper() + text[1:]
+    if check.problem == POWERED_ON:
         return _sdwire_read_error(
-            "power_unknown",
-            f"{sbc_name} has no power plug, so labctl can't confirm it is off. " + hint,
+            "powered_on", f"{text}. Power off before switching SD to host mode."
         )
-    try:
-        state = PowerController.from_plug(sbc.power_plug).get_state()
-    except Exception as e:
-        return _sdwire_read_error(
-            "power_unknown", f"Could not read power state of {sbc_name}: {e}. " + hint
-        )
-    if state == PowerState.ON:
-        return _sdwire_read_error(
-            "powered_on",
-            f"{sbc_name} is powered on. Power off before switching SD to host mode.",
-        )
-    if state != PowerState.OFF:
-        return _sdwire_read_error(
-            "power_unknown", f"Power state of {sbc_name} is {state.value}. " + hint
-        )
-    return None
+    return _sdwire_read_error(
+        "power_unknown",
+        f"{text}. Power the board off, or switch the card explicitly with "
+        "sdwire_to_host, then retry.",
+    )
 
 
 # Second look before treating the card as on the DUT (see below).
@@ -1272,9 +1283,9 @@ def power_cycle(sbc_name: str, delay: Optional[float] = None) -> str:
     Args:
         sbc_name: Name of the SBC to power cycle
         delay: Seconds to wait between off and on, 0 to 86400. Omitted:
-            the board's stored cycle delay, or 3.0 if none is set. The
-            stored delay is also the minimum: a smaller value is raised
-            to it.
+            the board's stored cycle delay, or 3.0 if none is set. That
+            is also the minimum: a smaller value is raised to it (a
+            negative one is an error).
     """
     from labctl.power import PowerController
 
@@ -1747,6 +1758,10 @@ def add_serial_device(
 def remove_serial_device(name: str) -> str:
     """Unregister a USB-serial adapter.
 
+    Refused while a board someone else has claimed has a port on the
+    adapter, by any path that reaches it (its /dev/lab/<name> link, its
+    registration, or a path resolving to the same device node).
+
     Args:
         name: Name of the serial device to remove
     """
@@ -1754,6 +1769,13 @@ def remove_serial_device(name: str) -> str:
     device = manager.get_serial_device_by_name(name)
     if not device:
         return f"Error: Serial device '{name}' not found"
+    if _get_config().claims.enabled:
+        boards = manager.sbcs_sharing_hardware(
+            serial_device_path=f"/dev/lab/{device.name}", serial_device_id=device.id
+        )
+        claim_err = _check_claims_of(manager, boards)
+        if claim_err:
+            return claim_err
 
     try:
         manager.delete_serial_device(device.id)
@@ -2691,7 +2713,7 @@ _CONFIRM_PREVIEWS["serial_send"] = _serial_send_preview
 def _cycle_delay_preview(arguments: dict) -> dict | None:
     """The delay a power-cycling call will wait, for its confirmation.
 
-    The board's stored delay is the minimum (board_cycle_delay); an
+    The board's stored delay, or 3 s, is the minimum (board_cycle_delay); an
     out-of-range stored or requested delay refuses the call (ValueError).
     None when the call doesn't power-cycle or the board isn't found (the
     tool reports that)."""

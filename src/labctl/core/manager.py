@@ -1047,17 +1047,28 @@ class ResourceManager:
         )
         names: set[str] = set()
         for r in rows:
-            path = r["device_path"] or ""
-            if path.startswith("/dev/lab/"):
-                link = os.path.normpath(path)[len("/dev/lab/") :]
-            elif path and "/" not in path:
-                link = path
-            else:
-                link = None
+            link = self._lab_link_name(r["device_path"])
             used = {n for n in (link, r["device_name"]) if n}
             if used and (wanted is None or used & wanted):
                 names.add(r["name"])
         return sorted(names)
+
+    @staticmethod
+    def _lab_link_name(device_path: Optional[str]) -> Optional[str]:
+        """The ``<name>`` of a ``/dev/lab/<name>`` path (normalised first,
+        so ``/dev//lab/./x`` and ``//dev/lab/x`` count), a bare legacy
+        ``<name>``, or None for any other path."""
+        if not device_path:
+            return None
+        if "/" not in device_path:
+            return device_path
+        if not device_path.startswith("/"):
+            return None
+        path = "/" + os.path.normpath(device_path).lstrip("/")
+        prefix = "/dev/lab/"
+        if path.startswith(prefix) and "/" not in path[len(prefix) :]:
+            return path[len(prefix) :] or None
+        return None
 
     def _serial_identity(
         self, device_path: Optional[str], serial_device_id: Optional[int]

@@ -313,3 +313,35 @@ class TestRuleLinks:
         path.write_text('SUBSYSTEM=="tty", KERNELS=="1-2", SYMLINK+="lab/x"\n')
         monkeypatch.setattr(udev, "UDEV_RULES_PATH", path)
         assert udev.installed_rule_links() == {"x": "1-2"}
+
+
+class TestRuleLinksAnyOrder:
+    """Every lab/<name> link counts, whatever the attribute order (#41
+    review); a link without a parsable USB path counts as changed."""
+
+    def test_symlink_before_kernels(self):
+        from labctl.serial.udev import rule_links
+
+        text = 'SYMLINK+="lab/a", SUBSYSTEM=="tty", KERNELS=="1-1.1"\n'
+        assert rule_links(text) == {"a": "1-1.1"}
+
+    def test_several_links_and_plain_assignment(self):
+        from labctl.serial.udev import rule_links
+
+        text = (
+            'KERNELS=="1-1.2", SYMLINK="lab/b other/x lab/c"\n'
+            'KERNELS=="1-1.3", SYMLINK+="lab/d", SYMLINK+="lab/e"\n'
+        )
+        assert rule_links(text) == {
+            "b": "1-1.2",
+            "c": "1-1.2",
+            "d": "1-1.3",
+            "e": "1-1.3",
+        }
+
+    def test_link_without_kernels_counts_as_changed(self):
+        from labctl.serial.udev import changed_links, rule_links
+
+        old = rule_links('SUBSYSTEM=="tty", ATTRS{serial}=="X1", SYMLINK+="lab/f"\n')
+        assert old == {"f": None}
+        assert changed_links(old, {"f": "1-1.4"}) == {"f"}

@@ -1997,3 +1997,36 @@ class TestSbcsUsingSerialLinks:
     def test_empty_and_unused(self, boards):
         assert boards.sbcs_using_serial_links(set()) == []
         assert boards.sbcs_using_serial_links({"nope"}) == []
+
+
+class TestLabLinkName:
+    """A port path is normalised before the /dev/lab/ test (#41 review)."""
+
+    @pytest.mark.parametrize(
+        "path, name",
+        [
+            ("/dev/lab/port-a", "port-a"),
+            ("/dev//lab/./port-a", "port-a"),
+            ("//dev/lab/port-a", "port-a"),
+            ("/dev/lab/../lab/port-a", "port-a"),
+            ("/dev/serial/../lab/port-a", "port-a"),
+            ("port-a", "port-a"),
+            ("/dev/lab/sub/port-a", None),
+            ("/dev/lab/", None),
+            ("/dev/ttyUSB0", None),
+            ("dev/lab/port-a", None),
+            (None, None),
+        ],
+    )
+    def test_lab_link_name(self, manager, path, name):
+        assert manager._lab_link_name(path) == name
+
+    def test_unnormalised_path_found(self, manager):
+        manager.create_serial_device("port-a", "1-1.1")
+        sbc = manager.create_sbc(name="odd-path")
+        manager.db.execute_modify(
+            "INSERT INTO serial_ports (sbc_id, port_type, device_path, tcp_port,"
+            " baud_rate) VALUES (?, 'console', '/dev//lab/./port-a', 4010, 115200)",
+            (sbc.id,),
+        )
+        assert manager.sbcs_using_serial_links({"port-a"}) == ["odd-path"]

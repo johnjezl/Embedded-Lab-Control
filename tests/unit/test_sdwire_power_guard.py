@@ -92,3 +92,65 @@ def test_missing_sdwire_leaves_the_board_running(board, power):
         deploy_to_card(None, board, ctrl, write)
     power.power_off.assert_not_called()
     ctrl.switch_to_host.assert_not_called()
+
+
+class TestCheckBoardOff:
+    """The one "proceed only on OFF" check (#41 review)."""
+
+    def _sbc(self, plug=True):
+        sbc = MagicMock()
+        sbc.power_plug = MagicMock() if plug else None
+        return sbc
+
+    def _check(self, sbc, state=None, error=None):
+        from labctl.sdwire.power_guard import check_board_off
+
+        power = MagicMock()
+        if error:
+            power.get_state.side_effect = error
+        else:
+            power.get_state.return_value = state
+        with patch("labctl.power.PowerController.from_plug", return_value=power):
+            return check_board_off(sbc)
+
+    def test_off(self):
+        from labctl.power.base import PowerState
+
+        check = self._check(self._sbc(), PowerState.OFF)
+        assert check.is_off and check.problem is None
+
+    def test_no_plug(self):
+        from labctl.sdwire import power_guard
+
+        check = self._check(self._sbc(plug=False))
+        assert check.problem == power_guard.NO_PLUG
+        assert power_guard.board_off_problem_text("b", check) == (
+            "b has no power plug, so labctl can't confirm it is off"
+        )
+
+    def test_unreadable(self):
+        from labctl.sdwire import power_guard
+
+        check = self._check(self._sbc(), error=RuntimeError("timeout"))
+        assert check.problem == power_guard.UNREADABLE
+        assert power_guard.board_off_problem_text("b", check) == (
+            "could not read the power state of b: timeout"
+        )
+
+    def test_on(self):
+        from labctl.power.base import PowerState
+        from labctl.sdwire import power_guard
+
+        check = self._check(self._sbc(), PowerState.ON)
+        assert check.problem == power_guard.POWERED_ON
+        assert power_guard.board_off_problem_text("b", check) == "b is powered on"
+
+    def test_unknown(self):
+        from labctl.power.base import PowerState
+        from labctl.sdwire import power_guard
+
+        check = self._check(self._sbc(), PowerState.UNKNOWN)
+        assert check.problem == power_guard.NOT_OFF
+        assert "power state of b is unknown" in power_guard.board_off_problem_text(
+            "b", check
+        )

@@ -13,7 +13,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `sdwire_ls`/`cat`/`info`, unless `force=true`. CLI `labctl sdwire host`
   does the same: it refuses a board with no plug or an unreadable or
   unknown plug state unless `--force` (which, as before, skips the power
-  check). CLI `sdwire ls`/`cat`/`info` are unchanged.
+  check), and so do CLI `sdwire ls`/`cat`/`info` (they refused only a
+  plug reporting ON). One check (`labctl.sdwire.power_guard`) serves all
+  of them.
 - A per-board cycle delay stored before `edit --cycle-delay` checked the
   range (e.g. `1e9`, NaN, negative) is refused on every path before
   anything is switched or written (#41): MCP/REST/web cycles, the reboot
@@ -28,16 +30,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   would remove or re-point a `/dev/lab/<name>` link such a board uses
   (every link, if the installed rules file can't be read). Both take
   `--override-claim`. `serial remove` now asks for confirmation only on a
-  terminal, like the other destructive commands.
+  terminal, like the other destructive commands. MCP
+  `remove_serial_device` refuses an adapter a board someone else has
+  claimed has a port on, the same way.
+- MCP confirmation tokens are bound to the plan they were issued with
+  (`will_do`): if it differs at confirmation (e.g. the board's stored cycle
+  delay changed), the call is refused and the caller asks for a new plan.
+- REST and web-UI power cycles of a board don't overlap: a cycle requested
+  while another is running (it blocks for the whole delay) is refused
+  with `429`, not started.
 
 ### Changed
-- The per-board cycle delay (`labctl edit --cycle-delay`) is the default
-  and the minimum for every power cycle of the board (#41), not only CLI
-  `power cycle` and recovery: MCP `power_cycle` (whose `delay` now
-  defaults to the stored value), REST `cycle` (likewise; the response adds
-  `delay_seconds`), the web UI's power-cycle button, the reboot after
-  `sdwire flash`/`update` and every `boot-test` run (CLI and MCP). A
-  smaller requested delay is raised to it. The `--dry-run` plans of
+- One cycle-delay rule on every surface (#41): the board's stored delay
+  (`labctl edit --cycle-delay`), or 3 s if none is set, is the default
+  and the minimum of every power cycle, not only CLI `power cycle` and
+  recovery: MCP `power_cycle` (whose `delay` now defaults to it), REST
+  `cycle` (likewise; the response adds `delay_seconds`), the web UI's
+  power-cycle button, the reboot after `sdwire flash`/`update` and every
+  `boot-test` run (CLI and MCP). A smaller requested delay is raised to
+  it, so MCP and REST no longer allow less than 3 s on a board without a
+  stored delay. A negative requested delay is an error everywhere (CLI
+  `power cycle --delay` used to raise it to the minimum). The `--dry-run` plans of
   `sdwire flash`/`update` and the MCP confirmations of `power_cycle`,
   `enter_/exit_recovery`, `boot_test` and `sdwire_update` (with
   `reboot=true`) show the delay (`will_do.cycle_delay_seconds`).
