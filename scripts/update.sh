@@ -251,6 +251,16 @@ LABCTL_DB_DIR="$LABCTL_HOME/db"
 "${ADMIN_FILES[@]}" shared-db "$SYSTEM_CONFIG_FILE" "$LABCTL_DB_DIR" labctl labctl ||
     echo "[!!] Continuing; fix the database permissions above and rerun."
 
+# 3d. /etc/ser2net.yaml group-writable, as install-services.sh makes it:
+# also when ser2net (or an admin) created it after the install, so labctl
+# group members can run `labctl ser2net generate --install`. /etc is
+# root's, so by path is safe; a symlink there is left alone.
+if [ -f /etc/ser2net.yaml ] && [ ! -L /etc/ser2net.yaml ]; then
+    chown root:labctl /etc/ser2net.yaml
+    chmod 664 /etc/ser2net.yaml
+    echo "[ok] /etc/ser2net.yaml (group-writable by labctl)"
+fi
+
 # 4. Verify install
 VERSION=$("$LABCTL_VENV/bin/labctl" --version 2>&1 || true)
 echo "[ok] $VERSION"

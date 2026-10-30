@@ -273,15 +273,27 @@ class TestMcpTools:
 
     def test_assign_serial_port_uses_base_tcp_port(self, mock_manager):
         """serial.base_tcp_port sets where auto-assignment starts."""
-        from labctl.core.config import Config
         from labctl.mcp_server import assign_serial_port
 
-        config = Config.from_dict({"serial": {"base_tcp_port": 6500}})
-        with patch("labctl.mcp_server._get_config", return_value=config):
-            result = assign_serial_port(
-                sbc_name="test-sbc-2", port_type="console", device="/dev/lab/b"
-            )
+        mock_manager.base_tcp_port = 6500
+        result = assign_serial_port(
+            sbc_name="test-sbc-2", port_type="console", device="/dev/lab/b"
+        )
         assert "(tcp:6500)" in result
+
+    def test_manager_built_with_base_tcp_port(self, tmp_path):
+        """The server's manager takes serial.base_tcp_port from the config."""
+        from labctl import mcp_server
+        from labctl.core.config import Config
+
+        config = Config.from_dict(
+            {
+                "database_path": str(tmp_path / "t.db"),
+                "serial": {"base_tcp_port": 6500},
+            }
+        )
+        with patch("labctl.core.config.load_config", return_value=config):
+            assert mcp_server._get_manager().base_tcp_port == 6500
 
     def test_assign_serial_port_bad_sbc(self, mock_manager):
         from labctl.mcp_server import assign_serial_port

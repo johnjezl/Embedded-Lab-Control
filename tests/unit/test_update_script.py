@@ -540,3 +540,27 @@ class TestScriptsShareDatabaseSetup:
         assert result.returncode == 0
         assert "Continuing" in result.stdout
         assert "reached-restart" in result.stdout
+
+
+class TestSer2netConfigGroupWritable:
+    """Both scripts make an existing /etc/ser2net.yaml root:labctl 664 (a
+    file ser2net created after the install too), leaving a symlink alone,
+    and update.sh does it before restarting the services."""
+
+    BLOCK = (
+        "if [ -f /etc/ser2net.yaml ] && [ ! -L /etc/ser2net.yaml ]; then\n"
+        "    chown root:labctl /etc/ser2net.yaml\n"
+        "    chmod 664 /etc/ser2net.yaml\n"
+    )
+
+    @pytest.mark.parametrize(
+        "script",
+        [UPDATE_SH, UPDATE_SH.parent / "install-services.sh"],
+        ids=lambda p: p.name,
+    )
+    def test_same_block(self, script):
+        assert script.read_text().count(self.BLOCK) == 1
+
+    def test_update_before_restart(self):
+        text = UPDATE_SH.read_text()
+        assert text.index(self.BLOCK) < text.index("systemctl restart")

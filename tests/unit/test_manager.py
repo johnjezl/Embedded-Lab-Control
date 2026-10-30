@@ -393,22 +393,18 @@ class TestSerialPortOperations:
     def test_assign_port_auto_tcp_from_base(self, manager):
         """serial.base_tcp_port sets where auto-assignment starts; ports
         already above it continue from the highest in use."""
+        manager.base_tcp_port = 6000
         a = manager.create_sbc(name="base-a")
         b = manager.create_sbc(name="base-b")
         c = manager.create_sbc(name="base-c")
 
-        port = manager.assign_serial_port(
-            a.id, PortType.CONSOLE, "/dev/lab/a", base_tcp_port=6000
-        )
+        port = manager.assign_serial_port(a.id, PortType.CONSOLE, "/dev/lab/a")
         assert port.tcp_port == 6000
-        port = manager.assign_serial_port(
-            b.id, PortType.CONSOLE, "/dev/lab/b", base_tcp_port=6000
-        )
+        port = manager.assign_serial_port(b.id, PortType.CONSOLE, "/dev/lab/b")
         assert port.tcp_port == 6001
         # A lower base doesn't reuse ports below the highest in use.
-        port = manager.assign_serial_port(
-            c.id, PortType.CONSOLE, "/dev/lab/c", base_tcp_port=4000
-        )
+        manager.base_tcp_port = 4000
+        port = manager.assign_serial_port(c.id, PortType.CONSOLE, "/dev/lab/c")
         assert port.tcp_port == 6002
 
     def test_assign_port_auto_tcp_raised_base(self, manager):
@@ -416,9 +412,8 @@ class TestSerialPortOperations:
         a = manager.create_sbc(name="raise-a")
         b = manager.create_sbc(name="raise-b")
         manager.assign_serial_port(a.id, PortType.CONSOLE, "/dev/lab/a")
-        port = manager.assign_serial_port(
-            b.id, PortType.CONSOLE, "/dev/lab/b", base_tcp_port=7000
-        )
+        manager.base_tcp_port = 7000
+        port = manager.assign_serial_port(b.id, PortType.CONSOLE, "/dev/lab/b")
         assert port.tcp_port == 7000
 
     def test_assign_port_replaces_existing(self, manager):
@@ -1229,6 +1224,28 @@ class TestStatusHistoryPruningKeepsUptime:
         result = manager.get_uptime(sbc.id)
         assert result["current_uptime_seconds"] == 0
         assert result["uptime_24h_percent"] == 0.0
+
+    def test_nothing_due_skips_the_delete(self, manager):
+        """Only the cheap EXISTS check runs when nothing is past the cutoff."""
+        from unittest.mock import patch
+
+        sbc = manager.create_sbc(name="fresh")
+        self._row(manager, sbc.id, "online", 1)
+        with patch.object(
+            manager.db, "execute_modify", wraps=manager.db.execute_modify
+        ) as modify:
+            assert manager.cleanup_old_status_logs(30) == 0
+        modify.assert_not_called()
+
+    def test_due_check_uses_index(self, manager):
+        plan = " ".join(
+            str(tuple(r))
+            for r in manager.db.execute(
+                "EXPLAIN QUERY PLAN SELECT EXISTS (SELECT 1 FROM status_log"
+                " WHERE logged_at < datetime('now', '-30 days'))"
+            )
+        )
+        assert "idx_status_log_logged_at" in plan
 
     def test_other_boards_unaffected(self, manager):
         a = manager.create_sbc(name="a")

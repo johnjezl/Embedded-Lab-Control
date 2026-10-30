@@ -172,6 +172,7 @@ def _get_manager():
     return get_manager(
         config.database_path,
         timeout_seconds=config.database.timeout_seconds,
+        base_tcp_port=config.serial.base_tcp_port,
     )
 
 
@@ -1567,7 +1568,6 @@ def assign_serial_port(
             device_path=device,
             baud_rate=baud_rate,
             alias=alias,
-            base_tcp_port=_get_config().serial.base_tcp_port,
         )
         return (
             f"Assigned {port_type} port to {sbc_name}: {device} (tcp:{port.tcp_port})"
