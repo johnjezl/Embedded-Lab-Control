@@ -2771,6 +2771,7 @@ def boot_test(
             # the board is switched off first, and nothing is deployed if
             # that fails. The first run powers it back on.
             deploy_to_card(
+                manager,
                 sbc,
                 ctrl,
                 lambda: ctrl.update_files(

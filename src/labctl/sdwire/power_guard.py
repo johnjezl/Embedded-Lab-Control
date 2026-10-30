@@ -29,7 +29,7 @@ def power_off_before_host_switch(sbc) -> None:
     time.sleep(1)
 
 
-def deploy_to_card(sbc, ctrl, write) -> None:
+def deploy_to_card(manager, sbc, ctrl, write) -> None:
     """Power ``sbc`` off, switch its card to the host, run ``write()``, and
     hand the card back to the board.
 
@@ -48,7 +48,9 @@ def deploy_to_card(sbc, ctrl, write) -> None:
             ctrl.switch_to_dut()
         except Exception:
             pass
+        from labctl.actuators.runtime import _left_off, boards_on_plug
+
         raise RuntimeError(
-            f"deploy to {sbc.name!r} failed: {e}; the board (and any board "
-            f"sharing its outlet) was left powered off"
+            f"deploy to {sbc.name!r} failed: {e}; "
+            f"{_left_off(sbc, boards_on_plug(manager, sbc))}"
         ) from e
