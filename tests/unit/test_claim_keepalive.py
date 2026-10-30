@@ -1,14 +1,16 @@
 """ClaimKeepalive: keep the caller's claim alive during a long call (#2)."""
 
+import sqlite3
 import threading
 from datetime import datetime, timedelta
 
 import pytest
 
-from labctl.core.claim_keepalive import ClaimKeepalive
+from labctl.core import claim_keepalive
+from labctl.core.claim_keepalive import CLAIMED, LOST, ClaimKeepalive
 from labctl.core.database import get_database
 from labctl.core.manager import ResourceManager
-from labctl.core.models import ClaimActor
+from labctl.core.models import ClaimActor, PlugType
 
 ALICE = ClaimActor(session_id="s-alice", owner="alice")
 BOB = ClaimActor(session_id="s-bob", owner="bob")
@@ -21,9 +23,9 @@ def manager(tmp_path):
     return m
 
 
-def _claim(manager, actor=ALICE, duration=600):
+def _claim(manager, actor=ALICE, duration=600, sbc="pi-1"):
     return manager.claim_sbc(
-        sbc_name="pi-1",
+        sbc_name=sbc,
         agent_name=actor.owner,
         session_id=actor.session_id,
         session_kind="mcp-http",
@@ -44,6 +46,54 @@ def _age(manager, seconds):
 
 def _expires_at(manager):
     return manager.get_open_claim("pi-1").expires_at
+
+
+def _db_down(*args, **kwargs):
+    raise sqlite3.OperationalError("database is locked")
+
+
+class TestHeartbeatHeldClaim:
+    """ResourceManager.heartbeat_held_claim: one conditional UPDATE."""
+
+    def test_heartbeats_the_holder(self, manager):
+        _claim(manager)
+        _age(manager, -10)
+        before = _expires_at(manager)
+        assert manager.heartbeat_held_claim("pi-1", ALICE) is True
+        after = _expires_at(manager)
+        assert after > before + timedelta(seconds=500)
+        # Same timestamp format as the rest of the claims table.
+        row = manager.db.execute_one("SELECT expires_at FROM claims")
+        assert len(row["expires_at"]) == len("2026-01-01 00:00:00.000000")
+
+    def test_same_owner_from_another_session(self, manager):
+        _claim(manager)
+        actor = ClaimActor(session_id="other", owner="alice")
+        assert manager.heartbeat_held_claim("pi-1", actor) is True
+
+    def test_not_for_someone_else(self, manager):
+        _claim(manager)
+        before = _expires_at(manager)
+        assert manager.heartbeat_held_claim("pi-1", BOB) is False
+        assert manager.heartbeat_held_claim("pi-1", ClaimActor("x")) is False
+        assert _expires_at(manager) == before
+
+    def test_not_for_an_expired_or_released_claim(self, manager):
+        _claim(manager)
+        _age(manager, 5)
+        assert manager.heartbeat_held_claim("pi-1", ALICE) is False
+        assert manager.get_active_claim("pi-1") is None
+
+    def test_heartbeat_claim_uses_it(self, manager):
+        _claim(manager)
+        assert manager.heartbeat_claim("pi-1", "s-alice") is True
+        assert manager.heartbeat_claim("pi-1", "s-bob") is False
+
+    def test_touch_claim_reports_a_zero_row_update(self, manager):
+        claim = _claim(manager)
+        assert manager.touch_claim(claim) is True
+        manager.force_release_claim("pi-1", reason="r")
+        assert manager.touch_claim(claim) is False
 
 
 class TestBeat:
@@ -101,6 +151,7 @@ class TestBeat:
             manager.force_release_claim("pi-1", reason="needed it")
             assert ka.beat() is False
             assert "no longer held" in ka.lost_reason
+            assert ka.lost_reason.kind == LOST
             # Lost stays lost, even if the caller claims it again.
             _claim(manager)
             assert ka.beat() is False
@@ -117,6 +168,17 @@ class TestBeat:
             ka.stop()
         assert manager.get_active_claim("pi-1") is None
 
+    def test_zero_row_update_is_lost(self, manager, monkeypatch):
+        """The claim looked held, but the UPDATE changed nothing."""
+        _claim(manager)
+        ka = ClaimKeepalive(manager, "pi-1", ALICE, interval=3600).start()
+        try:
+            monkeypatch.setattr(manager.db, "execute_modify", lambda *a: 0)
+            assert ka.beat() is False
+            assert ka.lost_reason.kind == LOST
+        finally:
+            ka.stop()
+
     def test_lost_to_another_holder_names_them(self, manager):
         _claim(manager)
         ka = ClaimKeepalive(manager, "pi-1", ALICE, interval=3600).start()
@@ -128,33 +190,57 @@ class TestBeat:
         finally:
             ka.stop()
 
-    def test_database_error_is_not_a_lost_claim(self, manager, monkeypatch):
+    def test_database_error_is_a_missed_beat(self, manager, monkeypatch):
         _claim(manager)
         ka = ClaimKeepalive(manager, "pi-1", ALICE, interval=3600).start()
         try:
-
-            def broken(name):
-                raise RuntimeError("database is locked")
-
-            monkeypatch.setattr(manager, "get_active_claim", broken)
+            monkeypatch.setattr(manager, "heartbeat_held_claim", _db_down)
             assert ka.beat() is True
             assert ka.lost_reason is None
         finally:
             ka.stop()
 
+    def test_database_error_past_the_deadline_is_lost(self, manager, monkeypatch):
+        _claim(manager)
+        ka = ClaimKeepalive(manager, "pi-1", ALICE, interval=3600).start()
+        try:
+            monkeypatch.setattr(manager, "heartbeat_held_claim", _db_down)
+            ka._deadline = 0.0  # the claim's time ran out without a beat
+            assert ka.beat() is False
+            assert "couldn't be renewed" in ka.lost_reason
+        finally:
+            ka.stop()
+
+
+class TestStart:
+    def test_database_error_carries_on_without_keepalive(
+        self, manager, monkeypatch, caplog
+    ):
+        _claim(manager)
+        monkeypatch.setattr(manager, "get_open_claim", _db_down)
+        with ClaimKeepalive(manager, "pi-1", ALICE) as ka:
+            assert not ka.held
+            assert ka._thread is None
+        assert "carrying on without keeping it alive" in caplog.text
+
 
 class TestThread:
+    def _watch(self, manager):
+        beat = threading.Event()
+        real = manager.heartbeat_held_claim
+
+        def heartbeat(sbc, actor):
+            result = real(sbc, actor)
+            beat.set()
+            return result
+
+        manager.heartbeat_held_claim = heartbeat
+        return beat
+
     def test_beats_in_the_background_and_stops(self, manager):
         _claim(manager)
-        beat = threading.Event()
+        beat = self._watch(manager)
         ka = ClaimKeepalive(manager, "pi-1", ALICE, interval=0.01)
-        real_touch = manager.touch_claim
-
-        def touch(claim):
-            real_touch(claim)
-            beat.set()
-
-        manager.touch_claim = touch
         with ka:
             assert beat.wait(5)
         assert ka._thread is None
@@ -181,26 +267,22 @@ class TestThread:
         assert ka.lost_reason
         ka.stop()
 
-    def test_interval_follows_the_claim_duration(self, manager):
+    def test_interval_is_a_quarter_of_the_duration(self, manager):
         _claim(manager, duration=120)
         ka = ClaimKeepalive(manager, "pi-1", ALICE)
-        seen = {}
-        real = threading.Thread
+        assert ka.next_interval() == 30.0
 
-        def fake_thread(target, args, **kw):
-            seen["interval"] = args[0]
-            return real(target=lambda *a: None, args=args, **kw)
+    def test_interval_follows_a_renew_to_a_shorter_duration(self, manager):
+        _claim(manager, duration=3600)
+        ka = ClaimKeepalive(manager, "pi-1", ALICE)
+        assert ka.next_interval() == claim_keepalive.MAX_INTERVAL_SECONDS
+        manager.renew_claim("pi-1", "s-alice", duration_seconds=60, owner="alice")
+        assert ka.next_interval() == 15.0
 
-        import labctl.core.claim_keepalive as mod
-
-        orig = mod.threading.Thread
-        mod.threading.Thread = fake_thread
-        try:
-            ka.start()
-        finally:
-            mod.threading.Thread = orig
-            ka.stop()
-        assert seen["interval"] == 30.0  # a quarter of 120 s
+    def test_interval_bounds(self, manager):
+        _claim(manager, duration=1)
+        ka = ClaimKeepalive(manager, "pi-1", ALICE)
+        assert ka.next_interval() == claim_keepalive.MIN_INTERVAL_SECONDS
 
 
 class TestCheckpoint:
@@ -216,32 +298,59 @@ class TestCheckpoint:
         _claim(manager)
         with ClaimKeepalive(manager, "pi-1", ALICE, interval=3600) as ka:
             manager.force_release_claim("pi-1", reason="r")
-            assert "no longer held" in ka.checkpoint()
+            reason = ka.checkpoint()
+        assert "no longer held" in reason and reason.kind == LOST
+
+    def test_own_claim_taken_over_counts_as_lost(self, manager):
+        _claim(manager)
+        with ClaimKeepalive(manager, "pi-1", ALICE, interval=3600) as ka:
+            manager.force_release_claim("pi-1", reason="r")
+            _claim(manager, BOB)
+            reason = ka.checkpoint()
+        assert reason.kind == LOST
+        assert "now claimed by 'bob'" in reason
 
     def test_new_claim_by_someone_else_stops_an_unclaimed_run(self, manager):
         with ClaimKeepalive(manager, "pi-1", ALICE) as ka:
             assert ka.checkpoint() is None
             _claim(manager, BOB)
-            assert "now claimed by 'bob'" in ka.checkpoint()
+            reason = ka.checkpoint()
+        assert "now claimed by 'bob'" in reason and reason.kind == CLAIMED
 
-    def test_claim_on_a_board_sharing_hardware_stops(self, manager):
-        from labctl.core.models import PlugType
-
+    def _share(self, manager):
         pi1 = manager.get_sbc_by_name("pi-1")
         pi2 = manager.create_sbc(name="pi-2")
         manager.assign_power_plug(pi1.id, PlugType.TASMOTA, "pdu", 1)
         manager.assign_power_plug(pi2.id, PlugType.TASMOTA, "pdu", 1)
+
+    def test_claim_on_a_board_sharing_hardware_stops(self, manager):
+        self._share(manager)
         with ClaimKeepalive(manager, "pi-1", ALICE) as ka:
-            manager.claim_sbc(
-                sbc_name="pi-2",
-                agent_name="bob",
-                session_id="s-bob",
-                session_kind="mcp-http",
-                duration_seconds=600,
-                reason="r",
-                owner="bob",
-            )
-            assert "'pi-2' is now claimed by 'bob'" in ka.checkpoint()
+            _claim(manager, BOB, sbc="pi-2")
+            reason = ka.checkpoint()
+        assert "'pi-2' is now claimed by 'bob'" in reason
+        assert reason.kind == CLAIMED
+
+    def test_sharer_claimed_does_not_heartbeat_own_claim(self, manager):
+        """The recheck runs first: a refused checkpoint extends nothing."""
+        self._share(manager)
+        _claim(manager)
+        _age(manager, -10)
+        before = _expires_at(manager)
+        with ClaimKeepalive(manager, "pi-1", ALICE, interval=3600) as ka:
+            _claim(manager, BOB, sbc="pi-2")
+            assert ka.checkpoint().kind == CLAIMED
+        assert _expires_at(manager) == before
+
+    def test_overridden_claims_are_allowed_new_ones_are_not(self, manager):
+        self._share(manager)
+        theirs = _claim(manager, BOB)
+        with ClaimKeepalive(
+            manager, "pi-1", ALICE, allowed_claim_ids={theirs.id}
+        ) as ka:
+            assert ka.checkpoint() is None
+            _claim(manager, ClaimActor("s-carol", "carol"), sbc="pi-2")
+            assert "'pi-2' is now claimed by 'carol'" in ka.checkpoint()
 
     def test_recheck_off_ignores_others_claims(self, manager):
         _claim(manager, BOB)
@@ -256,3 +365,23 @@ class TestCheckpoint:
         with ClaimKeepalive(manager, "pi-1", ALICE) as ka:
             assert ka.checkpoint() is None
             assert ka.checkpoint() is None
+
+    def test_database_error_goes_on(self, manager, monkeypatch):
+        _claim(manager)
+        with ClaimKeepalive(manager, "pi-1", ALICE, interval=3600) as ka:
+            monkeypatch.setattr(manager, "check_claim", _db_down)
+            monkeypatch.setattr(manager, "heartbeat_held_claim", _db_down)
+            assert ka.checkpoint() is None
+
+    def test_database_error_without_a_claim_goes_on(self, manager, monkeypatch):
+        with ClaimKeepalive(manager, "pi-1", ALICE) as ka:
+            monkeypatch.setattr(manager, "sbcs_sharing_hardware_with", _db_down)
+            assert ka.checkpoint() is None
+
+    def test_database_error_past_the_deadline_stops(self, manager, monkeypatch):
+        _claim(manager)
+        with ClaimKeepalive(manager, "pi-1", ALICE, interval=3600) as ka:
+            monkeypatch.setattr(manager, "check_claim", _db_down)
+            ka._deadline = 0.0
+            reason = ka.checkpoint()
+        assert reason.kind == LOST and "database error" in reason

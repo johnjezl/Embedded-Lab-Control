@@ -79,13 +79,13 @@ def test_heartbeats_the_users_own_claim(lab, hardware):
     cycle, _ = hardware
     _claim(manager, _cli_session_id(), "me")
     touched = []
-    real = ResourceManager.touch_claim
+    real = ResourceManager.heartbeat_held_claim
 
-    def touch(self, claim):
-        touched.append(claim.session_id)
-        return real(self, claim)
+    def heartbeat(self, sbc_name, actor):
+        touched.append(actor.session_id)
+        return real(self, sbc_name, actor)
 
-    with patch.object(ResourceManager, "touch_claim", touch):
+    with patch.object(ResourceManager, "heartbeat_held_claim", heartbeat):
         result = run(*ARGS)
     assert result.exit_code == 0, result.output
     assert "3/3" in result.output
@@ -144,3 +144,31 @@ def test_without_a_claim_unchanged(lab, hardware):
     assert result.exit_code == 0, result.output
     assert cycle.call_count == 3
     assert manager.get_open_claim("pi-c") is None
+
+
+def test_override_claim_still_stops_for_a_new_claim(lab, hardware):
+    """--override-claim covers only the claims overridden at the start: a
+    claim someone takes on a board sharing the hardware mid-test stops it."""
+    run, manager = lab
+    cycle, capture = hardware
+    _claim(manager, "mcp-http:1:agent-x", "agent-x")
+    sharer = manager.create_sbc(name="pi-d", project="test")
+    manager.assign_power_plug(sharer.id, PlugType.TASMOTA, "10.0.0.6", 1)
+
+    def claim_sharer(**kwargs):
+        if manager.get_active_claim("pi-d") is None:
+            manager.claim_sbc(
+                sbc_name="pi-d",
+                agent_name="agent-y",
+                session_id="mcp-http:2:agent-y",
+                session_kind="mcp-http",
+                duration_seconds=600,
+                reason="r",
+            )
+        return capture.return_value
+
+    capture.side_effect = claim_sharer
+    result = run(*ARGS, "--override-claim")
+    assert result.exit_code == 1, result.output
+    assert cycle.call_count == 1
+    assert "'pi-d' is now claimed by 'agent-y'" in result.output

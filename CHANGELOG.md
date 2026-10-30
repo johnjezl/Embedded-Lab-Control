@@ -13,17 +13,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   and power-cycle it mid-run. MCP `boot_test`, `serial_capture`,
   `sdwire_update` and `flash_image`, and CLI `boot-test`, now heartbeat a
   claim the caller already holds on the board from a background thread
-  while they run (every quarter of the claim's duration, 5-60 s). They
-  never claim a board for the caller.
-- Boot tests check again before each run's power cycle and stop
-  (`STOPPED after N of M runs: <reason>`; the CLI exits 1) once the
-  caller's claim is lost (released, force-released or expired), someone
-  else claims the board or a board sharing its hardware, or, over MCP
-  with `claims.require_claim`, nobody holds it. A CLI test started with
-  `--override-claim` stops only for the loss of the user's own claim.
+  while they run (every quarter of the claim's current duration, 5-60 s,
+  so a renew to a shorter claim is followed). They never claim a board
+  for the caller. Each heartbeat is one conditional UPDATE
+  (`ResourceManager.heartbeat_held_claim`, also used by
+  `heartbeat_claim`) that never revives a released, expired or
+  taken-over claim; `touch_claim` now says whether a row changed. A
+  database error is a missed heartbeat (the call goes on) until the
+  claim's deadline passes without a successful one; if the claim can't
+  be read when the call starts, it runs without keepalive (logged).
+- Boot tests check again before each run's power cycle and stop once
+  someone else claims the board or a board sharing its hardware, the
+  caller's claim is lost (released, force-released or expired), or, over
+  MCP with `claims.require_claim`, nobody holds it. The check runs
+  before the heartbeat, so a refused check extends nothing. A stopped
+  test says `STOPPED after N of M runs: <reason>` and reports
+  `Result: INCOMPLETE, ...` (or `Result: STOPPED before the first run`,
+  noting that the board is left off if the deploy powered it off)
+  instead of a pass rate; MCP results start with `Stopped: <reason>` and
+  the CLI exits 1. A CLI test started with `--override-claim` isn't
+  stopped by the claims it overrode, but is by any claim taken after it
+  started.
 - `sdwire_update` and `flash_image` with `reboot=true` leave the board
-  off, and say why, when the caller's claim was lost while the card was
-  being written.
+  off, and say why, when the check fails after the card is written:
+  `Not power cycled: <reason>` (`Not powered on:`) when the caller's own
+  claim was lost, `<board> is left off (not power cycled) because
+  '<board>' is now claimed by '<agent>'` when someone else claimed the
+  board or a board sharing its hardware.
 - `/deploy-and-test` skill: claim after a successful build, sizing the
   claim for the run (for `boot_test`, at least runs × (timeout + cycle
   delay + a few seconds) plus the deploy and a margin); renew it between

@@ -6589,7 +6589,8 @@ def boot_test_cmd(
     counting as 3 s, between off and on, and sets the pre_power relays
     first. A claim you hold on the SBC is kept alive while the test runs;
     the test stops (exit 1) before a run once that claim is lost or
-    another user claims the SBC (unless started with --override-claim).
+    another user claims the SBC or a board sharing its hardware (claims
+    overridden with --override-claim at the start don't count).
 
     \b
     Examples:
@@ -6700,16 +6701,20 @@ def boot_test_cmd(
     click.echo("")
 
     # The test can outlast the user's claim on the board: keep it alive,
-    # and stop between runs once it is lost or (unless the user overrode
-    # a claim to start) someone else claims the board.
+    # and stop between runs once it is lost or someone else claims the
+    # board. Claims overridden to start (--override-claim) don't stop it;
+    # one taken after the start does.
     from labctl.core.claim_keepalive import ClaimKeepalive
 
+    overridden = (
+        _all_conflicts(ctx, sbc_name) if ctx.params.get("override_claim") else []
+    )
     keepalive = ClaimKeepalive(
         manager,
         sbc_name,
         _cli_claim_actor(),
         enabled=ctx.obj["config"].claims.enabled,
-        recheck=not ctx.params.get("override_claim"),
+        allowed_claim_ids={c.id for c in overridden},
     )
 
     try:

@@ -78,6 +78,8 @@ class BootTestResult:
     # Why the test stopped before all its runs (e.g. the caller's claim
     # on the board was lost), or None when every run was made.
     stopped_reason: Optional[str] = None
+    # The deploy ran (it leaves the board powered off until the first run).
+    deployed: bool = False
 
     @property
     def passed_count(self) -> int:
@@ -138,12 +140,26 @@ class BootTestResult:
                 f"STOPPED after {len(self.runs)} of {self.total_runs} runs: "
                 f"{self.stopped_reason}"
             )
+            if not self.runs and self.deployed:
+                lines.append(
+                    f"{self.sbc_name} was powered off for the deploy and is "
+                    "left off."
+                )
 
         lines.append("")
-        lines.append(
-            f"Result: {self.passed_count}/{len(self.runs)} boots successful "
-            f"({self.pass_rate:.0f}%)"
-        )
+        if self.stopped_reason and not self.runs:
+            lines.append("Result: STOPPED before the first run (no boots tested)")
+        elif self.stopped_reason:
+            lines.append(
+                f"Result: INCOMPLETE, {self.passed_count}/{len(self.runs)} "
+                f"boots successful ({self.pass_rate:.0f}%) in "
+                f"{len(self.runs)} of {self.total_runs} runs"
+            )
+        else:
+            lines.append(
+                f"Result: {self.passed_count}/{len(self.runs)} boots successful "
+                f"({self.pass_rate:.0f}%)"
+            )
 
         if self.passed_count > 0:
             lines.append(f"Average boot time (successful): {self.avg_boot_time:.1f}s")
@@ -236,6 +252,7 @@ def run_boot_test(
     # Deploy if requested
     if deploy_fn:
         deploy_fn()
+        result.deployed = True
 
     for i in range(1, runs + 1):
         if before_run_fn:

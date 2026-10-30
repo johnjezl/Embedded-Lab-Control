@@ -202,8 +202,9 @@ Every command has `--help`. This section lists the commands; see
 A claim's deadline moves each time you use the board. Long operations
 keep a claim you already hold alive while they run (CLI `boot-test`; MCP
 `boot_test`, `serial_capture`, `sdwire_update`, `flash_image`) and never
-claim a board for you. A boot test stops between runs once your claim is
-lost or someone else claims the board; claim it for the whole test.
+claim a board for you. A boot test stops between runs (reporting an
+incomplete result) once your claim is lost or someone else claims the
+board; claim it for the whole test.
 
 ### SDWire (SD Card Multiplexer)
 

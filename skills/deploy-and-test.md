@@ -84,7 +84,7 @@ Call `claim_sbc(sbc_name=<sbc>, duration_minutes=<duration>, reason="deploy-and-
 
 Long tool calls (`boot_test`, `serial_capture`, `sdwire_update`, `flash_image`) keep a claim you hold alive while they run, and every call on the board renews it. But a claim still expires during a long gap between calls (e.g. while you analyze output): call `renew_sbc_claim(sbc_name=<sbc>, duration_minutes=...)` before a step you expect to take long, or after a pause. Don't claim for much longer than you need: over HTTP an interrupted session's claim lasts until it expires.
 
-If a long call reports that the claim was lost (`boot_test` says `STOPPED after N of M runs: ...`; `sdwire_update` says `Not power cycled: ...`), someone released or took the board: report it and stop. Don't claim it again to carry on.
+If a long call stops because of a claim (`boot_test` starts with `Stopped: <reason>` and reports `Result: INCOMPLETE` or `STOPPED before the first run`; `sdwire_update`/`flash_image` say `Not power cycled: ...`/`Not powered on: ...` when your claim was lost, or `<board> is left off ... because '<board>' is now claimed by '<agent>'`), your claim was released or someone else claimed the board or one sharing its hardware: report it, and that the board may be left off, and stop. Don't claim it again to carry on.
 
 **Release on every path.** Call `release_sbc(sbc_name=<sbc>)` as soon as you are done with the board: after the report (pass or fail), and also when you stop early (deploy failure, boot timeout, a confirmation you decided not to give, or the user cancelling). If you are interrupted before you can release it, the claim ends by itself: over stdio when the session ends (the server releases a dead session's claims), over HTTP when it expires.
 
@@ -156,7 +156,7 @@ Call the `boot_test` MCP tool:
 boot_test(sbc_name=<sbc>, expect_pattern=<pattern>, runs=<N>, timeout=<boot_timeout>, image=<image>, dest=<sd_dest>, partition=<partition>)
 ```
 
-The `boot_test` tool handles deploy, repeated power cycling, and serial capture internally. Report its output directly. Claim the board for the whole test first (Step 1b sizes it); `boot_test` keeps that claim alive while it runs, and stops early (`STOPPED after N of M runs: ...`) if the claim is lost or someone else claims the board. Report a stopped test as incomplete, not as a pass rate.
+The `boot_test` tool handles deploy, repeated power cycling, and serial capture internally. Report its output directly. Claim the board for the whole test first (Step 1b sizes it); `boot_test` keeps that claim alive while it runs, and stops early (its result starts with `Stopped: <reason>`) if the claim is lost or someone else claims the board. Report a stopped test as incomplete, not as a pass rate.
 
 If `boot_test` is not available, loop Steps 2-4 manually N times and report aggregate results, calling `renew_sbc_claim` between iterations if the loop may outlast the claim.
 
@@ -169,7 +169,7 @@ In every case below that stops the workflow after Step 1b, call `release_sbc(sbc
 - **Build failure**: Show the last 30 lines of build output. Do not proceed to deploy. (The board isn't claimed yet.)
 - **Deploy failure**: Report the MCP tool error and release the claim. Common causes: SDWire not assigned, block device not found, SD card not in host mode, a source path outside `mcp.allowed_read_paths`, or an image name that was never uploaded.
 - **Claim refused**: Another agent holds the board. Report the holder and stop. Optionally call `request_sbc_release(sbc_name=<sbc>, reason=...)` to ask them to release it.
-- **Claim lost mid-run**: `boot_test` reports `STOPPED after N of M runs: <reason>`, or `sdwire_update`/`flash_image` say the board was not power cycled or powered on because the claim was lost. Someone released or took the board: report it and stop; don't re-claim it to carry on.
+- **Claim lost or taken mid-run**: `boot_test` starts with `Stopped: <reason>`, or `sdwire_update`/`flash_image` say the board was left off (not power cycled or powered on) and why. Your claim was released, or someone else claimed the board or one sharing its hardware: report it (the board may be off) and stop; don't re-claim it to carry on.
 - **Confirmation required**: This is not an error. Repeat the call with the returned `confirm_token`. If you decide not to confirm, release the claim.
 - **Boot timeout**: Report the last few lines of captured output (helps diagnose where boot stalled). Mark as FAIL, and release the claim once you are done.
 - **No serial port**: If the SBC has no console port configured, warn the user but still deploy. Skip capture step.
