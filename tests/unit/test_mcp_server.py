@@ -5286,7 +5286,9 @@ class TestMcpCycleDelayConfirmation:
             sdwire_update(sbc_name="test-sbc-1", partition=1, deletes=["x"])
         )
         assert plan["status"] == "confirmation_required"
-        assert "will_do" not in plan
+        assert plan["will_do"] == {
+            "power_off": "switch test-sbc-1 off before taking its card"
+        }
 
     def test_boot_test_plan_shows_stored_delay(self, mock_manager, confirm):
         from labctl.mcp_server import boot_test

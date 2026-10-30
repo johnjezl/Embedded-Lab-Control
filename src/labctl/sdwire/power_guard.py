@@ -108,16 +108,33 @@ def read_access(sbc, ctrl, *, force: bool = False):
     return True, None
 
 
-def power_off_before_host_switch(sbc) -> None:
+class NoPlugError(RuntimeError):
+    """The board has no power plug, so it can't be switched off (or known
+    to be off) before its SD card is taken; callers add how to proceed."""
+
+
+def no_plug_refusal(sbc) -> str:
+    return (
+        f"{sbc.name!r} has no power plug, so labctl can't switch it off or "
+        "confirm it is off before switching its SD card to the host; nothing "
+        "was written to the card"
+    )
+
+
+def power_off_before_host_switch(sbc, *, no_plug_ok: bool = False) -> None:
     """Switch ``sbc`` off before its SD card goes to the host.
 
     Raises RuntimeError, before the card is touched, when the board can't
     be switched off: moving the card away from a running board risks bus
-    contention and a corrupted card. A board with no power plug is left
-    alone (labctl can't know or change its state).
+    contention and a corrupted card. A board with no power plug fails
+    closed too (:class:`NoPlugError`), unless ``no_plug_ok``: the caller
+    has made sure it is off. ``no_plug_ok`` never skips a power-off that a
+    plug makes possible, nor excuses one that fails.
     """
     if not sbc.power_plug:
-        return
+        if no_plug_ok:
+            return
+        raise NoPlugError(no_plug_refusal(sbc))
     from labctl.power import PowerController
 
     try:

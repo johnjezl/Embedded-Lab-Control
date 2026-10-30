@@ -117,6 +117,12 @@ scripted destructive commands. The exceptions are the older `remove`,
 `sdwire remove`, `actuator remove` and `power-all`, which
 also ask (and abort without `--yes`) when stdin is not a terminal.
 `power cycle`, `sdwire flash` and `sdwire update` also take `--dry-run`.
+`sdwire flash`/`update` (CLI and MCP) switch the board off before taking
+its card and write nothing if that fails. A board with no power plug
+can't be switched off or known to be off, so they refuse it unless
+`--no-plug-ok` (MCP `no_plug_ok=true`): you've made sure it is off. That
+flag never skips the power-off of a board that has a plug, nor excuses a
+failed one. (`boot-test` needs a plug anyway, so it has no such flag.)
 
 **Claims (D013):** commands that change a board refuse when another user
 has claimed it, naming the holder: those that operate it (`power
@@ -145,7 +151,10 @@ records overrides for, every board before it starts. A `--dry-run`
 reports the override instead of recording it.
 `remove --force` still works as an alias. The CLI's own claims (`labctl
 claim`, per user and host) count as the user's; claims made over MCP or
-the web don't, even by the same person. `claims.require_claim` doesn't
+the web don't, even by the same person. Under `sudo` the user is the one
+who ran sudo (`SUDO_USER`), not root, so e.g. `sudo labctl serial udev
+--install` keeps your own claims yours; the activity log names that user
+too. `claims.require_claim` doesn't
 apply to the CLI, and with `claims.enabled: false` nothing is checked or
 logged (`remove` still refuses a board with an open claim unless
 `--override-claim`). Not checked: reading a console and shell access
@@ -208,7 +217,7 @@ exactly like the commands they stand for.
 | `port list` | read |  |  |
 | `port remove` | destructive | yes | Deletes a record |
 | `ports` | read |  |  |
-| `power cycle` | destructive | yes | `--dry-run`; the board's stored cycle delay is the default and a floor; sets pre_power relays as `power on` |
+| `power cycle` | destructive | yes | `--dry-run`; the outlet's minimum (largest stored cycle delay among its boards, 3 s for one without) is the default and a floor; sets pre_power relays as `power on` |
 | `power off` | destructive | yes |  |
 | `power on` | hardware |  | Sets pre_power relays first, as MCP `power_on` |
 | `power status` | read |  |  |
@@ -224,14 +233,14 @@ exactly like the commands they stand for.
 | `sdwire cat` | hardware |  | Switches the SD card to the host, then to the board; only when the plug reports the board off (see note below) |
 | `sdwire discover` | read |  |  |
 | `sdwire dut` | hardware |  |  |
-| `sdwire flash` | destructive | yes | Overwrites the whole SD card; `--dry-run` |
+| `sdwire flash` | destructive | yes | Overwrites the whole SD card; `--dry-run`; powers the board off first, refusing a board with no plug unless `--no-plug-ok` |
 | `sdwire host` | destructive | yes | Pulls the card from the board; only when the plug reports it off (no plug or an unreadable plug refuses too); `--force` skips the power check |
 | `sdwire info` | hardware |  | As `sdwire cat` |
 | `sdwire list` | read |  |  |
 | `sdwire ls` | hardware |  | As `sdwire cat` |
 | `sdwire remove` | destructive | yes | Deletes a record |
 | `sdwire unassign` | destructive | yes | Deletes an association |
-| `sdwire update` | destructive | yes | Copies/renames/deletes files on the card; `--dry-run` |
+| `sdwire update` | destructive | yes | Copies/renames/deletes files on the card; `--dry-run`; power-off and no-plug rule as `sdwire flash` |
 | `ser2net generate` | system-write |  | Writes `/etc/ser2net.yaml` only with `--install` (or `-o` file) |
 | `ser2net reload` | system-write |  | Restarts ser2net: drops every live console session |
 | `serial add` | db-write |  |  |
@@ -305,9 +314,10 @@ checks, and the claims endpoints themselves.
 
 **Power over REST:** `POST /api/sbcs/<name>/power` takes `{"action":
 "on" | "off" | "cycle"}`, plus optional `"delay"` (seconds between off and
-on for `cycle`: a number from 0 to 86400; the board's stored cycle delay,
-or 3.0 if none is set, is the default and the minimum, so a smaller value
-is raised to it; `null` is refused) and
+on for `cycle`: a number from 0 to 86400; the largest stored cycle delay
+among the boards on the plug outlet, a board without one counting as 3.0,
+is the default and the minimum, so a smaller value is raised to it;
+`null` is refused) and
 `"override_claim"`. In the order checked:
 
 | Status | When |

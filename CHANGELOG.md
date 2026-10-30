@@ -36,6 +36,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   terminal, like the other destructive commands. MCP
   `remove_serial_device` refuses an adapter a board someone else has
   claimed has a port on, the same way.
+- Writing a board's SD card fails closed when the board has no power plug
+  (#41): `sdwire flash`/`update` (CLI) and MCP `sdwire_update`/`flash_image`
+  used to switch the card silently; they now refuse unless `--no-plug-ok`
+  (MCP `no_plug_ok=true`), which says you've made sure the board is off.
+  The flag never skips the power-off of a board with a plug nor excuses a
+  failed one. The MCP plans show `will_do.power_off`.
+- Under `sudo`, the CLI acts for the user who ran sudo (`SUDO_USER`): its
+  claim identity (`cli-<user>@<host>`), agent name and activity-log actor,
+  so e.g. `sudo labctl serial udev --install` doesn't turn your own claim
+  into someone else's.
 - MCP confirmation tokens are bound to the plan they were issued with
   (`will_do`): if it differs at confirmation (e.g. the board's stored cycle
   delay changed), the call is refused and the caller asks for a new plan.
