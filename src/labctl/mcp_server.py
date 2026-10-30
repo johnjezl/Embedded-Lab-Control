@@ -2086,7 +2086,7 @@ def sdwire_update(
             try:
                 ok = power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
             except (ActuationError, RuntimeError) as e:
-                summary += f". Power cycle failed: {e}"
+                summary += f". Power cycle failed and {sbc_name} may be off: {e}"
             else:
                 if ok:
                     summary += f". Power cycled {sbc_name}."

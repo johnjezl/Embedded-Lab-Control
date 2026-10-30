@@ -762,7 +762,10 @@ class TestMcpSDWireTools:
                 reboot=True,
             )
 
-        assert result.startswith("Partition 1: Copied: kernel.img. Power cycle failed:")
+        assert result.startswith(
+            "Partition 1: Copied: kernel.img. "
+            "Power cycle failed and test-sbc-1 may be off:"
+        )
         assert "relay gone" in result
         assert cycle.call_args.args[1].name == "test-sbc-1"
 
