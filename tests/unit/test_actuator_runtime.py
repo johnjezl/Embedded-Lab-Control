@@ -1288,42 +1288,45 @@ class TestBoardCycleDelay:
     def test_default_without_stored_delay(self, lab):
         """With no stored delay, 3 s is the default and the floor on every
         surface (as the CLI always did)."""
-        assert runtime.board_cycle_delay(lab.sbc) == 3.0
-        assert runtime.board_cycle_delay(lab.sbc, 0) == 3.0
-        assert runtime.board_cycle_delay(lab.sbc, 10) == 10.0
-        assert runtime.cycle_delay_floor(lab.sbc) == (3.0, "default minimum")
+        assert runtime.board_cycle_delay(lab.manager, lab.sbc) == 3.0
+        assert runtime.board_cycle_delay(lab.manager, lab.sbc, 0) == 3.0
+        assert runtime.board_cycle_delay(lab.manager, lab.sbc, 10) == 10.0
+        assert runtime.cycle_delay_floor(lab.manager, lab.sbc) == (
+            3.0,
+            "default minimum",
+        )
 
     def test_negative_requested_delay_is_an_error(self, lab):
         with pytest.raises(ValueError, match="delay must be a number"):
-            runtime.board_cycle_delay(lab.sbc, -1)
+            runtime.board_cycle_delay(lab.manager, lab.sbc, -1)
 
     def test_floor_names_stored_delay(self, lab):
         sbc = _store_delay(lab, 0.5)
-        assert runtime.cycle_delay_floor(sbc) == (0.5, "SBC minimum")
-        assert runtime.board_cycle_delay(sbc, 0) == 0.5
+        assert runtime.cycle_delay_floor(lab.manager, sbc) == (0.5, "SBC minimum")
+        assert runtime.board_cycle_delay(lab.manager, sbc, 0) == 0.5
 
     def test_stored_delay_is_default_and_minimum(self, lab):
         sbc = _store_delay(lab, 5.0)
-        assert runtime.board_cycle_delay(sbc) == 5.0
-        assert runtime.board_cycle_delay(sbc, 1) == 5.0
-        assert runtime.board_cycle_delay(sbc, 8) == 8.0
+        assert runtime.board_cycle_delay(lab.manager, sbc) == 5.0
+        assert runtime.board_cycle_delay(lab.manager, sbc, 1) == 5.0
+        assert runtime.board_cycle_delay(lab.manager, sbc, 8) == 8.0
 
     def test_stored_delay_below_default_is_used_when_omitted(self, lab):
         sbc = _store_delay(lab, 1.0)
-        assert runtime.board_cycle_delay(sbc) == 1.0
+        assert runtime.board_cycle_delay(lab.manager, sbc) == 1.0
 
     @pytest.mark.parametrize("stored", [1e9, -5.0, float("inf"), 86401.0])
     def test_out_of_range_stored_delay_refused(self, lab, stored):
         sbc = _store_delay(lab, stored)
         with pytest.raises(runtime.StoredCycleDelayError) as exc:
-            runtime.board_cycle_delay(sbc, 3.0)
+            runtime.board_cycle_delay(lab.manager, sbc, 3.0)
         assert isinstance(exc.value, ValueError)
         assert "labctl edit jetson-nano-2 --cycle-delay -1" in str(exc.value)
 
     def test_bad_requested_delay_reported_before_stored(self, lab):
         sbc = _store_delay(lab, 1e9)
         with pytest.raises(ValueError, match="delay must be a number") as exc:
-            runtime.board_cycle_delay(sbc, -1)
+            runtime.board_cycle_delay(lab.manager, sbc, -1)
         assert not isinstance(exc.value, runtime.StoredCycleDelayError)
 
     def test_cycle_waits_stored_minimum(self, lab, controller):
@@ -1370,3 +1373,70 @@ class TestBoardCycleDelay:
         slept = []
         fn(lab.manager, sbc, controller, delay_s=1.0, sleep_fn=slept.append)
         assert slept == [6.0]
+
+
+class TestOutletCycleDelay:
+    """The floor is the largest stored delay among the boards on the
+    outlet (#41 review 2)."""
+
+    @pytest.fixture
+    def outlet(self, lab):
+        from labctl.core.models import PlugType
+
+        lab.manager.assign_power_plug(lab.sbc.id, PlugType.TASMOTA, "10.1.1.1", 2)
+        other = lab.manager.create_sbc(name="sharer")
+        lab.manager.assign_power_plug(other.id, PlugType.TASMOTA, "10.1.1.1", 2)
+        elsewhere = lab.manager.create_sbc(name="elsewhere")
+        lab.manager.assign_power_plug(elsewhere.id, PlugType.TASMOTA, "10.1.1.1", 3)
+        return lab
+
+    def _set(self, lab, name, value):
+        lab.manager.db.execute_modify(
+            "UPDATE sbcs SET power_cycle_delay_seconds = ? WHERE name = ?",
+            (value, name),
+        )
+
+    def _sbc(self, lab):
+        return lab.manager.get_sbc_by_name("jetson-nano-2")
+
+    def test_sharers_larger_delay_is_the_floor(self, outlet):
+        self._set(outlet, "jetson-nano-2", 2.0)
+        self._set(outlet, "sharer", 8.0)
+        self._set(outlet, "elsewhere", 50.0)  # another outlet: ignored
+        sbc = self._sbc(outlet)
+        assert runtime.board_cycle_delay(outlet.manager, sbc) == 8.0
+        assert runtime.board_cycle_delay(outlet.manager, sbc, 4) == 8.0
+        assert runtime.cycle_delay_floor(outlet.manager, sbc) == (
+            8.0,
+            "minimum of 'sharer' (on the same outlet)",
+        )
+
+    def test_own_delay_when_largest(self, outlet):
+        self._set(outlet, "jetson-nano-2", 9.0)
+        self._set(outlet, "sharer", 8.0)
+        assert runtime.cycle_delay_floor(outlet.manager, self._sbc(outlet)) == (
+            9.0,
+            "SBC minimum",
+        )
+
+    def test_sharers_stored_delay_without_own(self, outlet):
+        self._set(outlet, "sharer", 1.0)
+        assert runtime.board_cycle_delay(outlet.manager, self._sbc(outlet)) == 1.0
+
+    def test_sharers_out_of_range_delay_refuses(self, outlet):
+        self._set(outlet, "sharer", 1e9)
+        with pytest.raises(runtime.StoredCycleDelayError) as exc:
+            runtime.board_cycle_delay(outlet.manager, self._sbc(outlet))
+        assert "labctl edit sharer --cycle-delay -1" in str(exc.value)
+        assert "'sharer' shares 'jetson-nano-2''s power outlet" in str(exc.value)
+
+    def test_cycle_waits_sharers_delay(self, outlet):
+        self._set(outlet, "sharer", 7.0)
+        controller = MagicMock()
+        controller.power_off.return_value = True
+        controller.power_on.return_value = True
+        slept = []
+        runtime.power_cycle_with_bindings(
+            outlet.manager, self._sbc(outlet), controller, 3.0, sleep_fn=slept.append
+        )
+        assert slept == [7.0]

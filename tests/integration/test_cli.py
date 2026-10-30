@@ -340,7 +340,7 @@ class TestResolveCycleDelay:
         from labctl.cli import DEFAULT_POWER_CYCLE_DELAY_SECONDS, _resolve_cycle_delay
 
         sbc = SimpleNamespace(power_cycle_delay_seconds=None)
-        delay, warn = _resolve_cycle_delay(sbc, None)
+        delay, warn = _resolve_cycle_delay(MagicMock(), sbc, None)
         assert delay == DEFAULT_POWER_CYCLE_DELAY_SECONDS
         assert warn is None
 
@@ -348,7 +348,7 @@ class TestResolveCycleDelay:
         from labctl.cli import _resolve_cycle_delay
 
         sbc = SimpleNamespace(power_cycle_delay_seconds=5.0)
-        delay, warn = _resolve_cycle_delay(sbc, None)
+        delay, warn = _resolve_cycle_delay(MagicMock(), sbc, None)
         assert delay == 5.0
         assert warn is None
 
@@ -356,7 +356,7 @@ class TestResolveCycleDelay:
         from labctl.cli import DEFAULT_POWER_CYCLE_DELAY_SECONDS, _resolve_cycle_delay
 
         sbc = SimpleNamespace(power_cycle_delay_seconds=None)
-        delay, warn = _resolve_cycle_delay(sbc, 1.0)
+        delay, warn = _resolve_cycle_delay(MagicMock(), sbc, 1.0)
         assert delay == DEFAULT_POWER_CYCLE_DELAY_SECONDS
         assert warn is not None
         assert "default minimum" in warn
@@ -365,7 +365,7 @@ class TestResolveCycleDelay:
         from labctl.cli import _resolve_cycle_delay
 
         sbc = SimpleNamespace(power_cycle_delay_seconds=5.0)
-        delay, warn = _resolve_cycle_delay(sbc, 2.0)
+        delay, warn = _resolve_cycle_delay(MagicMock(), sbc, 2.0)
         assert delay == 5.0
         assert warn is not None
         assert "SBC minimum" in warn
@@ -374,7 +374,7 @@ class TestResolveCycleDelay:
         from labctl.cli import _resolve_cycle_delay
 
         sbc = SimpleNamespace(power_cycle_delay_seconds=3.0)
-        delay, warn = _resolve_cycle_delay(sbc, 10.0)
+        delay, warn = _resolve_cycle_delay(MagicMock(), sbc, 10.0)
         assert delay == 10.0
         assert warn is None
 
@@ -605,6 +605,7 @@ class TestSdwireReadSafety:
         mock_power = MagicMock()
         mock_power.get_state.return_value = PowerState.ON
         mock_ctrl = MagicMock()
+        mock_ctrl.card_on_host.return_value = False
 
         with patch("labctl.cli._get_manager", return_value=manager):
             with patch(
@@ -629,7 +630,7 @@ class TestSdwireReadSafety:
 
         assert result.exit_code != 0
         assert "powered on" in result.output
-        assert "--force" not in result.output
+        assert "--force" in result.output
         mock_ctrl.switch_to_host.assert_not_called()
 
     def test_sdwire_info_rejects_powered_on(self, runner):
@@ -645,6 +646,7 @@ class TestSdwireReadSafety:
         mock_power = MagicMock()
         mock_power.get_state.return_value = PowerState.ON
         mock_ctrl = MagicMock()
+        mock_ctrl.card_on_host.return_value = False
 
         with patch("labctl.cli._get_manager", return_value=manager):
             with patch(
@@ -658,7 +660,7 @@ class TestSdwireReadSafety:
 
         assert result.exit_code != 0
         assert "powered on" in result.output
-        assert "--force" not in result.output
+        assert "--force" in result.output
         mock_ctrl.switch_to_host.assert_not_called()
 
     def test_sdwire_cat_waits_for_host_settle(self, runner, plug_off):
@@ -670,6 +672,7 @@ class TestSdwireReadSafety:
         manager = MagicMock()
         manager.get_sbc_by_name.return_value = sbc
         mock_ctrl = MagicMock()
+        mock_ctrl.card_on_host.return_value = False
         mock_ctrl.read_file.return_value = {
             "content": "x",
             "encoding": "text",
@@ -698,7 +701,8 @@ class TestSdwireReadSafety:
                     )
 
         assert result.exit_code == 0, result.output
-        mock_sleep.assert_called_once_with(2)
+        # 1 s: second look for a card on the host; 2 s: settle after switching.
+        assert [c.args for c in mock_sleep.call_args_list] == [(1.0,), (2,)]
 
     @pytest.mark.parametrize(
         "block_dev,expected",
@@ -714,6 +718,7 @@ class TestSdwireReadSafety:
         manager = MagicMock()
         manager.get_sbc_by_name.return_value = sbc
         mock_ctrl = MagicMock()
+        mock_ctrl.card_on_host.return_value = False
         mock_ctrl.wait_for_host.return_value = block_dev
 
         with patch("labctl.cli._get_manager", return_value=manager):
@@ -738,6 +743,7 @@ class TestSdwireReadSafety:
         manager = MagicMock()
         manager.get_sbc_by_name.return_value = sbc
         mock_ctrl = MagicMock()
+        mock_ctrl.card_on_host.return_value = False
         mock_ctrl.wait_for_host.return_value = "/dev/sdx"
         power = MagicMock()
         if error is not None:
@@ -831,6 +837,7 @@ class TestSdwireReadSafety:
         else:
             power.get_state.return_value = PowerState.UNKNOWN
         mock_ctrl = MagicMock()
+        mock_ctrl.card_on_host.return_value = False
         with (
             patch("labctl.cli._get_manager", return_value=manager),
             patch("labctl.sdwire.controller.SDWireController", return_value=mock_ctrl),
@@ -845,7 +852,7 @@ class TestSdwireReadSafety:
         }[case]
         assert expected in result.output
         assert "labctl sdwire host" in result.output
-        assert "--force" not in result.output
+        assert "--force" in result.output
         mock_ctrl.switch_to_host.assert_not_called()
 
     def test_sdwire_cat_reports_cleanup_failure(self, runner, plug_off):
@@ -857,6 +864,7 @@ class TestSdwireReadSafety:
         manager = MagicMock()
         manager.get_sbc_by_name.return_value = sbc
         mock_ctrl = MagicMock()
+        mock_ctrl.card_on_host.return_value = False
         mock_ctrl.read_file.return_value = {
             "content": "x",
             "encoding": "text",
@@ -897,6 +905,7 @@ class TestSdwireReadSafety:
         manager = MagicMock()
         manager.get_sbc_by_name.return_value = sbc
         mock_ctrl = MagicMock()
+        mock_ctrl.card_on_host.return_value = False
         mock_ctrl.get_disk_info.return_value = {
             "device_total_bytes": 1024,
             "disklabel_type": "msdos",
@@ -1957,3 +1966,82 @@ class TestStatusFastMode:
         result = runner.invoke(cli.main, ["-c", str(config_path), "status"])
         assert result.exit_code == 0, result.output
         assert called, "live probe path should run without --fast"
+
+
+class TestSdwireReadInPlace:
+    """CLI sdwire ls/cat/info mirror the MCP read tools (#41 review 2): a
+    card already on the host is read in place with no power check;
+    otherwise the board must be confirmed off, or --force."""
+
+    def _run(self, runner, args, *, on_host, plug=None, state=None):
+        sbc = MagicMock()
+        sbc.name = "test-sbc-1"
+        sbc.power_plug = plug
+        manager = MagicMock()
+        manager.get_sbc_by_name.return_value = sbc
+        ctrl = MagicMock()
+        ctrl.card_on_host.return_value = on_host
+        ctrl.list_files.return_value = {"entries": []}
+        ctrl.read_file.return_value = {"content": "x", "encoding": "text"}
+        ctrl.get_disk_info.return_value = {"partitions": []}
+        power = MagicMock()
+        power.get_state.return_value = state
+        with (
+            patch("labctl.cli._get_manager", return_value=manager),
+            patch("labctl.sdwire.controller.SDWireController", return_value=ctrl),
+            patch("labctl.power.PowerController.from_plug", return_value=power),
+            patch("time.sleep"),
+        ):
+            result = runner.invoke(main, ["sdwire", *args])
+        return result, ctrl
+
+    READS = [
+        ["ls", "test-sbc-1", "-p", "1"],
+        ["cat", "test-sbc-1", "-p", "1", "--path", "/x"],
+        ["info", "test-sbc-1"],
+    ]
+
+    @pytest.mark.parametrize("args", READS)
+    def test_card_on_host_read_in_place_without_plug(self, runner, args):
+        result, ctrl = self._run(runner, args, on_host=True)
+        assert result.exit_code == 0, result.output
+        ctrl.switch_to_host.assert_not_called()
+        ctrl.switch_to_dut.assert_not_called()
+
+    @pytest.mark.parametrize("args", READS)
+    def test_no_plug_refused_with_accurate_hint(self, runner, args):
+        result, ctrl = self._run(runner, args, on_host=False)
+        assert result.exit_code == 1
+        assert "test-sbc-1 has no power plug" in result.output
+        assert "rerun with --force" in result.output
+        assert "labctl sdwire host test-sbc-1 --force" in result.output
+        ctrl.switch_to_host.assert_not_called()
+
+    @pytest.mark.parametrize("args", READS)
+    def test_force_switches_and_restores(self, runner, args):
+        result, ctrl = self._run(runner, [*args, "--force"], on_host=False)
+        assert result.exit_code == 0, result.output
+        ctrl.switch_to_host.assert_called_once()
+        ctrl.switch_to_dut.assert_called_once()
+
+    @pytest.mark.parametrize("args", READS)
+    def test_board_off_switches_and_restores(self, runner, args):
+        from labctl.power.base import PowerState
+
+        result, ctrl = self._run(
+            runner, args, on_host=False, plug=MagicMock(), state=PowerState.OFF
+        )
+        assert result.exit_code == 0, result.output
+        ctrl.switch_to_host.assert_called_once()
+        ctrl.switch_to_dut.assert_called_once()
+
+    def test_powered_on_refused_with_force_hint(self, runner):
+        from labctl.power.base import PowerState
+
+        result, ctrl = self._run(
+            runner, self.READS[0], on_host=False, plug=MagicMock(), state=PowerState.ON
+        )
+        assert result.exit_code == 1
+        assert "test-sbc-1 is powered on" in result.output
+        assert "Use --force to override" in result.output
+        ctrl.switch_to_host.assert_not_called()

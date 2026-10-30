@@ -5395,3 +5395,40 @@ class TestConfirmationBindsPlan:
         result = power_cycle(sbc_name="test-sbc-1", confirm_token=plan["confirm_token"])
         assert result.startswith("Power cycled: test-sbc-1 (delay: 5.0s)")
         sleep.assert_called_once_with(5.0)
+
+
+class TestMcpReadHintAndClaimOrder:
+    """#41 review 2: the read tools' no-plug hint, and claims before the
+    cycle-delay plan."""
+
+    def test_no_plug_read_hint_names_force(self, mock_manager):
+        from labctl.mcp_server import _sdwire_read_power_refusal
+
+        sbc = MagicMock()
+        sbc.power_plug = None
+        data = json.loads(_sdwire_read_power_refusal("b", sbc))
+        assert data["error"] == "power_unknown"
+        assert "sdwire_to_host(force=true)" in data["message"]
+        assert "made sure the board is off" in data["message"]
+
+    @pytest.mark.confirmation
+    @pytest.mark.parametrize("tool", ["power_cycle", "enter_recovery", "boot_test"])
+    def test_claimed_board_refused_before_the_plan(self, claims_env, tool):
+        """A bad stored delay would refuse the plan too; the claim wins."""
+        from labctl import mcp_server
+
+        TestMcpCycleDelay._store(claims_env, 1e9)
+        claims_env.claim_sbc(
+            sbc_name="test-sbc-1",
+            agent_name="other",
+            session_id="other-session",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="holding",
+        )
+        kwargs = {"sbc_name": "test-sbc-1"}
+        if tool == "boot_test":
+            kwargs["expect_pattern"] = "ok"
+        data = json.loads(getattr(mcp_server, tool)(**kwargs))
+        assert data["error"] == "sbc_claimed"
+        assert "confirm_token" not in data

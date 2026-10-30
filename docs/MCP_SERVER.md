@@ -342,7 +342,7 @@ Tools perform mutations — the AI assistant calls these to take action.
 |------|------------|-------------|
 | `power_on` | `sbc_name` | Turn on power to an SBC, after setting its `pre_power` relay bindings |
 | `power_off` | `sbc_name` | Turn off power to an SBC |
-| `power_cycle` | `sbc_name`, `delay` (seconds, 0-86400; default the board's stored cycle delay, or 3.0) | Power cycle (off, wait, set `pre_power` bindings, on); refuses before power-off if a relay can't be opened. That default (the stored delay, or 3.0) is also the minimum: a smaller `delay` is raised to it |
+| `power_cycle` | `sbc_name`, `delay` (seconds, 0-86400; default the board's stored cycle delay, or 3.0) | Power cycle (off, wait, set `pre_power` bindings, on); refuses before power-off if a relay can't be opened. That default (the stored delay, or 3.0) is also the minimum: a smaller `delay` is raised to it. Boards sharing the outlet are cycled too, so the largest stored delay among them applies |
 
 Power tools switch the plug outlet, so boards sharing the SBC's outlet are
 switched too, and a claim someone else holds on one of them refuses the
@@ -412,7 +412,8 @@ board's power. A card already on the host is read in place and left there.
 A card on the DUT is switched to the host and back only when the SBC is
 known to be off; otherwise they refuse with `"error": "powered_on"` or
 `"power_unknown"` (no power plug, or its state can't be read) and switch
-nothing. They return JSON; errors carry `error` and `message`
+nothing. Once you've made sure such a board is off, `sdwire_to_host(force=true)`
+moves the card to the host, and the read tools then read it in place. They return JSON; errors carry `error` and `message`
 (e.g. `path_not_found`, `size_limit_exceeded`, `binary_content`: retry with
 `encoding="base64"`).
 

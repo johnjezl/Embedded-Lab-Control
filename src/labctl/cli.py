@@ -626,12 +626,13 @@ def _display_recent_activity(manager, *, limit: int = 5) -> None:
 
 
 def _sdwire_host_switch_guard_cli(
-    sbc_name: str, sbc, force: bool = False, allow_force_override: bool = False
+    sbc_name: str, sbc, force: bool = False, *, read: bool = False
 ) -> str | None:
     """Refuse taking the SD card from the board unless its plug reports it
     OFF (power_guard.check_board_off: no plug, a plug that can't be read,
-    or another state refuse too, as in the MCP tools). ``force`` (only
-    ``sdwire host`` has --force) skips the check."""
+    or another state refuse too, as in the MCP tools). ``force`` (the
+    commands' --force) skips the check. ``read`` words the hint for
+    ``sdwire ls``/``cat``/``info``."""
     if force:
         return None
     from labctl.sdwire.power_guard import (
@@ -645,17 +646,38 @@ def _sdwire_host_switch_guard_cli(
         return None
     if check.problem == POWERED_ON:
         advice = "Power off before switching SD to host mode."
-    elif allow_force_override:
-        advice = "Make sure the board is off first."
-    else:
+    elif read:
         advice = (
-            "Power the board off, or switch the card explicitly with "
-            "`labctl sdwire host`, then retry."
+            "Once you've made sure the board is off, rerun with --force, or "
+            f"switch the card with `labctl sdwire host {sbc_name} --force` and "
+            "read it there."
         )
-    message = f"Error: {board_off_problem_text(sbc_name, check)}. {advice}"
-    if allow_force_override:
-        message += "\nUse --force to override (risks SD card corruption)."
-    return message
+    else:
+        advice = "Make sure the board is off first."
+    return (
+        f"Error: {board_off_problem_text(sbc_name, check)}. {advice}"
+        "\nUse --force to override (risks SD card corruption)."
+    )
+
+
+def _sdwire_read_needs_switch(sbc_name: str, sbc, ctrl, force: bool) -> bool:
+    """How ``sdwire ls``/``cat``/``info`` reach the card (as the MCP read
+    tools do): a card already on the host is read in place and left there
+    (the board isn't using it, so its power doesn't matter); otherwise the
+    card is switched to the host and back, only when the board is confirmed
+    off (or --force). Exits with the refusal."""
+    if ctrl.card_on_host():
+        return False
+    # A card switched to the host moments ago may still be initialising
+    # and probe as "no medium": look once more before deciding.
+    time.sleep(1.0)
+    if ctrl.card_on_host():
+        return False
+    guard_err = _sdwire_host_switch_guard_cli(sbc_name, sbc, force=force, read=True)
+    if guard_err:
+        click.echo(guard_err, err=True)
+        sys.exit(1)
+    return True
 
 
 class _CliState(dict):
@@ -1361,9 +1383,10 @@ def info_cmd(ctx: click.Context, name: str) -> None:
         "Per-SBC power-cycle off→on delay (seconds, 0-86400). The default "
         "and the minimum for every power cycle of the board: `power cycle`, "
         "the reboot after `sdwire flash`/`update`, `boot-test`, "
-        "`enter-recovery`/`exit-recovery`, and MCP/REST/web cycles. Pass a "
-        "negative number (e.g. -1) to clear the override and fall back to the "
-        f"default and minimum of {DEFAULT_POWER_CYCLE_DELAY_SECONDS}s."
+        "`enter-recovery`/`exit-recovery`, and MCP/REST/web cycles; boards "
+        "sharing a plug outlet use the largest stored delay among them. Pass "
+        "a negative number (e.g. -1) to clear the override and fall back to "
+        f"the default and minimum of {DEFAULT_POWER_CYCLE_DELAY_SECONDS}s."
     ),
 )
 @click.pass_context
@@ -1678,9 +1701,7 @@ def sdwire_host_cmd(ctx: click.Context, sbc_name: str, force: bool) -> None:
         click.echo(f"Error: No SDWire assigned to '{sbc_name}'", err=True)
         sys.exit(1)
 
-    guard_err = _sdwire_host_switch_guard_cli(
-        sbc_name, sbc, force=force, allow_force_override=True
-    )
+    guard_err = _sdwire_host_switch_guard_cli(sbc_name, sbc, force=force)
     if guard_err:
         click.echo(guard_err, err=True)
         sys.exit(1)
@@ -1777,7 +1798,7 @@ def sdwire_flash_cmd(
 
     reboot_delay = None
     if not no_reboot and sbc.power_plug:
-        reboot_delay = _reboot_cycle_delay(sbc)
+        reboot_delay = _reboot_cycle_delay(manager, sbc)
 
     if dry_run:
         from labctl.sdwire.controller import _validate_image_file
@@ -2034,7 +2055,7 @@ def sdwire_update_cmd(
 
     reboot_delay = None
     if reboot and sbc.power_plug:
-        reboot_delay = _reboot_cycle_delay(sbc)
+        reboot_delay = _reboot_cycle_delay(manager, sbc)
 
     if dry_run:
         steps = []
@@ -2166,6 +2187,12 @@ def sdwire_update_cmd(
     show_default=True,
     help="Safety cap on returned entries",
 )
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Skip the power-off check when the card must be switched from the "
+    "board (risks SD card corruption if it runs)",
+)
 @click.pass_context
 def sdwire_ls_cmd(
     ctx: click.Context,
@@ -2174,12 +2201,14 @@ def sdwire_ls_cmd(
     target_path: str,
     recursive: bool,
     max_entries: int,
+    force: bool,
 ) -> None:
     """List directory contents on an SBC SD card partition.
 
     Switches the card to the host, reads it, and switches it back to the
-    SBC; only when the SBC's plug reports it off (no plug or an unreadable
-    plug refuses too). Prints JSON.
+    SBC, only when the SBC's plug reports it off (no plug or an unreadable
+    plug refuses too; --force skips the check). A card already on the host
+    is read in place and left there. Prints JSON.
     """
     from labctl.sdwire.controller import SDWireController
 
@@ -2191,22 +2220,17 @@ def sdwire_ls_cmd(
     if not sbc.sdwire:
         click.echo(f"Error: No SDWire assigned to '{sbc_name}'", err=True)
         sys.exit(1)
-    guard_err = _sdwire_host_switch_guard_cli(sbc_name, sbc)
-    if guard_err:
-        click.echo(guard_err, err=True)
-        sys.exit(1)
-
     ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    needs_switch = _sdwire_read_needs_switch(sbc_name, sbc, ctrl, force)
     host_switched = False
     cleanup_error: RuntimeError | None = None
     output: str
 
     try:
-        ctrl.switch_to_host()
-        host_switched = True
-        import time
-
-        time.sleep(2)
+        if needs_switch:
+            ctrl.switch_to_host()
+            host_switched = True
+            time.sleep(2)
         result = ctrl.list_files(
             partition=partition,
             path=target_path,
@@ -2275,6 +2299,12 @@ def sdwire_ls_cmd(
     show_default=True,
     help="Output encoding",
 )
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Skip the power-off check when the card must be switched from the "
+    "board (risks SD card corruption if it runs)",
+)
 @click.pass_context
 def sdwire_cat_cmd(
     ctx: click.Context,
@@ -2283,12 +2313,14 @@ def sdwire_cat_cmd(
     target_path: str,
     max_bytes: int,
     encoding: str,
+    force: bool,
 ) -> None:
     """Read a file from an SBC SD card partition.
 
     Switches the card to the host, reads it, and switches it back to the
-    SBC; only when the SBC's plug reports it off (no plug or an unreadable
-    plug refuses too). Prints JSON.
+    SBC, only when the SBC's plug reports it off (no plug or an unreadable
+    plug refuses too; --force skips the check). A card already on the host
+    is read in place and left there. Prints JSON.
     """
     from labctl.sdwire.controller import SDWireController, SDWireSymlinkError
 
@@ -2300,22 +2332,17 @@ def sdwire_cat_cmd(
     if not sbc.sdwire:
         click.echo(f"Error: No SDWire assigned to '{sbc_name}'", err=True)
         sys.exit(1)
-    guard_err = _sdwire_host_switch_guard_cli(sbc_name, sbc)
-    if guard_err:
-        click.echo(guard_err, err=True)
-        sys.exit(1)
-
     ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    needs_switch = _sdwire_read_needs_switch(sbc_name, sbc, ctrl, force)
     host_switched = False
     cleanup_error: RuntimeError | None = None
     output: str
 
     try:
-        ctrl.switch_to_host()
-        host_switched = True
-        import time
-
-        time.sleep(2)
+        if needs_switch:
+            ctrl.switch_to_host()
+            host_switched = True
+            time.sleep(2)
         result = ctrl.read_file(
             partition=partition,
             path=target_path,
@@ -2378,13 +2405,20 @@ def sdwire_cat_cmd(
 @sdwire_group.command("info")
 @claim_checked()
 @click.argument("sbc_name")
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Skip the power-off check when the card must be switched from the "
+    "board (risks SD card corruption if it runs)",
+)
 @click.pass_context
-def sdwire_info_cmd(ctx: click.Context, sbc_name: str) -> None:
+def sdwire_info_cmd(ctx: click.Context, sbc_name: str, force: bool) -> None:
     """Show partition metadata for an SBC SD card.
 
     Switches the card to the host, reads the partition table (sudo parted,
-    blkid), and switches it back; only when the SBC's plug reports it off
-    (no plug or an unreadable plug refuses too). Prints JSON.
+    blkid), and switches it back, only when the SBC's plug reports it off
+    (no plug or an unreadable plug refuses too; --force skips the check). A
+    card already on the host is read in place and left there. Prints JSON.
     """
     from labctl.sdwire.controller import SDWireController
 
@@ -2396,22 +2430,17 @@ def sdwire_info_cmd(ctx: click.Context, sbc_name: str) -> None:
     if not sbc.sdwire:
         click.echo(f"Error: No SDWire assigned to '{sbc_name}'", err=True)
         sys.exit(1)
-    guard_err = _sdwire_host_switch_guard_cli(sbc_name, sbc)
-    if guard_err:
-        click.echo(guard_err, err=True)
-        sys.exit(1)
-
     ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    needs_switch = _sdwire_read_needs_switch(sbc_name, sbc, ctrl, force)
     host_switched = False
     cleanup_error: RuntimeError | None = None
     output: str
 
     try:
-        ctrl.switch_to_host()
-        host_switched = True
-        import time
-
-        time.sleep(2)
+        if needs_switch:
+            ctrl.switch_to_host()
+            host_switched = True
+            time.sleep(2)
         result = ctrl.get_disk_info()
         output = json.dumps({"sbc_name": sbc_name, **result}, indent=2)
     except RuntimeError as e:
@@ -3520,10 +3549,13 @@ def power_off_cmd(ctx: click.Context, sbc_name: str) -> None:
         sys.exit(1)
 
 
-def _resolve_cycle_delay(sbc, requested: float | None) -> tuple[float, str | None]:
+def _resolve_cycle_delay(
+    manager, sbc, requested: float | None
+) -> tuple[float, str | None]:
     """The effective power-cycle delay for an SBC: runtime's
-    board_cycle_delay (the floor is the SBC's stored delay, or
-    ``DEFAULT_POWER_CYCLE_DELAY_SECONDS``; omitted means the floor).
+    board_cycle_delay (the floor is the largest stored delay among the
+    boards on its outlet, or ``DEFAULT_POWER_CYCLE_DELAY_SECONDS``;
+    omitted means the floor).
 
     Returns ``(delay, warning)``; ``warning`` says when the requested
     value was raised to the floor, else None. Raises ValueError for a
@@ -3533,10 +3565,10 @@ def _resolve_cycle_delay(sbc, requested: float | None) -> tuple[float, str | Non
     """
     from labctl.actuators.runtime import board_cycle_delay, cycle_delay_floor
 
-    delay = board_cycle_delay(sbc, requested)
+    delay = board_cycle_delay(manager, sbc, requested)
     if requested is None or delay <= requested:
         return delay, None
-    _floor, source = cycle_delay_floor(sbc)
+    _floor, source = cycle_delay_floor(manager, sbc)
     return (
         delay,
         f"--delay {float(requested)}s is below the {source} of {delay}s; "
@@ -3544,13 +3576,13 @@ def _resolve_cycle_delay(sbc, requested: float | None) -> tuple[float, str | Non
     )
 
 
-def _reboot_cycle_delay(sbc) -> float:
+def _reboot_cycle_delay(manager, sbc) -> float:
     """The delay a reboot (power cycle) of ``sbc`` will wait, checked
     before anything is changed: an out-of-range stored delay exits."""
     from labctl.actuators.runtime import board_cycle_delay
 
     try:
-        return board_cycle_delay(sbc)
+        return board_cycle_delay(manager, sbc)
     except ValueError as e:
         click.echo(f"Error: {e}. Nothing changed.", err=True)
         sys.exit(1)
@@ -3567,7 +3599,8 @@ def _reboot_cycle_delay(sbc) -> float:
     default=None,
     help=(
         "Delay between off and on (seconds, 0-86400). If omitted, the "
-        "SBC's stored value (`edit --cycle-delay`) is used; otherwise "
+        "SBC's stored value (`edit --cycle-delay`) is used (the largest "
+        "among boards sharing its plug outlet); otherwise "
         f"{DEFAULT_POWER_CYCLE_DELAY_SECONDS}s. That value is also the "
         "minimum: smaller values (including 0) are raised to it with a "
         "warning; a negative value is an error."
@@ -3598,7 +3631,7 @@ def power_cycle_cmd(
     )
 
     try:
-        effective_delay, warning = _resolve_cycle_delay(sbc, delay)
+        effective_delay, warning = _resolve_cycle_delay(manager, sbc, delay)
     except ValueError as e:  # incl. an out-of-range stored delay
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -4343,7 +4376,7 @@ def _run_composite(ctx, sbc_name: str, fn_name: str, fn) -> None:
 
     controller, _sbc = _get_power_controller(manager, sbc_name)
     try:
-        delay, _warning = _resolve_cycle_delay(sbc, None)
+        delay, _warning = _resolve_cycle_delay(manager, sbc, None)
     except ValueError as e:  # an out-of-range stored delay; nothing touched
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -6228,7 +6261,7 @@ def boot_test_cmd(
 
     # Every run power-cycles through the pre_power relays and waits the
     # board's cycle delay: check both before deploying anything.
-    cycle_delay = _reboot_cycle_delay(sbc)
+    cycle_delay = _reboot_cycle_delay(manager, sbc)
     from labctl.actuators.runtime import ActuationError, check_power_on
 
     try:
