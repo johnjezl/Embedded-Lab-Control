@@ -402,6 +402,22 @@ class TestWeb:
         unopenable.controller.power_on.assert_not_called()
         unopenable.controller.power_off.assert_not_called()
 
+    def test_api_on_strap_write_failure_is_not_switched(self, lab, client):
+        lab.driver.next_write_outcome = WriteOutcome.WRITE_FAILED
+        resp = client.post("/api/sbcs/board/power", json={"action": "on"})
+        assert resp.status_code == 409
+        assert resp.get_json()["switched"] is False
+        lab.controller.power_on.assert_not_called()
+
+    def test_api_cycle_strap_write_failure_after_power_off(self, lab, client):
+        lab.driver.next_write_outcome = WriteOutcome.WRITE_FAILED
+        resp = client.post(
+            "/api/sbcs/board/power", json={"action": "cycle", "delay": 0.0}
+        )
+        assert resp.status_code == 500
+        assert "left powered off" in resp.get_json()["error"]
+        assert "switched" not in resp.get_json()
+
     @pytest.mark.parametrize(
         "delay", ["5", -1, None, True, "Infinity", 1e20, "10" * 200]
     )

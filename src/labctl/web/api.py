@@ -8,6 +8,7 @@ from flask import Blueprint, g, jsonify, request
 
 from labctl import __version__
 from labctl.actuators.runtime import (
+    ActuationError,
     PrePowerCheckError,
     power_cycle_with_bindings,
     power_on_with_bindings,
@@ -262,9 +263,13 @@ def control_power(name: str):
                 ),
                 500,
             )
-    except PrePowerCheckError as e:
-        # Refused before anything was switched: the board is as it was.
-        return jsonify({"error": str(e), "switched": False}), 409
+    except ActuationError as e:
+        # Refused before anything was switched (the pre-check, or a strap
+        # that failed before power-on): the board is as it was. A strap
+        # failure after a cycle's power-off is a 500.
+        if isinstance(e, PrePowerCheckError) or action == "on":
+            return jsonify({"error": str(e), "switched": False}), 409
+        return jsonify({"error": str(e)}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
