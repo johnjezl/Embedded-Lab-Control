@@ -762,11 +762,10 @@ class TestMcpSDWireTools:
                 reboot=True,
             )
 
-        assert result.startswith(
-            "Partition 1: Copied: kernel.img. "
-            "Power cycle failed and test-sbc-1 may be off:"
+        assert result == (
+            "Error: power cycle failed and test-sbc-1 may be off: relay gone. "
+            "(Partition 1: Copied: kernel.img, done.)"
         )
-        assert "relay gone" in result
         assert cycle.call_args.args[1].name == "test-sbc-1"
 
     def test_sdwire_update_reboot_relay_checked_up_front(self, mock_manager):
@@ -1995,8 +1994,9 @@ class TestMcpFlashImage:
                 reboot=True,
             )
 
-        assert "Flashed" in result
-        assert "Not powered on: relay gone" in result
+        assert result.startswith(
+            "Error: test-sbc-1 not powered on: relay gone. Flashed "
+        )
         mock_power_inst.power_on.assert_not_called()
 
     def test_flash_image_reboot_relay_checked_up_front(self, mock_manager):

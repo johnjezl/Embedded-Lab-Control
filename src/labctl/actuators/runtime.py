@@ -615,8 +615,6 @@ def check_pre_power_actuators(manager, sbc) -> None:
         # to a missing channel fails here rather than after power-off.
         try:
             actuator, channel = _resolve(manager, binding)
-        except PrePowerCheckError:
-            raise
         except ActuationError as e:
             raise PrePowerCheckError(str(e)) from e
         if binding.desired_state not in (

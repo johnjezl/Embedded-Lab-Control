@@ -387,7 +387,9 @@ class TestWeb:
         resp = client.post(
             "/api/sbcs/board/power", json={"action": action, "delay": 0.0}
         )
-        assert resp.status_code == 500
+        # Refused before anything was switched.
+        assert resp.status_code == 409
+        assert resp.get_json()["switched"] is False
         assert "permission denied" in resp.get_json()["error"]
         unopenable.controller.power_on.assert_not_called()
         unopenable.controller.power_off.assert_not_called()
