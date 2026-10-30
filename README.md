@@ -705,14 +705,20 @@ elsewhere (e.g. `/var/lib/labctl/labctl.db` or
 `/var/lib/labctl/.config/labctl/labctl.db`), which only the `labctl` user
 can write. To let `labctl` group members write it from the CLI, move it:
 
+Every step runs as root: your own account may not be able to see into
+`/var/lib/labctl` at all.
+
 ```bash
 sudo systemctl stop labctl-web labctl-monitor labctl-mcp
-OLD=/var/lib/labctl/labctl.db          # your current database_path
+OLD=/var/lib/labctl/labctl.db          # your current database_path (named labctl.db)
 sudo install -d -o labctl -g labctl -m 2775 /var/lib/labctl/db
 # A clean stop normally leaves no -wal/-shm; move them too if present.
-for f in "$OLD" "$OLD-wal" "$OLD-shm"; do
-    [ -e "$f" ] && sudo mv "$f" /var/lib/labctl/db/
-done
+sudo sh -c 'for f in "$1" "$1-wal" "$1-shm"; do
+    if [ -e "$f" ]; then mv -v "$f" /var/lib/labctl/db/; fi
+done' sh "$OLD"
+# Check the database arrived before going on: if it isn't there,
+# update.sh creates a new, EMPTY database at the new path.
+sudo ls -l /var/lib/labctl/db/labctl.db
 # Set database_path: /var/lib/labctl/db/labctl.db, then copy the config to
 # the service copy (update.sh refuses to run while the two differ):
 sudoedit /etc/labctl/config.yaml

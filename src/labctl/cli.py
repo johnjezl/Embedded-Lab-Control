@@ -3382,8 +3382,10 @@ def ser2net_generate_cmd(
 
     A port with no TCP port recorded: with --install it is assigned one
     and saved, exactly as `port assign` without -t would (one above the
-    highest in use, at least serial.base_tcp_port); without --install the
-    port is left out of the config and the number it would get is shown.
+    highest in use, at least serial.base_tcp_port), unless another user has
+    claimed its board: that port is skipped (left out of the config) and
+    named. Without --install the port is left out of the config and the
+    number it would get is shown.
     """
     config: Config = ctx.obj["config"]
     manager = _get_manager(ctx)
@@ -3410,6 +3412,18 @@ def ser2net_generate_cmd(
     missing = [p for p in db_ports if not p.tcp_port]
     if install:
         for db_port in missing:
+            # Saving a TCP port changes the board's configuration, so the
+            # same claim check as `port assign` (the board's own claim).
+            sbc_name = sbc_names.get(db_port.sbc_id)
+            claimed = _all_conflicts(ctx, sbc_name, shared=False) if sbc_name else []
+            if claimed:
+                click.echo(
+                    f"skipped {label(db_port)}: '{sbc_name}' is claimed by "
+                    f"'{_holder(claimed[0])}'; assign a TCP port with "
+                    "`labctl port assign --override-claim`",
+                    err=True,
+                )
+                continue
             try:
                 saved = manager.assign_serial_port(
                     sbc_id=db_port.sbc_id,
