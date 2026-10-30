@@ -6013,6 +6013,16 @@ def boot_test_cmd(
             click.echo("Error: --dest is required with --image", err=True)
             sys.exit(1)
 
+    # Every run power-cycles through the pre_power relays: check them
+    # before deploying anything.
+    from labctl.actuators.runtime import ActuationError, check_power_on
+
+    try:
+        check_power_on(manager, sbc)
+    except ActuationError as e:
+        click.echo(f"Error: {e}. Nothing changed.", err=True)
+        sys.exit(1)
+
     # Build deploy function
     deploy_fn = None
     if not no_deploy and image and dest:

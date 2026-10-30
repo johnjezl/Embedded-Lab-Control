@@ -200,16 +200,41 @@ class TestCli:
         assert "0/1" in result.output
         assert "power_on failed on 'board'" in result.output
 
-    def test_boot_test_unopenable_relay_fails_each_run(self, unopenable, console):
-        """Like a plug failure: each run is recorded as failed, with why."""
-        result = unopenable.run(
-            "boot-test", "board", "-e", "login", "--no-deploy", "-r", "2"
+    def test_boot_test_unopenable_relay_refused_up_front(self, unopenable, console):
+        """Found before the image is deployed or any run starts."""
+        with patch("labctl.serial.boot_test.run_boot_test") as run_boot_test:
+            result = unopenable.run(
+                "boot-test", "board", "-e", "login", "--no-deploy", "-r", "2"
+            )
+        assert result.exit_code == 1
+        assert "Error: actuator 'relay-a' for 'recovery_mode' can't be used" in (
+            result.output
         )
-        assert result.exit_code == 0, result.output
-        assert "0/2" in result.output
-        assert "actuator 'relay-a' for 'recovery_mode' can't be used" in (result.output)
-        assert "Traceback" not in result.output
+        assert "Nothing changed." in result.output
+        run_boot_test.assert_not_called()
         unopenable.controller.power_off.assert_not_called()
+
+    def test_boot_test_relay_failing_mid_test_fails_the_run(
+        self, lab, console, monkeypatch
+    ):
+        """A relay that goes away after the start is recorded as a failed
+        run, like a plug failure."""
+        from labctl.actuators import runtime
+
+        real_check = runtime.check_power_on
+        calls = []
+
+        def check_then_fail(manager, sbc):
+            calls.append(sbc.name)
+            if len(calls) > 1:
+                raise runtime.PrePowerCheckError("relay gone")
+            return real_check(manager, sbc)
+
+        monkeypatch.setattr(runtime, "check_power_on", check_then_fail)
+        result = lab.run("boot-test", "board", "-e", "login", "--no-deploy", "-r", "1")
+        assert result.exit_code == 0, result.output
+        assert "0/1" in result.output
+        assert "relay gone" in result.output
 
     @pytest.fixture
     def sdwire(self, lab):
