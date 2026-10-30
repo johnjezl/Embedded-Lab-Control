@@ -164,6 +164,17 @@ class TestCli:
         assert "Error: delay must be a number of seconds" in result.output
         assert "Dry run" not in result.output
 
+    def test_power_cycle_bad_stored_delay_says_how_to_clear_it(self, lab):
+        """A delay stored before `edit --cycle-delay` checked the range."""
+        import sqlite3
+
+        with sqlite3.connect(lab.db_path) as db:
+            db.execute("UPDATE sbcs SET power_cycle_delay_seconds = 1e9")
+        result = lab.run("power", "cycle", "board", "-y")
+        assert result.exit_code == 1
+        assert "labctl edit board --cycle-delay -1" in result.output
+        lab.controller.power_off.assert_not_called()
+
     def test_power_all_on(self, lab):
         result = lab.run("power-all", "on", "--yes")
         assert result.exit_code == 0, result.output
@@ -289,12 +300,56 @@ class TestCli:
         assert "could not power off 'board' before switching its SD card" in (
             result.output
         )
-        assert "nothing was deployed" in result.output
+        assert "nothing was written to the card" in result.output
         if failure == "raises":
             assert "plug unreachable" in result.output
         sdwire.switch_to_host.assert_not_called()
         sdwire.update_files.assert_not_called()
         lab.controller.power_on.assert_not_called()
+
+    @pytest.mark.parametrize("failure", [RuntimeError, OSError])
+    def test_boot_test_deploy_failure_after_power_off_says_board_left_off(
+        self, lab, sdwire, console, tmp_path, failure
+    ):
+        """Any failure once the board is off is one Error line (no
+        traceback), hands the card back, and says the board is off."""
+        image = tmp_path / "kernel.img"
+        image.write_bytes(b"img")
+        sdwire.update_files.side_effect = failure("mount failed")
+        result = lab.run(
+            "boot-test", "board", "-e", "login", "-r", "1",
+            "--image", str(image), "--dest", "kernel.img",
+        )  # fmt: skip
+        assert result.exit_code == 1
+        assert not isinstance(result.exception, failure), result.exception
+        assert "deploy to 'board' failed: mount failed" in result.output
+        assert "left powered off" in result.output
+        sdwire.switch_to_dut.assert_called_once()
+        lab.controller.power_on.assert_not_called()
+
+    @pytest.mark.parametrize("command", ["flash", "update"])
+    def test_sdwire_write_refused_when_power_off_fails(
+        self, lab, sdwire, tmp_path, command
+    ):
+        """The card is never switched away from a board that may be running
+        (it used to carry on with a warning)."""
+        image = tmp_path / "image.img"
+        image.write_bytes(b"img")
+        lab.controller.power_off.side_effect = lambda: False
+        if command == "flash":
+            args = ("sdwire", "flash", "board", str(image), "--no-reboot", "-y")
+        else:
+            args = (
+                "sdwire", "update", "board", "-p", "1", "--copy",
+                f"{image}:kernel.img", "-y",
+            )  # fmt: skip
+        result = lab.run(*args)
+        assert result.exit_code == 1
+        assert "could not power off 'board'" in result.output
+        assert "nothing was written to the card" in result.output
+        sdwire.switch_to_host.assert_not_called()
+        sdwire.flash_image.assert_not_called()
+        sdwire.update_files.assert_not_called()
 
     def test_sdwire_flash_reboot(self, lab, sdwire, tmp_path):
         image = tmp_path / "image.img"

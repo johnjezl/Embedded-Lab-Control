@@ -1395,7 +1395,7 @@ def edit_cmd(
             power_cycle_delay_seconds=cycle_delay,
         )
     except ValueError as e:
-        click.echo(f"Error: --cycle-delay: {e}. Nothing changed.", err=True)
+        click.echo(f"Error: {e}. Nothing changed.", err=True)
         sys.exit(1)
     if new_name:
         click.echo(f"Renamed SBC: {name} -> {new_name}")
@@ -1782,17 +1782,16 @@ def sdwire_flash_cmd(
                 click.echo(f"Error: {e}. Nothing changed.", err=True)
                 sys.exit(1)
 
-        # Power off (best effort)
+        # The card must not leave a running board (bus contention).
+        from labctl.sdwire.power_guard import power_off_before_host_switch
+
         if sbc.power_plug:
             click.echo("Powering off SBC...")
-            try:
-                from labctl.power import PowerController
-
-                power_ctrl = PowerController.from_plug(sbc.power_plug)
-                power_ctrl.power_off()
-                time.sleep(1)
-            except Exception:
-                pass
+        try:
+            power_off_before_host_switch(sbc)
+        except RuntimeError as e:
+            click.echo(f"Error: {e}.", err=True)
+            sys.exit(1)
 
         # Switch to host
         click.echo("Switching SD card to host...")
@@ -2017,19 +2016,17 @@ def sdwire_update_cmd(
                 click.echo(f"Error: {e}. Nothing changed.", err=True)
                 sys.exit(1)
 
-        # Step 0: Auto power-off to prevent SD card bus contention
+        # Step 0: power off; the card must not leave a running board (bus
+        # contention), so nothing is flashed if that fails.
+        from labctl.sdwire.power_guard import power_off_before_host_switch
+
         if sbc.power_plug:
             click.echo(f"Powering off {sbc_name}...")
-            try:
-                from labctl.power import PowerController
-
-                power_ctrl = PowerController.from_plug(sbc.power_plug)
-                power_ctrl.power_off()
-                import time as time_mod
-
-                time_mod.sleep(1)
-            except Exception:
-                click.echo("Warning: Could not power off (continuing anyway)", err=True)
+        try:
+            power_off_before_host_switch(sbc)
+        except RuntimeError as e:
+            click.echo(f"Error: {e}.", err=True)
+            sys.exit(1)
 
         # Step 1: Switch to host
         click.echo("Switching SD card to host...")
@@ -2590,6 +2587,7 @@ def serial_udev_cmd(ctx: click.Context, install: bool, reload: bool) -> None:
     from labctl.serial.udev import (
         generate_udev_rules,
         install_udev_rules,
+        missing_device_group,
         reload_udev,
     )
 
@@ -2606,6 +2604,14 @@ def serial_udev_cmd(ctx: click.Context, install: bool, reload: bool) -> None:
         try:
             install_udev_rules(rules)
             click.echo(f"Installed udev rules ({len(devices)} devices)")
+            if missing_device_group():
+                click.echo(
+                    "Note: the devices are root:dialout 0660 and you are not "
+                    "in dialout, so you can't open them directly (relays from "
+                    "the CLI). Join it with: sudo usermod -aG dialout $USER "
+                    "(then log in again).",
+                    err=True,
+                )
         except PermissionError:
             click.echo("Error: Permission denied. Try with sudo.", err=True)
             sys.exit(1)
@@ -3464,6 +3470,17 @@ def power_cycle_cmd(
         validate_cycle_delay(effective_delay)
     except ValueError as e:
         click.echo(f"Error: {e}", err=True)
+        stored = sbc.power_cycle_delay_seconds
+        if stored is not None:
+            try:
+                validate_cycle_delay(stored)
+            except ValueError:
+                # Stored before edit --cycle-delay checked the range.
+                click.echo(
+                    f"The delay stored for {sbc_name} is out of range; clear "
+                    f"it with: labctl edit {sbc_name} --cycle-delay -1",
+                    err=True,
+                )
         sys.exit(1)
 
     if dry_run:
@@ -5981,7 +5998,6 @@ def boot_test_cmd(
       labctl boot-test pi-5-1 --no-deploy -e "slmos>" -r 5 -t 30
       labctl boot-test pi-5-1 -i slmos.bin -d kernel_2712.img -e "slmos>" -o /tmp/results/
     """  # noqa: E501
-    import time as time_mod
 
     from labctl.serial.boot_test import run_boot_test
 
@@ -6030,10 +6046,10 @@ def boot_test_cmd(
     # Build deploy function
     deploy_fn = None
     if not no_deploy and image and dest:
-        from labctl.serial.boot_test import power_off_for_deploy
 
         def _deploy():
             from labctl.sdwire.controller import SDWireController
+            from labctl.sdwire.power_guard import deploy_to_card
 
             if not sbc.sdwire:
                 raise RuntimeError(f"No SDWire assigned to '{sbc_name}'")
@@ -6041,15 +6057,12 @@ def boot_test_cmd(
             ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
 
             # The card must not leave a running board (bus contention):
-            # switch the board off first, and deploy nothing if that fails.
-            # The first run powers it back on.
-            power_off_for_deploy(sbc)
-
+            # the board is switched off first, and nothing is deployed if
+            # that fails. The first run powers it back on.
             click.echo("Deploying image...")
-            ctrl.switch_to_host()
-            time_mod.sleep(2)
-            ctrl.update_files(partition, [(image, dest)])
-            ctrl.switch_to_dut()
+            deploy_to_card(
+                sbc, ctrl, lambda: ctrl.update_files(partition, [(image, dest)])
+            )
             click.echo(f"Deployed {image} -> {dest}")
 
         deploy_fn = _deploy

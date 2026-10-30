@@ -484,9 +484,7 @@ class TestPowerCycleCommand:
         )
 
         assert result.exit_code == 1
-        assert "Error: --cycle-delay: delay must be a number of seconds from 0" in (
-            result.output
-        )
+        assert "Error: delay must be a number of seconds from 0" in result.output
         assert "Nothing changed." in result.output
         assert m.get_sbc(sbc.id).power_cycle_delay_seconds is None
 

@@ -243,6 +243,13 @@ class TestMcpAdminActuatorOpsConfig:
             assert load_config(cfg).mcp.allow_admin_actuator_ops is False
         assert "allow_admin_actuator_ops must be true or false" in caplog.text
 
+    def test_warning_logged_once(self, caplog):
+        """The MCP HTTP server re-reads the config per request."""
+        with caplog.at_level(logging.WARNING):
+            for _ in range(3):
+                Config.from_dict({"mcp": {"allow_admin_actuator_ops": "false"}})
+        assert caplog.text.count("allow_admin_actuator_ops must be") == 1
+
     def test_blank_stays_off(self, tmp_path):
         from labctl.core.config import load_config
 
