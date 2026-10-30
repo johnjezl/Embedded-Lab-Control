@@ -213,13 +213,15 @@ def run_boot_test(
         partition=partition,
     )
 
+    # Create output dir if needed (a caller-provided handle already exists).
+    # Before the deploy, which powers the board off: a failure here must
+    # leave the board as it was.
+    if output_dir and output_dir_fd is None:
+        os.makedirs(output_dir, exist_ok=True)
+
     # Deploy if requested
     if deploy_fn:
         deploy_fn()
-
-    # Create output dir if needed (a caller-provided handle already exists)
-    if output_dir and output_dir_fd is None:
-        os.makedirs(output_dir, exist_ok=True)
 
     for i in range(1, runs + 1):
         run_result = _run_single_boot(
