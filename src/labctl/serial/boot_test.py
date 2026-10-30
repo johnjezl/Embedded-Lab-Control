@@ -75,6 +75,9 @@ class BootTestResult:
     # Per-run output files that couldn't be written (name: reason); the boot
     # results still stand, but the caller must be told the logs are missing.
     output_errors: list[str] = field(default_factory=list)
+    # Why the test stopped before all its runs (e.g. the caller's claim
+    # on the board was lost), or None when every run was made.
+    stopped_reason: Optional[str] = None
 
     @property
     def passed_count(self) -> int:
@@ -130,6 +133,12 @@ class BootTestResult:
                 f"{status} ({r.elapsed_seconds:.1f}s) - {detail}"
             )
 
+        if self.stopped_reason:
+            lines.append(
+                f"STOPPED after {len(self.runs)} of {self.total_runs} runs: "
+                f"{self.stopped_reason}"
+            )
+
         lines.append("")
         lines.append(
             f"Result: {self.passed_count}/{len(self.runs)} boots successful "
@@ -182,6 +191,7 @@ def run_boot_test(
     output_dir: str | None = None,
     output_dir_fd: Optional[int] = None,
     progress_fn=None,
+    before_run_fn=None,
 ) -> BootTestResult:
     """Run automated boot reliability test.
 
@@ -202,6 +212,10 @@ def run_boot_test(
             checked and created by the caller); files are created
             relative to it and ``output_dir`` is only used for messages
         progress_fn: Optional callback(run_number, total, result) for progress
+        before_run_fn: Optional callable run before each run's power cycle;
+            it returns None to go on, or a reason to stop the test there
+            (recorded as ``stopped_reason``). Used to stop when the
+            caller's claim on the board is lost mid-test.
     """
     result = BootTestResult(
         sbc_name=sbc_name,
@@ -224,6 +238,13 @@ def run_boot_test(
         deploy_fn()
 
     for i in range(1, runs + 1):
+        if before_run_fn:
+            reason = before_run_fn()
+            if reason:
+                logger.warning("Boot test of %s stopped: %s", sbc_name, reason)
+                result.stopped_reason = reason
+                break
+
         run_result = _run_single_boot(
             run_number=i,
             tcp_host=tcp_host,

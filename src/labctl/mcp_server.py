@@ -22,7 +22,7 @@ import shlex
 import sys
 import threading
 import time as _time_mod
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from functools import wraps
 from typing import Optional
 
@@ -612,6 +612,24 @@ def _check_claim(
             }
         )
     return None
+
+
+def _claim_keepalive(manager, sbc_name: str):
+    """A :class:`ClaimKeepalive` for this caller's claim on ``sbc_name``
+    (issue #2): heartbeats it while a long call runs, and its checkpoint
+    stops a multi-step call once the claim is lost or someone else claims
+    the board. Build it in the handler's thread (the caller's identity
+    comes from the request), after the call's own claim check passed."""
+    from labctl.core.claim_keepalive import ClaimKeepalive
+
+    config = _get_config()
+    return ClaimKeepalive(
+        manager,
+        sbc_name,
+        _caller_actor(),
+        enabled=config.claims.enabled,
+        require_claim=config.claims.require_claim,
+    )
 
 
 def _check_claims_of(manager, sbc_names, for_sbc: str | None = None) -> str | None:
@@ -2075,7 +2093,9 @@ def sdwire_update(
     renames, then deletes), unmounts, switches back to DUT. The SBC is left
     powered off unless reboot=true, which power cycles it (waiting the
     largest stored cycle delay among the boards on its plug outlet, each
-    counting as 3 s if it has none).
+    counting as 3 s if it has none). A claim you hold is kept alive while
+    it writes; if it was lost meanwhile, the SBC is left off even with
+    reboot=true.
 
     Args:
         sbc_name: Name of the SBC with an assigned SDWire device
@@ -2131,6 +2151,7 @@ def sdwire_update(
         return path_err
 
     ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    keepalive = None
 
     try:
         # The relays and the cycle delay the reboot will need are checked
@@ -2149,6 +2170,10 @@ def sdwire_update(
                 check_power_on(manager, sbc)
             except (ActuationError, ValueError) as e:
                 return f"Error: {e}. Nothing changed."
+
+        # The write can outlast the claim: keep the caller's claim alive
+        # until the end, and reboot only if it is still held.
+        keepalive = _claim_keepalive(manager, sbc_name).start()
 
         # The card must not leave a running board (bus contention):
         # nothing is written if the board can't be switched off.
@@ -2181,7 +2206,12 @@ def sdwire_update(
             parts.append(f"Deleted: {', '.join(result['deleted'])}")
         summary = f"Partition {partition}: {'; '.join(parts)}"
 
-        if reboot and sbc.power_plug:
+        stop_reason = keepalive.checkpoint() if reboot and sbc.power_plug else None
+        if stop_reason:
+            summary = (
+                f"{summary}. Not power cycled: {stop_reason}; {sbc_name} is left off"
+            )
+        elif reboot and sbc.power_plug:
             from labctl.actuators.runtime import (
                 ActuationError,
                 power_cycle_with_bindings,
@@ -2207,6 +2237,8 @@ def sdwire_update(
     except RuntimeError as e:
         return f"Error: {e}"
     finally:
+        if keepalive is not None:
+            keepalive.stop()
         _close_fds(file_pairs)
 
 
@@ -2502,7 +2534,9 @@ def flash_image(
 
     Powers the SBC off first (refusing, writing nothing, if it can't be
     switched off; a board with no power plug is refused unless
-    no_plug_ok=true) and leaves it off unless reboot=true.
+    no_plug_ok=true) and leaves it off unless reboot=true. A claim you
+    hold is kept alive while it writes; if it was lost meanwhile, the
+    board is left off even with reboot=true.
 
     Args:
         sbc_name: Name of the SBC with an assigned SDWire device
@@ -2548,6 +2582,7 @@ def flash_image(
 
     ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
     flash_ok = False
+    keepalive = None
 
     try:
         # The relays the reboot will need are checked before the board is
@@ -2559,6 +2594,10 @@ def flash_image(
                 check_power_on(manager, sbc)
             except ActuationError as e:
                 return f"Error: {e}. Nothing changed."
+
+        # Flashing can outlast the claim: keep the caller's claim alive
+        # until the end, and power on only if it is still held.
+        keepalive = _claim_keepalive(manager, sbc_name).start()
 
         # The card must not leave a running board (bus contention):
         # nothing is flashed if the board can't be switched off.
@@ -2619,7 +2658,10 @@ def flash_image(
         ctrl.switch_to_dut()
 
         # Reboot
-        if reboot and sbc.power_plug:
+        stop_reason = keepalive.checkpoint() if reboot and sbc.power_plug else None
+        if stop_reason:
+            parts.append(f"Not powered on: {stop_reason}; {sbc_name} is left off")
+        elif reboot and sbc.power_plug:
             from labctl.actuators.runtime import (
                 ActuationError,
                 power_on_with_bindings,
@@ -2650,6 +2692,8 @@ def flash_image(
             pass
         return f"Error: {e}"
     finally:
+        if keepalive is not None:
+            keepalive.stop()
         os.close(image_fd)
         _close_fds(post_flash_pairs)
 
@@ -2670,7 +2714,8 @@ def serial_capture(
     """Capture serial output from a port.
 
     Connects to the serial port via ser2net, captures output until timeout
-    or pattern match, then disconnects.
+    or pattern match, then disconnects. A claim you hold on the port's
+    SBC is kept alive during a long capture.
 
     Args:
         port_name: Port alias or SBC name (SBC defaults to console port)
@@ -2692,24 +2737,26 @@ def serial_capture(
 
     # Capturing holds the board's ser2net session, so it is claim-checked
     # like serial_send.
-    if port.sbc_id:
-        sbc = manager.get_sbc(port.sbc_id)
-        if sbc:
-            claim_err = _check_claim(manager, sbc.name, mutating=True)
-            if claim_err:
-                return claim_err
+    sbc = manager.get_sbc(port.sbc_id) if port.sbc_id else None
+    if sbc:
+        claim_err = _check_claim(manager, sbc.name, mutating=True)
+        if claim_err:
+            return claim_err
 
     if not port.tcp_port:
         return f"Error: Port '{port_name}' has no TCP port configured"
 
+    # A long capture can outlast the claim: keep the caller's alive.
+    keepalive = _claim_keepalive(manager, sbc.name) if sbc else nullcontext()
     try:
-        result = capture_serial_output(
-            tcp_host="localhost",
-            tcp_port=port.tcp_port,
-            timeout=timeout,
-            until_pattern=until_pattern,
-            tail=tail,
-        )
+        with keepalive:
+            result = capture_serial_output(
+                tcp_host="localhost",
+                tcp_port=port.tcp_port,
+                timeout=timeout,
+                until_pattern=until_pattern,
+                tail=tail,
+            )
         return result.to_mcp_string(pattern=until_pattern)
     except RuntimeError as e:
         return f"Error: {e}"
@@ -2945,6 +2992,12 @@ def boot_test(
     capturing serial output each time. Reports how many boots
     successfully reached the expected pattern.
 
+    A claim you hold on the SBC is kept alive while the test runs. Before
+    each run's power cycle the test stops ("STOPPED after N of M runs")
+    if your claim was lost meanwhile (released, force-released or
+    expired) or someone else has claimed the SBC or a board sharing its
+    hardware. Still claim it for the whole test (see renew_sbc_claim).
+
     Args:
         sbc_name: Name of the SBC to test
         expect_pattern: Regex that indicates successful boot
@@ -3052,22 +3105,27 @@ def boot_test(
         if not ok:
             raise RuntimeError(f"power_on failed on {sbc_name!r}")
 
+    # The run can outlast the claim: keep the caller's claim alive, and
+    # stop between runs once it is lost or someone else claims the board.
+    keepalive = _claim_keepalive(manager, sbc_name)
     try:
-        result = run_boot_test(
-            sbc_name=sbc_name,
-            expect_pattern=expect_pattern,
-            tcp_host="localhost",
-            tcp_port=sbc.console_port.tcp_port,
-            power_cycle_fn=power_cycle_fn,
-            runs=runs,
-            timeout=timeout,
-            deploy_fn=deploy_fn,
-            image=image,
-            dest=dest,
-            partition=partition,
-            output_dir=output_dir,
-            output_dir_fd=output_dir_fd,
-        )
+        with keepalive:
+            result = run_boot_test(
+                sbc_name=sbc_name,
+                expect_pattern=expect_pattern,
+                tcp_host="localhost",
+                tcp_port=sbc.console_port.tcp_port,
+                power_cycle_fn=power_cycle_fn,
+                runs=runs,
+                timeout=timeout,
+                deploy_fn=deploy_fn,
+                image=image,
+                dest=dest,
+                partition=partition,
+                output_dir=output_dir,
+                output_dir_fd=output_dir_fd,
+                before_run_fn=keepalive.checkpoint,
+            )
         result_str = result.format_summary()
         advisory = _claim_advisory(manager, sbc_name)
         return f"{result_str}\n\n{advisory}" if advisory else result_str

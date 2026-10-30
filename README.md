@@ -199,6 +199,12 @@ Every command has `--help`. This section lists the commands; see
 | `labctl claims expire` | Run one expiry/dead-session sweep (also prunes old released claims) |
 | `labctl claims stats` | Show aggregate claim statistics |
 
+A claim's deadline moves each time you use the board. Long operations
+keep a claim you already hold alive while they run (CLI `boot-test`; MCP
+`boot_test`, `serial_capture`, `sdwire_update`, `flash_image`) and never
+claim a board for you. A boot test stops between runs once your claim is
+lost or someone else claims the board; claim it for the whole test.
+
 ### SDWire (SD Card Multiplexer)
 
 | Command | Description |
