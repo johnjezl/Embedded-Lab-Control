@@ -1208,7 +1208,12 @@ def add_cmd(
 @main.command("remove")
 @override_claim_option
 @click.argument("name")
-@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Skip confirmation (asked even when not on a terminal)",
+)
 @click.option(
     "--force",
     is_flag=True,
@@ -1346,8 +1351,10 @@ def info_cmd(ctx: click.Context, name: str) -> None:
     default=None,
     help=(
         "Per-SBC power-cycle off→on delay (seconds). Used as both the "
-        "default and the floor for `power cycle --delay`. Pass a negative "
-        "number to clear the override and fall back to the global default "
+        "default and the floor for CLI `power cycle --delay`, and as the "
+        "delay of `enter-recovery`/`exit-recovery`; other reboots (MCP, "
+        "REST, sdwire --reboot, boot-test) don't use it. Pass a negative "
+        "number to clear the override and fall back to the default "
         f"({DEFAULT_POWER_CYCLE_DELAY_SECONDS}s)."
     ),
 )
@@ -1495,7 +1502,12 @@ def sdwire_add_cmd(
 
 @sdwire_group.command("remove")
 @click.argument("name")
-@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Skip confirmation (asked even when not on a terminal)",
+)
 @click.pass_context
 def sdwire_remove_cmd(ctx: click.Context, name: str, yes: bool) -> None:
     """Unregister an SDWire device."""
@@ -1636,8 +1648,10 @@ def sdwire_dut_cmd(ctx: click.Context, sbc_name: str) -> None:
 def sdwire_host_cmd(ctx: click.Context, sbc_name: str, force: bool) -> None:
     """Switch SD card to host (dev machine can flash it).
 
-    Refuses if the SBC is powered on to prevent SD card bus contention.
-    Use --force to override (e.g., if SBC is halted but power relay is on).
+    Refuses if the SBC's plug reports it powered on, to prevent SD card bus
+    contention. The check is skipped when the SBC has no plug or its state
+    can't be read. Use --force to override (e.g., if SBC is halted but power
+    relay is on).
     """
     from labctl.sdwire.controller import SDWireController
 
@@ -1680,13 +1694,17 @@ def sdwire_host_cmd(ctx: click.Context, sbc_name: str, force: bool) -> None:
 @claim_checked()
 @click.argument("sbc_name")
 @click.argument("image", type=click.Path(exists=True, path_type=Path))
-@click.option("--no-reboot", is_flag=True, help="Don't power cycle after flashing")
+@click.option(
+    "--no-reboot",
+    is_flag=True,
+    help="Don't power cycle after flashing (the SBC is left powered off)",
+)
 @click.option(
     "--copy",
     "-c",
     "post_copies",
     multiple=True,
-    help="Copy file to boot partition after flash (source:dest)",
+    help="Copy file to partition 1 after flash (source:dest; repeatable)",
 )
 @click.option(
     "--dry-run",
@@ -1704,9 +1722,10 @@ def sdwire_flash_cmd(
 ) -> None:
     """Flash an SD card image to an SBC's SDWire.
 
-    Supports .img, .img.xz, and .img.gz formats. Switches to host,
-    writes the image, optionally copies files to the boot partition,
-    switches back to DUT, and optionally power cycles.
+    Supports .img, .img.xz, and .img.gz formats. Powers the SBC off (if it
+    has a plug), switches to host, writes the image, optionally copies
+    files to partition 1, switches back to DUT, and power-cycles (setting
+    pre_power relays first). With --no-reboot the SBC is left powered off.
 
     \b
     Examples:
@@ -1906,7 +1925,11 @@ def sdwire_flash_cmd(
     multiple=True,
     help="Delete file (relative to partition root)",
 )
-@click.option("--reboot", is_flag=True, help="Power cycle the SBC after updating")
+@click.option(
+    "--reboot",
+    is_flag=True,
+    help="Power cycle the SBC after updating (otherwise it is left off)",
+)
 @click.option(
     "--dry-run",
     is_flag=True,
@@ -1925,9 +1948,11 @@ def sdwire_update_cmd(
 ) -> None:
     """Copy, rename, and/or delete files on a partition on an SBC's SD card.
 
-    Switches to host, mounts the partition, performs operations (copies first,
-    then renames, then deletes), unmounts, switches back to DUT, and optionally
-    power cycles.
+    Powers the SBC off (if it has a plug), switches to host, mounts the
+    partition, performs operations (copies first, then renames, then
+    deletes), unmounts, and switches back to DUT. With --reboot it then
+    power-cycles (setting pre_power relays first); without it the SBC is
+    left powered off.
 
     \b
     Examples:
@@ -2121,7 +2146,11 @@ def sdwire_ls_cmd(
     recursive: bool,
     max_entries: int,
 ) -> None:
-    """List directory contents on an SBC SD card partition."""
+    """List directory contents on an SBC SD card partition.
+
+    Switches the card to the host, reads it, and switches it back to the
+    SBC; refuses while the SBC's plug reports it powered on. Prints JSON.
+    """
     from labctl.sdwire.controller import SDWireController
 
     manager = _get_manager(ctx)
@@ -2225,7 +2254,11 @@ def sdwire_cat_cmd(
     max_bytes: int,
     encoding: str,
 ) -> None:
-    """Read a file from an SBC SD card partition."""
+    """Read a file from an SBC SD card partition.
+
+    Switches the card to the host, reads it, and switches it back to the
+    SBC; refuses while the SBC's plug reports it powered on. Prints JSON.
+    """
     from labctl.sdwire.controller import SDWireController, SDWireSymlinkError
 
     manager = _get_manager(ctx)
@@ -2316,7 +2349,12 @@ def sdwire_cat_cmd(
 @click.argument("sbc_name")
 @click.pass_context
 def sdwire_info_cmd(ctx: click.Context, sbc_name: str) -> None:
-    """Show partition metadata for an SBC SD card."""
+    """Show partition metadata for an SBC SD card.
+
+    Switches the card to the host, reads the partition table (sudo parted,
+    blkid), and switches it back; refuses while the SBC's plug reports it
+    powered on. Prints JSON.
+    """
     from labctl.sdwire.controller import SDWireController
 
     manager = _get_manager(ctx)
@@ -2445,7 +2483,12 @@ def serial_add_cmd(
 
 @serial_group.command("remove")
 @click.argument("name")
-@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Skip confirmation (asked even when not on a terminal)",
+)
 @click.pass_context
 def serial_remove_cmd(ctx: click.Context, name: str, yes: bool) -> None:
     """Unregister a USB-serial adapter."""
@@ -2753,7 +2796,7 @@ def _resolve_send_pacing(
 @click.option(
     "--raw",
     is_flag=True,
-    help="Send raw data without appending newline",
+    help="Send the data as given, without appending CRLF (\\r\\n)",
 )
 @click.option(
     "--capture",
@@ -2800,11 +2843,14 @@ def serial_send_cmd(
     """Send data to a serial port.
 
     PORT_NAME is a port alias or SBC name (defaults to console port).
+    DATA is sent as UTF-8 followed by CRLF unless --raw. Backslash escapes
+    are not interpreted: use the shell's $'...' quoting for control bytes.
+    --until applies only with --capture.
 
     \b
     Examples:
       labctl serial send pi-5-1-console "help"
-      labctl serial send pi-5-1 --raw "ABCD\\r\\n"
+      labctl serial send pi-5-1 --raw $'ABCD\\r\\n'
       labctl serial send pi-5-1 "help" --capture 5
       labctl serial send pi-5-1 "help" --capture 5 --until ">"
       labctl serial send pi-5-1 "help" --interbyte-delay-ms 2
@@ -2871,7 +2917,11 @@ def port_group() -> None:
     help="TCP port (auto-assigned if not specified)",
 )
 @click.option(
-    "--baud", "-b", type=int, default=115200, help="Baud rate (default: 115200)"
+    "--baud",
+    "-b",
+    type=int,
+    default=115200,
+    help="Baud rate (default: 115200; serial.default_baud is not used here)",
 )
 @click.option("--alias", "-a", help="Human-friendly name for this assignment")
 @click.option(
@@ -3123,7 +3173,11 @@ def ser2net_group() -> None:
     type=click.Path(path_type=Path),
     help="Output file (default: stdout)",
 )
-@click.option("--install", is_flag=True, help="Install to /etc/ser2net.yaml")
+@click.option(
+    "--install",
+    is_flag=True,
+    help="Write /etc/ser2net.yaml (always this path; ser2net.config_file is not used)",
+)
 @click.pass_context
 def ser2net_generate_cmd(
     ctx: click.Context, output: Path | None, install: bool
@@ -3339,10 +3393,11 @@ def _emit_power_event(
 def power_on_cmd(ctx: click.Context, sbc_name: str) -> None:
     """Turn power on for an SBC.
 
-    Consults pre_power bindings: any binding on the SBC with
-    sample_phase=pre_power is driven to its desired_state before power
-    is applied. If applying any of those straps fails the device stays
-    powered off rather than booting without the strap.
+    Consults pre_power bindings: every binding with sample_phase=pre_power,
+    on this SBC and on any board sharing its plug outlet, is driven to its
+    desired_state before power is applied. The relays are checked first;
+    if any can't be reached or set, power is not switched on rather than
+    booting without the strap.
     """
     from labctl.actuators.runtime import ActuationError, power_on_with_bindings
 
@@ -3432,10 +3487,10 @@ def _resolve_cycle_delay(sbc, requested: float | None) -> tuple[float, str | Non
     type=float,
     default=None,
     help=(
-        "Delay between off and on (seconds). If omitted, the SBC's stored "
-        f"value is used; otherwise {DEFAULT_POWER_CYCLE_DELAY_SECONDS}s. "
-        "The stored value also acts as a floor — smaller values are raised "
-        "with a warning."
+        "Delay between off and on (seconds, 0-86400). If omitted, the SBC's "
+        "stored value (`edit --cycle-delay`) is used; otherwise "
+        f"{DEFAULT_POWER_CYCLE_DELAY_SECONDS}s. That value is also the "
+        "minimum: smaller values are raised to it with a warning."
     ),
 )
 @click.option(
@@ -3447,7 +3502,12 @@ def _resolve_cycle_delay(sbc, requested: float | None) -> tuple[float, str | Non
 def power_cycle_cmd(
     ctx: click.Context, sbc_name: str, delay: float | None, dry_run: bool
 ) -> None:
-    """Power cycle an SBC (off, wait, on)."""
+    """Power cycle an SBC (off, wait, set pre_power relays, on).
+
+    The pre_power relays (see `power on`) are checked before power-off, so
+    a relay that can't be reached leaves the board running. A strap that
+    fails after power-off leaves the board off.
+    """
     manager = _get_manager(ctx)
     controller, sbc = _get_power_controller(manager, sbc_name)
 
@@ -3546,7 +3606,12 @@ def power_status_cmd(ctx: click.Context, sbc_name: str) -> None:
 @override_claim_option
 @click.argument("action", type=click.Choice(["on", "off"]))
 @click.option("--project", "-p", help="Filter by project name")
-@click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Skip confirmation (asked even when not on a terminal)",
+)
 @click.pass_context
 def power_all_cmd(
     ctx: click.Context,
@@ -3558,7 +3623,9 @@ def power_all_cmd(
     """Turn power on or off for all SBCs.
 
     Boards another user has claimed (or that share a plug, SDWire, console
-    or relay with one) are skipped, unless --override-claim.
+    or relay with one) are skipped, unless --override-claim. Power-on sets
+    each board's pre_power relays first. Asks for confirmation unless --yes
+    (even when not on a terminal).
     """
     from labctl.actuators.runtime import power_on_with_bindings
 
@@ -3697,7 +3764,10 @@ def actuator_group() -> None:
     "--driver",
     type=click.Choice([d.value for d in DriverName]),
     required=True,
-    help="Driver implementation to use.",
+    help=(
+        "Driver implementation to use. Only lcus1_serial is implemented "
+        "(needs the actuators extra); the others are refused."
+    ),
 )
 @click.option(
     "--device",
@@ -3855,7 +3925,7 @@ def actuator_set_cmd(ctx: click.Context, name: str, channel: int, state: str) ->
     """Drive a channel directly (bypasses bindings).
 
     Provisioning aid for verifying wiring; production paths should go
-    through `labctl actuate / release / press`.
+    through `labctl bindings actuate / release / press`. CHANNEL is 1-based.
     """
     from labctl.actuators import DriverError, get_driver
     from labctl.core.models import ChannelState
@@ -3920,7 +3990,12 @@ def actuator_set_cmd(ctx: click.Context, name: str, channel: int, state: str) ->
 @actuator_group.command("remove")
 @override_claim_option
 @click.argument("name")
-@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt.")
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    help="Skip confirmation (asked even when not on a terminal).",
+)
 @click.pass_context
 def actuator_remove_cmd(
     ctx: click.Context, name: str, yes: bool, override_claim: bool
@@ -3971,7 +4046,10 @@ def actuator_remove_cmd(
     type=_channel_state_choice(),
     default="closed",
     show_default=True,
-    help="Which physical state means 'asserted' for this binding.",
+    help=(
+        "Which physical state means 'asserted' for this binding. Must "
+        "differ from the channel's default state (open for new actuators)."
+    ),
 )
 @click.option(
     "--pulse-ms",
@@ -3987,7 +4065,8 @@ def actuator_remove_cmd(
     show_default=True,
     help=(
         "When the binding's value matters: pre-power straps "
-        "(recovery_mode, boot_select), post-power, or none."
+        "(recovery_mode, boot_select) are set before every power-on; "
+        "post-power is stored but not yet acted on; none."
     ),
 )
 @click.option(
@@ -4093,7 +4172,7 @@ def unbind_cmd(ctx: click.Context, sbc_name: str, purpose: str) -> None:
 
 @main.group("bindings")
 def bindings_group() -> None:
-    """Inspect actuator bindings."""
+    """Inspect and drive actuator bindings."""
 
 
 def _channel_busy_error():
@@ -4240,12 +4319,16 @@ def _run_composite(ctx, sbc_name: str, fn_name: str, fn) -> None:
 def enter_recovery_cmd(ctx: click.Context, sbc_name: str) -> None:
     """Power-aware "enter recovery mode" composite.
 
+    Needs a binding with purpose `recovery_mode` (see `labctl bind`).
+
+    \b
     Sequence:
-      1. Probe the recovery_mode actuator (read-only).
+      1. Probe the recovery_mode actuator and check the pre_power relays
+         (read-only; abort before switching anything if one fails).
       2. power_off
-      3. sleep(power_cycle_delay_seconds)
+      3. sleep(power_cycle_delay_seconds; default 3s)
       4. Engage the recovery_mode strap (desired=asserted).
-      5. power_on (re-applies the strap via pre_power bindings).
+      5. Set the pre_power relays, then power_on.
     """
     from labctl.actuators.runtime import enter_recovery
 
@@ -4259,7 +4342,11 @@ def enter_recovery_cmd(ctx: click.Context, sbc_name: str) -> None:
 @click.argument("sbc_name")
 @click.pass_context
 def exit_recovery_cmd(ctx: click.Context, sbc_name: str) -> None:
-    """Power-aware "leave recovery mode" composite (release strap, normal boot)."""
+    """Power-aware "leave recovery mode" composite (release strap, normal boot).
+
+    Needs a binding with purpose `recovery_mode`. Same sequence as
+    enter-recovery, but releases the strap (desired=released).
+    """
     from labctl.actuators.runtime import exit_recovery
 
     _run_composite(ctx, sbc_name, "exit_recovery", exit_recovery)
@@ -4271,7 +4358,7 @@ def exit_recovery_cmd(ctx: click.Context, sbc_name: str) -> None:
 @click.argument("purpose")
 @click.pass_context
 def bindings_status_cmd(ctx: click.Context, sbc_name: str, purpose: str) -> None:
-    """Show current desired vs. last state for a binding (read-only)."""
+    """Show a binding's desired and last-known state (read-only)."""
     from labctl.actuators.runtime import binding_status
 
     manager, binding = _resolve_binding_for_verb(ctx, sbc_name, purpose)
@@ -4352,7 +4439,7 @@ def bindings_list_cmd(ctx: click.Context, target_sbc: str | None) -> None:
     "--follow",
     "-f",
     is_flag=True,
-    help="Continuous output (like tail -f)",
+    help="Also echo each logged line to the terminal",
 )
 @click.option(
     "--lines",
@@ -4377,14 +4464,16 @@ def log_cmd(
 ) -> None:
     """Capture serial output to a log file.
 
-    Connects to an SBC's serial port and logs all output to a file.
-    By default, creates a timestamped log file in the current directory.
+    Connects to an SBC's serial port and logs all output to a file until
+    Ctrl+C (or until --lines are captured), reconnecting if the connection
+    drops. By default, creates a timestamped log file in the current
+    directory.
 
     \b
     Examples:
       labctl log pi4                     # Log to pi4-<timestamp>.log
       labctl log pi4 -o serial.log       # Log to specific file
-      labctl log pi4 -f                  # Follow mode (continuous)
+      labctl log pi4 -f                  # Also echo lines to the terminal
       labctl log pi4 -n 100              # Capture 100 lines then exit
     """
     import select
@@ -4616,7 +4705,8 @@ def ssh_cmd(ctx: click.Context, sbc_name: str, user: str | None) -> None:
     help=(
         "Skip live power probes; show the cached value written by the "
         "monitor daemon. Renders instantly even if a power plug is slow "
-        "or unreachable. Stale readings (older than 2 minutes) are dimmed."
+        "or unreachable. Stale readings (older than 2 minutes, or twice "
+        "health.power_check_interval if longer) are dimmed."
     ),
 )
 @click.pass_context
@@ -4817,7 +4907,11 @@ def _refuse_own_claim(sbc_name: str, claim) -> None:
     "--duration",
     "-d",
     default=None,
-    help="Duration like '30m', '2h', or minutes as integer (default from config)",
+    help=(
+        "Duration like '90s', '30m', '2h', or minutes as integer (default: "
+        "claims.default_duration_minutes; bounded by claims.min/"
+        "max_duration_minutes)"
+    ),
 )
 @click.option("--reason", "-r", required=True, help="Human-readable reason for audit")
 @click.option(
@@ -4958,7 +5052,10 @@ def renew_cmd(ctx: click.Context, sbc_name: str, duration: str | None) -> None:
 @click.option("--reason", "-r", required=True, help="Why the override is needed")
 @click.pass_context
 def force_release_cmd(ctx: click.Context, sbc_name: str, reason: str) -> None:
-    """Operator override — forcibly release an active claim."""
+    """Override — forcibly release another user's active claim.
+
+    Recorded in the activity log with the reason.
+    """
     from labctl.core.models import ClaimNotFoundError, UnknownSBCError
 
     manager = _get_manager(ctx)
@@ -5037,7 +5134,14 @@ def claims_show_cmd(ctx: click.Context, sbc_name: str) -> None:
 
 @claims_group.command("history")
 @click.argument("sbc_name")
-@click.option("--last", "-n", type=int, default=10, help="How many entries to show")
+@click.option(
+    "--last",
+    "-n",
+    type=int,
+    default=10,
+    show_default=True,
+    help="How many entries to show",
+)
 @click.pass_context
 def claims_history_cmd(ctx: click.Context, sbc_name: str, last: int) -> None:
     """Show past claims for an SBC."""
@@ -5077,6 +5181,9 @@ def claims_history_cmd(ctx: click.Context, sbc_name: str, last: int) -> None:
 @click.pass_context
 def claims_expire_cmd(ctx: click.Context) -> None:
     """Run one sweep: release expired claims and dead-session claims.
+
+    Also prunes released claims older than
+    claims.auto_prune_released_after_days.
 
     Suitable for cron / systemd timer (e.g. every 60 seconds).
     """
@@ -5141,7 +5248,12 @@ def claims_stats_cmd(ctx: click.Context) -> None:
 )
 @click.pass_context
 def export_cmd(ctx: click.Context, fmt: str, output: Path | None) -> None:
-    """Export all SBC configurations."""
+    """Export all SBC configurations.
+
+    Includes serial adapters, and each SBC's serial ports, network
+    addresses, power plug and SDWire. Actuators, bindings and the per-SBC
+    cycle delay are not exported.
+    """
     import json
 
     import yaml
@@ -5501,7 +5613,12 @@ def proxy_group() -> None:
         "immediately when the upstream console disconnects."
     ),
 )
-@click.option("--foreground", "-f", is_flag=True, help="Run in foreground (default)")
+@click.option(
+    "--foreground",
+    "-f",
+    is_flag=True,
+    help="Run in foreground (always; accepted for compatibility)",
+)
 @click.pass_context
 def proxy_start_cmd(
     ctx: click.Context,
@@ -5513,8 +5630,10 @@ def proxy_start_cmd(
 ) -> None:
     """Start a serial proxy for an SBC.
 
-    Use this when you want multiple terminals or browsers to watch the
-    same SBC serial output without fighting over the direct console port.
+    Use this when several terminals need the same serial output without
+    fighting over the direct console port. Viewers
+    connect over TCP (e.g. nc or telnet); the proxy runs in the foreground
+    until Ctrl+C.
 
     The proxy connects upstream to the SBC's serial console TCP port and
     fans the output out to all connected clients. Multiple clients can
@@ -5714,7 +5833,8 @@ def mcp_cmd(
     """Start the MCP (Model Context Protocol) server.
 
     By default uses stdio transport for local AI tool integration
-    (Claude Desktop, Claude Code, etc.). Use --http for remote access.
+    (Claude Desktop, Claude Code, etc.). Use --http for HTTP; it binds
+    127.0.0.1 unless --host is given.
     """
     if (
         not http_port
@@ -5740,7 +5860,9 @@ def mcp_cmd(
             raise
         raise click.ClickException(
             "MCP support is not installed. "
-            "Install it with: pip install 'embedded-lab-control[mcp]'"
+            "Install the [mcp] extra: pip install -e '.[mcp]' from a "
+            "checkout (or pip install 'embedded-lab-control[mcp]' once "
+            "published on PyPI)"
         ) from e
 
     if check:
@@ -5856,13 +5978,13 @@ def _mcp_check(
     "--cert",
     type=click.Path(exists=True),
     default=None,
-    help="Path to SSL certificate file (PEM format)",
+    help="Path to SSL certificate file (PEM format; default: web.cert_file)",
 )
 @click.option(
     "--key",
     type=click.Path(exists=True),
     default=None,
-    help="Path to SSL private key file (PEM format)",
+    help="Path to SSL private key file (PEM format; default: web.key_file)",
 )
 @click.pass_context
 def web_cmd(
@@ -5984,8 +6106,11 @@ def boot_test_cmd(
 ) -> None:
     """Automated boot reliability testing.
 
-    Deploys an image (optional), then reboots the SBC multiple times and
-    captures serial output to determine success rate.
+    Copies --image to --dest on the SD card (both required unless
+    --no-deploy), then power-cycles the SBC --runs times, counting the
+    boots whose serial output matches --expect within --timeout. Each
+    cycle waits 3 s between off and on and sets the pre_power relays
+    first.
 
     \b
     Examples:
@@ -6220,7 +6345,10 @@ def health_check_cmd(
     "-i",
     type=int,
     default=None,
-    help="Check interval in seconds (default: from config)",
+    help=(
+        "Ping/serial check interval in seconds (default: health.check_interval)."
+        " Power probes run every health.power_check_interval."
+    ),
 )
 @click.option(
     "--no-update",
@@ -6242,7 +6370,9 @@ def monitor_cmd(
     """Start the monitoring daemon.
 
     Runs periodic health checks on all SBCs and triggers alerts
-    when status changes occur.
+    when status changes occur. On start it returns unbound and released
+    relay channels to their default state (asserted bindings, e.g. a
+    recovery strap mid-flash, are left alone).
 
     Press Ctrl+C to stop.
 
@@ -6742,7 +6872,7 @@ def user_group():
 
 @user_group.command("hash-password")
 def hash_password_cmd():
-    """Generate a password hash for use in config.
+    """Generate a password hash for use in config (needs the web extra).
 
     Prompts for password input and outputs a werkzeug-compatible hash.
     """
@@ -6773,6 +6903,9 @@ def generate_key_cmd():
 @click.argument("username")
 def user_add_cmd(username: str):
     """Print a ready-to-paste YAML snippet for a new user.
+
+    The snippet has no role line, so the user is an operator; add
+    `role: agent` for an AI agent's key. Needs werkzeug (web extra).
 
     Prompts for password, generates API key, outputs YAML.
     """

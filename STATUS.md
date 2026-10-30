@@ -3,45 +3,35 @@
 ## Current State
 
 - **Milestone**: Public PyPI release (`embedded-lab-control`)
-- **Sub-task**: Phase 1 — safety (decisions: D012)
-- **Status**: Phase 0 merged (PR #12) and deployed to tarrasque on
-  2026-10-07 (`embedded-lab-control` 0.2.0.dev0, MCP on 127.0.0.1:8080).
-  Phase 1 WS1–WS4 merged to main (PRs #13–#16, 2026-10-08/09): quick
-  hardening, host path allowlist, classification + destructive
-  confirmation, MCP HTTP auth. Not yet deployed (needs
-  `mcp.allowed_*_paths` in both configs first). WS5 (security docs,
-  `SECURITY.md`, deploy) in progress on `phase1/ws5-wrapup` (see
-  `docs/IMPLEMENTATION.md`).
+- **Sub-task**: next is P2 (PyPI release); Phase 0 and Phase 1 (safety)
+  are done
+- **Status**: `main` @ `e02a2f3` has everything merged through PR #37
+  (2026-10-29), and all of it is deployed to tarrasque (2026-10-29).
+  Phase 1 (WS1–WS5, PRs #13–#18), claim enforcement on every surface
+  (D013, PRs #22/#24/#25), image uploads + MCP TLS (D014, PR #26) and
+  the fixes since (PRs #28–#37) are in. See `docs/IMPLEMENTATION.md`.
+- **Open follow-ups**: #19 (remaining by-path root operations in the
+  install/update scripts), #23 (`flash_image`/`sdwire_update` switch the
+  SD card to the host even if power-off failed), #38 (BoardPower
+  refactor: one board-level power operation with a structured result).
 
 ## Last Session
 
-- **Date**: 2026-09-29
-- **Branch**: `release/phase0` (from `main` @ `11ad19f`)
-- **Completed**:
-  - Issue triage: #3, #7 → P1 safety; #2, #9, #11 → post-release
-  - MCP server on mcp 2.2 (`MCPServer`), tool calls serialized (D011)
-  - `ToolAnnotations` on all 52 tools from a single table + enforcement test
-  - `labctl mcp --http PORT --host ADDR` now honored (was 127.0.0.1:8000)
-  - Packaged as `embedded-lab-control` 0.2.0.dev0; build/twine/pipx verified
-  - Python 3.10 fix in `labctl.sdwire`; sdwire extra gated on ≥ 3.12
-  - 996 tests passing on 3.10 and 3.12 (baseline on mcp 2.2: 791 passed,
-    13 failed, 157 errors); coverage 68%
-  - Repo clean under pinned black/isort/flake8 (`ea3a13a`)
-  - `.github/workflows/ci.yml`: 3.10–3.13 matrix (lint + pytest/coverage
-    artifact) and full-history gitleaks job; 4 reviewed false positives in
-    `.gitleaksignore`
-- **Pending**:
-  - Push `release/phase0` and confirm the first CI run (3.11/3.13 only
-    exercised in CI so far)
-  - Phase 1 safety: #3, #7, auth/confirm/dry-run (see
-    `docs/development/RELEASE_NOTES_PHASE0.md`)
-- **Environment notes**:
-  - This host's `/tmp` is on the failing `/dev/sda` (#11); SQLite commits
-    take ~1.2 s there. Run tests with `--basetemp` on `/dev/shm`
-    (~2 min vs ~32 min).
-  - Production `labctl-mcp` is still mcp 1.26 on `127.0.0.1:8000` via the
-    `PYTHONPATH` overlay; see deployment notes in
-    `docs/development/RELEASE_NOTES_PHASE0.md` before deploying.
+- **Date**: 2026-10-29
+- **Branch**: `main` @ `e02a2f3`
+- **Completed** (PRs #28–#37, all deployed):
+  - #28: tests never load the machine's real config or database;
+    schema v11 repairs a pre-release `images` table
+  - #29: `labctl mcp --http` waits for a busy port; `update.sh` waits
+    through systemd auto-restarts
+  - #30, #31: Kasa KLAP v2 (python-kasa ≥ 0.12 on 3.11+); KLAP-discovered
+    strips controlled per outlet again
+  - #32: `list_images` tells stdio sessions how to get an image in
+  - #34: MCP `serial_send` `keys` / `data_hex` for control characters
+  - #35: relay open failures reported cleanly, with a group hint
+  - #37: `pre_power` bindings applied on every power-on path (#36),
+    including boards sharing an outlet; relays checked before switching
+- **Pending**: P2 (PyPI release); follow-ups #19, #23, #38
 
 ## Earlier Session (Activity Stream)
 
@@ -88,9 +78,10 @@
 
 ## Notes
 
-- **All Milestones Complete!**
-- 996 tests passing (Python 3.10 and 3.12, 2026-09-29)
-- Database schema v3: serial_devices, sdwire_devices/sdwire_assignments tables
+- **All Milestones Complete!** (M1–M7 plus the features below)
+- 1985 tests collected (2026-10-29); CI runs Python 3.10–3.13
+- Database schema v11 (v8: actuators/bindings, v9: claim owners,
+  v10/v11: uploaded images)
 - Schema migration is automatic and preserves existing data
 - Two config files may need to be kept in sync (user + labctl system user)
   - Recommendation: use /etc/labctl/config.yaml as single source of truth
@@ -113,3 +104,9 @@
 | - | Authentication | Complete |
 | - | MCP Server | Complete |
 | - | SDWire Support | Complete |
+| - | Hardware Claims (PR #1; enforcement PRs #22/#24/#25) | Complete |
+| - | Activity Stream | Complete |
+| - | Actuators / Bindings (PR #4; all power paths PR #37) | Complete |
+| P0 | PyPI release: installable + mcp 2.x SDK (PR #12) | Complete |
+| P1 | PyPI release: safety (PRs #13–#18, #22–#26) | Complete, deployed |
+| P2 | PyPI release: publish | Next |

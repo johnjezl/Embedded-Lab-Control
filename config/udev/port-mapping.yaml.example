@@ -1,7 +1,15 @@
-# Example port mapping for udev rule generation
+# Example port mapping for udev rule generation (legacy)
 #
-# This file maps physical USB paths to logical device names.
-# USB paths can be discovered using: ./scripts/discover-usb-serial.sh
+# Read only by scripts/generate-udev-rules.py (--mapping FILE); labctl
+# itself never reads it. The current workflow registers adapters in the
+# database instead: `labctl serial add <name> <usb_path>`, then
+# `labctl serial udev --install --reload`.
+#
+# This file maps physical USB paths to logical device names (symlinks
+# /dev/lab/<name>). Only usb_path and name are used; vendor and model are
+# informational (the generated rule comments use the detected device's
+# vendor/model instead). USB paths can be discovered using:
+# ./scripts/discover-usb-serial.sh
 #
 # Copy this file to port-mapping.yaml and customize for your setup.
 

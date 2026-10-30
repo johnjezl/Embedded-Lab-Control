@@ -111,19 +111,21 @@ pytest tests/ --cov=labctl --cov-report=term-missing
 
 ```
 tests/
-├── conftest.py           # Shared fixtures
-├── unit/
+├── conftest.py           # Shared fixtures (isolates config/DB from the host)
+├── unit/                 # One file per module, e.g.
 │   ├── test_database.py
-│   ├── test_models.py
-│   ├── test_power_tasmota.py
+│   ├── test_manager.py
+│   ├── test_power.py
+│   ├── test_actuator_runtime.py
+│   ├── test_mcp_server.py
 │   └── ...
-├── integration/
+├── integration/          # CLI and Flask app end to end, e.g.
 │   ├── test_cli.py
-│   ├── test_api.py
+│   ├── test_web.py
+│   ├── test_pre_power_paths.py
 │   └── ...
-└── fixtures/
-    ├── sample_config.yaml
-    └── test_database.db
+└── fixtures/             # Recorded device data, e.g.
+    └── kasa_hs300_fw112.json
 ```
 
 ---
@@ -222,7 +224,7 @@ These files MUST be kept current:
 | `CHANGELOG.md` | After each commit |
 | `STATUS.md` | Session start/end, blockers found |
 | `README.md` | User-facing features added |
-| `docs/ARCHITECTURE.md` | Design decisions change |
+| `docs/DECISIONS.md` | Design decisions change |
 
 ### 4.2 CHANGELOG.md Format
 
@@ -488,7 +490,7 @@ Before declaring a milestone COMPLETE:
 
 ### 9.2 Files Requiring Discussion First
 
-- `ARCHITECTURE.md` (design changes)
+- Design changes (record them in `docs/DECISIONS.md`)
 - `pyproject.toml` (new dependencies)
 - Configuration schemas
 - Database schema changes

@@ -1245,9 +1245,14 @@ def power_cycle(sbc_name: str, delay: float = 3.0) -> str:
     state before power comes back on. They are checked before power-off,
     so a relay that can't be opened leaves the board running.
 
+    The plug outlet is switched, so boards sharing the SBC's outlet are
+    cycled too: their pre_power relays are checked and set the same way,
+    and a claim someone else holds on one of them refuses the call.
+
     Args:
         sbc_name: Name of the SBC to power cycle
-        delay: Seconds to wait between off and on (default 3.0)
+        delay: Seconds to wait between off and on, 0 to 86400 (default
+            3.0; the board's stored cycle delay is not used here)
     """
     if delay < 0:
         return "Error: delay must be non-negative"
@@ -1980,9 +1985,10 @@ def sdwire_update(
 ) -> str:
     """Copy, rename, and/or delete files on a partition on an SBC's SD card.
 
-    Atomic operation: switches SD to host, mounts partition, performs operations
-    (copies first, then renames, then deletes), unmounts, switches back to DUT,
-    optionally power cycles.
+    Atomic operation: powers the SBC off (if it has a power plug), switches
+    SD to host, mounts partition, performs operations (copies first, then
+    renames, then deletes), unmounts, switches back to DUT. The SBC is left
+    powered off unless reboot=true, which power cycles it (3 s delay).
 
     Args:
         sbc_name: Name of the SBC with an assigned SDWire device
@@ -1992,7 +1998,8 @@ def sdwire_update(
             absolute host path inside mcp.allowed_read_paths
         renames: List of "oldname:newname" pairs (both relative to partition root)
         deletes: List of filenames to delete (relative to partition root)
-        reboot: Whether to power cycle the SBC after updating
+        reboot: Power cycle the SBC after updating (default false: it
+            stays off)
     """
     import time
 
@@ -2111,7 +2118,25 @@ def sdwire_ls(
     recursive: bool = False,
     max_entries: int = 1000,
 ) -> str:
-    """List directory contents on an SBC SD card partition."""
+    """List directory contents on an SBC SD card partition.
+
+    The partition is mounted read-only. A card already on the host is read
+    in place and left there. A card on the DUT is switched to the host and
+    back only when the SBC is known to be powered off; otherwise the call
+    refuses with error "powered_on" or "power_unknown" (no power plug, or
+    its state can't be read) and nothing is switched.
+
+    Returns JSON with "entries" and "truncated"; errors are JSON with
+    "error" and "message".
+
+    Args:
+        sbc_name: Name of the SBC with an assigned SDWire device
+        partition: Partition number (e.g., 1 for the first partition)
+        path: Directory on the partition (default: "/")
+        recursive: List subdirectories too (default: false)
+        max_entries: Stop after this many entries, setting "truncated"
+            (default: 1000)
+    """
     from labctl.sdwire import SDWireController
 
     manager = _get_manager()
@@ -2187,7 +2212,26 @@ def sdwire_cat(
     max_bytes: int = 1024 * 1024,
     encoding: str = "text",
 ) -> str:
-    """Read a file from an SBC SD card partition."""
+    """Read a file from an SBC SD card partition.
+
+    The partition is mounted read-only and symlinks are not followed. A
+    card already on the host is read in place and left there. A card on
+    the DUT is switched to the host and back only when the SBC is known to
+    be powered off; otherwise the call refuses with error "powered_on" or
+    "power_unknown" (no power plug, or its state can't be read) and
+    nothing is switched.
+
+    Returns JSON with "content", "encoding" and file metadata; errors are
+    JSON with "error" and "message" (e.g. "size_limit_exceeded",
+    "binary_content": retry with encoding="base64").
+
+    Args:
+        sbc_name: Name of the SBC with an assigned SDWire device
+        partition: Partition number (e.g., 1 for the first partition)
+        path: File on the partition
+        max_bytes: Refuse files larger than this (default: 1048576, 1 MiB)
+        encoding: "text" (UTF-8, the default), "base64" or "hex"
+    """
     from labctl.sdwire import SDWireController
     from labctl.sdwire.controller import SDWireSymlinkError
 
@@ -2277,7 +2321,18 @@ def sdwire_cat(
 @mcp.tool(annotations=TOOL_ANNOTATIONS["sdwire_info"])
 @_with_mcp_activity
 def sdwire_info(sbc_name: str) -> str:
-    """Return partition-table metadata for an SBC SD card."""
+    """Return partition-table and filesystem metadata for an SBC SD card.
+
+    Reads the partition table (parted); nothing is mounted. A card already
+    on the host is read in place and left there. A card on the DUT is
+    switched to the host and back only when the SBC is known to be powered
+    off; otherwise the call refuses with error "powered_on" or
+    "power_unknown" (no power plug, or its state can't be read) and nothing
+    is switched. Errors are JSON with "error" and "message".
+
+    Args:
+        sbc_name: Name of the SBC with an assigned SDWire device
+    """
     from labctl.sdwire import SDWireController
 
     manager = _get_manager()
@@ -2343,12 +2398,16 @@ def flash_image(
     verifies block device size, ensures no partitions are mounted, and
     resolves the device from SDWire config (never accepts raw /dev paths).
 
+    Powers the SBC off first (if it has a power plug) and leaves it off
+    unless reboot=true.
+
     Args:
         sbc_name: Name of the SBC with an assigned SDWire device
         image_path: The image (.img, .img.xz, .img.gz): an uploaded image's
             bare name (see list_images), or an absolute host path inside
             mcp.allowed_read_paths
-        reboot: Power on the SBC after flashing
+        reboot: Power on the SBC after flashing (default false: it stays
+            off)
         post_flash_copies: Optional "source:dest" pairs to copy to boot partition after flash;
             sources as for image_path
     """  # noqa: E501
@@ -3262,8 +3321,10 @@ def claim_sbc(
 
     Args:
         sbc_name: Name of the SBC to claim
-        duration_minutes: How long to hold (bounded by config)
-        reason: Human-readable reason (required for audit)
+        duration_minutes: How long to hold (default 30; must be within
+            claims.min_duration_minutes..max_duration_minutes)
+        reason: Human-readable reason, recorded in the audit log
+            (optional; "no reason given" when omitted)
         agent_name: Self-declared agent identifier
         context: Optional metadata (git branch, ticket, etc.)
     """
@@ -4195,7 +4256,8 @@ def enter_recovery(sbc_name: str) -> str:
 
     Pre-flight probes the recovery_mode actuator, then power_off →
     sleep → engage strap → power_on. Aborts before any power
-    transition if the actuator is unreachable.
+    transition if the actuator is unreachable. The sleep is the SBC's
+    stored power-cycle delay (3.0 s if none is set).
 
     Args:
         sbc_name: Target SBC.
@@ -4209,6 +4271,10 @@ def enter_recovery(sbc_name: str) -> str:
 @_with_mcp_activity
 def exit_recovery(sbc_name: str) -> str:
     """Power-aware "leave recovery mode" composite (release strap, normal boot).
+
+    Like enter_recovery: probes the recovery_mode actuator, then
+    power_off → sleep → release strap → power_on. The sleep is the SBC's
+    stored power-cycle delay (3.0 s if none is set).
 
     Args:
         sbc_name: Target SBC.

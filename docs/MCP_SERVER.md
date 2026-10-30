@@ -43,14 +43,15 @@ AI Assistant (Claude Desktop / Claude Code)
 The MCP server requires the `mcp` optional dependency:
 
 ```bash
-pip install labctl[mcp]
-
-# Or if installing from source:
-pip install ".[mcp]"
+# From a checkout of this repository:
+pip install '.[mcp]'
 
 # In the production venv:
 sudo /opt/labctl/venv/bin/pip install /path/to/Embedded-Lab-Control[mcp]
 ```
+
+The package is not on PyPI yet. Once it is published,
+`pip install 'embedded-lab-control[mcp]'` works too.
 
 ## Starting the Server
 
@@ -100,7 +101,8 @@ that user's `api_key`.
   sessions (and the same user after a server restart) count as the
   claimant; audit entries record `mcp-http:<server process>:<username>`.
 - Each user has a **role** (`auth.users[].role`): `operator` (the default
-  when unset) or `agent`. Only operators may `force_release_sbc`; agents
+  when unset) or `agent`; any other value counts as `agent`, with a
+  warning. Only operators may `force_release_sbc`; agents
   get `"error": "not_operator"` and can only `request_sbc_release`.
   The web UI and REST API apply the same roles and owners (see
   [OPERATIONS.md](OPERATIONS.md#web-ui-and-rest-api)).
@@ -165,7 +167,8 @@ bind a reachable address with auth enabled and TLS on.
 
 `--cert`/`--key` (or `mcp.cert_file`/`mcp.key_file` in the config; the
 flags take precedence) serve HTTPS. Both are needed; the server refuses to
-start with only one, or with a file it can't read. Without TLS the server
+start with only one, with a file it can't read, or with a certificate and
+key that don't load as a pair. Without TLS the server
 speaks plain HTTP, so API keys and uploads cross the network in clear text,
 and a non-loopback bind without TLS logs a warning at startup. The web
 server's certificate (`web.cert_file`/`key_file`) can be reused; the
@@ -276,6 +279,9 @@ to understand the current state before taking action.
 | `lab://ports` | All serial port assignments with aliases, SBC mappings, and TCP ports |
 | `lab://sdwire-devices` | All registered SDWire SD card multiplexer devices with assignments |
 | `lab://status` | Dashboard-style overview — all SBCs with live power state queries |
+| `lab://claims` | All active claims across the lab |
+| `lab://claims/metrics` | Aggregate claim statistics (totals by outcome, avg duration) |
+| `lab://activity/recent` | Last 50 activity events across the lab |
 
 ### Template Resources (parameterized)
 
@@ -284,11 +290,8 @@ to understand the current state before taking action.
 | `lab://sbcs/{sbc_name}` | SBC name | Full details for one SBC |
 | `lab://power/{sbc_name}` | SBC name | Live power state query (on/off/unknown) |
 | `lab://health/{sbc_name}` | SBC name | Live health check (ping, serial, power) |
-| `lab://claims` | — | All active claims across the lab |
 | `lab://claims/{sbc_name}` | SBC name | Current claim on an SBC |
-| `lab://claims/history/{sbc_name}` | SBC name | Past (released) claims for an SBC |
-| `lab://claims/metrics` | — | Aggregate claim statistics (totals by outcome, avg duration) |
-| `lab://activity/recent` | — | Last 50 activity events across the lab |
+| `lab://claims/history/{sbc_name}` | SBC name | Past (released) claims for an SBC (last 20) |
 | `lab://activity/{sbc_name}` | SBC name | Last 50 activity events for one SBC |
 
 ### Resource Output Format
@@ -339,7 +342,12 @@ Tools perform mutations — the AI assistant calls these to take action.
 |------|------------|-------------|
 | `power_on` | `sbc_name` | Turn on power to an SBC, after setting its `pre_power` relay bindings |
 | `power_off` | `sbc_name` | Turn off power to an SBC |
-| `power_cycle` | `sbc_name`, `delay` (default 3.0) | Power cycle (off, wait, set `pre_power` bindings, on); refuses before power-off if a relay can't be opened |
+| `power_cycle` | `sbc_name`, `delay` (seconds, 0-86400, default 3.0) | Power cycle (off, wait, set `pre_power` bindings, on); refuses before power-off if a relay can't be opened. The default does not use the board's stored cycle delay (the CLI's `power cycle` does) |
+
+Power tools switch the plug outlet, so boards sharing the SBC's outlet are
+switched too, and a claim someone else holds on one of them refuses the
+call. `power_on` and `power_cycle` also check and set those boards'
+`pre_power` relays.
 
 ### Health Monitoring
 
@@ -379,10 +387,10 @@ Tools perform mutations — the AI assistant calls these to take action.
 | Tool | Parameters | Description |
 |------|------------|-------------|
 | `sdwire_to_dut` | `sbc_name` | Switch SD card to SBC (boot from SD) |
-| `sdwire_to_host` | `sbc_name` | Switch SD card to host (for flashing) |
-| `sdwire_update` | `sbc_name`, `partition`, `copies`, `renames`, `deletes`, `reboot` | Copy, rename, or delete files on SD card partition (atomic: mount, operate, unmount). Host `copies` sources must be allowlisted |
-| `sdwire_ls` | `sbc_name`, `partition`, `path`, `recursive`, `max_entries` | List directory contents on an SD card partition using a read-only mount |
-| `sdwire_cat` | `sbc_name`, `partition`, `path`, `max_bytes`, `encoding` | Read a file from an SD card partition with size and encoding guards |
+| `sdwire_to_host` | `sbc_name`, `force` (default false) | Switch SD card to host (for flashing). Refuses while the SBC's plug reports it on; `force=true` overrides (risks SD card corruption) |
+| `sdwire_update` | `sbc_name`, `partition`, `copies`, `renames`, `deletes`, `reboot` | Copy, rename, or delete files on SD card partition (atomic: power off, mount, operate, unmount, back to DUT). Host `copies` sources must be allowlisted |
+| `sdwire_ls` | `sbc_name`, `partition`, `path` (default `/`), `recursive` (default false), `max_entries` (default 1000) | List directory contents on an SD card partition using a read-only mount |
+| `sdwire_cat` | `sbc_name`, `partition`, `path`, `max_bytes` (default 1 MiB), `encoding` (`text` default, `base64`, `hex`) | Read a file from an SD card partition with size and encoding guards; symlinks are not followed |
 | `sdwire_info` | `sbc_name` | Return partition-table and filesystem metadata for the SD card |
 | `sdwire_add` | `name`, `serial_number`, `device_type` | Register an SDWire device |
 | `sdwire_remove` | `name` | Unregister an SDWire device |
@@ -390,6 +398,21 @@ Tools perform mutations — the AI assistant calls these to take action.
 | `sdwire_unassign` | `sbc_name` | Remove SDWire assignment from SBC |
 | `sdwire_discover` | | Scan for connected SDWire devices |
 | `flash_image` | `sbc_name`, `image_path`, `reboot`, `post_flash_copies` | Flash raw disk image (.img/.img.xz/.img.gz) to SD card with safety checks. Host paths must be allowlisted (see [Host file access](#host-file-access-allowlist)) |
+
+`sdwire_update` and `flash_image` power the SBC off first (best effort,
+when it has a power plug) and **leave it off** unless `reboot=true`:
+`sdwire_update` then power-cycles it (3 s delay), `flash_image` powers it
+on. With `reboot=true` the `pre_power` relays are checked before anything
+is switched.
+
+`sdwire_ls`, `sdwire_cat` and `sdwire_info` don't change the card or the
+board's power. A card already on the host is read in place and left there.
+A card on the DUT is switched to the host and back only when the SBC is
+known to be off; otherwise they refuse with `"error": "powered_on"` or
+`"power_unknown"` (no power plug, or its state can't be read) and switch
+nothing. They return JSON; errors carry `error` and `message`
+(e.g. `path_not_found`, `size_limit_exceeded`, `binary_content`: retry with
+`encoding="base64"`).
 
 ### Images
 
@@ -411,11 +434,45 @@ Tools perform mutations — the AI assistant calls these to take action.
 |------|------------|-------------|
 | `boot_test` | `sbc_name`, `expect_pattern`, `runs`, `timeout`, `image`, `dest`, `partition`, `output_dir` | Automated boot reliability testing with deploy and serial capture. `image` is an uploaded image's name or a path in `allowed_read_paths`; `output_dir` must be in `allowed_write_paths` |
 
+### Actuators and Bindings
+
+Actuators are USB relay boards; a binding wires one relay channel to an
+SBC for a named purpose (`recovery_mode`, `power_button`, ...). Agents
+normally use the binding verbs.
+
+| Tool | Parameters | Description |
+|------|------------|-------------|
+| `actuator_list` | | List provisioned actuators |
+| `actuator_probe` | `name` | Check that an actuator is reachable (records the result on the actuator) |
+| `actuator_add` | `name`, `driver` (`lcus1_serial`), `device_path`, `vid`, `pid`, `serial_no`, `channels` (default 1) | Register an actuator. **Privileged**; `device_path` must be under `/dev/lab/`, `/dev/serial/by-id/`, `/dev/ttyUSB*` or `/dev/ttyACM*` |
+| `actuator_remove` | `name` | Remove an actuator and the bindings on its channels. **Privileged** |
+| `actuator_set` | `name`, `channel` (1-based), `state` (`open`/`closed`) | Drive a channel directly, bypassing bindings (wiring checks only). **Privileged** |
+| `bind` | `sbc_name`, `purpose`, `actuator`, `channel`, `mode` (`latch`/`momentary`), `active_when` (`closed` default, or `open`), `pulse_ms` (required for `momentary`), `sample_phase` (`none` default, `pre_power`, `post_power`), `notes` | Bind an actuator channel to (SBC, purpose). `pre_power` bindings are set to their desired state whenever labctl powers the board on |
+| `unbind` | `sbc_name`, `purpose` | Remove a binding |
+| `bindings_list` | `sbc_name` (optional) | List bindings, for one SBC or all |
+| `actuate` | `sbc_name`, `purpose` | Drive a latch binding to its active state (desired = asserted) |
+| `release` | `sbc_name`, `purpose` | Drive a latch binding away from active (desired = released) |
+| `press` | `sbc_name`, `purpose` | Pulse a momentary binding for its `pulse_ms` |
+| `actuation_status` | `sbc_name`, `purpose` | Desired vs. last state of a binding, with its actuator and channel |
+
+The privileged tools refuse unless `mcp.allow_admin_actuator_ops: true` is
+set in the config (default off).
+
+### Recovery
+
+| Tool | Parameters | Description |
+|------|------------|-------------|
+| `enter_recovery` | `sbc_name` | Probe the `recovery_mode` actuator, then power off, wait, assert the strap, power on. Aborts before any power change if the actuator is unreachable |
+| `exit_recovery` | `sbc_name` | The same sequence, releasing the strap (normal boot) |
+
+Both need a `recovery_mode` binding and a power plug on the SBC. The wait
+is the SBC's stored power-cycle delay (3.0 s if none is set).
+
 ### Claims (Exclusive Access Coordination)
 
 | Tool | Parameters | Description |
 |------|------------|-------------|
-| `claim_sbc` | `sbc_name`, `duration_minutes`, `reason`, `agent_name`, `context` | Claim exclusive access to an SBC |
+| `claim_sbc` | `sbc_name`, `duration_minutes` (default 30), `reason` (optional), `agent_name`, `context` | Claim exclusive access to an SBC. The duration must lie within `claims.min_duration_minutes`..`max_duration_minutes`; the MCP default is 30, not `claims.default_duration_minutes` |
 | `release_sbc` | `sbc_name` | Release your claim (this session, or your user over authenticated HTTP) |
 | `renew_sbc_claim` | `sbc_name`, `duration_minutes` | Extend an active claim's deadline |
 | `list_claims` | — | List all active claims across the lab |
@@ -478,7 +535,7 @@ structured JSON with an `"error"` field (claim conflicts).
 Prompts are reusable instruction templates that guide the AI through multi-step
 workflows.
 
-### `debug-sbc`
+### `debug_sbc`
 
 **Parameters:** `sbc_name`
 
@@ -488,7 +545,7 @@ Guides the assistant through debugging an unresponsive SBC:
 3. Run health check via `run_health_check` tool
 4. Take corrective action based on findings (power cycle, etc.)
 
-### `lab-report`
+### `lab_report`
 
 **Parameters:** (none)
 
@@ -511,7 +568,7 @@ or in error state, along with power information.
 
 > "My Jetson Nano isn't responding"
 
-Using the `debug-sbc` prompt, the assistant:
+Using the `debug_sbc` prompt, the assistant:
 1. Reads `lab://sbcs/jetson-nano-2` — sees status is "offline"
 2. Reads `lab://power/jetson-nano-2` — sees power is ON
 3. Calls `run_health_check(sbc_name="jetson-nano-2")` — ping fails
@@ -616,15 +673,18 @@ service's user, which may read files you can't:
 Tool annotations (`destructiveHint` etc.) are only hints a client may
 ignore, so the server enforces confirmation itself. By default every tool
 annotated destructive (power off/cycle, flashing, SD file changes,
-`serial_send`, deleting records, actuator/binding verbs, recovery, force
-release: 23 tools) is a two-step call:
+`sdwire_to_host`, `serial_send`, `boot_test`, deleting records and
+images, raw actuator and binding verbs, recovery, force release: 24
+tools) is a two-step call:
 
 1. Called normally, it **does nothing** and returns a plan:
    ```json
    {"status": "confirmation_required", "tool": "power_off",
-    "arguments": {"sbc_name": "pi-5-1"}, "confirm_token": "…",
-    "expires_in_seconds": 120, "message": "…"}
+    "action": "Power off SBC", "arguments": {"sbc_name": "pi-5-1"},
+    "confirm_token": "…", "expires_in_seconds": 120, "message": "…"}
    ```
+   `action` is the tool's title. `serial_send` adds a `will_do` object
+   with the exact bytes it will write (`bytes_hex`, `byte_count`).
 2. Called again with **the same arguments** plus `confirm_token`, it acts.
 
 Tokens are random, single-use, expire after 120 s, and are bound to the tool
@@ -633,7 +693,8 @@ are also bound to the user they were issued to. A token used for a different
 call or by a different user, used twice, or expired returns
 `confirmation_failed` and does nothing.
 These tools show an extra optional `confirm_token` parameter in their
-schema and say "DESTRUCTIVE: requires confirmation" in their description.
+schema, and their description ends with a note starting "DESTRUCTIVE. By
+default this requires confirmation".
 
 ```yaml
 mcp:
@@ -748,9 +809,23 @@ curl --fail-with-body -T build/sdcard.img \
   (`image_upload`, `image_delete`). The `images` table (schema v10)
   records each upload's user, size and SHA-256; `list_images` shows them.
 - Responses are JSON: `201` (new) or `200` (replaced) with `name`, `path`,
-  `size`, `sha256`; errors carry `error` and `message` (`401`, `403`
-  `not_owner`/`uploads_disabled`, `409` `exists`, `411`, `413`, `422`
-  `sha256_mismatch`, `507` `insufficient_space`).
+  `size`, `sha256`, `replaced`; errors carry `error` and `message`:
+
+  | Status | `error` |
+  |---|---|
+  | `400` | `invalid_name`, `invalid_sha256`, `invalid_length`, `length_mismatch` (body longer or shorter than `Content-Length`), `disconnected` |
+  | `401` | `unauthorized` (no valid API key, when auth is on) |
+  | `403` | `not_owner`, `uploads_disabled` |
+  | `409` | `exists` (add `?overwrite=1`), `not_a_file` |
+  | `411` | `length_required` |
+  | `413` | `too_large` |
+  | `422` | `sha256_mismatch` |
+  | `500` | `upload_dir_unavailable`, `upload_failed` |
+  | `507` | `insufficient_space` |
+
+  A rejected `Host` header gets a plain-text `421`, a rejected `Origin` a
+  plain-text `403`, as on `/mcp`. `delete_image` returns these errors
+  as `Error: <message>` text (an unknown name: `no image named …`).
 
 ## Troubleshooting
 
@@ -758,7 +833,7 @@ curl --fail-with-body -T build/sdcard.img \
 
 Check that the `mcp` package is installed:
 ```bash
-python -c "import mcp; print(mcp.__version__)"
+python -c "import importlib.metadata as m; print(m.version('mcp'))"
 ```
 
 ### Tools return "SBC not found"

@@ -21,17 +21,18 @@ Centralized management system for embedded development lab resources. Provides d
 7. Update `STATUS.md` at session start/end
 
 ## Current State
-All milestones (M1-M7) complete. Additional features: authentication (session-based web + API key), MCP server, serial device management, Kasa power strip support, HTTPS.
+All milestones (M1-M7) complete; Phase 0 and Phase 1 (safety) of the PyPI release are merged and deployed; next is P2 (PyPI release). Additional features: authentication (session-based web + API key), MCP server (stdio or HTTP with API-key auth and TLS, two-step confirmation for destructive tools, host path allowlist, image uploads), hardware claims enforced on every surface, activity stream, serial device management, Kasa power strip support, SDWire, USB relay actuators with per-board bindings (`pre_power` straps applied on every power-on path), HTTPS.
 
 ## Tech Stack
 - Python 3.10+
 - Click (CLI)
 - Flask (web/API)
-- SQLite (database, schema v3)
+- SQLite (database, schema v11)
 - ser2net (serial over TCP)
 - MCP SDK (AI integration via Model Context Protocol)
 - python-kasa (TP-Link Kasa smart plug/strip control)
 - sdwire (SD card multiplexer control — SDWire/SDWireC/SDWire3)
+- pyserial (USB relay actuators — LCUS-1 driver)
 - pytest (testing)
 
 ## Commands Reference
@@ -50,7 +51,7 @@ isort src/ tests/
 flake8 src/ tests/
 
 # Install with all extras
-pip install ".[web,mcp,kasa,sdwire]"
+pip install -e ".[dev,web,mcp,kasa,sdwire,actuators]"
 ```
 
 ## Key Architecture
@@ -61,4 +62,6 @@ pip install ".[web,mcp,kasa,sdwire]"
 - `src/labctl/health/` - Health checks, monitoring daemon, alerts
 - `src/labctl/serial/` - ser2net config, serial proxy, udev rules
 - `src/labctl/sdwire/` - SDWire SD card multiplexer control
+- `src/labctl/actuators/` - USB relay drivers (LCUS-1, mock) and binding runtime (pre_power straps, recovery composites)
+- `src/labctl/services.py` - systemd service checks (`labctl services`)
 - `src/labctl/mcp_server.py` - MCP server (resources, tools, prompts)

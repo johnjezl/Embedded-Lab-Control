@@ -7,26 +7,24 @@ is use-agnostic; specific behaviors (USB Force Recovery on a Jetson,
 boot-select strap on a board, simulated GPIO input, etc.) are layered
 on top via bindings.
 
-**Status:** Implemented (Phases 1–7); awaiting Phase 8 hardware validation
+**Status:** Merged (PR #4, Phases 1–7); `pre_power` on every power path
+(PR #37)
 **Source request:** Lab-day request, 2026-05-09
 **Target release:** v0.x
 **Motivating case:** Jetson Orin Nano USB Force Recovery (J14 9–10) without a physical jumper
 
-**Implementation note (2026-05-09):** Phases 1–7 land on the
-`feat/actuators` branch with 897/897 tests passing. Two CLI surfaces
-deviated from the spec sketch to avoid name conflicts with existing
-commands:
+**Implementation note:** the implemented surface differs from the
+original sketch; this document describes what was built. In
+particular:
 
-- `labctl assert` → `labctl bindings actuate` (avoids the Python
-  keyword AND the existing claim-related top-level verbs).
-- `labctl release` (binding) → `labctl bindings release` (avoids the
-  existing claim-`release` command).
-
-The verbs live under the `bindings` group, matching how
-`power on/off/cycle` is grouped. MCP tool names stay flat.
-
-Phase 8 (live hardware validation on a real Jetson Orin Nano + LCUS-1)
-is the only remaining piece before merge.
+- The operation verbs live under the `bindings` group:
+  `labctl bindings actuate|release|press|status` (top-level
+  `labctl release` releases a claim and `labctl status` is the SBC
+  overview). MCP tool names stay flat.
+- `labctl bind` takes the shape as separate, explicit flags
+  (`--mode`, `--active-when`, `--pulse-ms`, `--phase`); there are no
+  per-purpose defaults.
+- Channel indexes are 1-based.
 
 ---
 
@@ -79,32 +77,33 @@ User-facing verbs are per-purpose, not per-relay:
 ## Data model
 
 ```
-Actuator (lab-level)
-├── id: stable name, e.g. "usbrelay-rack1-a"
-├── kind: relay | gpio | …
-├── driver: lcus1_serial | numato_acm | hid_generic | sysfs_gpio | …
-├── transport: { device_path, vid, pid, serial_no }
-├── channels: [
-│     { index, label?, default_state: open|closed,
-│       last_state, last_changed_at, cycle_count }
-│   ]
-├── claimed_by: <agent_name>?
-└── health: { reachable, last_probe_at, last_probe_result }
+Actuator (table `actuators`)
+├── name: unique stable name, e.g. "usbrelay-rack1-a"
+├── kind: relay | gpio
+├── driver: lcus1_serial | numato_acm | hid_generic | sysfs_gpio
+│     (only lcus1_serial is implemented)
+├── transport: device_path, vid, pid, serial_no
+├── last_probe_at, last_probe_result
+└── channels (table `actuator_channels`, UNIQUE (actuator_id, channel_index)):
+      { channel_index (1-based), label?, default_state: open|closed
+        (default open), last_state, last_changed_at, cycle_count }
 
-Binding (use-level)
-├── id: "<target_type>:<target_id>:<purpose>"
-├── actuator_id, channel_index
-├── target_type: sbc | …
-├── target_id: SBC name (or other lab-resource name)
-├── purpose: predefined string (see below)
-├── shape:
-│     { mode: latch | momentary,
-│       active: closed | open,
-│       momentary_pulse_ms?: int,
-│       sample_phase: pre_power | post_power | none }
+Binding (table `bindings`)
+├── sbc_id: target SBC (bindings target SBCs only)
+├── purpose: free-form string (see below); UNIQUE (sbc_id, purpose)
+├── actuator_channel_id: UNIQUE — one binding per channel
+├── shape_mode: latch | momentary
+├── shape_active: closed | open
+├── momentary_pulse_ms: int (momentary only)
+├── sample_phase: pre_power | post_power | none   (default none)
 ├── desired_state: asserted | released | following_power
+│     (default released)
 └── notes: free text (wiring photo URL, polarity, etc.)
 ```
+
+Bindings are addressed by (SBC name, purpose) on every surface.
+Claims are SBC claims (see "SBC claim composition" below); actuators
+have no claim of their own.
 
 ### `desired_state` (persistent intent)
 
@@ -117,13 +116,17 @@ the operator *wants*. The two diverge when:
 - Power cycles consult `desired_state` to decide whether to re-assert
   a `pre_power` strap before applying power.
 
-`assert sbc <purpose>` sets `desired_state = asserted`. `release` sets
-`desired_state = released`. `power_on` and `power_cycle` read
-`desired_state` for any binding with `sample_phase = pre_power` and
-drive the actuator to the appropriate physical state before applying
-power.
+`labctl bindings actuate <sbc> <purpose>` sets `desired_state =
+asserted`; `labctl bindings release` sets `desired_state = released`.
+Every power-on path reads `desired_state` for any binding with
+`sample_phase = pre_power` and drives the actuator to the appropriate
+physical state before applying power (see "Power-cycle integration").
 
 ### Channel count: hint vs. enumeration
+
+*Partly deferred:* only `lcus1_serial` exists, so `--channels`
+(default 1) is always taken as given; the enumeration check below
+arrives with the first enumerating driver.
 
 `--channels N` at provisioning time is a *hint*, used only by drivers
 that cannot enumerate (e.g. LCUS-1, which has no protocol query for
@@ -142,9 +145,16 @@ declaration the driver trusts.
 
 ---
 
-## Purposes (initial enum)
+## Purposes (recommended names)
 
-| purpose          | shape default      | notes                                                                             |
+The `purpose` column accepts any string; these names are the
+recommended set (`KNOWN_PURPOSES` in `labctl.core.models`). The shape
+column is the *typical* wiring, not a default: `labctl bind` takes
+`--mode` (required), `--active-when` (default `closed`), `--pulse-ms`
+(required for momentary) and `--phase` (default `none`) explicitly for
+every purpose, so a strap must be bound with `--phase pre-power`.
+
+| purpose          | typical shape      | notes                                                                             |
 |------------------|--------------------|-----------------------------------------------------------------------------------|
 | `recovery_mode`  | latch / pre-power  | Tegra USB Force Recovery (J14 9-10), Pi BCM bootmode straps, etc.                 |
 | `boot_select`    | latch / pre-power  | A/B slot strap, BOOT0 line on STM32, etc.                                         |
@@ -154,20 +164,18 @@ declaration the driver trusts.
 | `usb_power_break`| latch / any        | Cut Vbus to a downstream USB device.                                              |
 | `dut_input`      | latch or momentary | Generic "close two pins together" — for simulating button presses, GPIOs, etc.    |
 
-Adding a purpose is a config + CLI label addition, not a schema
-migration.
+Using a new purpose needs no schema migration or code change.
 
 ### Wiring polarity validation
 
 At binding creation, refuse a config where `default_state == active`.
 That would mean "the device boots in this state every cold boot,"
 which for a `recovery_mode` binding means "always boot in recovery" —
-almost certainly a wiring mistake. The error:
+almost certainly a wiring mistake. The CLI error:
 
 ```
-Error: 'recovery_mode' binding has default_state=closed and active=closed.
-       This means the device would always boot in recovery.
-       Verify wiring, or pass --shape latch:open-active.
+Error: binding has default_state=open and active=open; the device would
+always be asserted. Verify wiring or pass --active-when closed.
 ```
 
 ---
@@ -245,33 +253,41 @@ labctl actuator add usbrelay-rack1-a \
     --channels 1
 labctl actuator list
 labctl actuator probe usbrelay-rack1-a
-labctl actuator set usbrelay-rack1-a 0 closed       # raw, bypasses bindings
+labctl actuator set usbrelay-rack1-a 1 closed       # raw, bypasses bindings
 labctl actuator remove usbrelay-rack1-a
 ```
 
 MCP equivalents: `actuator_add`, `actuator_list`, `actuator_probe`,
-`actuator_set`, `actuator_remove`. **MCP `actuator_*` tools require
-admin scope** so agents going through MCP can't bypass bindings.
+`actuator_set`, `actuator_remove`. `actuator_add`, `actuator_remove`
+and `actuator_set` are refused unless `mcp.allow_admin_actuator_ops:
+true` is set in the config (default `false`), so agents going through
+MCP can't provision relays or bypass bindings. `actuator_list` and
+`actuator_probe` are not gated.
 
-### Binding (admin)
+### Binding
 
 ```
 labctl bind jetson-nano-2 recovery_mode \
-    --actuator usbrelay-rack1-a --channel 0 \
-    --shape latch:closed-active --sample-phase pre-power
+    --actuator usbrelay-rack1-a --channel 1 \
+    --mode latch --active-when closed --phase pre-power
+labctl bind rpi-5-1 power_button \
+    --actuator usbrelay-rack1-b --channel 1 \
+    --mode momentary --pulse-ms 200
 labctl bindings list [--target jetson-nano-2]
 labctl unbind jetson-nano-2 recovery_mode
 ```
 
-MCP: `bind`, `unbind`, `bindings_list`.
+MCP: `bind`, `unbind`, `bindings_list`. These are not behind the
+`allow_admin_actuator_ops` gate; like the other board-changing tools
+they are claim-checked.
 
 ### Operation (user agent)
 
 ```
-labctl actuate jetson-nano-2 recovery_mode      # = assert; sets desired=asserted
-labctl release jetson-nano-2 recovery_mode      # sets desired=released
-labctl press   jetson-nano-2 power_button       # momentary pulse
-labctl status  jetson-nano-2 recovery_mode      # current state + desired
+labctl bindings actuate jetson-nano-2 recovery_mode  # sets desired=asserted
+labctl bindings release jetson-nano-2 recovery_mode  # sets desired=released
+labctl bindings press   rpi-5-1 power_button         # momentary pulse
+labctl bindings status  jetson-nano-2 recovery_mode  # current state + desired
 ```
 
 MCP: `actuate`, `release`, `press`, `actuation_status`.
@@ -286,36 +302,37 @@ latch binding. Calling the wrong verb against the binding's declared
 shape is an error, not a silent default:
 
 ```
-$ labctl press jetson-nano-2 recovery_mode
-Error: 'recovery_mode' is bound as latch (not momentary).
-       Use 'actuate' / 'release' for sustained state, or rebind with
-       --shape momentary:200ms if you want press semantics.
+$ labctl bindings press jetson-nano-2 recovery_mode
+Error: 'press' requires a momentary binding; 'recovery_mode' is bound as
+latch. Use 'actuate'/'release' for latch bindings, or rebind with
+--mode momentary if you want press semantics.
 ```
 
 Rationale: silent fallback (e.g. "treat press-on-latch as a 200 ms
 pulse") leaves the operator with a recovery_mode strap held when they
-thought they'd released it. The 200 ms momentary default applies only
-when a binding is *created* with `--shape momentary` and no explicit
-duration.
+thought they'd released it. There is no default pulse length: a
+momentary binding is created with an explicit `--pulse-ms`.
 
 ### Composite, power-aware operations
 
 The operations that justify the relay install:
 
 ```
-labctl enter_recovery jetson-nano-2
-    # 0. probe all touched actuators (read-only)        ← pre-flight
+labctl enter-recovery jetson-nano-2
+    # 0. probe the recovery_mode actuator, then check every pre_power
+    #    relay of this board and of boards sharing its outlet
+    #    (read-only)                                      ← pre-flight
     # 1. power_off
-    # 2. sleep(power.min_off_ms)
+    # 2. sleep(power_cycle_delay_seconds, 3.0 s if unset)
     # 3. actuate recovery_mode  → desired=asserted
-    # 4. power_on
-    # 5. wait_for usb_apx_device                        (optional)
-labctl exit_recovery jetson-nano-2
-    # 1. power_off
-    # 2. sleep(power.min_off_ms)
-    # 3. release recovery_mode  → desired=released
-    # 4. power_on
+    # 4. apply pre_power bindings (this board and outlet sharers)
+    # 5. power_on
+labctl exit-recovery jetson-nano-2
+    # same, with step 3 = release recovery_mode → desired=released
 ```
+
+Waiting for the USB APX device after power-on is not part of the
+composite (deferred with the APX heuristics below).
 
 MCP: `enter_recovery`, `exit_recovery`. `reflash_secure` is **not** in
 v1 — too opinionated about BSP layout.
@@ -329,12 +346,24 @@ power flows:
   applied. `power_on` / `power_cycle` consult bindings' `desired_state`
   and drive the actuator accordingly before applying power. This holds
   for every path that powers a board on: CLI `power on`/`cycle`,
-  `power-all on`, `boot-test`, and the cycle or power-on after `sdwire
-  flash`/`update`; the matching MCP tools; and the web UI and REST API
+  `power-all on`, `boot-test`, the cycle or power-on after `sdwire
+  flash`/`update`, and `enter-recovery`/`exit-recovery`; the matching
+  MCP tools; and the web UI and REST API
   (`labctl.actuators.runtime.power_on_with_bindings` /
-  `power_cycle_with_bindings`). A cycle checks the relays before
-  power-off, so one that can't be opened leaves the board running.
-- `post_power` — actuator is driven after the device is up. *Deferred.*
+  `power_cycle_with_bindings`).
+  - **Outlet sharers.** Switching a plug outlet powers every board on
+    it, so the `pre_power` bindings of every SBC sharing the outlet
+    are checked and applied too (`boards_on_plug`).
+  - **Checked before switching.** Before any power change, every relay
+    those bindings need is resolved and probed (read-only) and its
+    channel checked for an in-flight verb (`check_power_on`). A relay
+    that can't be opened or is busy refuses the operation with nothing
+    switched; for a cycle (and a flash/update with a reboot), the board
+    keeps running. A strap that fails *after* power-off leaves the
+    board off and the error says so; a board is never powered on
+    without its straps.
+- `post_power` — actuator is driven after the device is up. *Deferred:*
+  the value is accepted and stored, but no runtime path acts on it.
 - `none` — no automatic coupling; user drives explicitly.
 
 A target with `pre_power` bindings whose `desired_state == asserted`
@@ -352,15 +381,16 @@ lets `power_cycle` "just do the right thing" without a separate
 Locks are non-blocking with a clear "channel busy" error rather than
 queueing — agents should retry or back off explicitly.
 
-### SBC claim composition (with non-blocking actuator claims)
+### SBC claim composition (snapshot check)
 
-Claiming an SBC implicitly *attempts* to acquire any actuator channels
-its bindings reference. If any channel is busy, the SBC claim
-**fails immediately** with a "shared actuator busy on <channel>"
-message instead of blocking. This avoids the lock-ordering deadlock
-where two SBCs share a multi-channel relay.
-
-Releasing the SBC releases all linked channels.
+Claiming an SBC takes a *snapshot* of the channel locks its bindings
+reference (`check_no_channel_busy_for_sbc`): each lock is tried
+without blocking and released straight away. If any channel is busy
+(a verb in flight), the claim **fails immediately** with an "actuator
+channel … is busy" error instead of blocking. No channel lock is held
+for the life of the claim; ownership across processes comes from the
+DB-backed SBC claim, which binding verbs and actuator operations check
+(including claims on boards sharing the relay).
 
 ### Default-safe drive on daemon start (gated by `desired_state`)
 
@@ -391,7 +421,8 @@ confusingly. Three guard rails:
    abort before any power transition.
 2. **Write-or-abort transitions.** Every USB write returns
    `WriteOutcome`. Anything other than `OK` aborts the composite,
-   leaves power off, and emits an "actuator state uncertain" event.
+   leaves power off, and records the failed write (`ok=False`, with
+   the outcome) in the activity log.
    The composite is structured so aborting between any two steps
    leaves a *safe* state: power off, strap state irrelevant.
 3. **`desired_state` survives the disconnect.** If the operator's
@@ -407,8 +438,10 @@ and retry. No silent half-recoveries.
 `actuator probe` is side-effect-free. For LCUS-1 (write-only),
 probe = "open the serial port, verify the device descriptor, do not
 send a state-changing command." For Numato, probe = "read current
-channel state via `relay read`." Surfaces in the actuator's `health`
-field and reported by `run_health_check` alongside SBC checks.
+channel state via `relay read`." The result is stored in the
+actuator's `last_probe_at` / `last_probe_result`. *Deferred:* health
+checks (`labctl health-check`, MCP `run_health_check`, the monitor
+daemon) do not probe relays.
 
 ### Wear telemetry (deferred)
 
@@ -441,9 +474,8 @@ power-cycle timings for normal vs. recovery flows.
 - Existing `power_on` / `power_off` / `power_cycle` keep working
   unchanged. They grow a "consult bindings with `pre_power` shape"
   step that is a no-op when no bindings exist on the SBC.
-- Existing `claim_sbc` / `release_sbc` grow the
-  "auto-acquire/release linked actuator channels" behavior with
-  non-blocking semantics.
+- Existing `claim_sbc` grows a non-blocking snapshot check of the
+  linked actuator channels (see "SBC claim composition").
 - New CLI/MCP verbs are additive; nothing in today's surface is
   renamed or removed.
 - Schema migration v7 → v8 adds `actuators`, `actuator_channels`, and
@@ -461,14 +493,14 @@ The narrowest set that delivers the Jetson case end-to-end:
 | `lcus1_serial` driver only | `numato_acm`, `hid_generic`, `sysfs_gpio` drivers |
 | CLI: `actuator add/list/probe/remove/set` | Web UI for actuator state |
 | CLI: `bind/unbind/bindings list` | `reflash_secure` |
-| CLI: `actuate/release/press/status` | `post_power` sample_phase |
-| `enter_recovery` / `exit_recovery` composites | Hardware fault detection (APX-not-seen heuristics) |
+| CLI: `bindings actuate/release/press/status` | `post_power` sample_phase (stored, not acted on) |
+| `enter-recovery` / `exit-recovery` composites | Hardware fault detection (APX-not-seen heuristics) |
 | `pre_power` sample_phase | `bind test` validation harness |
-| SBC claim auto-acquires linked channels (non-blocking) | Multi-channel coordinated bindings |
+| SBC claim snapshot-checks linked channels (non-blocking) | Multi-channel coordinated bindings |
 | Daemon-start default-safe drive gated by `desired_state` | Per-channel cycle-count thresholds |
 | Pre-flight probe + WriteOutcome abort semantics | |
 | Verb/shape congruence enforcement | |
-| Wiring-polarity validation at bind time | |
+| Wiring-polarity validation at bind time | Relay probes in health checks |
 
 That's ~60% of the original spec, all of the Jetson value, none of the
 speculative scaffolding. Each deferred item has a clear trigger
@@ -481,9 +513,9 @@ condition for when it should ship.
 - **Power timing column name.** Reuse `power_cycle_delay_seconds` or
   add a parallel `min_off_ms_for_recovery`? Default to reuse until a
   target shows the two diverging.
-- **Binding ID format.** `<target_type>:<target_id>:<purpose>` is
-  human-readable but constrains target IDs (no colons in SBC names).
-  Acceptable today (no SBC has a colon), revisit if it bites.
+- **Binding identity.** Resolved: bindings have an integer id and are
+  addressed by (SBC name, purpose), UNIQUE in the schema; no string
+  binding ID was introduced.
 - **Multi-target actuator channels.** Spec assumes 1 channel ↔ 1
   binding. A channel bound to two targets is currently unrepresentable
   — fine for v1, may need revisiting if rack power-button arrays land.
