@@ -20,6 +20,7 @@ and, in Phase 7, the MCP server.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from contextlib import contextmanager
@@ -624,6 +625,12 @@ def check_pre_power_actuators(manager, sbc) -> None:
             DesiredState.RELEASED,
         ):
             continue
+        if _get_channel_lock(binding.actuator_channel_id).locked():
+            raise PrePowerCheckError(
+                f"{binding.purpose!r} on {sbc.name!r}: channel "
+                f"{binding.actuator_channel_id} is busy (another operation "
+                f"in flight)"
+            )
         if actuator.id in seen:
             continue
         seen.add(actuator.id)
@@ -690,26 +697,66 @@ def apply_pre_power_bindings(manager, sbc) -> None:
             )
 
 
-def _apply_pre_power(manager, sbc) -> None:
-    """apply_pre_power_bindings, with a busy channel (another verb in
-    flight in this process) reported as an :class:`ActuationError` like
-    any other strap failure."""
+def boards_on_plug(manager, sbc) -> list:
+    """``sbc`` and every other SBC on its plug outlet: switching the plug
+    powers them all, so each one's straps must be set first."""
+    boards = [sbc]
+    plug = sbc.power_plug
+    if plug is None:
+        return boards
+    for name in manager.sbcs_sharing_hardware(
+        plug=(plug.plug_type.value, plug.address, plug.plug_index)
+    ):
+        if name != sbc.name:
+            other = manager.get_sbc_by_name(name)
+            if other is not None:
+                boards.append(other)
+    return boards
+
+
+def validate_cycle_delay(delay_s) -> None:
+    """Raise ValueError unless ``delay_s`` is a finite number >= 0."""
+    if (
+        isinstance(delay_s, bool)
+        or not isinstance(delay_s, (int, float))
+        or not math.isfinite(delay_s)
+        or delay_s < 0
+    ):
+        raise ValueError(
+            f"delay must be a non-negative number of seconds, not {delay_s!r}"
+        )
+
+
+def _check_pre_power(manager, boards) -> None:
+    for board in boards:
+        check_pre_power_actuators(manager, board)
+
+
+def _apply_pre_power(manager, boards) -> None:
+    """apply_pre_power_bindings for each board, with a busy channel
+    (another verb in flight in this process) reported as an
+    :class:`ActuationError` like any other strap failure."""
     try:
-        apply_pre_power_bindings(manager, sbc)
+        for board in boards:
+            apply_pre_power_bindings(manager, board)
     except ChannelBusyError as e:
         raise ActuationError(str(e)) from e
 
 
 def power_on_with_bindings(manager, sbc, controller) -> bool:
-    """Drive ``sbc``'s pre_power bindings, then power it on.
+    """Drive the pre_power bindings of ``sbc`` (and of any board sharing
+    its plug outlet), then power it on.
 
     Every path that powers a board on goes through here (or
     :func:`power_cycle_with_bindings`) so a strap is in its desired state
-    whichever interface did it (issue #36). Raises :class:`ActuationError`
-    without switching power if a binding can't be applied; returns the
-    controller's result otherwise.
+    whichever interface did it (issue #36). The relays are checked before
+    any is driven; :class:`ActuationError` (a
+    :class:`PrePowerCheckError` from the check) means power wasn't
+    switched. Returns the controller's result otherwise.
     """
-    _apply_pre_power(manager, sbc)
+    boards = boards_on_plug(manager, sbc)
+    _check_pre_power(manager, boards)
+    _apply_pre_power(manager, boards)
     return controller.power_on()
 
 
@@ -721,28 +768,25 @@ def power_cycle_with_bindings(
     *,
     sleep_fn=None,
 ) -> bool:
-    """Power-cycle ``sbc``: off, wait, drive pre_power bindings, on.
+    """Power-cycle ``sbc``: off, wait, drive pre_power bindings (its own
+    and those of any board sharing its plug outlet), on.
 
     Before anything is switched: a bad ``delay_s`` raises ValueError, and
-    a pre_power actuator that can't be opened raises
+    a pre_power relay that can't be opened or is busy raises
     :class:`PrePowerCheckError`, so the board keeps running. After
     power-off, a strap that can't be applied raises :class:`ActuationError`
-    saying the board is off (it is not powered on without its strap), and
-    a plug that won't switch off raises RuntimeError. Returns the result
-    of power_on.
+    saying the board was left off (it is not powered on without its
+    strap). A plug failure raises RuntimeError. Returns the result of
+    power_on.
     """
-    if (
-        isinstance(delay_s, bool)
-        or not isinstance(delay_s, (int, float))
-        or not delay_s >= 0
-    ):
-        raise ValueError(f"delay must be a non-negative number, not {delay_s!r}")
-    check_pre_power_actuators(manager, sbc)
+    validate_cycle_delay(delay_s)
+    boards = boards_on_plug(manager, sbc)
+    _check_pre_power(manager, boards)
     if not controller.power_off():
         raise RuntimeError(f"power_off failed on {sbc.name!r}")
     (sleep_fn or time.sleep)(delay_s)
     try:
-        _apply_pre_power(manager, sbc)
+        _apply_pre_power(manager, boards)
     except ActuationError as e:
         raise ActuationError(f"{e}; {sbc.name!r} was left powered off") from e
     return controller.power_on()

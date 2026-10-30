@@ -2,6 +2,7 @@
 (issue #36), and refuses without switching power when a relay can't be
 opened."""
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -55,7 +56,7 @@ def lab(tmp_path, monkeypatch):
     )
     manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
 
-    driver = MockRelayDriver(channel_count=1)
+    driver = MockRelayDriver(channel_count=2)
     monkeypatch.setattr("labctl.actuators.runtime.get_driver", lambda *a, **kw: driver)
     monkeypatch.setattr("labctl.actuators.runtime.time.sleep", lambda s: None)
 
@@ -120,6 +121,39 @@ class TestCli:
         assert lab.events[0] == "off"
         _strap_closed_before_on(lab)
 
+    def test_power_cycle_nan_delay_is_one_error_line(self, lab):
+        result = lab.run("power", "cycle", "board", "--delay", "nan", "--yes")
+        assert result.exit_code == 1
+        assert "Error: delay must be a non-negative number" in result.output
+        assert "Traceback" not in result.output
+        lab.controller.power_off.assert_not_called()
+
+    def test_power_on_sets_straps_of_boards_sharing_the_plug(self, lab):
+        """The outlet powers every board on it, so a board sharing it has
+        its strap set too, before power comes on."""
+        manager = lab.manager
+        other = manager.create_sbc(name="board-b", project="test")
+        manager.assign_power_plug(other.id, PlugType.TASMOTA, "10.0.0.5", 1)
+        actuator = manager.get_actuator_by_name("relay-a")
+        channel2 = manager.add_actuator_channel(
+            actuator.id, 2, default_state=ChannelState.OPEN
+        )
+        b2 = manager.create_binding(
+            other.id,
+            "recovery_mode",
+            channel2.id,
+            shape_mode=ShapeMode.LATCH,
+            shape_active=ChannelState.CLOSED,
+            sample_phase=SamplePhase.PRE_POWER,
+        )
+        manager.update_binding_desired_state(b2.id, DesiredState.ASSERTED)
+
+        result = lab.run("power", "on", "board")
+        assert result.exit_code == 0, result.output
+        ((_, log),) = [e for e in lab.events if isinstance(e, tuple)]
+        assert STRAP_CLOSED in log
+        assert (2, True, WriteOutcome.OK) in log
+
     def test_power_all_on(self, lab):
         result = lab.run("power-all", "on", "--yes")
         assert result.exit_code == 0, result.output
@@ -149,6 +183,12 @@ class TestCli:
         assert "2/2" in result.output
         assert lab.events.count("off") == 2
         _strap_closed_before_on(lab)
+
+    def test_boot_test_plug_on_failure_fails_the_run(self, lab, console):
+        lab.controller.power_on.side_effect = lambda: False
+        result = lab.run("boot-test", "board", "-e", "login", "--no-deploy", "-r", "1")
+        assert "0/1" in result.output
+        assert "power_on failed on 'board'" in result.output
 
     def test_boot_test_unopenable_relay_fails_each_run(self, unopenable, console):
         """Like a plug failure: each run is recorded as failed, with why."""
@@ -192,7 +232,7 @@ class TestCli:
         image.write_bytes(b"img")
         result = unopenable.run("sdwire", "flash", "board", str(image), "--yes")
         assert result.exit_code == 1
-        assert "Error: flashed, but not powered back on: actuator 'relay-a'" in (
+        assert "Error: flashed, but the power cycle failed: actuator 'relay-a'" in (
             result.output
         )
         unopenable.controller.power_on.assert_not_called()
@@ -229,7 +269,7 @@ class TestCli:
             "--yes",
         )
         assert result.exit_code == 1
-        assert "Error: files updated, but not powered back on: actuator" in (
+        assert "Error: files updated, but the power cycle failed: actuator" in (
             result.output
         )
         unopenable.controller.power_on.assert_not_called()
@@ -318,10 +358,14 @@ class TestWeb:
         unopenable.controller.power_on.assert_not_called()
         unopenable.controller.power_off.assert_not_called()
 
-    @pytest.mark.parametrize("delay", ["5", -1, None, True])
+    @pytest.mark.parametrize("delay", ["5", -1, None, True, "Infinity"])
     def test_api_bad_delay_refused_before_power_off(self, lab, client, delay):
+        if delay == "Infinity":  # the JSON token, which Python parses to inf
+            body = '{"action": "cycle", "delay": Infinity}'
+        else:
+            body = json.dumps({"action": "cycle", "delay": delay})
         resp = client.post(
-            "/api/sbcs/board/power", json={"action": "cycle", "delay": delay}
+            "/api/sbcs/board/power", data=body, content_type="application/json"
         )
         assert resp.status_code == 400
         assert "delay" in resp.get_json()["error"]

@@ -104,14 +104,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   the web UI and REST power actions, and CLI `power-all on`, `boot-test`
   and the reboot after `sdwire flash`/`update` used to switch power and
   leave the strap however it was last set, so a board could boot in or
-  out of recovery depending on which interface turned it on. A relay that
-  can't be opened now stops these before power is switched (cycles check
-  before powering off): MCP and the CLI say so in one line, the REST API
+  out of recovery depending on which interface turned it on. Boards that
+  share the plug outlet have their straps set too, since the outlet
+  powers them all. A relay that can't be opened, or whose channel is busy
+  with another operation, now stops these before power is switched
+  (cycles check before powering off): MCP and the CLI say so in one line, the REST API
   returns it as a 500 error, the web UI flashes it, after a flash or file
-  update the tools report that the board wasn't powered back on, and
+  update the tools report that the power cycle failed and why, and
   `boot-test` records the run as failed. A strap that fails after
   power-off leaves the board off, and the error says so. A REST power
-  cycle with a `delay` that isn't a non-negative number is now refused
+  cycle with a `delay` that isn't a finite non-negative number is now refused
   with a 400 before power-off (it used to switch the board off, then
   fail).
 - A relay that labctl can't open no longer crashes `power on`/`power

@@ -1007,7 +1007,10 @@ class TestRelayOpenFailure:
         )
         assert result.exit_code == 1
         assert isinstance(result.exception, SystemExit)
-        assert f"Error: {self.MESSAGE}" in result.output
+        assert (
+            "Error: actuator 'relay-1' for 'recovery_mode' can't be used: "
+            f"{self.MESSAGE}"
+        ) in result.output
         assert calls == []  # never powered on without the strap
 
     def test_actuator_set(self, runner, lab, monkeypatch):
