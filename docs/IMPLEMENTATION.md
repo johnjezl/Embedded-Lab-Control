@@ -901,7 +901,7 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
 - ☐ #41 Code gaps from the audit. Behaviour part (not merged yet):
   `serial.base_tcp_port` (`ser2net generate --install` saves missing TCP
   ports with it), `ser2net.config_file` honoured by `--install` (atomic
-  write), `health.status_retention_days` pruning (0 keeps all; schema v12
+  where possible), `health.status_retention_days` pruning (keeps what uptime needs; 0 keeps all; schema v12
   index), `claims.require_agent_name` enforced (no shared name over
   unauthenticated HTTP), MCP `claim_sbc` duration default from config, `post_power`
   refused, `ports --all`, unused proxy/health keys removed, no-terminal

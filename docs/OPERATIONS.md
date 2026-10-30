@@ -246,7 +246,7 @@ exactly like the commands they stand for.
 | `sdwire remove` | destructive | yes | Deletes a record |
 | `sdwire unassign` | destructive | yes | Deletes an association |
 | `sdwire update` | destructive | yes | Copies/renames/deletes files on the card; `--dry-run`; power-off and no-plug rule as `sdwire flash` |
-| `ser2net generate` | system-write |  | Only with `--install`: saves a TCP port for any port without one, then atomically replaces `ser2net.config_file` (default `/etc/ser2net.yaml`), refusing a symlink or hard link there. Otherwise writes stdout or the `-o` file |
+| `ser2net generate` | system-write |  | Only with `--install`: saves a TCP port for any port without one, then writes `ser2net.config_file` (default `/etc/ser2net.yaml`), atomically when it can create files in that directory and otherwise in place, refusing a symlink or hard link there. Otherwise writes stdout or the `-o` file |
 | `ser2net reload` | system-write |  | Restarts ser2net: drops every live console session |
 | `serial add` | db-write |  |  |
 | `serial capture` | shared-resource |  | Holds a ser2net session; sends nothing |

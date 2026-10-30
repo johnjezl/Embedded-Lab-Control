@@ -3368,9 +3368,10 @@ def ser2net_group() -> None:
     "--install",
     is_flag=True,
     help=(
-        "Write the config to ser2net.config_file (default /etc/ser2net.yaml), "
-        "replacing it atomically; refuses a symlink or hard link there. "
-        "Saves a TCP port for any port that has none first."
+        "Write the config to ser2net.config_file (default /etc/ser2net.yaml): "
+        "atomically when labctl can create files in its directory, otherwise "
+        "rewritten in place; refuses a symlink or hard link there. Saves a "
+        "TCP port for any port that has none first."
     ),
 )
 @click.pass_context
