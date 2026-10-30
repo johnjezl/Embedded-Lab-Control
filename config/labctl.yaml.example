@@ -100,13 +100,17 @@ ser2net:
 #   # Recommended when several agents share the lab. Needs claims
 #   # enabled.
 #   require_claim: false
-#   # Claim durations, in whole minutes (out-of-range values are clamped).
+#   # Claim durations, in whole minutes. A claim asking for a duration
+#   # outside min..max is refused; inconsistent values here are corrected
+#   # at load, with a warning.
 #   default_duration_minutes: 30
 #   min_duration_minutes: 1
 #   max_duration_minutes: 1440
 #   # An expired claim stays its holder's for this long before it is freed.
 #   grace_period_seconds: 60
-#   # `labctl claims expire` prunes released claims older than this.
+#   # Released claims older than this are pruned by `labctl claims expire`
+#   # and by the MCP server's periodic sweep (which also prunes activity
+#   # events older than 30 days; that age isn't configurable).
 #   auto_prune_released_after_days: 30
 
 # Web server SSL/TLS (disabled by default, serves HTTP)
@@ -159,8 +163,8 @@ mcp:
   # allowed_origins: ["https://lab.example.com"]
   # Security gate: actuator_add / actuator_remove / actuator_set (raw relay
   # access that bypasses bindings) are refused over MCP unless this is
-  # true. Default false. Write an unquoted true/false: a quoted string such
-  # as "false" currently counts as on.
+  # true (a YAML boolean; any other value keeps them off, with a warning).
+  # Default false.
   # allow_admin_actuator_ops: false
 
 # SQLite busy-wait when another process holds a write lock (seconds).

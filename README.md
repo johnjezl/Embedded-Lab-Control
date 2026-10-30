@@ -61,8 +61,16 @@ from the adapters you register:
 ```bash
 labctl serial discover                 # find adapters and their USB paths
 labctl serial add sbc1-console 1-10.1.3
-labctl serial udev --install --reload  # write /etc/udev/rules.d/99-lab-serial.rules
+labctl serial udev > 99-lab-serial.rules   # generate the rules
+sudo install -m 644 99-lab-serial.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
+
+The devices are `root:dialout 0660`: join `dialout` to open them directly
+(`sudo usermod -aG dialout $USER`, then log in again). On a system-wide
+install, `install-services.sh` makes the rules file writable by the
+`labctl` group, and `labctl serial udev --install --reload` updates it
+without `sudo`.
 
 For a shared, system-wide install with systemd services, see
 [Systemd Services](#systemd-services).
@@ -258,7 +266,7 @@ the point here is to allow SDWire workflows without granting broader root access
 | `labctl plug remove <sbc>` | Remove the plug assignment |
 | `labctl power on <sbc>` | Turn on (sets pre_power relays first; see below) |
 | `labctl power off <sbc>` | Turn off |
-| `labctl power cycle <sbc> [--delay N] [--dry-run]` | Off, wait, set pre_power relays, on. The delay is 0–86400 s; the default and minimum are the SBC's `--cycle-delay`, otherwise 3 s. |
+| `labctl power cycle <sbc> [--delay N] [--dry-run]` | Off, wait, set pre_power relays, on. The delay is at most 86400 s; the default and minimum are the SBC's `--cycle-delay`, otherwise 3 s (smaller values are raised to it). |
 | `labctl power status <sbc>` | Check power state |
 | `labctl power-all on/off` | Control all SBCs (claimed boards are skipped) |
 
