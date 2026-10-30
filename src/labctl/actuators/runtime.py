@@ -20,7 +20,6 @@ and, in Phase 7, the MCP server.
 from __future__ import annotations
 
 import logging
-import math
 import threading
 import time
 from contextlib import contextmanager
@@ -615,7 +614,7 @@ def check_pre_power_actuators(manager, sbc) -> None:
         # Resolved first, as apply_pre_power_bindings does, so a binding
         # to a missing channel fails here rather than after power-off.
         try:
-            actuator, _ = _resolve(manager, binding)
+            actuator, channel = _resolve(manager, binding)
         except PrePowerCheckError:
             raise
         except ActuationError as e:
@@ -625,11 +624,11 @@ def check_pre_power_actuators(manager, sbc) -> None:
             DesiredState.RELEASED,
         ):
             continue
-        if _get_channel_lock(binding.actuator_channel_id).locked():
+        if _get_channel_lock(channel.id).locked():
             raise PrePowerCheckError(
-                f"{binding.purpose!r} on {sbc.name!r}: channel "
-                f"{binding.actuator_channel_id} is busy (another operation "
-                f"in flight)"
+                f"actuator {actuator.name!r} channel {channel.channel_index} "
+                f"for {binding.purpose!r} is busy (another operation in "
+                f"flight)"
             )
         if actuator.id in seen:
             continue
@@ -714,22 +713,54 @@ def boards_on_plug(manager, sbc) -> list:
     return boards
 
 
+MAX_CYCLE_DELAY_SECONDS = 3600.0
+
+
 def validate_cycle_delay(delay_s) -> None:
-    """Raise ValueError unless ``delay_s`` is a finite number >= 0."""
-    if (
-        isinstance(delay_s, bool)
-        or not isinstance(delay_s, (int, float))
-        or not math.isfinite(delay_s)
-        or delay_s < 0
-    ):
+    """Raise ValueError unless ``delay_s`` is a number of seconds from 0
+    to :data:`MAX_CYCLE_DELAY_SECONDS` (time.sleep can't take much more,
+    and a cycle validates before it switches anything)."""
+    try:
+        ok = (
+            not isinstance(delay_s, bool)
+            and isinstance(delay_s, (int, float))
+            and 0 <= float(delay_s) <= MAX_CYCLE_DELAY_SECONDS
+        )
+    except OverflowError:  # an int too large for a float
+        ok = False
+    if not ok:
         raise ValueError(
-            f"delay must be a non-negative number of seconds, not {delay_s!r}"
+            f"delay must be a number of seconds from 0 to "
+            f"{MAX_CYCLE_DELAY_SECONDS:g}, not {delay_s!r}"
         )
 
 
-def _check_pre_power(manager, boards) -> None:
+def check_power_on(manager, sbc) -> list:
+    """Check the pre_power relays of ``sbc`` and of every board sharing
+    its plug outlet; return those boards. Raises
+    :class:`PrePowerCheckError` (naming a sharer) before anything is
+    switched."""
+    boards = boards_on_plug(manager, sbc)
     for board in boards:
-        check_pre_power_actuators(manager, board)
+        try:
+            check_pre_power_actuators(manager, board)
+        except PrePowerCheckError as e:
+            if board is sbc:
+                raise
+            raise PrePowerCheckError(
+                f"{e} ({board.name!r} shares {sbc.name!r}'s power outlet)"
+            ) from e
+    return boards
+
+
+def _left_off(sbc, boards) -> str:
+    others = [b.name for b in boards if b is not sbc]
+    if not others:
+        return f"{sbc.name!r} was left powered off"
+    return (
+        f"{sbc.name!r} and the boards sharing its outlet "
+        f"({', '.join(repr(n) for n in others)}) were left powered off"
+    )
 
 
 def _apply_pre_power(manager, boards) -> None:
@@ -754,8 +785,7 @@ def power_on_with_bindings(manager, sbc, controller) -> bool:
     :class:`PrePowerCheckError` from the check) means power wasn't
     switched. Returns the controller's result otherwise.
     """
-    boards = boards_on_plug(manager, sbc)
-    _check_pre_power(manager, boards)
+    boards = check_power_on(manager, sbc)
     _apply_pre_power(manager, boards)
     return controller.power_on()
 
@@ -780,15 +810,14 @@ def power_cycle_with_bindings(
     power_on.
     """
     validate_cycle_delay(delay_s)
-    boards = boards_on_plug(manager, sbc)
-    _check_pre_power(manager, boards)
+    boards = check_power_on(manager, sbc)
     if not controller.power_off():
         raise RuntimeError(f"power_off failed on {sbc.name!r}")
     (sleep_fn or time.sleep)(delay_s)
     try:
         _apply_pre_power(manager, boards)
     except ActuationError as e:
-        raise ActuationError(f"{e}; {sbc.name!r} was left powered off") from e
+        raise ActuationError(f"{e}; {_left_off(sbc, boards)}") from e
     return controller.power_on()
 
 
@@ -824,8 +853,9 @@ def enter_recovery(
             f"pre-flight probe failed on {actuator.name!r}: "
             f"{outcome.result.value} ({outcome.detail or 'no detail'})"
         )
-    # The power-on step also drives the SBC's other pre_power bindings.
-    check_pre_power_actuators(manager, sbc)
+    # The power-on step also drives the SBC's other pre_power bindings,
+    # and those of boards sharing its outlet.
+    boards = check_power_on(manager, sbc)
 
     # 1. Power off.
     if not controller.power_off():
@@ -835,7 +865,7 @@ def enter_recovery(
     # 3. Engage recovery strap.
     actuate_binding(manager, binding)
     # 4. Power on (re-applies the strap via apply_pre_power_bindings).
-    apply_pre_power_bindings(manager, sbc)
+    _apply_pre_power(manager, boards)
     if not controller.power_on():
         raise ActuationError(f"power_on failed on {sbc.name!r}")
 
@@ -863,14 +893,15 @@ def exit_recovery(
             f"pre-flight probe failed on {actuator.name!r}: "
             f"{outcome.result.value} ({outcome.detail or 'no detail'})"
         )
-    # The power-on step also drives the SBC's other pre_power bindings.
-    check_pre_power_actuators(manager, sbc)
+    # The power-on step also drives the SBC's other pre_power bindings,
+    # and those of boards sharing its outlet.
+    boards = check_power_on(manager, sbc)
 
     if not controller.power_off():
         raise ActuationError(f"power_off failed on {sbc.name!r}")
     sleep_fn(delay_s)
     release_binding(manager, binding)
-    apply_pre_power_bindings(manager, sbc)
+    _apply_pre_power(manager, boards)
     if not controller.power_on():
         raise ActuationError(f"power_on failed on {sbc.name!r}")
 

@@ -98,24 +98,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 - `pre_power` relay bindings (e.g. a `recovery_mode` strap) are now set
-  before power-on on every path, not just CLI `power on`/`power cycle`
-  and the recovery composites (#36). The MCP `power_on`/`power_cycle`/
+  before power-on on every path, not just CLI `power on`/`power cycle` and
+  the recovery composites (#36). The MCP `power_on`/`power_cycle`/
   `boot_test` tools and the reboot after `sdwire_update`/`flash_image`,
   the web UI and REST power actions, and CLI `power-all on`, `boot-test`
   and the reboot after `sdwire flash`/`update` used to switch power and
-  leave the strap however it was last set, so a board could boot in or
-  out of recovery depending on which interface turned it on. Boards that
-  share the plug outlet have their straps set too, since the outlet
-  powers them all. A relay that can't be opened, or whose channel is busy
-  with another operation, now stops these before power is switched
-  (cycles check before powering off): MCP and the CLI say so in one line, the REST API
-  returns it as a 500 error, the web UI flashes it, after a flash or file
-  update the tools report that the power cycle failed and why, and
+  leave the strap however it was last set, so a board could boot in or out
+  of recovery depending on which interface turned it on. Boards that share
+  the plug outlet have their straps set too, since the outlet powers them
+  all (this also applies to `enter-recovery`/`exit-recovery`). A relay
+  that can't be opened, or whose channel is busy with another operation,
+  now stops these before power is switched (cycles check before powering
+  off; a flash or file update with a reboot checks before it powers the
+  board off and writes the card): MCP and the CLI say so in one line, the
+  REST API returns it as a 500 error, the web UI flashes it, after a flash
+  or file update the tools report that the power cycle failed and why, and
   `boot-test` records the run as failed. A strap that fails after
   power-off leaves the board off, and the error says so. A REST power
-  cycle with a `delay` that isn't a finite non-negative number is now refused
-  with a 400 before power-off (it used to switch the board off, then
-  fail).
+  cycle with a `delay` outside 0–3600 seconds is now refused with a 400
+  before power-off (it used to switch the board off, then fail).
 - A relay that labctl can't open no longer crashes `power on`/`power
   cycle` (and the binding verbs and recovery composites) with a
   traceback; nor does an actuator whose driver isn't implemented. The

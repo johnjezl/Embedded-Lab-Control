@@ -124,7 +124,9 @@ class TestCli:
     def test_power_cycle_nan_delay_is_one_error_line(self, lab):
         result = lab.run("power", "cycle", "board", "--delay", "nan", "--yes")
         assert result.exit_code == 1
-        assert "Error: delay must be a non-negative number" in result.output
+        assert (
+            "Error: delay must be a number of seconds from 0 to 3600" in result.output
+        )
         assert "Traceback" not in result.output
         lab.controller.power_off.assert_not_called()
 
@@ -227,15 +229,44 @@ class TestCli:
         assert result.exit_code == 0, result.output
         _strap_closed_before_on(lab)
 
-    def test_sdwire_flash_unopenable_relay(self, unopenable, sdwire, tmp_path):
+    def test_sdwire_flash_unopenable_relay_refused_up_front(
+        self, unopenable, sdwire, tmp_path
+    ):
+        """Found before the board is switched off and the card written."""
         image = tmp_path / "image.img"
         image.write_bytes(b"img")
         result = unopenable.run("sdwire", "flash", "board", str(image), "--yes")
         assert result.exit_code == 1
-        assert "Error: flashed, but the power cycle failed: actuator 'relay-a'" in (
+        assert "Error: actuator 'relay-a' for 'recovery_mode' can't be used" in (
             result.output
         )
-        unopenable.controller.power_on.assert_not_called()
+        assert "Nothing changed." in result.output
+        unopenable.controller.power_off.assert_not_called()
+        sdwire.switch_to_host.assert_not_called()
+        sdwire.flash_image.assert_not_called()
+
+    def test_sdwire_flash_no_reboot_skips_the_relay_check(
+        self, unopenable, sdwire, tmp_path
+    ):
+        image = tmp_path / "image.img"
+        image.write_bytes(b"img")
+        result = unopenable.run(
+            "sdwire", "flash", "board", str(image), "--no-reboot", "--yes"
+        )
+        assert result.exit_code == 0, result.output
+        sdwire.flash_image.assert_called_once()
+
+    def test_sdwire_flash_strap_failure_after_flash(self, lab, sdwire, tmp_path):
+        """The relay passes the check but the write fails at reboot: the
+        error says the board was flashed and left off."""
+        image = tmp_path / "image.img"
+        image.write_bytes(b"img")
+        lab.driver.next_write_outcome = WriteOutcome.WRITE_FAILED
+        result = lab.run("sdwire", "flash", "board", str(image), "--yes")
+        assert result.exit_code == 1
+        assert "Error: flashed, but the power cycle failed: " in result.output
+        assert "'board' was left powered off" in result.output
+        lab.controller.power_on.assert_not_called()
 
     def test_sdwire_update_reboot(self, lab, sdwire, tmp_path):
         source = tmp_path / "kernel.img"
@@ -269,10 +300,11 @@ class TestCli:
             "--yes",
         )
         assert result.exit_code == 1
-        assert "Error: files updated, but the power cycle failed: actuator" in (
+        assert "Error: actuator 'relay-a' for 'recovery_mode' can't be used" in (
             result.output
         )
-        unopenable.controller.power_on.assert_not_called()
+        unopenable.controller.power_off.assert_not_called()
+        sdwire.update_files.assert_not_called()
 
 
 # --- MCP ---
@@ -358,10 +390,14 @@ class TestWeb:
         unopenable.controller.power_on.assert_not_called()
         unopenable.controller.power_off.assert_not_called()
 
-    @pytest.mark.parametrize("delay", ["5", -1, None, True, "Infinity"])
+    @pytest.mark.parametrize(
+        "delay", ["5", -1, None, True, "Infinity", 1e20, "10" * 200]
+    )
     def test_api_bad_delay_refused_before_power_off(self, lab, client, delay):
         if delay == "Infinity":  # the JSON token, which Python parses to inf
             body = '{"action": "cycle", "delay": Infinity}'
+        elif delay == "10" * 200:  # an int too large for a float
+            body = '{"action": "cycle", "delay": ' + delay + "}"
         else:
             body = json.dumps({"action": "cycle", "delay": delay})
         resp = client.post(

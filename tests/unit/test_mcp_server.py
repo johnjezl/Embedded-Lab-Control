@@ -766,6 +766,35 @@ class TestMcpSDWireTools:
         assert "relay gone" in result
         assert cycle.call_args.args[1].name == "test-sbc-1"
 
+    def test_sdwire_update_reboot_relay_checked_up_front(self, mock_manager):
+        """A relay the reboot needs is found before power-off and the write."""
+        from unittest.mock import MagicMock
+
+        from labctl.actuators.runtime import PrePowerCheckError
+        from labctl.mcp_server import sdwire_update
+
+        mock_ctrl_instance = MagicMock()
+        power = MagicMock()
+        with (
+            patch("labctl.sdwire.SDWireController", return_value=mock_ctrl_instance),
+            patch("labctl.power.base.PowerController.from_plug", return_value=power),
+            patch(
+                "labctl.actuators.runtime.check_power_on",
+                side_effect=PrePowerCheckError("relay gone"),
+            ),
+        ):
+            result = sdwire_update(
+                sbc_name="test-sbc-1",
+                partition=1,
+                copies=[f"{self.host_dir}/local.bin:kernel.img"],
+                reboot=True,
+            )
+
+        assert result == "Error: relay gone. Nothing changed."
+        power.power_off.assert_not_called()
+        mock_ctrl_instance.switch_to_host.assert_not_called()
+        mock_ctrl_instance.update_files.assert_not_called()
+
     def test_sdwire_update_runtime_error(self, mock_manager):
         from unittest.mock import MagicMock
 
@@ -1966,6 +1995,32 @@ class TestMcpFlashImage:
         assert "Flashed" in result
         assert "Not powered on: relay gone" in result
         mock_power_inst.power_on.assert_not_called()
+
+    def test_flash_image_reboot_relay_checked_up_front(self, mock_manager):
+        from unittest.mock import MagicMock
+
+        from labctl.actuators.runtime import PrePowerCheckError
+        from labctl.mcp_server import flash_image
+
+        mock_ctrl = MagicMock()
+        power = MagicMock()
+        with (
+            patch("labctl.sdwire.SDWireController", return_value=mock_ctrl),
+            patch("labctl.power.base.PowerController.from_plug", return_value=power),
+            patch(
+                "labctl.actuators.runtime.check_power_on",
+                side_effect=PrePowerCheckError("relay gone"),
+            ),
+        ):
+            result = flash_image(
+                sbc_name="test-sbc-1",
+                image_path=f"{self.host_dir}/test.img",
+                reboot=True,
+            )
+
+        assert result == "Error: relay gone. Nothing changed."
+        power.power_off.assert_not_called()
+        mock_ctrl.flash_image.assert_not_called()
 
     def test_flash_image_no_block_device(self, mock_manager):
         from unittest.mock import MagicMock
