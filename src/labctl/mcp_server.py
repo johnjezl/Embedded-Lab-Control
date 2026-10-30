@@ -2085,13 +2085,16 @@ def sdwire_update(
             power_ctrl = PowerController.from_plug(sbc.power_plug)
             try:
                 ok = power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
+                failure = None if ok else f"power_on failed on {sbc_name!r}"
             except (ActuationError, RuntimeError) as e:
-                summary += f". Power cycle failed and {sbc_name} may be off: {e}"
+                failure = str(e)
+            if failure is None:
+                summary += f". Power cycled {sbc_name}."
             else:
-                if ok:
-                    summary += f". Power cycled {sbc_name}."
-                else:
-                    summary += f". power_on failed on {sbc_name!r}."
+                summary = (
+                    f"Error: power cycle failed and {sbc_name} may be off: "
+                    f"{failure}. ({summary}, done.)"
+                )
 
         advisory = _claim_advisory(manager, sbc_name)
         return f"{summary}\n\n{advisory}" if advisory else summary
@@ -2461,13 +2464,13 @@ def flash_image(
             power_ctrl = PowerController.from_plug(sbc.power_plug)
             try:
                 ok = power_on_with_bindings(manager, sbc, power_ctrl)
+                failure = None if ok else f"power_on failed on {sbc_name!r}"
             except (ActuationError, RuntimeError) as e:
-                parts.append(f"Not powered on: {e}")
+                failure = str(e)
+            if failure is None:
+                parts.append(f"Powered on {sbc_name}")
             else:
-                if ok:
-                    parts.append(f"Powered on {sbc_name}")
-                else:
-                    parts.append(f"power_on failed on {sbc_name!r}")
+                parts.insert(0, f"Error: {sbc_name} not powered on: {failure}")
 
         result = ". ".join(parts)
         advisory = _claim_advisory(manager, sbc_name)

@@ -111,12 +111,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   now stops these before power is switched (cycles check before powering
   off; a flash or file update with a reboot checks before it powers the
   board off and writes the card): MCP and the CLI say so in one line, the
-  REST API returns it as a 500 error, the web UI flashes it, after a flash
-  or file update the tools report that the power cycle failed and why, and
-  `boot-test` records the run as failed. A strap that fails after
-  power-off leaves the board off, and the error says so. A REST power
-  cycle with a `delay` outside 0–3600 seconds is now refused with a 400
-  before power-off (it used to switch the board off, then fail).
+  REST API answers 409 with `"switched": false` (a failure after power-off
+  stays a 500), the web UI flashes it, after a flash or file update the
+  tools report that the power cycle failed and why, and `boot-test`
+  records the run as failed. A strap that fails after power-off leaves the
+  board off, and the error says so. A REST power cycle with a `delay`
+  outside 0–3600 seconds is now refused with a 400 before power-off (it
+  used to switch the board off, then fail).
 - A relay that labctl can't open no longer crashes `power on`/`power
   cycle` (and the binding verbs and recovery composites) with a
   traceback; nor does an actuator whose driver isn't implemented. The
