@@ -154,7 +154,8 @@ class TestSBCOperations:
         assert cleared.power_cycle_delay_seconds is None
 
     @pytest.mark.parametrize(
-        "bad", [86400.5, 1e9, float("nan"), float("inf"), float("-inf")]
+        "bad",
+        [86400.5, 1e9, float("nan"), float("-nan"), float("inf"), float("-inf")],
     )
     def test_update_sbc_refuses_a_cycle_delay_no_power_cycle_accepts(
         self, manager, bad
@@ -171,6 +172,13 @@ class TestSBCOperations:
         after = manager.get_sbc(sbc.id)
         assert after.power_cycle_delay_seconds == 6.0
         assert after.project != "changed"
+
+    def test_update_sbc_minus_zero_clears_the_cycle_delay(self, manager):
+        """`--cycle-delay -0` is negative to the user: it clears."""
+        sbc = manager.create_sbc(name="cycle-minus-zero")
+        manager.update_sbc(sbc.id, power_cycle_delay_seconds=6.0)
+        cleared = manager.update_sbc(sbc.id, power_cycle_delay_seconds=-0.0)
+        assert cleared.power_cycle_delay_seconds is None
 
     def test_update_sbc_accepts_the_cycle_delay_limit(self, manager):
         sbc = manager.create_sbc(name="cycle-max")

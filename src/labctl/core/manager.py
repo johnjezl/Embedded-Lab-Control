@@ -342,9 +342,14 @@ class ResourceManager:
 
         if power_cycle_delay_seconds is not None:
             updates.append("power_cycle_delay_seconds = ?")
-            # A negative sentinel clears the per-SBC override (-inf isn't one:
-            # it is refused with the other non-finite values).
-            if -math.inf < power_cycle_delay_seconds < 0:
+            # A negative sentinel (-0 too) clears the per-SBC override; -inf
+            # isn't one: it is refused with the other non-finite values.
+            value = power_cycle_delay_seconds
+            if (
+                value != -math.inf
+                and not math.isnan(value)
+                and math.copysign(1.0, value) < 0
+            ):
                 params.append(None)
                 changes.append("cycle_delay=cleared")
             else:

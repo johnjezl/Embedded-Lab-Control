@@ -20,7 +20,8 @@ UDEV_HEADER = """\
 # Regenerate with: labctl serial udev --install
 #
 # Devices are root:dialout 0660: the labctl services (in dialout) and
-# ser2net (root) open them; other users reach consoles through ser2net.
+# ser2net (root) open them; users outside dialout reach consoles through
+# ser2net, but can't drive relays or use `labctl console --direct`.
 """
 
 
@@ -46,30 +47,51 @@ def generate_udev_rules(devices: list["SerialDevice"]) -> str:
     return "\n".join(lines)
 
 
-def missing_device_group(group: str = "dialout") -> bool:
-    """True when the user running labctl isn't in ``group``, so they can't
-    open the root:<group> 0660 devices the rules create. Under sudo that is
-    the invoking user (SUDO_USER), not root; plain root is never missing.
-    False when the group doesn't exist on this system."""
+def device_group_note(group: str = "dialout") -> str | None:
+    """What the user running labctl must do to open the root:<group> 0660
+    devices the rules create, or None when nothing. Under sudo that is the
+    invoking user (SUDO_USER), not root; plain root needs nothing, nor does
+    a system without ``group``."""
     import grp
     import os
     import pwd
 
     try:
-        group_entry = grp.getgrnam(group)
+        entry = grp.getgrnam(group)
     except KeyError:
-        return False
-    if os.geteuid() != 0:
-        gid = group_entry.gr_gid
-        return gid != os.getegid() and gid not in os.getgroups()
-    user = os.environ.get("SUDO_USER")
-    if not user or user == "root":
-        return False
-    try:
-        primary_gid = pwd.getpwnam(user).pw_gid
-    except KeyError:
-        return False
-    return primary_gid != group_entry.gr_gid and user not in group_entry.gr_mem
+        return None
+    gid = entry.gr_gid
+    sudo_user = os.environ.get("SUDO_USER") if os.geteuid() == 0 else None
+    if os.geteuid() == 0 and sudo_user in (None, "root"):
+        return None
+    if sudo_user is None:
+        if gid == os.getegid() or gid in os.getgroups():
+            return None
+        try:
+            account = pwd.getpwuid(os.geteuid())
+        except KeyError:
+            return None
+        user, primary_gid = account.pw_name, account.pw_gid
+    else:
+        try:
+            user, primary_gid = sudo_user, pwd.getpwnam(sudo_user).pw_gid
+        except KeyError:
+            return None
+    member = user in entry.gr_mem or primary_gid == gid
+    if member and sudo_user is not None:
+        return None
+    access = (
+        f"the devices are root:{group} 0660, so you can't open them directly "
+        f"(relays from the CLI, `labctl console --direct`) until "
+    )
+    if member:
+        return access + (
+            f"you log in again: {user} was added to {group} after this "
+            f"session started"
+        )
+    return access + (
+        f"{user} joins {group}: sudo usermod -aG {group} {user} (then log in " f"again)"
+    )
 
 
 def install_udev_rules(

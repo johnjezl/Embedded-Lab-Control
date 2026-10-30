@@ -38,6 +38,11 @@ def deploy_to_card(manager, sbc, ctrl, write) -> None:
     """
     from labctl.actuators.runtime import _left_off, boards_on_plug
 
+    # A missing SDWire must not cost a running board its power.
+    try:
+        ctrl.ensure_present()
+    except Exception as e:
+        raise RuntimeError(f"{e}; nothing changed") from e
     power_off_before_host_switch(sbc)
     try:
         ctrl.switch_to_host()

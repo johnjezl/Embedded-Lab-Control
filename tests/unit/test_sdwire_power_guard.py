@@ -83,3 +83,12 @@ def test_hand_back_failure_after_a_good_write_says_it_was_deployed(board, power)
     )
     assert "the card is still on the host" in str(exc.value)
     assert "'board' was left powered off" in str(exc.value)
+
+
+def test_missing_sdwire_leaves_the_board_running(board, power):
+    ctrl, write = MagicMock(), MagicMock()
+    ctrl.ensure_present.side_effect = RuntimeError("SDWire 'x' not found")
+    with pytest.raises(RuntimeError, match="not found; nothing changed"):
+        deploy_to_card(None, board, ctrl, write)
+    power.power_off.assert_not_called()
+    ctrl.switch_to_host.assert_not_called()

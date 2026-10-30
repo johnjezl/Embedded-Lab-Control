@@ -2585,9 +2585,9 @@ def serial_rename_cmd(ctx: click.Context, name: str, new_name: str) -> None:
 def serial_udev_cmd(ctx: click.Context, install: bool, reload: bool) -> None:
     """Generate udev rules from registered serial devices."""
     from labctl.serial.udev import (
+        device_group_note,
         generate_udev_rules,
         install_udev_rules,
-        missing_device_group,
         reload_udev,
     )
 
@@ -2604,14 +2604,9 @@ def serial_udev_cmd(ctx: click.Context, install: bool, reload: bool) -> None:
         try:
             install_udev_rules(rules)
             click.echo(f"Installed udev rules ({len(devices)} devices)")
-            if missing_device_group():
-                click.echo(
-                    "Note: the devices are root:dialout 0660 and you are not "
-                    "in dialout, so you can't open them directly (relays from "
-                    "the CLI). Join it with: sudo usermod -aG dialout $USER "
-                    "(then log in again).",
-                    err=True,
-                )
+            note = device_group_note()
+            if note:
+                click.echo(f"Note: {note}.", err=True)
         except PermissionError:
             click.echo("Error: Permission denied. Try with sudo.", err=True)
             sys.exit(1)
