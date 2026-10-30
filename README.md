@@ -70,8 +70,10 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 The devices are `root:dialout 0660`: join `dialout` to open them directly
 (`sudo usermod -aG dialout $USER`, then log in again). On a system-wide
 install, `install-services.sh` makes the rules file writable by the
-`labctl` group, and members of that group can update it with
-`labctl serial udev --install --reload`, without `sudo`.
+`labctl` group (`root:labctl 0664`), and members of that group can update
+it with `labctl serial udev --install --reload`, without `sudo`; on such a
+host use that instead of the `sudo install` above, which resets the file
+to `root:root 0644`.
 
 For a shared, system-wide install with systemd services, see
 [Systemd Services](#systemd-services).
@@ -81,7 +83,8 @@ For a shared, system-wide install with systemd services, see
 labctl uses the first of these that loads. A file in the search path that
 exists but can't be loaded (bad YAML or a bad value) is skipped with a
 warning, and the next one is used; a file named with `-c` or
-`$LABCTL_CONFIG` is refused instead.
+`$LABCTL_CONFIG` is refused instead. `labctl web` and `labctl mcp --http`
+refuse to start on any config that didn't load.
 
 1. `-c/--config PATH` (only that file)
 2. `$LABCTL_CONFIG`

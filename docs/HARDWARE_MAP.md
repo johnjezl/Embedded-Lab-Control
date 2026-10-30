@@ -85,7 +85,8 @@ generated from it:
 generated from a mapping file and installed with:
 
 ```bash
-scripts/generate-udev-rules.py --mapping config/udev/port-mapping.yaml \
+# with labctl's venv active (the generator needs PyYAML)
+python scripts/generate-udev-rules.py --mapping config/udev/port-mapping.yaml \
     --output config/udev/99-lab-serial.rules
 sudo scripts/install-udev.sh   # installs config/udev/99-lab-serial.rules
 ```
@@ -102,5 +103,7 @@ These scripts still exist but are not needed with the flow above.
 
 ### Device assigned wrong name
 1. Verify USB path: `udevadm info -q property -n /dev/ttyUSBx | grep DEVPATH`
-2. Update the registration (`labctl serial remove` / `labctl serial add`)
+2. Fix the registration: `labctl serial rename <old> <new>` for the name;
+   for a wrong USB path, `labctl port remove` the port using it, then
+   `labctl serial remove` and `labctl serial add` with the right path
 3. Regenerate and reinstall rules (`labctl serial udev --install --reload`)
