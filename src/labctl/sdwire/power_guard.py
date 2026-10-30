@@ -1,6 +1,70 @@
-"""Power a board off before its SD card is switched to the host."""
+"""Power a board off before its SD card is switched to the host, and
+check that it is off before the card is taken from it."""
 
 import time
+from dataclasses import dataclass
+from typing import Optional
+
+# Why a board isn't confirmed off (BoardOffCheck.problem).
+NO_PLUG = "no_plug"
+UNREADABLE = "unreadable"
+POWERED_ON = "powered_on"
+NOT_OFF = "not_off"  # a state other than ON or OFF (e.g. unknown)
+
+
+@dataclass
+class BoardOffCheck:
+    """Result of :func:`check_board_off`: ``problem`` is None when the
+    plug reports the board OFF, else one of NO_PLUG, UNREADABLE (``error``
+    says why), POWERED_ON or NOT_OFF (``state`` says which)."""
+
+    problem: Optional[str] = None
+    state: object = None  # a PowerState when the plug was read
+    error: Optional[str] = None
+
+    @property
+    def is_off(self) -> bool:
+        return self.problem is None
+
+
+def check_board_off(sbc) -> BoardOffCheck:
+    """Whether ``sbc``'s plug reports it OFF: the one check behind every
+    "proceed only when the board is off" refusal (``sdwire host`` and
+    MCP ``sdwire_to_host``/``sdwire_ls``/``cat``/``info``, and the CLI
+    ``sdwire ls``/``cat``/``info``). Fails closed: no plug, a plug that
+    can't be read, or any state but OFF is a problem. Each caller words
+    its own refusal."""
+    if not sbc.power_plug:
+        return BoardOffCheck(NO_PLUG)
+    from labctl.power import PowerController
+    from labctl.power.base import PowerState
+
+    try:
+        state = PowerController.from_plug(sbc.power_plug).get_state()
+    except Exception as e:
+        return BoardOffCheck(UNREADABLE, error=str(e))
+    if state == PowerState.OFF:
+        return BoardOffCheck(state=state)
+    if state == PowerState.ON:
+        return BoardOffCheck(POWERED_ON, state=state)
+    return BoardOffCheck(NOT_OFF, state=state)
+
+
+def board_off_problem_text(sbc_name: str, check: BoardOffCheck) -> str:
+    """One sentence (no final period, may start lower-case) saying why
+    ``check`` doesn't confirm ``sbc_name`` off; callers add their own
+    framing and hints."""
+    if check.problem == NO_PLUG:
+        return f"{sbc_name} has no power plug, so labctl can't confirm it is off"
+    if check.problem == UNREADABLE:
+        return f"could not read the power state of {sbc_name}: {check.error}"
+    if check.problem == POWERED_ON:
+        return f"{sbc_name} is powered on"
+    state = getattr(check.state, "value", check.state)
+    return (
+        f"the power state of {sbc_name} is {state}, so labctl can't confirm "
+        "it is off"
+    )
 
 
 def power_off_before_host_switch(sbc) -> None:

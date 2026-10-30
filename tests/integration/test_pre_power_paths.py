@@ -491,6 +491,7 @@ def client(lab, monkeypatch):
 
     # The REST cycle rate limit is per board name, module-wide.
     monkeypatch.setattr("labctl.web.api._power_cycle_times", {})
+    monkeypatch.setattr("labctl.web.api._power_cycles_in_progress", set())
 
     config = Config(
         database_path=lab.db_path,
@@ -774,3 +775,89 @@ class TestStoredCycleDelay:
         assert resp.status_code == 302
         lab.controller.power_off.assert_not_called()
         assert slept == []
+
+
+class TestCycleRuleAndOverlap:
+    """One delay rule on every surface, and REST/web cycles of a board
+    don't overlap (#41 review)."""
+
+    def test_cli_negative_delay_is_an_error(self, lab):
+        result = lab.run("power", "cycle", "board", "--delay", "-1", "-y")
+        assert result.exit_code == 1
+        assert "Error: delay must be a number of seconds from 0 to 86400" in (
+            result.output
+        )
+        lab.controller.power_off.assert_not_called()
+
+    def test_cli_small_delay_raised_with_warning(self, lab):
+        result = lab.run("power", "cycle", "board", "--delay", "1", "-y")
+        assert result.exit_code == 0, result.output
+        assert "--delay 1.0s is below the default minimum of 3.0s" in result.output
+
+    def test_api_small_delay_raised_to_default_floor(self, lab, client):
+        resp = client.post(
+            "/api/sbcs/board/power", json={"action": "cycle", "delay": 0.5}
+        )
+        assert resp.status_code == 200, resp.get_json()
+        assert resp.get_json()["delay_seconds"] == 3.0
+
+    def test_api_null_delay_refused(self, lab, client):
+        resp = client.post(
+            "/api/sbcs/board/power", json={"action": "cycle", "delay": None}
+        )
+        assert resp.status_code == 400
+        assert resp.get_json()["error"] == (
+            "delay must be a number of seconds, not null"
+        )
+        lab.controller.power_off.assert_not_called()
+
+    def test_api_marks_the_cycle_in_progress_while_it_waits(
+        self, lab, client, monkeypatch
+    ):
+        from labctl.web import api
+
+        seen = []
+        monkeypatch.setattr(
+            "labctl.actuators.runtime.time.sleep",
+            lambda s: seen.append("board" in api._power_cycles_in_progress),
+        )
+        resp = client.post("/api/sbcs/board/power", json={"action": "cycle"})
+        assert resp.status_code == 200, resp.get_json()
+        assert seen == [True]
+        assert "board" not in api._power_cycles_in_progress
+
+    def test_api_overlapping_cycle_refused(self, lab, client, monkeypatch):
+        from labctl.web import api
+
+        monkeypatch.setattr(api, "_power_cycles_in_progress", {"board"})
+        resp = client.post("/api/sbcs/board/power", json={"action": "cycle"})
+        assert resp.status_code == 429
+        assert "already in progress" in resp.get_json()["error"]
+        lab.controller.power_off.assert_not_called()
+
+    def test_api_failed_cycle_clears_the_marker(self, lab, client):
+        from labctl.web import api
+
+        lab.controller.power_off.side_effect = RuntimeError("plug gone")
+        resp = client.post("/api/sbcs/board/power", json={"action": "cycle"})
+        assert resp.status_code == 500
+        assert "board" not in api._power_cycles_in_progress
+        # A failed cycle doesn't start the rate-limit interval.
+        assert "board" not in api._power_cycle_times
+
+    def test_view_overlapping_cycle_refused(self, lab, client, monkeypatch):
+        from labctl.web import api
+
+        monkeypatch.setattr(api, "_power_cycles_in_progress", {"board"})
+        resp = client.post("/sbc/board/power/cycle")
+        assert resp.status_code == 302
+        lab.controller.power_off.assert_not_called()
+
+    def test_view_cycle_rate_limited_after_rest_cycle(self, lab, client):
+        assert (
+            client.post("/api/sbcs/board/power", json={"action": "cycle"}).status_code
+            == 200
+        )
+        lab.controller.power_off.reset_mock()
+        client.post("/sbc/board/power/cycle")
+        lab.controller.power_off.assert_not_called()

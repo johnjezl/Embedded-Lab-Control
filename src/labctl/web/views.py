@@ -18,6 +18,7 @@ from labctl.actuators.runtime import power_cycle_with_bindings, power_on_with_bi
 from labctl.core.models import AddressType, PlugType, PortType, Status
 from labctl.power import PowerController, PowerState
 from labctl.web import claims
+from labctl.web.api import begin_power_cycle, end_power_cycle
 
 views_bp = Blueprint("views", __name__)
 
@@ -101,6 +102,14 @@ def sbc_power_action(name: str, action: str):
     if refusal:
         return claims.refusal_page(refusal, name)
 
+    # Same guard as REST: one cycle of a board at a time, rate-limited.
+    if action == "cycle":
+        busy = begin_power_cycle(name)
+        if busy:
+            flash(f"Error: {busy}", "error")
+            return redirect(url_for("views.sbc_detail", name=name))
+
+    success = False
     try:
         controller = PowerController.from_plug(sbc.power_plug)
 
@@ -117,6 +126,9 @@ def sbc_power_action(name: str, action: str):
         flash(msg, "success" if success else "error")
     except Exception as e:
         flash(f"Error: {e}", "error")
+    finally:
+        if action == "cycle":
+            end_power_cycle(name, success)
 
     return redirect(url_for("views.sbc_detail", name=name))
 

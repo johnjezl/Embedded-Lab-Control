@@ -55,7 +55,7 @@ the tool and its exact arguments. Configure with `mcp.confirm_destructive`
 | `get_claim` | read |  |  |
 | `list_claims` | read |  |  |
 | `list_images` | read |  | Uploading is not a tool: `PUT /images/<name>` on the HTTP port writes `mcp.upload_dir` (system-write; its uploader or an operator may replace an image) |
-| `power_cycle` | destructive | yes | Sets pre_power relays like `power_on`, after power-off; `delay` 0-86400 s, default and minimum the board's stored cycle delay (3.0 if none) |
+| `power_cycle` | destructive | yes | Sets pre_power relays like `power_on`, after power-off; `delay` 0-86400 s; default and minimum the board's stored cycle delay, or 3.0 if none |
 | `power_off` | destructive | yes |  |
 | `power_on` | hardware |  | First sets the relays bound with `sample_phase: pre_power` (e.g. a strap) on this board and every board sharing its plug outlet; all are checked first, and power is not switched if one can't be set |
 | `press` | destructive | yes |  |
@@ -221,7 +221,7 @@ exactly like the commands they stand for.
 | `request-release` | db-write |  |  |
 | `sdwire add` | db-write |  |  |
 | `sdwire assign` | db-write |  |  |
-| `sdwire cat` | hardware |  | Switches the SD card to the host, then to the board (see note below) |
+| `sdwire cat` | hardware |  | Switches the SD card to the host, then to the board; only when the plug reports the board off (see note below) |
 | `sdwire discover` | read |  |  |
 | `sdwire dut` | hardware |  |  |
 | `sdwire flash` | destructive | yes | Overwrites the whole SD card; `--dry-run` |
@@ -254,14 +254,13 @@ exactly like the commands they stand for.
 | `user verify` | read |  |  |
 | `web` | server |  | Long-running web UI/API |
 
-**CLI vs MCP:** `sdwire host` has the same strict power check as MCP
-`sdwire_to_host` (proceed only on OFF; `--force` skips it), but the CLI
-`sdwire ls`/`cat`/`info` don't have the MCP tools' strict power check. They refuse only when the plug reports the board ON,
-so they proceed when it has no power plug, when the plug can't be read, or
-when its state is unknown. They always switch the card to the host and
-then to the board, even if it was on the host to begin with. The MCP tools were hardened first because
-agents may call them unprompted; aligning the CLI is tracked in the Phase 1
-notes.
+**SD card power check:** `sdwire host`, `sdwire ls`/`cat`/`info` and
+the MCP `sdwire_to_host`/`sdwire_ls`/`cat`/`info` take the card from the
+board only when its plug reports it OFF: no power plug, a plug that can't
+be read, or an unknown state refuse too. `sdwire host --force` (MCP
+`force=true`) skips the check. Unlike the MCP tools, the CLI `sdwire
+ls`/`cat`/`info` always switch the card to the host and then to the
+board, even if it was on the host to begin with.
 
 ## Web UI and REST API
 
@@ -305,9 +304,9 @@ checks, and the claims endpoints themselves.
 
 **Power over REST:** `POST /api/sbcs/<name>/power` takes `{"action":
 "on" | "off" | "cycle"}`, plus optional `"delay"` (seconds between off and
-on for `cycle`: a number from 0 to 86400; default the board's stored
-cycle delay, or 3.0 if none is set, and a smaller value is raised to the
-stored delay) and
+on for `cycle`: a number from 0 to 86400; the board's stored cycle delay,
+or 3.0 if none is set, is the default and the minimum, so a smaller value
+is raised to it; `null` is refused) and
 `"override_claim"`. In the order checked:
 
 | Status | When |
@@ -315,7 +314,7 @@ stored delay) and
 | `404` | No such SBC |
 | `400` | No power plug assigned, missing or bad `action`, or for `cycle` a bad `delay` or an out-of-range stored cycle delay (checked before claims) |
 | `409` / `403` | Claim refusals as above (`sbc_claimed`, `claim_required`, `not_operator`) |
-| `429` | A `cycle` within 5 s of this board's last successful cycle through this server |
+| `429` | A `cycle` while another REST or web-UI cycle of this board is running in this server, or within 5 s of its last successful one |
 | `409` | `{"error": ..., "switched": false}`: a pre_power relay (on this board or one sharing its outlet) couldn't be checked, or, for `on`, couldn't be set; power was not switched |
 | `500` | The plug failed, or for `cycle` a strap couldn't be set after power-off (the board was left off) |
 | `200` | `{"name", "action", "success": true, "state"}`, plus `"delay_seconds"` (the delay used) for `cycle` |
@@ -323,13 +322,15 @@ stored delay) and
 `on` and `cycle` set the pre_power relays first, as the CLI and MCP do.
 With several boards on one outlet, a `409` for `on` can follow relays that
 were already set: only power is guaranteed unswitched. REST, the web UI's
-power button, and MCP `power_cycle` use the board's stored cycle delay
-(`labctl edit --cycle-delay`) like every other power cycle: it is the
-default when no `delay` is given, and the minimum when one is (a smaller
-value is raised to it; the CLI's `power cycle` also raises a value below
-3 s when no delay is stored). The same holds for the reboot after
-`sdwire flash`/`update` (CLI and MCP), `boot-test` (CLI and MCP) and the
-recovery commands. A stored delay outside 0-86400 s (stored before
-`edit --cycle-delay` checked the range) is refused on every path before
-anything is switched or written; clear it with `labctl edit <name>
---cycle-delay -1`.
+power button, and MCP `power_cycle` follow the same delay rule as every
+other power cycle: the board's stored cycle delay (`labctl edit
+--cycle-delay`), or 3 s if none is set, is the default when no delay is
+given and the minimum when one is (a smaller value is raised to it; a
+negative one is an error). The same holds for CLI `power cycle`, the
+reboot after `sdwire flash`/`update` (CLI and MCP), `boot-test` (CLI and
+MCP) and the recovery commands. A stored delay outside 0-86400 s (stored
+before `edit --cycle-delay` checked the range) is refused on every path
+before anything is switched or written; clear it with `labctl edit <name>
+--cycle-delay -1`. A REST or web-UI cycle request returns only after the
+whole off-wait-on sequence, so behind a reverse proxy set its read timeout
+above the longest delay you store (plus a few seconds for the plug).

@@ -558,7 +558,7 @@ class TestEnterRecovery:
             lab.manager,
             lab.sbc,
             controller,
-            delay_s=2.0,
+            delay_s=4.0,
             sleep_fn=lambda s: slept.append(s),
         )
 
@@ -566,7 +566,7 @@ class TestEnterRecovery:
         # twice: once by actuate_binding (step 3) and once by
         # apply_pre_power_bindings (step 4); both write True.
         assert controller.calls == ["off", "on"]
-        assert slept == [2.0]
+        assert slept == [4.0]
         states = [(idx, closed) for (idx, closed, _) in lab.driver.write_log]
         # First write: actuate_binding drives to active=closed.
         # Second write: pre_power binding application also drives closed.
@@ -1052,10 +1052,10 @@ class TestPowerHelpers:
             lab.manager,
             lab.sbc,
             controller,
-            2.5,
+            3.5,
             sleep_fn=lambda s: (slept.append(s), controller.events.append("sleep")),
         )
-        assert slept == [2.5]
+        assert slept == [3.5]
         assert controller.events == [
             "off",
             "sleep",
@@ -1286,9 +1286,21 @@ class TestBoardCycleDelay:
         return ctrl
 
     def test_default_without_stored_delay(self, lab):
+        """With no stored delay, 3 s is the default and the floor on every
+        surface (as the CLI always did)."""
         assert runtime.board_cycle_delay(lab.sbc) == 3.0
-        assert runtime.board_cycle_delay(lab.sbc, 0) == 0.0
+        assert runtime.board_cycle_delay(lab.sbc, 0) == 3.0
         assert runtime.board_cycle_delay(lab.sbc, 10) == 10.0
+        assert runtime.cycle_delay_floor(lab.sbc) == (3.0, "default minimum")
+
+    def test_negative_requested_delay_is_an_error(self, lab):
+        with pytest.raises(ValueError, match="delay must be a number"):
+            runtime.board_cycle_delay(lab.sbc, -1)
+
+    def test_floor_names_stored_delay(self, lab):
+        sbc = _store_delay(lab, 0.5)
+        assert runtime.cycle_delay_floor(sbc) == (0.5, "SBC minimum")
+        assert runtime.board_cycle_delay(sbc, 0) == 0.5
 
     def test_stored_delay_is_default_and_minimum(self, lab):
         sbc = _store_delay(lab, 5.0)

@@ -381,12 +381,12 @@ class TestMcpPowerTools:
             patch("labctl.actuators.runtime.time.sleep") as sleep,
         ):
             mock_from_plug.return_value = mock_ctrl
-            result = power_cycle(sbc_name="test-sbc-1", delay=1.0)
+            result = power_cycle(sbc_name="test-sbc-1", delay=5.0)
 
         assert "Power cycled" in result
         # Off, wait, on (with pre_power bindings applied in between).
         mock_ctrl.power_off.assert_called_once()
-        sleep.assert_called_once_with(1.0)
+        sleep.assert_called_once_with(5.0)
         mock_ctrl.power_on.assert_called_once()
 
     def test_power_on_failure(self, mock_manager):
@@ -5291,3 +5291,107 @@ class TestMcpCycleDelayConfirmation:
         TestMcpCycleDelay._store(mock_manager, 4.0)
         plan = json.loads(boot_test(sbc_name="test-sbc-1", expect_pattern="ok"))
         assert plan["will_do"] == {"cycle_delay_seconds": 4.0}
+
+
+class TestMcpRemoveSerialDeviceClaims:
+    """remove_serial_device is claim-checked like CLI `serial remove`:
+    any path that reaches the adapter counts (#41 review)."""
+
+    @pytest.fixture
+    def unlinked(self, claims_env, monkeypatch):
+        """test-sbc-2's console is /dev/ttyUSB9, the node behind
+        /dev/lab/port-9, so it isn't linked to the registration."""
+        import os
+
+        claims_env.create_serial_device("port-9", "1-1.9")
+        claims_env.assign_serial_port(
+            claims_env.get_sbc_by_name("test-sbc-2").id,
+            PortType.CONSOLE,
+            "/dev/ttyUSB9",
+            4009,
+        )
+        real = os.path.realpath
+        nodes = {"/dev/lab/port-9": "/dev/ttyUSB9", "/dev/ttyUSB9": "/dev/ttyUSB9"}
+        monkeypatch.setattr(
+            "labctl.core.manager.os.path.realpath", lambda p: nodes.get(p) or real(p)
+        )
+        return claims_env
+
+    def _claim_by_other(self, manager):
+        manager.claim_sbc(
+            sbc_name="test-sbc-2",
+            agent_name="other",
+            session_id="other-session",
+            session_kind="cli",
+            duration_seconds=600,
+            reason="holding",
+        )
+
+    def test_refused_under_another_users_claim(self, unlinked):
+        from labctl.mcp_server import remove_serial_device
+
+        self._claim_by_other(unlinked)
+        data = json.loads(remove_serial_device(name="port-9"))
+        assert data["error"] == "sbc_claimed"
+        assert data["claim"]["sbc_name"] == "test-sbc-2"
+        assert unlinked.get_serial_device_by_name("port-9") is not None
+
+    def test_allowed_for_the_claimant(self, unlinked):
+        from labctl.mcp_server import claim_sbc, remove_serial_device
+
+        claim_sbc(sbc_name="test-sbc-2", reason="mine")
+        assert remove_serial_device(name="port-9") == "Removed serial device: port-9"
+
+    def test_unclaimed_adapter_removed(self, unlinked):
+        from labctl.mcp_server import remove_serial_device
+
+        assert remove_serial_device(name="port-9") == "Removed serial device: port-9"
+
+
+@pytest.mark.confirmation
+class TestConfirmationBindsPlan:
+    """A token is bound to its plan: a stored cycle delay changed between
+    the plan and the confirmation refuses the call (#41 review)."""
+
+    @pytest.fixture
+    def env(self, mock_manager):
+        from labctl.core.config import Config
+
+        power = MagicMock()
+        power.power_off.return_value = True
+        power.power_on.return_value = True
+        with (
+            patch("labctl.mcp_server._get_config", return_value=Config()),
+            patch("labctl.power.base.PowerController.from_plug", return_value=power),
+            patch("labctl.actuators.runtime.time.sleep") as sleep,
+        ):
+            yield power, sleep
+
+    def test_changed_stored_delay_refuses_the_confirmation(self, mock_manager, env):
+        from labctl.mcp_server import power_cycle
+
+        power, sleep = env
+        TestMcpCycleDelay._store(mock_manager, 5.0)
+        plan = json.loads(power_cycle(sbc_name="test-sbc-1"))
+        assert plan["will_do"] == {"cycle_delay_seconds": 5.0}
+
+        TestMcpCycleDelay._store(mock_manager, 600.0)
+        result = json.loads(
+            power_cycle(sbc_name="test-sbc-1", confirm_token=plan["confirm_token"])
+        )
+        assert result["status"] == "confirmation_failed"
+        assert "the plan changed" in result["error"]
+        assert '"cycle_delay_seconds": 600.0' in result["error"]
+        assert "new plan" in result["message"]
+        power.power_off.assert_not_called()
+        sleep.assert_not_called()
+
+    def test_unchanged_plan_is_confirmed(self, mock_manager, env):
+        from labctl.mcp_server import power_cycle
+
+        power, sleep = env
+        TestMcpCycleDelay._store(mock_manager, 5.0)
+        plan = json.loads(power_cycle(sbc_name="test-sbc-1"))
+        result = power_cycle(sbc_name="test-sbc-1", confirm_token=plan["confirm_token"])
+        assert result.startswith("Power cycled: test-sbc-1 (delay: 5.0s)")
+        sleep.assert_called_once_with(5.0)

@@ -18,6 +18,7 @@ from pathlib import Path
 import click
 
 from labctl import __version__
+from labctl.actuators.runtime import DEFAULT_CYCLE_DELAY_SECONDS
 from labctl.core import audit
 from labctl.core.config import Config, load_config
 from labctl.core.manager import ResourceManager, get_manager
@@ -513,8 +514,9 @@ def _collect_status_power_states(sbcs, reset: str) -> dict[str, str]:
 # fallback when no config is available.
 STATUS_FAST_STALE_SECONDS = 120
 
-# Floor + default for `power cycle --delay` when an SBC has no override.
-DEFAULT_POWER_CYCLE_DELAY_SECONDS = 3.0
+# Floor + default of every power cycle when an SBC has no stored delay
+# (the runtime's value; one rule on every surface).
+DEFAULT_POWER_CYCLE_DELAY_SECONDS = DEFAULT_CYCLE_DELAY_SECONDS
 
 
 def _status_fast_stale_threshold(config) -> int:
@@ -624,60 +626,36 @@ def _display_recent_activity(manager, *, limit: int = 5) -> None:
 
 
 def _sdwire_host_switch_guard_cli(
-    sbc_name: str,
-    sbc,
-    force: bool = False,
-    allow_force_override: bool = False,
-    *,
-    fail_closed: bool = False,
+    sbc_name: str, sbc, force: bool = False, allow_force_override: bool = False
 ) -> str | None:
-    """Refuse host-mode switching when the SBC still appears powered on.
-
-    With ``fail_closed`` (``sdwire host``, like MCP ``sdwire_to_host``),
-    proceed only when the plug reports the board OFF: no plug, a plug
-    that can't be read, or another state refuse too. Without it (the CLI
-    ``sdwire ls``/``cat``/``info``) only a plug reporting ON refuses.
-    ``force`` skips the check either way.
-    """
+    """Refuse taking the SD card from the board unless its plug reports it
+    OFF (power_guard.check_board_off: no plug, a plug that can't be read,
+    or another state refuse too, as in the MCP tools). ``force`` (only
+    ``sdwire host`` has --force) skips the check."""
     if force:
         return None
-    override = (
-        "\nUse --force to override (risks SD card corruption)."
-        if allow_force_override
-        else ""
+    from labctl.sdwire.power_guard import (
+        POWERED_ON,
+        board_off_problem_text,
+        check_board_off,
     )
-    if not sbc.power_plug:
-        if not fail_closed:
-            return None
-        return (
-            f"Error: {sbc_name} has no power plug, so labctl can't confirm it "
-            f"is off. Make sure the board is off first.{override}"
-        )
 
-    from labctl.power import PowerController
-    from labctl.power.base import PowerState
-
-    try:
-        state = PowerController.from_plug(sbc.power_plug).get_state()
-    except Exception as e:
-        if not fail_closed:
-            return None
-        return (
-            f"Error: could not read the power state of {sbc_name}: {e}. Make "
-            f"sure the board is off first.{override}"
+    check = check_board_off(sbc)
+    if check.is_off:
+        return None
+    if check.problem == POWERED_ON:
+        advice = "Power off before switching SD to host mode."
+    elif allow_force_override:
+        advice = "Make sure the board is off first."
+    else:
+        advice = (
+            "Power the board off, or switch the card explicitly with "
+            "`labctl sdwire host`, then retry."
         )
-    if state == PowerState.ON:
-        return (
-            f"Error: {sbc_name} is powered on. Power off before "
-            f"switching SD to host mode.{override}"
-        )
-    if fail_closed and state != PowerState.OFF:
-        return (
-            f"Error: the power state of {sbc_name} is {state.value}, so labctl "
-            f"can't confirm it is off. Make sure the board is off first."
-            f"{override}"
-        )
-    return None
+    message = f"Error: {board_off_problem_text(sbc_name, check)}. {advice}"
+    if allow_force_override:
+        message += "\nUse --force to override (risks SD card corruption)."
+    return message
 
 
 class _CliState(dict):
@@ -1385,7 +1363,7 @@ def info_cmd(ctx: click.Context, name: str) -> None:
         "the reboot after `sdwire flash`/`update`, `boot-test`, "
         "`enter-recovery`/`exit-recovery`, and MCP/REST/web cycles. Pass a "
         "negative number (e.g. -1) to clear the override and fall back to the "
-        f"default ({DEFAULT_POWER_CYCLE_DELAY_SECONDS}s)."
+        f"default and minimum of {DEFAULT_POWER_CYCLE_DELAY_SECONDS}s."
     ),
 )
 @click.pass_context
@@ -1701,7 +1679,7 @@ def sdwire_host_cmd(ctx: click.Context, sbc_name: str, force: bool) -> None:
         sys.exit(1)
 
     guard_err = _sdwire_host_switch_guard_cli(
-        sbc_name, sbc, force=force, allow_force_override=True, fail_closed=True
+        sbc_name, sbc, force=force, allow_force_override=True
     )
     if guard_err:
         click.echo(guard_err, err=True)
@@ -2200,7 +2178,8 @@ def sdwire_ls_cmd(
     """List directory contents on an SBC SD card partition.
 
     Switches the card to the host, reads it, and switches it back to the
-    SBC; refuses while the SBC's plug reports it powered on. Prints JSON.
+    SBC; only when the SBC's plug reports it off (no plug or an unreadable
+    plug refuses too). Prints JSON.
     """
     from labctl.sdwire.controller import SDWireController
 
@@ -2308,7 +2287,8 @@ def sdwire_cat_cmd(
     """Read a file from an SBC SD card partition.
 
     Switches the card to the host, reads it, and switches it back to the
-    SBC; refuses while the SBC's plug reports it powered on. Prints JSON.
+    SBC; only when the SBC's plug reports it off (no plug or an unreadable
+    plug refuses too). Prints JSON.
     """
     from labctl.sdwire.controller import SDWireController, SDWireSymlinkError
 
@@ -2403,8 +2383,8 @@ def sdwire_info_cmd(ctx: click.Context, sbc_name: str) -> None:
     """Show partition metadata for an SBC SD card.
 
     Switches the card to the host, reads the partition table (sudo parted,
-    blkid), and switches it back; refuses while the SBC's plug reports it
-    powered on. Prints JSON.
+    blkid), and switches it back; only when the SBC's plug reports it off
+    (no plug or an unreadable plug refuses too). Prints JSON.
     """
     from labctl.sdwire.controller import SDWireController
 
@@ -3541,34 +3521,27 @@ def power_off_cmd(ctx: click.Context, sbc_name: str) -> None:
 
 
 def _resolve_cycle_delay(sbc, requested: float | None) -> tuple[float, str | None]:
-    """Resolve the effective power-cycle delay for an SBC.
+    """The effective power-cycle delay for an SBC: runtime's
+    board_cycle_delay (the floor is the SBC's stored delay, or
+    ``DEFAULT_POWER_CYCLE_DELAY_SECONDS``; omitted means the floor).
 
-    The per-SBC value (if set) is used as both the default when the
-    user omits ``--delay`` *and* the floor when they pass a smaller
-    value. Falls back to ``DEFAULT_POWER_CYCLE_DELAY_SECONDS`` when the
-    SBC has no override.
-
-    Returns a tuple ``(delay, warning)``. ``warning`` is a human-readable
-    string when the requested value was raised to the floor, else None.
-    An out-of-range stored value raises StoredCycleDelayError (a
-    ValueError whose message says how to clear it).
+    Returns ``(delay, warning)``; ``warning`` says when the requested
+    value was raised to the floor, else None. Raises ValueError for a
+    requested value out of range (negative included) and
+    StoredCycleDelayError (a ValueError saying how to clear it) for an
+    out-of-range stored one.
     """
-    from labctl.actuators.runtime import stored_cycle_delay
+    from labctl.actuators.runtime import board_cycle_delay, cycle_delay_floor
 
-    sbc_value = stored_cycle_delay(sbc)
-    floor = sbc_value if sbc_value is not None else DEFAULT_POWER_CYCLE_DELAY_SECONDS
-
-    if requested is None:
-        return floor, None
-
-    requested = float(requested)
-    if requested < floor:
-        source = "SBC minimum" if sbc_value is not None else "default minimum"
-        return (
-            floor,
-            f"--delay {requested}s is below the {source} of {floor}s; using {floor}s",
-        )
-    return requested, None
+    delay = board_cycle_delay(sbc, requested)
+    if requested is None or delay <= requested:
+        return delay, None
+    _floor, source = cycle_delay_floor(sbc)
+    return (
+        delay,
+        f"--delay {float(requested)}s is below the {source} of {delay}s; "
+        f"using {delay}s",
+    )
 
 
 def _reboot_cycle_delay(sbc) -> float:
@@ -3593,11 +3566,11 @@ def _reboot_cycle_delay(sbc) -> float:
     type=float,
     default=None,
     help=(
-        "Delay between off and on (seconds, at most 86400). If omitted, the "
+        "Delay between off and on (seconds, 0-86400). If omitted, the "
         "SBC's stored value (`edit --cycle-delay`) is used; otherwise "
         f"{DEFAULT_POWER_CYCLE_DELAY_SECONDS}s. That value is also the "
-        "minimum: smaller values (including 0 or negative) are raised to it "
-        "with a warning."
+        "minimum: smaller values (including 0) are raised to it with a "
+        "warning; a negative value is an error."
     ),
 )
 @click.option(
@@ -3622,12 +3595,10 @@ def power_cycle_cmd(
         ActuationError,
         PrePowerCheckError,
         power_cycle_with_bindings,
-        validate_cycle_delay,
     )
 
     try:
         effective_delay, warning = _resolve_cycle_delay(sbc, delay)
-        validate_cycle_delay(effective_delay)
     except ValueError as e:  # incl. an out-of-range stored delay
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)

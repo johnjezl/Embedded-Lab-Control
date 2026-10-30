@@ -582,6 +582,16 @@ class TestConnectCommand:
 class TestSdwireReadSafety:
     """Safety checks for SDWire read commands."""
 
+    @pytest.fixture
+    def plug_off(self):
+        """The board's plug reports it OFF, so the card may be taken."""
+        from labctl.power.base import PowerState
+
+        power = MagicMock()
+        power.get_state.return_value = PowerState.OFF
+        with patch("labctl.power.PowerController.from_plug", return_value=power):
+            yield power
+
     def test_sdwire_cat_rejects_powered_on(self, runner):
         from labctl.power.base import PowerState
 
@@ -651,12 +661,12 @@ class TestSdwireReadSafety:
         assert "--force" not in result.output
         mock_ctrl.switch_to_host.assert_not_called()
 
-    def test_sdwire_cat_waits_for_host_settle(self, runner):
+    def test_sdwire_cat_waits_for_host_settle(self, runner, plug_off):
         sbc = MagicMock()
         sbc.name = "test-sbc-1"
         sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
         sbc.sdwire.device_type = "sdwirec"
-        sbc.power_plug = None
+        sbc.power_plug = MagicMock()
         manager = MagicMock()
         manager.get_sbc_by_name.return_value = sbc
         mock_ctrl = MagicMock()
@@ -796,25 +806,54 @@ class TestSdwireReadSafety:
         assert result.exit_code == 0, result.output
         ctrl.switch_to_host.assert_called_once()
 
-    def test_sdwire_ls_guard_still_lenient(self):
-        """The CLI read commands keep the ON-only check (only `host` changed)."""
-        from labctl.cli import _sdwire_host_switch_guard_cli
+    @pytest.mark.parametrize(
+        "args",
+        [
+            ["ls", "test-sbc-1", "-p", "1"],
+            ["cat", "test-sbc-1", "-p", "1", "--path", "/x"],
+            ["info", "test-sbc-1"],
+        ],
+    )
+    @pytest.mark.parametrize("case", ["no_plug", "unreadable", "unknown"])
+    def test_sdwire_reads_fail_closed(self, runner, args, case):
+        """Like MCP sdwire_ls/cat/info and `sdwire host` (#41): only a plug
+        reporting OFF lets the card be taken from the board."""
+        from labctl.power.base import PowerState
 
         sbc = MagicMock()
-        sbc.power_plug = None
-        assert _sdwire_host_switch_guard_cli("b", sbc) is None
-        sbc.power_plug = MagicMock()
-        with patch(
-            "labctl.power.PowerController.from_plug", side_effect=RuntimeError("x")
+        sbc.name = "test-sbc-1"
+        sbc.power_plug = None if case == "no_plug" else MagicMock()
+        manager = MagicMock()
+        manager.get_sbc_by_name.return_value = sbc
+        power = MagicMock()
+        if case == "unreadable":
+            power.get_state.side_effect = RuntimeError("plug unreachable")
+        else:
+            power.get_state.return_value = PowerState.UNKNOWN
+        mock_ctrl = MagicMock()
+        with (
+            patch("labctl.cli._get_manager", return_value=manager),
+            patch("labctl.sdwire.controller.SDWireController", return_value=mock_ctrl),
+            patch("labctl.power.PowerController.from_plug", return_value=power),
         ):
-            assert _sdwire_host_switch_guard_cli("b", sbc) is None
+            result = runner.invoke(main, ["sdwire", *args])
+        assert result.exit_code == 1
+        expected = {
+            "no_plug": "test-sbc-1 has no power plug",
+            "unreadable": "could not read the power state of test-sbc-1",
+            "unknown": "power state of test-sbc-1 is unknown",
+        }[case]
+        assert expected in result.output
+        assert "labctl sdwire host" in result.output
+        assert "--force" not in result.output
+        mock_ctrl.switch_to_host.assert_not_called()
 
-    def test_sdwire_cat_reports_cleanup_failure(self, runner):
+    def test_sdwire_cat_reports_cleanup_failure(self, runner, plug_off):
         sbc = MagicMock()
         sbc.name = "test-sbc-1"
         sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
         sbc.sdwire.device_type = "sdwirec"
-        sbc.power_plug = None
+        sbc.power_plug = MagicMock()
         manager = MagicMock()
         manager.get_sbc_by_name.return_value = sbc
         mock_ctrl = MagicMock()
@@ -849,12 +888,12 @@ class TestSdwireReadSafety:
         assert result.exit_code != 0
         assert "Failed to restore SD card to DUT mode" in result.output
 
-    def test_sdwire_info_reports_cleanup_failure(self, runner):
+    def test_sdwire_info_reports_cleanup_failure(self, runner, plug_off):
         sbc = MagicMock()
         sbc.name = "test-sbc-1"
         sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
         sbc.sdwire.device_type = "sdwirec"
-        sbc.power_plug = None
+        sbc.power_plug = MagicMock()
         manager = MagicMock()
         manager.get_sbc_by_name.return_value = sbc
         mock_ctrl = MagicMock()
