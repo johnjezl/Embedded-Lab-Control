@@ -7,7 +7,11 @@ import time
 from flask import Blueprint, g, jsonify, request
 
 from labctl import __version__
-from labctl.actuators.runtime import power_cycle_with_bindings, power_on_with_bindings
+from labctl.actuators.runtime import (
+    power_cycle_with_bindings,
+    power_on_with_bindings,
+    validate_cycle_delay,
+)
 from labctl.core import audit
 from labctl.core.models import PortType, Status
 from labctl.power import PowerController
@@ -196,10 +200,11 @@ def control_power(name: str):
         return jsonify({"error": "action must be on, off, or cycle"}), 400
 
     delay = data.get("delay", 3.0)
-    if action == "cycle" and (
-        isinstance(delay, bool) or not isinstance(delay, (int, float)) or not delay >= 0
-    ):
-        return jsonify({"error": "delay must be a non-negative number"}), 400
+    if action == "cycle":
+        try:
+            validate_cycle_delay(delay)
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
 
     refusal = claims.check(sbc.name)
     if refusal:

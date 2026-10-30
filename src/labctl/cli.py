@@ -1837,7 +1837,7 @@ def sdwire_flash_cmd(
             try:
                 ok = power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
             except (ActuationError, RuntimeError) as e:
-                raise RuntimeError(f"flashed, but not powered back on: {e}") from e
+                raise RuntimeError(f"flashed, but the power cycle failed: {e}") from e
             if not ok:
                 raise RuntimeError(f"flashed, but power_on failed on {sbc_name!r}")
             click.echo(f"Power cycled: {sbc_name}")
@@ -2043,7 +2043,7 @@ def sdwire_update_cmd(
                 ok = power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
             except (ActuationError, RuntimeError) as e:
                 raise RuntimeError(
-                    f"files updated, but not powered back on: {e}"
+                    f"files updated, but the power cycle failed: {e}"
                 ) from e
             if not ok:
                 raise RuntimeError(
@@ -3442,7 +3442,7 @@ def power_cycle_cmd(
 
     try:
         ok = power_cycle_with_bindings(manager, sbc, controller, effective_delay)
-    except PrePowerCheckError as e:
+    except (PrePowerCheckError, ValueError) as e:
         # Refused before power-off: nothing switched, so no power event.
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -6010,10 +6010,12 @@ def boot_test_cmd(
 
         power_ctrl = PowerController.from_plug(sbc.power_plug)
         try:
-            power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
+            ok = power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
         except ActuationError as e:
             # Recorded as a failed run, like a plug failure.
             raise RuntimeError(str(e)) from e
+        if not ok:
+            raise RuntimeError(f"power_on failed on {sbc_name!r}")
 
     # Progress callback
     def progress(run_num, total, run_result):

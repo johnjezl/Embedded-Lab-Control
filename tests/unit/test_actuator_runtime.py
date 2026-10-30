@@ -1111,7 +1111,7 @@ class TestPowerHelpers:
         )
         assert controller.events == ["off", ("on", [])]
 
-    @pytest.mark.parametrize("delay", [-1, "3", None, True, float("nan")])
+    @pytest.mark.parametrize("delay", [-1, "3", None, True, float("nan"), float("inf")])
     def test_cycle_bad_delay_refused_before_anything(self, lab, controller, delay):
         with pytest.raises(ValueError, match="delay must be a non-negative number"):
             runtime.power_cycle_with_bindings(
@@ -1125,10 +1125,48 @@ class TestPowerHelpers:
         binding = _make_binding(lab)
         lab.manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
         with runtime._channel_lock(lab.channel.id):
-            with pytest.raises(runtime.ActuationError, match="busy"):
+            with pytest.raises(runtime.PrePowerCheckError, match="busy"):
                 runtime.power_on_with_bindings(lab.manager, lab.sbc, controller)
-            with pytest.raises(runtime.ActuationError, match="left powered off"):
+            with pytest.raises(runtime.PrePowerCheckError, match="busy"):
                 runtime.power_cycle_with_bindings(
                     lab.manager, lab.sbc, controller, 0, sleep_fn=lambda s: None
                 )
+        controller.power_off.assert_not_called()
+        controller.power_on.assert_not_called()
+        assert lab.driver.write_log == []
+
+    def test_channel_taken_after_the_check_leaves_board_off(
+        self, lab, controller, monkeypatch
+    ):
+        """A verb that grabs the channel between the check and the write is
+        an ActuationError saying the board is off, not an unhandled error."""
+        binding = _make_binding(lab)
+        lab.manager.update_binding_desired_state(binding.id, DesiredState.ASSERTED)
+
+        def busy(manager, sbc):
+            raise runtime.ChannelBusyError("channel 1 is busy")
+
+        monkeypatch.setattr(runtime, "apply_pre_power_bindings", busy)
+        with pytest.raises(runtime.ActuationError, match="left powered off"):
+            runtime.power_cycle_with_bindings(
+                lab.manager, lab.sbc, controller, 0, sleep_fn=lambda s: None
+            )
+        controller.power_on.assert_not_called()
+
+    def test_power_on_checks_every_relay_before_driving_any(
+        self, lab, controller, monkeypatch
+    ):
+        """A second strap's relay that can't be used stops power-on before
+        the first strap is driven."""
+        _make_binding(lab)
+        monkeypatch.setattr(
+            runtime,
+            "probe_actuator",
+            lambda a: runtime.ProbeOutcome(
+                result=ProbeResult.UNREACHABLE, detail="no such device"
+            ),
+        )
+        with pytest.raises(runtime.PrePowerCheckError, match="no such device"):
+            runtime.power_on_with_bindings(lab.manager, lab.sbc, controller)
+        assert lab.driver.write_log == []
         controller.power_on.assert_not_called()

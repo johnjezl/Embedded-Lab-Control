@@ -2076,7 +2076,7 @@ def sdwire_update(
             try:
                 ok = power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
             except (ActuationError, RuntimeError) as e:
-                summary += f". Not powered back on: {e}"
+                summary += f". Power cycle failed: {e}"
             else:
                 if ok:
                     summary += f". Power cycled {sbc_name}."
@@ -2758,10 +2758,12 @@ def boot_test(
 
         power_ctrl = PowerController.from_plug(sbc.power_plug)
         try:
-            power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
+            ok = power_cycle_with_bindings(manager, sbc, power_ctrl, 3.0)
         except ActuationError as e:
             # Recorded as a failed run, like a plug failure.
             raise RuntimeError(str(e)) from e
+        if not ok:
+            raise RuntimeError(f"power_on failed on {sbc_name!r}")
 
     try:
         result = run_boot_test(
