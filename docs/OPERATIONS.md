@@ -166,12 +166,15 @@ logged (`remove` still refuses a board with an open claim unless
 (`connect`, `console`, `serial capture`, `ssh`, `proxy start`), `log`, `health-check`,
 `monitor`, `actuator probe`, the `claims` commands, lab-wide serial setup
 (`ser2net`, `serial rename`/`repair`,`serial udev` without `--install`),
-which affects every board's consoles at once, and the hardware inventory
-(`add`, `serial add`, `sdwire add`/`remove`, `actuator add`). `sdwire
-remove` refuses a device that is still assigned. `serial remove` also
-refuses, whoever holds a claim, an adapter still linked to a port (assigned
-with `--serial-device` or by a `/dev/lab/<name>` path naming a registered
-adapter).
+which affects every board's consoles at once (but `ser2net generate
+--install` makes `port assign`'s checks before saving a TCP port for a
+port without one: if another user has claimed its board or one sharing its
+console device, it refuses outright, unless `--override-claim`), and the
+hardware inventory (`add`, `serial add`, `sdwire add`/`remove`, `actuator
+add`). `sdwire remove` refuses a device that is still assigned. `serial
+remove` also refuses, whoever holds a claim, an adapter still linked to a
+port (assigned with `--serial-device` or by a `/dev/lab/<name>` path
+naming a registered adapter).
 The top-level aliases `off` (`power off`), `on` (`power on`),
 `rm`/`delete` (`remove`), `ls` (`list`) and `show` (`info`) behave
 exactly like the commands they stand for.
@@ -246,7 +249,7 @@ exactly like the commands they stand for.
 | `sdwire remove` | destructive | yes | Deletes a record |
 | `sdwire unassign` | destructive | yes | Deletes an association |
 | `sdwire update` | destructive | yes | Copies/renames/deletes files on the card; `--dry-run`; power-off and no-plug rule as `sdwire flash` |
-| `ser2net generate` | system-write |  | Only with `--install`: saves a TCP port for any port without one, then writes `ser2net.config_file` (default `/etc/ser2net.yaml`), atomically when it can create files in that directory and otherwise in place, refusing a symlink or hard link there. Otherwise writes stdout or the `-o` file |
+| `ser2net generate` | system-write |  | Only with `--install`: saves a TCP port for any port without one (skipping, and leaving out of the config, ports of boards another user has claimed), then writes `ser2net.config_file` (default `/etc/ser2net.yaml`), atomically when it can create files in that directory and otherwise in place, refusing a symlink or hard link there. Otherwise writes stdout or the `-o` file |
 | `ser2net reload` | system-write |  | Restarts ser2net: drops every live console session |
 | `serial add` | db-write |  |  |
 | `serial capture` | shared-resource |  | Holds a ser2net session; sends nothing |

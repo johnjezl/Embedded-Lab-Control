@@ -16,7 +16,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   4000. With `--install` each such port is assigned one and saved, as
   `port assign` without `-t` would (one above the highest in use, at
   least `serial.base_tcp_port`; refused past 65535), and the command
-  says which. Without `--install` nothing is saved: those ports are left
+  says which. A port whose board another user has claimed is skipped
+  (left out of the config, named, with a pointer to `port assign
+  --override-claim`). Without `--install` nothing is saved: those ports are left
   out of the output and the number each would get is shown (stderr).
 - `ser2net generate --install` writes `ser2net.config_file` (default
   `/etc/ser2net.yaml`, unchanged); it always wrote `/etc/ser2net.yaml`.
@@ -80,9 +82,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   config that won't parse) is a warning: the scripts carry on, and
   `update.sh` still restarts the services.
   **Upgrading:** an existing install keeps its database where it is
-  (e.g. `/var/lib/labctl/labctl.db`). To share it with the group: stop the
+  (e.g. `/var/lib/labctl/labctl.db`). To share it with the group, as root
+  throughout (your account may not see into `/var/lib/labctl`): stop the
   services, move `labctl.db` (and any `labctl.db-wal`/`-shm`) into
-  `/var/lib/labctl/db/`, set `database_path: /var/lib/labctl/db/labctl.db`
+  `/var/lib/labctl/db/`, check it arrived (`sudo ls -l
+  /var/lib/labctl/db/labctl.db`; if it isn't there, `update.sh` creates a
+  new, empty database), set `database_path: /var/lib/labctl/db/labctl.db`
   in `/etc/labctl/config.yaml` and copy it to the service config, run
   `update.sh` (or `install-services.sh`), and start the services. README
   "Moving the database" has the commands.

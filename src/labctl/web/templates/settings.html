@@ -55,7 +55,8 @@
             <tr><th>Check Interval</th><td>{{ config.health.check_interval if config else '10' }}s</td></tr>
             <tr><th>Ping Timeout</th><td>{{ config.health.ping_timeout if config else '2.0' }}s</td></tr>
             <tr><th>Serial Timeout</th><td>{{ config.health.serial_timeout if config else '2.0' }}s</td></tr>
-            <tr><th>Status Retention</th><td>{{ config.health.status_retention_days if config else '30' }} days</td></tr>
+            {% set retention = config.health.status_retention_days if config else 30 %}
+            <tr><th>Status Retention</th><td>{{ 'keep all' if retention == 0 else retention ~ ' days' }}</td></tr>
             <tr><th>Alert on Offline</th><td>{{ 'Yes' if (config and config.health.alert_on_offline) else 'No' }}</td></tr>
             <tr><th>Alert on Power Change</th><td>{{ 'Yes' if (config and config.health.alert_on_power_change) else 'No' }}</td></tr>
             <tr><th>Alert Log</th><td><code>{{ config.health.alert_log_path if config else '~/.local/share/labctl/alerts.log' }}</code></td></tr>

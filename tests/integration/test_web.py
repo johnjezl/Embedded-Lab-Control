@@ -916,3 +916,18 @@ class TestDashboardClaims:
         # Should have redirected to SBC detail and shown flash
         assert b"Force-released" in response.data
         assert manager.get_active_claim(sample_sbc.name) is None
+
+
+class TestSettingsStatusRetention:
+    """health.status_retention_days on the settings page: 0 keeps all."""
+
+    @pytest.mark.parametrize("days,shown", [(0, "keep all"), (30, "30 days")])
+    def test_shown(self, app, client, days, shown):
+        app.config["LABCTL_CONFIG"].health.status_retention_days = days
+        response = client.get("/settings")
+        assert response.status_code == 200
+        text = response.data.decode()
+        row = text[text.index("Status Retention") :][:120]
+        assert shown in row
+        if days == 0:
+            assert "0 days" not in row
