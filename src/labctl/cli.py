@@ -5239,8 +5239,9 @@ def export_cmd(ctx: click.Context, fmt: str, output: Path | None) -> None:
     """Export all SBC configurations.
 
     Includes serial adapters, and each SBC's serial ports, network
-    addresses, power plug and SDWire. Actuators, bindings and the per-SBC
-    cycle delay are not exported.
+    addresses, power plug and SDWire (nothing is written when there are no
+    SBCs). Actuators, bindings and the per-SBC cycle delay are not
+    exported.
     """
     import json
 
