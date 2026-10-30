@@ -498,61 +498,45 @@ class TestPreInstallConfigCheck:
         assert self.run(cfg, loader=tmp_path / "missing.py").returncode == 3
 
 
-class TestInstallServicesDatabase:
-    """install-services.sh puts a fresh install's database in a setgid,
-    group-writable directory of its own, and only secures the database
-    the system config actually names."""
+class TestScriptsShareDatabaseSetup:
+    """install-services.sh and update.sh make the database group-writable
+    with the same admin_files call, and a failure there only warns: under
+    `set -e` it must not stop update.sh before it restarts the services."""
 
     INSTALL_SH = UPDATE_SH.parent / "install-services.sh"
-
-    def _script(self) -> str:
-        text = self.INSTALL_SH.read_text()
-        head = 'DB_PATH=$("$LABCTL_VENV/bin/python" -I -c \'\n'
-        start = text.index(head) + len(head)
-        return text[start : text.index('\n\' "$SYSTEM_CONFIG_FILE")', start)]
-
-    @pytest.mark.parametrize(
-        "body,expected",
-        [
-            (
-                "database_path: /var/lib/labctl/db/labctl.db\n",
-                "/var/lib/labctl/db/labctl.db",
-            ),
-            ("log_level: INFO\n", ""),
-            ("", ""),
-            ("- a list\n", ""),
-        ],
+    CALL = (
+        '"${ADMIN_FILES[@]}" shared-db "$SYSTEM_CONFIG_FILE" "$LABCTL_DB_DIR"'
+        " labctl labctl ||\n"
+        '    echo "[!!] Continuing; fix the database permissions above and rerun."'
     )
-    def test_reads_database_path(self, tmp_path, body, expected):
-        cfg = tmp_path / "config.yaml"
-        cfg.write_text(body)
-        result = subprocess.run(
-            [sys.executable, "-I", "-c", self._script(), str(cfg)],
-            capture_output=True,
-            text=True,
-            cwd="/",
-            timeout=60,
-        )
-        assert result.returncode == 0, result.stderr
-        assert result.stdout.strip() == expected
+
+    @pytest.mark.parametrize("script", [UPDATE_SH, INSTALL_SH], ids=lambda p: p.name)
+    def test_same_call_never_fatal(self, script):
+        text = script.read_text()
+        assert text.count(self.CALL) == 1
+        assert 'LABCTL_DB_DIR="$LABCTL_HOME/db"' in text
+        # No second copy of the logic in shell.
+        assert "labctl.db-wal" not in text and '"$DB_PATH-wal"' not in text
+
+    def test_update_sets_up_database_before_restart(self):
+        text = UPDATE_SH.read_text()
+        assert text.index(self.CALL) < text.index("systemctl restart")
 
     def test_fresh_config_points_at_db_dir(self):
         text = self.INSTALL_SH.read_text()
-        assert 'LABCTL_DB_DIR="$LABCTL_HOME/db"' in text
         assert '"database_path: $LABCTL_DB_DIR/labctl.db"' in text
-        assert 'secure-dir "$LABCTL_DB_DIR" labctl labctl 2775' in text
-        assert 'create "$DB_PATH" labctl labctl 664' in text
 
-    def test_update_script_secures_the_same_database(self):
-        """update.sh keeps the db directory and file group-writable with the
-        same database_path reader as install-services.sh."""
-        text = UPDATE_SH.read_text()
-        head = 'DB_PATH=$("$LABCTL_VENV/bin/python" -I -c \'\n'
-        start = text.index(head) + len(head)
-        snippet = text[start : text.index('\n\' "$SYSTEM_CONFIG_FILE")', start)]
-        assert snippet == self._script()
-        assert 'LABCTL_DB_DIR="$LABCTL_HOME/db"' in text
-        assert 'secure-dir "$LABCTL_DB_DIR" labctl labctl 2775' in text
-        assert 'create "$DB_PATH" labctl labctl 664' in text
-        # Before the restart, so services reopen a group-writable database.
-        assert text.index('create "$DB_PATH"') < text.index("systemctl restart")
+    def test_warning_does_not_stop_set_e_script(self, tmp_path):
+        """The `cmd || echo` form keeps a set -e script going."""
+        script = tmp_path / "s.sh"
+        script.write_text(
+            "set -e\nADMIN_FILES=(false)\nSYSTEM_CONFIG_FILE=x\nLABCTL_DB_DIR=y\n"
+            + self.CALL
+            + "\necho reached-restart\n"
+        )
+        result = subprocess.run(
+            ["bash", str(script)], capture_output=True, text=True, timeout=30
+        )
+        assert result.returncode == 0
+        assert "Continuing" in result.stdout
+        assert "reached-restart" in result.stdout

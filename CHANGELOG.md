@@ -12,29 +12,44 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `import`): one above the highest port in use, and at least the base. It
   must be 1-65535 (anything else keeps 4000, with a warning). The web
   settings page showed it blank (it read `ser2net.base_tcp_port`).
-- `ser2net generate` gives a port with no TCP port recorded the next
-  free one from `serial.base_tcp_port` up (one each), instead of 4000 for
-  all of them. Only the generated config changes, not the database.
+- `ser2net generate` no longer gives every port without a TCP port
+  4000. With `--install` each such port is assigned one and saved, as
+  `port assign` without `-t` would (one above the highest in use, at
+  least `serial.base_tcp_port`; refused past 65535), and the command
+  says which. Without `--install` nothing is saved: those ports are left
+  out of the output and the number each would get is shown (stderr).
 - `ser2net generate --install` writes `ser2net.config_file` (default
   `/etc/ser2net.yaml`, unchanged); it always wrote `/etc/ser2net.yaml`.
-  The file is rewritten in place (owner and mode kept), and a symlink on
-  the path or a hard-linked file is refused, since it may run as root.
+  The file is replaced atomically (a temporary file in the same
+  directory, given the old file's owner and mode, fsynced and renamed
+  over it); a symlink on the path or a hard-linked file is refused, since
+  it may run as root. A labctl group member, who can write
+  `/etc/ser2net.yaml` but not `/etc`, gets it rewritten in place. The
+  permission-denied message names the configured path.
   `install-services.sh` still makes only `/etc/ser2net.yaml`
   group-writable.
 - `health.status_retention_days` now prunes status history: the monitor
-  deletes older entries at startup and then hourly. It must be a whole
-  number above 0.
+  deletes older entries at startup and then hourly; `0` keeps all of it.
+  Schema v12 indexes `status_log(logged_at)` for this.
 - `claims.require_agent_name` is enforced: MCP `claim_sbc` and
   `POST /api/claims/<sbc>` refuse (`agent_name_required`) a claim that
-  would be recorded under a placeholder name, i.e. with no `agent_name`
-  (in the call, or earlier in the MCP session) and no authenticated user.
-  CLI claims are always named (`--name` or `$USER`).
+  would be recorded under a placeholder name: no `agent_name` and no
+  authenticated user (or, over MCP stdio, no name given earlier in the
+  session). CLI claims are always named (`--name` or `$USER`). A REST
+  `agent_name` that isn't a string is a 400.
+- MCP over unauthenticated HTTP no longer remembers an `agent_name`
+  across calls: the server can't tell its clients apart, so one client's
+  name named every other client's claims and releases. It is used for
+  the call that gives it; stdio and per-user (authenticated) names are
+  still remembered.
 - MCP `claim_sbc` defaults `duration_minutes` to
   `claims.default_duration_minutes`, like the CLI and REST (it was 30).
-- `bind --phase post-power` (and MCP `bind` with `sample_phase=post_power`)
-  is refused: nothing acts on it yet. Bindings stored with it before are
-  kept and listed as inactive (`bindings list` marks them `*`, `bindings
-  status` says so, MCP output carries `sample_phase_note`).
+- `post-power` bindings can no longer be created: nothing acts on them
+  yet. `bind --phase` no longer offers `post-power`, and the database
+  layer refuses `post_power` (MCP `bind` reports its error). Bindings
+  stored with it before are kept and listed as inactive (`bindings list`
+  marks them `*`, `bindings status` says so, MCP output carries
+  `sample_phase_note`).
 - `ports --all` lists the USB serial devices (`/dev/ttyUSB*`,
   `/dev/ttyACM*`) no `/dev/lab` symlink points at; the flag did nothing.
 - `remove`, `sdwire remove`, `serial remove`, `actuator remove` and
@@ -48,8 +63,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `/var/lib/labctl/db` (setgid `2775`; the file, created empty if
   missing, and any `-wal`/`-shm` are `664`; SQLite gives new `-wal`/`-shm`
   files the database's mode). A database configured elsewhere is left
-  alone, with a note. Root creates and re-permissions these through
-  `labctl.core.admin_files` (new `create` operation).
+  alone, with a note. Both scripts run the same root-safe step,
+  `python -m labctl.core.admin_files shared-db` (new; also new: `create`),
+  and a problem there (a symlinked database file, a non-regular `-wal`, a
+  config that won't parse) is a warning: the scripts carry on, and
+  `update.sh` still restarts the services.
   **Upgrading:** an existing install keeps its database where it is
   (e.g. `/var/lib/labctl/labctl.db`). To share it with the group: stop the
   services, move `labctl.db` (and any `labctl.db-wal`/`-shm`) into

@@ -263,3 +263,86 @@ class TestCli:
         assert "unknown user or group" in capsys.readouterr().err
         assert admin_files.main(["secure", str(managed / "f"), USER, GROUP, "rw"]) == 2
         assert capsys.readouterr().err.startswith("error:")
+
+
+class TestSharedDb:
+    """shared_db: what install-services.sh and update.sh run for the
+    services' database. Problems are reported (exit 2), never raised."""
+
+    def _config(self, tmp_path, db_path):
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(f"database_path: {db_path}\n")
+        return cfg
+
+    def test_configured_dir_made_group_writable(self, managed, tmp_path, capsys):
+        db_dir = managed / "db"
+        cfg = self._config(tmp_path, db_dir / "labctl.db")
+        assert admin_files.shared_db(str(cfg), str(db_dir), USER, GROUP) == 0
+        assert stat.S_IMODE(db_dir.stat().st_mode) == 0o2775
+        db = db_dir / "labctl.db"
+        assert db.read_bytes() == b""
+        assert stat.S_IMODE(db.stat().st_mode) == 0o664
+        assert "[ok] Database" in capsys.readouterr().out
+
+    def test_existing_wal_and_shm_secured(self, managed, tmp_path):
+        db_dir = managed / "db"
+        db_dir.mkdir()
+        for name in ("labctl.db", "labctl.db-wal", "labctl.db-shm"):
+            (db_dir / name).write_bytes(b"x")
+            (db_dir / name).chmod(0o644)
+        cfg = self._config(tmp_path, db_dir / "labctl.db")
+        assert admin_files.shared_db(str(cfg), str(db_dir), USER, GROUP) == 0
+        for name in ("labctl.db", "labctl.db-wal", "labctl.db-shm"):
+            assert stat.S_IMODE((db_dir / name).stat().st_mode) == 0o664
+
+    def test_database_elsewhere_left_alone(self, managed, tmp_path, capsys):
+        db_dir = managed / "db"
+        cfg = self._config(tmp_path, managed / "labctl.db")
+        assert admin_files.shared_db(str(cfg), str(db_dir), USER, GROUP) == 0
+        assert not db_dir.exists()
+        assert "Moving the database" in capsys.readouterr().out
+
+    def test_symlinked_dir_left_alone(self, managed, tmp_path, capsys):
+        real = tmp_path / "real"
+        real.mkdir(mode=0o700)
+        db_dir = managed / "db"
+        db_dir.symlink_to(real)
+        cfg = self._config(tmp_path, db_dir / "labctl.db")
+        assert admin_files.shared_db(str(cfg), str(db_dir), USER, GROUP) == 0
+        assert stat.S_IMODE(real.stat().st_mode) == 0o700
+        assert not (real / "labctl.db").exists()
+        assert "is a symlink" in capsys.readouterr().out
+
+    def test_symlinked_database_warns(self, managed, tmp_path, victim, capsys):
+        db_dir = managed / "db"
+        db_dir.mkdir()
+        (db_dir / "labctl.db").symlink_to(victim)
+        cfg = self._config(tmp_path, db_dir / "labctl.db")
+        assert admin_files.shared_db(str(cfg), str(db_dir), USER, GROUP) == 2
+        assert stat.S_IMODE(victim.stat().st_mode) == 0o600
+        assert "[!!] Database" in capsys.readouterr().out
+
+    def test_non_regular_wal_warns_and_rest_done(self, managed, tmp_path, capsys):
+        db_dir = managed / "db"
+        db_dir.mkdir()
+        os.mkfifo(db_dir / "labctl.db-wal")
+        cfg = self._config(tmp_path, db_dir / "labctl.db")
+        assert admin_files.shared_db(str(cfg), str(db_dir), USER, GROUP) == 2
+        assert stat.S_IMODE((db_dir / "labctl.db").stat().st_mode) == 0o664
+        assert "Left as is" in capsys.readouterr().out
+
+    @pytest.mark.parametrize("body", ["database_path: [unclosed\n", None])
+    def test_unreadable_config_warns(self, managed, tmp_path, capsys, body):
+        cfg = tmp_path / "config.yaml"
+        if body is not None:
+            cfg.write_text(body)
+        db_dir = managed / "db"
+        assert admin_files.shared_db(str(cfg), str(db_dir), USER, GROUP) == 2
+        assert not db_dir.exists()
+        assert "not checked" in capsys.readouterr().out
+
+    def test_cli_exit_code(self, managed, tmp_path):
+        db_dir = managed / "db"
+        cfg = self._config(tmp_path, db_dir / "labctl.db")
+        argv = ["shared-db", str(cfg), str(db_dir), USER, GROUP]
+        assert admin_files.main(argv) == 0

@@ -3,6 +3,8 @@
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from labctl.core.models import Status
 from labctl.health.alerts import (
     Alert,
@@ -586,8 +588,9 @@ class TestStatusHistoryPruning:
         assert daemon.manager.cleanup_old_status_logs.call_count == 2
         daemon.manager.cleanup_old_status_logs.assert_called_with(7)
 
-    def test_none_disables(self):
-        daemon = self._daemon(retention=None)
+    @pytest.mark.parametrize("retention", [None, 0])
+    def test_none_or_zero_keeps_all(self, retention):
+        daemon = self._daemon(retention=retention)
         daemon._prune_status_log(100.0)
         daemon.manager.cleanup_old_status_logs.assert_not_called()
 

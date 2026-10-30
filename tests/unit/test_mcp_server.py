@@ -2849,6 +2849,48 @@ class TestMcpClaimDefaultsAndNames:
         assert result["status"] == "claimed"
         assert result["claim"]["agent_name"] == "alice"
 
+    def test_unauthenticated_http_name_not_shared(self, claims_env):
+        """Over unauthenticated HTTP one client's agent_name must not name
+        (or count as the name of) another client's claim."""
+        from labctl import mcp_server
+
+        mcp_server._get_config().claims.require_agent_name = True
+        with (
+            patch("labctl.mcp_server._AGENT_NAME", None),
+            patch("labctl.mcp_server._SESSION_KIND", "mcp-http"),
+            patch("labctl.mcp_server._authenticated_user", return_value=None),
+        ):
+            first = json.loads(
+                mcp_server.claim_sbc(sbc_name="test-sbc-1", agent_name="client-a")
+            )
+            assert first["claim"]["agent_name"] == "client-a"
+            assert mcp_server._AGENT_NAME is None  # not remembered
+            second = json.loads(mcp_server.claim_sbc(sbc_name="test-sbc-2"))
+            assert second["error"] == "agent_name_required"
+            assert mcp_server._get_agent_name().startswith("unnamed-")
+
+    def test_unauthenticated_http_unnamed_claim_not_named_by_others(self, claims_env):
+        from labctl import mcp_server
+
+        with (
+            patch("labctl.mcp_server._AGENT_NAME", None),
+            patch("labctl.mcp_server._SESSION_KIND", "mcp-http"),
+            patch("labctl.mcp_server._authenticated_user", return_value=None),
+        ):
+            mcp_server.claim_sbc(sbc_name="test-sbc-1", agent_name="client-a")
+            result = json.loads(mcp_server.claim_sbc(sbc_name="test-sbc-2"))
+        assert result["claim"]["agent_name"].startswith("unnamed-")
+
+    def test_stdio_name_remembered(self, claims_env):
+        from labctl import mcp_server
+
+        with (
+            patch("labctl.mcp_server._AGENT_NAME", None),
+            patch("labctl.mcp_server._SESSION_KIND", "mcp-stdio"),
+        ):
+            mcp_server.claim_sbc(sbc_name="test-sbc-1", agent_name="solo")
+            assert mcp_server._get_agent_name() == "solo"
+
     def test_unnamed_allowed_by_default(self, claims_env):
         from labctl import mcp_server
 

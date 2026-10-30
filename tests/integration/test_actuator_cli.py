@@ -314,8 +314,38 @@ class TestBindCommand:
             ],
         )
         assert result.exit_code == 2
-        assert "post-power bindings aren't implemented yet" in result.output
+        assert "'post-power' is not one of" in result.output
         assert lab.manager.get_binding_by_target(lab.sbc.id, "recovery_mode") is None
+
+    def test_bind_manager_refusal_is_one_error_line(self, runner, lab):
+        """The manager is the guard (e.g. post_power); its ValueError is
+        reported, not a traceback."""
+        from unittest.mock import patch
+
+        _add_relay(runner, lab.config_path)
+        with patch(
+            "labctl.core.manager.ResourceManager.create_binding",
+            side_effect=ValueError("post-power bindings aren't implemented yet"),
+        ):
+            result = runner.invoke(
+                main,
+                [
+                    "-c",
+                    str(lab.config_path),
+                    "bind",
+                    "jetson-nano-2",
+                    "recovery_mode",
+                    "--actuator",
+                    "relay-1",
+                    "--channel",
+                    "1",
+                    "--mode",
+                    "latch",
+                ],
+            )
+        assert result.exit_code == 1
+        assert "Error: post-power bindings aren't implemented yet" in result.output
+        assert result.exception is None or isinstance(result.exception, SystemExit)
 
     def test_stored_post_power_listed_inactive(self, runner, lab):
         _add_relay(runner, lab.config_path)

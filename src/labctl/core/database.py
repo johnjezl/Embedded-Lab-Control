@@ -33,7 +33,7 @@ from typing import Generator, Optional
 logger = logging.getLogger(__name__)
 
 # Current schema version
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 # Default SQLite busy-timeout when the Database is constructed without an
 # explicit value (e.g. tests, direct callers). Matches Config.database
@@ -273,6 +273,7 @@ CREATE INDEX IF NOT EXISTS idx_serial_ports_device ON serial_ports(device_path);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_serial_ports_alias ON serial_ports(alias) WHERE alias IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_sdwire_assignments_sbc ON sdwire_assignments(sbc_id);
 CREATE INDEX IF NOT EXISTS idx_status_log_sbc ON status_log(sbc_id);
+CREATE INDEX IF NOT EXISTS idx_status_log_logged_at ON status_log(logged_at);
 CREATE INDEX IF NOT EXISTS idx_audit_log_entity ON audit_log(entity_type, entity_id);
 CREATE INDEX IF NOT EXISTS idx_audit_log_logged_at ON audit_log(logged_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor, logged_at DESC);
@@ -699,6 +700,20 @@ class Database:
             except sqlite3.OperationalError as e:
                 if "duplicate column" not in str(e):
                     raise
+
+        if from_version < 12:
+            # v12: the monitor prunes status history by age
+            # (health.status_retention_days). A hand-made database may
+            # lack the table; there is nothing to index then.
+            has_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table'"
+                " AND name = 'status_log'"
+            ).fetchone()
+            if has_table:
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_status_log_logged_at"
+                    " ON status_log(logged_at)"
+                )
 
         # OR IGNORE: tolerate a concurrent process that has already
         # bumped schema_version to the current value during a race.

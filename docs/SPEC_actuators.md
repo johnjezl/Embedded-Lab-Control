@@ -365,8 +365,9 @@ power flows:
     board off and the error says so; a board is never powered on
     without its straps.
 - `post_power` — actuator is driven after the device is up. *Deferred:*
-  new bindings with it are refused (CLI, MCP and the manager), since no
-  runtime path would act on it. Bindings stored with it by earlier
+  new bindings with it are refused by the manager (`create_binding`;
+  MCP `bind` reports the error, and the CLI's `--phase` doesn't offer
+  it), since no runtime path would act on it. Bindings stored with it by earlier
   versions stay, marked inactive in `bindings list`/`status` and in MCP
   output (`sample_phase_note`).
 - `none` — no automatic coupling; user drives explicitly.
