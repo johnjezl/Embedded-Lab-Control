@@ -160,6 +160,45 @@ class TestBindingCrud:
         assert b.actuator_name == "relay-1"
         assert b.channel_index == 1
 
+    def test_create_binding_refuses_post_power(self, manager):
+        """post_power isn't acted on, so new bindings can't use it."""
+        sbc, a, ch = self._setup(manager)
+        with pytest.raises(ValueError, match="post-power bindings aren't"):
+            manager.create_binding(
+                sbc.id,
+                "recovery_mode",
+                ch.id,
+                shape_mode=ShapeMode.LATCH,
+                shape_active=ChannelState.CLOSED,
+                sample_phase=SamplePhase.POST_POWER,
+            )
+        assert manager.list_bindings(sbc_id=sbc.id) == []
+
+    def test_stored_post_power_binding_marked_inactive(self, manager):
+        """One stored by an older version lists as inactive."""
+        sbc, a, ch = self._setup(manager)
+        b = manager.create_binding(
+            sbc.id,
+            "recovery_mode",
+            ch.id,
+            shape_mode=ShapeMode.LATCH,
+            shape_active=ChannelState.CLOSED,
+        )
+        manager.db.execute_modify(
+            "UPDATE bindings SET sample_phase = 'post_power' WHERE id = ?", (b.id,)
+        )
+        shape = manager.get_binding(b.id).to_dict()["shape"]
+        assert shape["sample_phase"] == "post_power"
+        assert shape["sample_phase_note"].startswith("inactive")
+        b2 = manager.create_binding(
+            sbc.id,
+            "boot_select",
+            manager.add_actuator_channel(a.id, 2).id,
+            shape_mode=ShapeMode.LATCH,
+            shape_active=ChannelState.CLOSED,
+        )
+        assert "sample_phase_note" not in b2.to_dict()["shape"]
+
     def test_get_binding_by_target(self, manager):
         sbc, a, ch = self._setup(manager)
         manager.create_binding(

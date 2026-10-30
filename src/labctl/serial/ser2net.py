@@ -5,6 +5,8 @@ Generates ser2net YAML configuration for exposing serial ports over TCP.
 Supports ser2net 4.0+ YAML configuration format.
 """
 
+import errno
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -173,3 +175,27 @@ if __name__ == "__main__":
     ]
 
     print(generate_ser2net_config(ports))
+
+
+def write_ser2net_config(path: str, content: str) -> None:
+    """Write ``content`` to the ser2net config at absolute ``path``.
+
+    `ser2net generate --install` may run as root (sudo), with the path
+    taken from ``ser2net.config_file``. The file is opened without
+    following a symlink on any path component, must be a regular file
+    with a single link (or not exist yet: it is then created 0644), and
+    is rewritten in place, so its owner and mode (``root:labctl 664``
+    from install-services.sh) are kept.
+    """
+    from labctl.core.safe_open import open_file_nofollow
+
+    fd = open_file_nofollow(path, os.O_WRONLY | os.O_CREAT, 0o644)
+    try:
+        if os.fstat(fd).st_nlink != 1:
+            raise OSError(errno.EMLINK, f"{path} has more than one hard link")
+        os.ftruncate(fd, 0)
+        data = content.encode()
+        while data:
+            data = data[os.write(fd, data) :]
+    finally:
+        os.close(fd)

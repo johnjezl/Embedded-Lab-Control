@@ -262,6 +262,7 @@ def sbc_port_assign(name: str):
             tcp_port=int(tcp_port) if tcp_port else None,
             baud_rate=int(baud_rate),
             alias=alias,
+            base_tcp_port=g.config.serial.base_tcp_port,
         )
         flash(f"Assigned {port_type} port", "success")
     except Exception as e:

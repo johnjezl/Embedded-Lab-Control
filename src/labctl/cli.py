@@ -30,7 +30,11 @@ from labctl.core.models import (
     Status,
 )
 from labctl.power import PowerController, PowerState
-from labctl.serial.ser2net import Ser2NetPort, generate_ser2net_config
+from labctl.serial.ser2net import (
+    Ser2NetPort,
+    generate_ser2net_config,
+    write_ser2net_config,
+)
 
 # Command aliases mapping
 ALIASES = {
@@ -93,7 +97,26 @@ def _stdin_is_tty() -> bool:
         return False
 
 
-def destructive_command(action: str):
+def _confirm_or_require_yes(yes: bool, question: str, action: str) -> None:
+    """Confirmation for the commands that delete records or act on every
+    board: ask on a terminal; without one, refuse unless --yes, rather
+    than read an answer from a pipe or act unasked."""
+    if yes:
+        return
+    if not _stdin_is_tty():
+        click.echo(
+            f"Error: stdin is not a terminal, so labctl can't ask before it "
+            f"{action}; pass --yes to go ahead without asking.",
+            err=True,
+        )
+        sys.exit(1)
+    click.confirm(question, abort=True)
+
+
+_YES_REQUIRED_HELP = "Don't ask for confirmation (required when not on a terminal)."
+
+
+def destructive_command(action: str, *, strict: bool = False):
     """Add ``--yes/-y`` and an interactive confirmation to a destructive command.
 
     Asks only when stdin is a terminal (D012, Phase 1 WS3), so callers
@@ -101,12 +124,23 @@ def destructive_command(action: str):
     asked. A script started from an interactive shell inherits that
     terminal and *is* asked: such scripts should pass ``--yes``.
     ``--yes`` skips the question; so does ``--dry-run`` on commands that
-    have it. Apply directly below the ``@group.command(...)`` line.
+    have it. With ``strict`` (commands that delete records), a caller
+    without a terminal isn't asked either, but is refused unless it passes
+    ``--yes``. Apply directly below the ``@group.command(...)`` line.
     """
 
     def decorator(f):
         @functools.wraps(f)
         def wrapper(*args, yes: bool = False, **kwargs):
+            if strict and not yes and not kwargs.get("dry_run"):
+                if not _stdin_is_tty():
+                    click.echo(
+                        "Error: stdin is not a terminal, so labctl can't ask "
+                        f"before this ({action.lower()}); pass --yes to go "
+                        "ahead without asking.",
+                        err=True,
+                    )
+                    sys.exit(1)
             if not yes and not kwargs.get("dry_run") and _stdin_is_tty():
                 # Refuse a claimed board before asking, not after (D013).
                 precheck = getattr(f, "_claim_precheck", None)
@@ -127,7 +161,11 @@ def destructive_command(action: str):
             "--yes",
             "-y",
             is_flag=True,
-            help="Don't ask for confirmation (it is only asked on a terminal).",
+            help=(
+                _YES_REQUIRED_HELP
+                if strict
+                else "Don't ask for confirmation (it is only asked on a terminal)."
+            ),
         )(wrapper)
 
     return decorator
@@ -770,17 +808,34 @@ def main(
         time.sleep(delay)
 
 
+# USB serial adapters the kernel names directly; `ports --all` lists the
+# ones no lab symlink points at.
+_RAW_SERIAL_GLOBS = ("/dev/ttyUSB*", "/dev/ttyACM*")
+
+
+def _unlinked_serial_devices(linked_targets: set[str]) -> list[str]:
+    import glob
+
+    found = set()
+    for pattern in _RAW_SERIAL_GLOBS:
+        found.update(glob.glob(pattern))
+    return sorted(d for d in found if os.path.realpath(d) not in linked_targets)
+
+
 @main.command("ports")
 @click.option(
     "--all",
     "-a",
     "show_all",
     is_flag=True,
-    help="Show all serial devices, not just /dev/lab/",
+    help=(
+        "Also list USB serial devices (/dev/ttyUSB*, /dev/ttyACM*) that no "
+        "lab symlink points at"
+    ),
 )
 @click.pass_context
 def ports_cmd(ctx: click.Context, show_all: bool) -> None:
-    """List available serial ports."""
+    """List available serial ports (the symlinks in serial.dev_dir)."""
     verbose = ctx.obj.get("verbose", False)
     config: Config = ctx.obj["config"]
     dev_dir = config.serial.dev_dir
@@ -803,22 +858,35 @@ def ports_cmd(ctx: click.Context, show_all: bool) -> None:
                     }
                 )
 
+    others = (
+        _unlinked_serial_devices({os.path.realpath(p["target"]) for p in lab_ports})
+        if show_all
+        else []
+    )
+
     if not lab_ports:
         click.echo(f"No ports configured in {dev_dir}/")
         if verbose:
             click.echo("Run discover-usb-serial.sh to find connected devices")
-        return
+    else:
+        # Print table header
+        click.echo(f"{'NAME':<20} {'DEVICE':<15} {'TCP PORT':<10}")
+        click.echo("-" * 45)
 
-    # Print table header
-    click.echo(f"{'NAME':<20} {'DEVICE':<15} {'TCP PORT':<10}")
-    click.echo("-" * 45)
+        for port in lab_ports:
+            tcp = port["tcp_port"] or "-"
+            click.echo(f"{port['name']:<20} {port['target']:<15} {tcp:<10}")
 
-    for port in lab_ports:
-        tcp = port["tcp_port"] or "-"
-        click.echo(f"{port['name']:<20} {port['target']:<15} {tcp:<10}")
+        if verbose:
+            click.echo(f"\n{len(lab_ports)} port(s) configured")
 
-    if verbose:
-        click.echo(f"\n{len(lab_ports)} port(s) configured")
+    if show_all:
+        if others:
+            click.echo(f"\nOther serial devices (no link in {dev_dir}/):")
+            for device in others:
+                click.echo(f"  {device}")
+        else:
+            click.echo("\nNo other USB serial devices found.")
 
 
 def _get_tcp_port(port_name: str, config: Config) -> int | None:
@@ -1231,12 +1299,7 @@ def add_cmd(
 @main.command("remove")
 @override_claim_option
 @click.argument("name")
-@click.option(
-    "--yes",
-    "-y",
-    is_flag=True,
-    help="Skip confirmation (asked even when not on a terminal)",
-)
+@click.option("--yes", "-y", is_flag=True, help=_YES_REQUIRED_HELP)
 @click.option(
     "--force",
     is_flag=True,
@@ -1266,8 +1329,11 @@ def remove_cmd(
         sys.exit(1)
 
     _announce_override(_check_claim_cli(ctx, name, override, shared=False, probe=True))
-    if not yes:
-        click.confirm(f"Remove SBC '{name}' and all associated data?", abort=True)
+    _confirm_or_require_yes(
+        yes,
+        f"Remove SBC '{name}' and all associated data?",
+        f"removes SBC '{name}'",
+    )
     _check_claim_cli(ctx, name, override, shared=False)
 
     # Any claim left is the user's own (or overridden): release the user's
@@ -1542,12 +1608,7 @@ def sdwire_add_cmd(
 
 @sdwire_group.command("remove")
 @click.argument("name")
-@click.option(
-    "--yes",
-    "-y",
-    is_flag=True,
-    help="Skip confirmation (asked even when not on a terminal)",
-)
+@click.option("--yes", "-y", is_flag=True, help=_YES_REQUIRED_HELP)
 @click.pass_context
 def sdwire_remove_cmd(ctx: click.Context, name: str, yes: bool) -> None:
     """Unregister an SDWire device."""
@@ -1558,8 +1619,9 @@ def sdwire_remove_cmd(ctx: click.Context, name: str, yes: bool) -> None:
         click.echo(f"Error: SDWire device '{name}' not found", err=True)
         sys.exit(1)
 
-    if not yes:
-        click.confirm(f"Remove SDWire device '{name}'?", abort=True)
+    _confirm_or_require_yes(
+        yes, f"Remove SDWire device '{name}'?", f"removes SDWire device '{name}'"
+    )
 
     try:
         manager.delete_sdwire_device(device.id)
@@ -2582,7 +2644,7 @@ def _serial_remove_claim_check(ctx, kwargs, override, probe):
 
 
 @serial_group.command("remove")
-@destructive_command("Unregister a USB-serial adapter")
+@destructive_command("Unregister a USB-serial adapter", strict=True)
 @claim_checked(check=_serial_remove_claim_check)
 @click.argument("name")
 @click.pass_context
@@ -3039,7 +3101,10 @@ def port_group() -> None:
     "--tcp-port",
     "-t",
     type=click.IntRange(1, 65535),
-    help="TCP port (auto-assigned if not specified)",
+    help=(
+        "TCP port (default: one above the highest in use, at least "
+        "serial.base_tcp_port)"
+    ),
 )
 @click.option(
     "--baud",
@@ -3116,6 +3181,7 @@ def port_assign_cmd(
             baud_rate=baud,
             alias=alias,
             serial_device_id=serial_device_id,
+            base_tcp_port=ctx.obj["config"].serial.base_tcp_port,
         )
         alias_str = f" as '{alias}'" if alias else ""
         click.echo(
@@ -3301,13 +3367,22 @@ def ser2net_group() -> None:
 @click.option(
     "--install",
     is_flag=True,
-    help="Write /etc/ser2net.yaml (always this path; ser2net.config_file is not used)",
+    help=(
+        "Write the config to ser2net.config_file (default /etc/ser2net.yaml), "
+        "in place; refuses a symlink or hard link there"
+    ),
 )
 @click.pass_context
 def ser2net_generate_cmd(
     ctx: click.Context, output: Path | None, install: bool
 ) -> None:
-    """Generate ser2net configuration from database."""
+    """Generate ser2net configuration from database.
+
+    A port with no TCP port recorded gets the next free one from
+    serial.base_tcp_port up, as `port assign` would (in the generated
+    config only; the database isn't changed).
+    """
+    config: Config = ctx.obj["config"]
     manager = _get_manager(ctx)
 
     # Get all serial ports from database
@@ -3322,17 +3397,22 @@ def ser2net_generate_cmd(
     for sbc in manager.list_sbcs():
         sbc_names[sbc.id] = sbc.name
 
-    # Convert to Ser2NetPort objects
+    # Convert to Ser2NetPort objects. Ports without a TCP port take the
+    # ones auto-assignment would give next, one each.
+    next_free = manager.next_tcp_port(config.serial.base_tcp_port)
     ports = []
     for db_port in db_ports:
         sbc_name = sbc_names.get(db_port.sbc_id, f"sbc{db_port.sbc_id}")
         port_name = db_port.alias or f"{sbc_name}-{db_port.port_type.value}"
+        tcp_port = db_port.tcp_port
+        if not tcp_port:
+            tcp_port, next_free = next_free, next_free + 1
 
         ports.append(
             Ser2NetPort(
                 name=port_name,
                 device=db_port.device_path,
-                tcp_port=db_port.tcp_port or 4000,
+                tcp_port=tcp_port,
                 baud=db_port.baud_rate,
             )
         )
@@ -3341,15 +3421,23 @@ def ser2net_generate_cmd(
     config_content = generate_ser2net_config(ports)
 
     if install:
-        # Write to /etc/ser2net.yaml
-        ser2net_path = Path("/etc/ser2net.yaml")
+        ser2net_path = str(config.ser2net.config_file)
         try:
-            ser2net_path.write_text(config_content)
-            click.echo(f"Installed ser2net config to {ser2net_path}")
-            click.echo("Run 'labctl ser2net reload' to apply changes")
+            write_ser2net_config(ser2net_path, config_content)
         except PermissionError:
-            click.echo("Error: Permission denied. Try with sudo.", err=True)
+            click.echo(
+                f"Error: permission denied writing {ser2net_path}. Join the "
+                "labctl group (install-services.sh makes /etc/ser2net.yaml "
+                "group-writable) or use sudo.",
+                err=True,
+            )
             sys.exit(1)
+        except (OSError, ValueError) as e:
+            why = getattr(e, "strerror", None) or e
+            click.echo(f"Error: not writing {ser2net_path}: {why}", err=True)
+            sys.exit(1)
+        click.echo(f"Installed ser2net config to {ser2net_path}")
+        click.echo("Run 'labctl ser2net reload' to apply changes")
     elif output:
         output.write_text(config_content)
         click.echo(f"Wrote ser2net config to {output}")
@@ -3747,12 +3835,7 @@ def power_status_cmd(ctx: click.Context, sbc_name: str) -> None:
 @override_claim_option
 @click.argument("action", type=click.Choice(["on", "off"]))
 @click.option("--project", "-p", help="Filter by project name")
-@click.option(
-    "--yes",
-    "-y",
-    is_flag=True,
-    help="Skip confirmation (asked even when not on a terminal)",
-)
+@click.option("--yes", "-y", is_flag=True, help=_YES_REQUIRED_HELP)
 @click.pass_context
 def power_all_cmd(
     ctx: click.Context,
@@ -3765,8 +3848,8 @@ def power_all_cmd(
 
     Boards another user has claimed (or that share a plug, SDWire, console
     or relay with one) are skipped, unless --override-claim. Power-on sets
-    each board's pre_power relays first. Asks for confirmation unless --yes
-    (even when not on a terminal).
+    each board's pre_power relays first. Asks for confirmation on a
+    terminal; without one it needs --yes.
     """
     from labctl.actuators.runtime import power_on_with_bindings
 
@@ -3810,8 +3893,11 @@ def power_all_cmd(
         click.echo("\nNothing to do: every board is claimed by another user.")
         sys.exit(1)
 
-    if not yes:
-        click.confirm(f"\nPower {action.upper()} {len(targets)} SBC(s)?", abort=True)
+    _confirm_or_require_yes(
+        yes,
+        f"\nPower {action.upper()} {len(targets)} SBC(s)?",
+        f"powers {action} {len(targets)} SBC(s)",
+    )
 
     # Execute power commands
     success_count = 0
@@ -4131,12 +4217,7 @@ def actuator_set_cmd(ctx: click.Context, name: str, channel: int, state: str) ->
 @actuator_group.command("remove")
 @override_claim_option
 @click.argument("name")
-@click.option(
-    "--yes",
-    "-y",
-    is_flag=True,
-    help="Skip confirmation (asked even when not on a terminal).",
-)
+@click.option("--yes", "-y", is_flag=True, help=_YES_REQUIRED_HELP)
 @click.pass_context
 def actuator_remove_cmd(
     ctx: click.Context, name: str, yes: bool, override_claim: bool
@@ -4156,11 +4237,11 @@ def actuator_remove_cmd(
             ctx, channel_ids, override_claim, same_device=False, probe=True
         )
     )
-    if not yes and not click.confirm(
-        f"Remove actuator {name!r} and any bindings on its channels?"
-    ):
-        click.echo("Aborted.")
-        return
+    _confirm_or_require_yes(
+        yes,
+        f"Remove actuator {name!r} and any bindings on its channels?",
+        f"removes actuator {name!r}",
+    )
     _check_bound_claims_cli(ctx, channel_ids, override_claim, same_device=False)
 
     manager.delete_actuator(actuator.id)
@@ -4207,7 +4288,7 @@ def actuator_remove_cmd(
     help=(
         "When the binding's value matters: pre-power straps "
         "(recovery_mode, boot_select) are set before every power-on; "
-        "post-power is stored but not yet acted on; none."
+        "none. post-power is refused: it isn't implemented yet."
     ),
 )
 @click.option(
@@ -4252,6 +4333,10 @@ def bind_cmd(
     shape_mode = ShapeMode(mode)
     shape_active = ChannelState(active_when)
 
+    if sample_phase == "post-power":
+        from labctl.core.models import POST_POWER_REFUSED
+
+        raise click.UsageError(POST_POWER_REFUSED)
     if shape_mode is ShapeMode.MOMENTARY and pulse_ms is None:
         raise click.UsageError("--pulse-ms is required when --mode=momentary")
     if shape_mode is ShapeMode.LATCH and pulse_ms is not None:
@@ -4516,10 +4601,11 @@ def bindings_status_cmd(ctx: click.Context, sbc_name: str, purpose: str) -> None
         f"Actuator:   {info['actuator']['name']}[{info['channel']['index']}]"
         f"  ({info['actuator']['driver']})"
     )
+    note = info["binding"].get("sample_phase_note")
     click.echo(
         f"Shape:      {info['binding']['shape_mode']}, "
         f"active={info['binding']['shape_active']}, "
-        f"phase={info['binding']['sample_phase']}"
+        f"phase={info['binding']['sample_phase']}" + (f" ({note})" if note else "")
     )
     click.echo(f"Desired:    {info['binding']['desired_state']}")
     last = info["channel"]["last_state"] or "unknown"
@@ -4534,7 +4620,13 @@ def bindings_status_cmd(ctx: click.Context, sbc_name: str, purpose: str) -> None
 @click.option("--target", "target_sbc", default=None, help="Filter to one SBC.")
 @click.pass_context
 def bindings_list_cmd(ctx: click.Context, target_sbc: str | None) -> None:
-    """List bindings (optionally filtered by target SBC)."""
+    """List bindings (optionally filtered by target SBC).
+
+    post_power bindings (stored by earlier versions) are marked * as
+    inactive: nothing acts on them.
+    """
+    from labctl.core.models import SamplePhase
+
     manager = _get_manager(ctx)
     sbc_id = None
     if target_sbc:
@@ -4554,12 +4646,22 @@ def bindings_list_cmd(ctx: click.Context, target_sbc: str | None) -> None:
         f"{'CH':<3} {'MODE':<10} {'ACTIVE':<7} {'PHASE':<11} DESIRED"
     )
     click.echo("-" * 100)
+    inactive = False
     for b in bindings:
+        phase = b.sample_phase.value
+        if b.sample_phase is SamplePhase.POST_POWER:
+            phase += "*"
+            inactive = True
         click.echo(
             f"{(b.sbc_name or '?'):<18} {b.purpose:<16} "
             f"{(b.actuator_name or '?'):<22} {(b.channel_index or 0):<3} "
             f"{b.shape_mode.value:<10} {b.shape_active.value:<7} "
-            f"{b.sample_phase.value:<11} {b.desired_state.value}"
+            f"{phase:<11} {b.desired_state.value}"
+        )
+    if inactive:
+        click.echo(
+            "\n* post_power isn't implemented yet: these bindings are never "
+            "applied around power-on."
         )
 
 
@@ -5676,6 +5778,7 @@ def import_cmd(
                     baud_rate=port_data.get("baud_rate", 115200),
                     alias=port_data.get("alias"),
                     serial_device_id=sd_id,
+                    base_tcp_port=ctx.obj["config"].serial.base_tcp_port,
                 )
             except ValueError as e:  # e.g. TCP port or alias already in use
                 click.echo(
@@ -6536,7 +6639,8 @@ def monitor_cmd(
     Runs periodic health checks on all SBCs and triggers alerts
     when status changes occur. On start it returns unbound and released
     relay channels to their default state (asserted bindings, e.g. a
-    recovery strap mid-flash, are left alone).
+    recovery strap mid-flash, are left alone). At start and then hourly it
+    deletes status history older than health.status_retention_days.
 
     Press Ctrl+C to stop.
 
@@ -6585,6 +6689,7 @@ def monitor_cmd(
         update_status=not no_update,
         alert_on_offline=config.health.alert_on_offline,
         alert_on_power_change=config.health.alert_on_power_change,
+        status_retention_days=config.health.status_retention_days,
     )
 
     click.echo(

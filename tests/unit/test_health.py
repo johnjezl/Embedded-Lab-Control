@@ -561,6 +561,74 @@ class TestSplitCadence:
         assert CheckType.POWER not in kwargs["check_types"]
 
 
+class TestStatusHistoryPruning:
+    """health.status_retention_days: the monitor prunes old status history
+    at startup and then once an hour."""
+
+    def _daemon(self, retention=30):
+        from labctl.health.daemon import MonitorDaemon
+
+        manager = MagicMock()
+        manager.cleanup_old_status_logs.return_value = 0
+        return MonitorDaemon(
+            manager,
+            MagicMock(),
+            MagicMock(spec=AlertManager),
+            status_retention_days=retention,
+        )
+
+    def test_prunes_first_then_hourly(self):
+        daemon = self._daemon(retention=7)
+        daemon._prune_status_log(100.0)
+        daemon._prune_status_log(100.0 + 3599)
+        assert daemon.manager.cleanup_old_status_logs.call_count == 1
+        daemon._prune_status_log(100.0 + 3600)
+        assert daemon.manager.cleanup_old_status_logs.call_count == 2
+        daemon.manager.cleanup_old_status_logs.assert_called_with(7)
+
+    def test_none_disables(self):
+        daemon = self._daemon(retention=None)
+        daemon._prune_status_log(100.0)
+        daemon.manager.cleanup_old_status_logs.assert_not_called()
+
+    def test_failure_is_logged_not_raised(self, caplog):
+        import logging
+
+        daemon = self._daemon()
+        daemon.manager.cleanup_old_status_logs.side_effect = RuntimeError("locked")
+        with caplog.at_level(logging.WARNING):
+            daemon._prune_status_log(100.0)
+        assert "Pruning status history failed: locked" in caplog.text
+
+    def test_start_prunes_before_checks(self, monkeypatch):
+        """The run loop prunes once before its first health check pass."""
+        daemon = self._daemon(retention=5)
+        daemon.manager.list_sbcs.return_value = []
+        daemon.checker.check_all.return_value = {}
+        monkeypatch.setattr("labctl.health.daemon.signal.signal", MagicMock())
+        monkeypatch.setattr(
+            "labctl.actuators.runtime.apply_safe_drive_on_startup",
+            MagicMock(return_value={"held": [], "failed": []}),
+        )
+        monkeypatch.setattr("labctl.health.daemon.time.sleep", lambda _s: daemon.stop())
+        daemon.start()
+        daemon.manager.cleanup_old_status_logs.assert_called_once_with(5)
+
+    def test_monitor_cli_passes_retention(self, tmp_path):
+        from click.testing import CliRunner
+
+        from labctl.cli import main
+
+        cfg = tmp_path / "config.yaml"
+        cfg.write_text(
+            f"database_path: {tmp_path / 'lab.db'}\n"
+            "health:\n  status_retention_days: 9\n"
+        )
+        with patch("labctl.health.MonitorDaemon") as daemon_cls:
+            CliRunner().invoke(main, ["-c", str(cfg), "monitor"])
+        assert daemon_cls.call_args.kwargs["status_retention_days"] == 9
+
+
 class TestParallelCheckAll:
     """`HealthChecker.check_all` should run probes concurrently."""
 

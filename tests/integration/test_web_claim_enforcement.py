@@ -814,3 +814,37 @@ def test_fractional_duration_refused(lab):
     client, _ = lab
     resp = client.post("/api/claims/c", json={"duration_minutes": 2.5}, headers=BOT)
     assert resp.status_code == 400
+
+
+class TestRestRequireAgentName:
+    """claims.require_agent_name: a REST claim must be named, by the
+    authenticated user or by agent_name when auth is off."""
+
+    def test_no_auth_unnamed_refused(self, tmp_path):
+        app, client, manager = _make(tmp_path, auth=False, require_agent_name=True)
+        manager.create_sbc(name="c")
+        resp = client.post("/api/claims/c", json={"reason": "r", "agent_name": " "})
+        assert resp.status_code == 400
+        assert resp.get_json()["error"] == "agent_name_required"
+        assert manager.get_active_claim("c") is None
+
+    def test_no_auth_named_allowed(self, tmp_path):
+        app, client, manager = _make(tmp_path, auth=False, require_agent_name=True)
+        manager.create_sbc(name="c")
+        resp = client.post("/api/claims/c", json={"reason": "r", "agent_name": "ci"})
+        assert resp.status_code == 201
+        assert manager.get_active_claim("c").agent_name == "ci"
+
+    def test_authenticated_user_counts_as_name(self, tmp_path):
+        app, client, manager = _make(tmp_path, require_agent_name=True)
+        manager.create_sbc(name="c")
+        resp = client.post("/api/claims/c", json={"reason": "r"}, headers=BOT)
+        assert resp.status_code == 201
+        assert manager.get_active_claim("c").agent_name == "bot"
+
+    def test_off_by_default(self, tmp_path):
+        app, client, manager = _make(tmp_path, auth=False)
+        manager.create_sbc(name="c")
+        resp = client.post("/api/claims/c", json={"reason": "r"})
+        assert resp.status_code == 201
+        assert manager.get_active_claim("c").agent_name == "web-operator"

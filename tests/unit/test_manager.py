@@ -390,6 +390,37 @@ class TestSerialPortOperations:
 
         assert port.tcp_port == 4000  # Base port
 
+    def test_assign_port_auto_tcp_from_base(self, manager):
+        """serial.base_tcp_port sets where auto-assignment starts; ports
+        already above it continue from the highest in use."""
+        a = manager.create_sbc(name="base-a")
+        b = manager.create_sbc(name="base-b")
+        c = manager.create_sbc(name="base-c")
+
+        port = manager.assign_serial_port(
+            a.id, PortType.CONSOLE, "/dev/lab/a", base_tcp_port=6000
+        )
+        assert port.tcp_port == 6000
+        port = manager.assign_serial_port(
+            b.id, PortType.CONSOLE, "/dev/lab/b", base_tcp_port=6000
+        )
+        assert port.tcp_port == 6001
+        # A lower base doesn't reuse ports below the highest in use.
+        port = manager.assign_serial_port(
+            c.id, PortType.CONSOLE, "/dev/lab/c", base_tcp_port=4000
+        )
+        assert port.tcp_port == 6002
+
+    def test_assign_port_auto_tcp_raised_base(self, manager):
+        """Raising the base skips past existing lower ports."""
+        a = manager.create_sbc(name="raise-a")
+        b = manager.create_sbc(name="raise-b")
+        manager.assign_serial_port(a.id, PortType.CONSOLE, "/dev/lab/a")
+        port = manager.assign_serial_port(
+            b.id, PortType.CONSOLE, "/dev/lab/b", base_tcp_port=7000
+        )
+        assert port.tcp_port == 7000
+
     def test_assign_port_replaces_existing(self, manager):
         """Test assigning port replaces existing assignment."""
         sbc = manager.create_sbc(name="replace-test")

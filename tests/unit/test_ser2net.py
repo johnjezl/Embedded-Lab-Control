@@ -1,5 +1,7 @@
 """Unit tests for ser2net configuration generator."""
 
+import pytest
+
 from labctl.serial.ser2net import Ser2NetPort, generate_ser2net_config
 
 
@@ -187,3 +189,70 @@ class TestGenerateSer2netConfig:
         )
         d = port.to_ser2net_dict()
         assert "/dev/lab/port-1" in d["connector"]
+
+
+class TestWriteSer2netConfig:
+    """write_ser2net_config: the --install write, which may run as root."""
+
+    def test_creates_missing_file(self, tmp_path):
+        import stat
+
+        from labctl.serial.ser2net import write_ser2net_config
+
+        path = tmp_path / "ser2net.yaml"
+        write_ser2net_config(str(path), "a: 1\n")
+        assert path.read_text() == "a: 1\n"
+        assert stat.S_IMODE(path.stat().st_mode) == 0o644
+
+    def test_rewrites_in_place_keeping_mode(self, tmp_path):
+        import stat
+
+        from labctl.serial.ser2net import write_ser2net_config
+
+        path = tmp_path / "ser2net.yaml"
+        path.write_text("old content that is longer\n")
+        path.chmod(0o664)
+        inode = path.stat().st_ino
+        write_ser2net_config(str(path), "new\n")
+        assert path.read_text() == "new\n"
+        assert stat.S_IMODE(path.stat().st_mode) == 0o664
+        assert path.stat().st_ino == inode
+
+    def test_symlink_refused(self, tmp_path):
+        from labctl.serial.ser2net import write_ser2net_config
+
+        victim = tmp_path / "victim"
+        victim.write_text("secret\n")
+        link = tmp_path / "ser2net.yaml"
+        link.symlink_to(victim)
+        with pytest.raises(OSError):
+            write_ser2net_config(str(link), "x\n")
+        assert victim.read_text() == "secret\n"
+
+    def test_symlinked_parent_refused(self, tmp_path):
+        from labctl.serial.ser2net import write_ser2net_config
+
+        real = tmp_path / "real"
+        real.mkdir()
+        (tmp_path / "etc").symlink_to(real)
+        with pytest.raises(OSError):
+            write_ser2net_config(str(tmp_path / "etc" / "ser2net.yaml"), "x\n")
+        assert not (real / "ser2net.yaml").exists()
+
+    def test_hard_link_refused(self, tmp_path):
+        import os
+
+        from labctl.serial.ser2net import write_ser2net_config
+
+        victim = tmp_path / "victim"
+        victim.write_text("secret\n")
+        os.link(victim, tmp_path / "ser2net.yaml")
+        with pytest.raises(OSError, match="more than one hard link"):
+            write_ser2net_config(str(tmp_path / "ser2net.yaml"), "x\n")
+        assert victim.read_text() == "secret\n"
+
+    def test_relative_path_refused(self):
+        from labctl.serial.ser2net import write_ser2net_config
+
+        with pytest.raises(ValueError):
+            write_ser2net_config("ser2net.yaml", "x\n")

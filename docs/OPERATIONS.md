@@ -113,9 +113,10 @@ the tool and its exact arguments. Configure with `mcp.confirm_destructive`
 terminal**, i.e. when stdin is a terminal. Callers without one (cron, CI,
 systemd, pipes, agents' tool calls) are not asked. A shell script started
 from an interactive terminal inherits it and **is** asked, so add `--yes` to
-scripted destructive commands. The exceptions are the older `remove`,
-`sdwire remove`, `actuator remove` and `power-all`, which
-also ask (and abort without `--yes`) when stdin is not a terminal.
+scripted destructive commands. The exceptions are `remove`, `sdwire
+remove`, `serial remove`, `actuator remove` and `power-all`: without a
+terminal they don't go ahead unasked, but refuse (exit 1) unless given
+`--yes`.
 `power cycle`, `sdwire flash` and `sdwire update` also take `--dry-run`.
 `sdwire flash`/`update` (CLI and MCP) switch the board off before taking
 its card and write nothing if that fails. A board with no power plug
@@ -245,7 +246,7 @@ exactly like the commands they stand for.
 | `sdwire remove` | destructive | yes | Deletes a record |
 | `sdwire unassign` | destructive | yes | Deletes an association |
 | `sdwire update` | destructive | yes | Copies/renames/deletes files on the card; `--dry-run`; power-off and no-plug rule as `sdwire flash` |
-| `ser2net generate` | system-write |  | Writes `/etc/ser2net.yaml` only with `--install` (or `-o` file) |
+| `ser2net generate` | system-write |  | Writes `ser2net.config_file` (default `/etc/ser2net.yaml`) only with `--install`, refusing a symlink or hard link there (or an `-o` file) |
 | `ser2net reload` | system-write |  | Restarts ser2net: drops every live console session |
 | `serial add` | db-write |  |  |
 | `serial capture` | shared-resource |  | Holds a ser2net session; sends nothing |

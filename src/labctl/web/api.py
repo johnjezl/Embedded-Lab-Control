@@ -247,11 +247,12 @@ def control_power(name: str):
     if not sbc.power_plug:
         return jsonify({"error": "No power plug assigned"}), 400
 
-    data = request.get_json()
-    if not data or "action" not in data:
+    data = _json_body()
+    action = data.get("action")
+    if not isinstance(action, str):
         return jsonify({"error": "action is required (on, off, cycle)"}), 400
 
-    action = data["action"].lower()
+    action = action.lower()
     if action not in ["on", "off", "cycle"]:
         return jsonify({"error": "action must be on, off, or cycle"}), 400
 
@@ -400,6 +401,7 @@ def assign_port(name: str):
             baud_rate=data.get("baud_rate", 115200),
             alias=data.get("alias"),
             serial_device_id=serial_device_id,
+            base_tcp_port=g.config.serial.base_tcp_port,
         )
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -766,7 +768,25 @@ def create_claim(sbc_name: str):
     if error:
         return error
     reason = data.get("reason") or "web claim"
-    agent_name = data.get("agent_name") or claims.web_user_name()
+    agent_name = data.get("agent_name")
+    if isinstance(agent_name, str):
+        agent_name = agent_name.strip()
+    if not agent_name:
+        # Without auth there is no user to name the claim after.
+        if config.claims.require_agent_name and not claims.web_actor().owner:
+            return (
+                jsonify(
+                    {
+                        "error": "agent_name_required",
+                        "message": (
+                            "This lab requires claims to name the agent "
+                            "(claims.require_agent_name): send agent_name"
+                        ),
+                    }
+                ),
+                400,
+            )
+        agent_name = claims.web_user_name()
     if not isinstance(reason, str) or not isinstance(agent_name, str):
         return jsonify({"error": "reason and agent_name must be strings"}), 400
 

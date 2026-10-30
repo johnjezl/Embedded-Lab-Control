@@ -95,7 +95,8 @@ Binding (table `bindings`)
 ├── shape_mode: latch | momentary
 ├── shape_active: closed | open
 ├── momentary_pulse_ms: int (momentary only)
-├── sample_phase: pre_power | post_power | none   (default none)
+├── sample_phase: pre_power | none   (default none; post_power refused,
+│     kept only on bindings stored by earlier versions)
 ├── desired_state: asserted | released | following_power
 │     (default released)
 └── notes: free text (wiring photo URL, polarity, etc.)
@@ -364,7 +365,10 @@ power flows:
     board off and the error says so; a board is never powered on
     without its straps.
 - `post_power` — actuator is driven after the device is up. *Deferred:*
-  the value is accepted and stored, but no runtime path acts on it.
+  new bindings with it are refused (CLI, MCP and the manager), since no
+  runtime path would act on it. Bindings stored with it by earlier
+  versions stay, marked inactive in `bindings list`/`status` and in MCP
+  output (`sample_phase_note`).
 - `none` — no automatic coupling; user drives explicitly.
 
 A target with `pre_power` bindings whose `desired_state == asserted`
@@ -494,7 +498,7 @@ The narrowest set that delivers the Jetson case end-to-end:
 | `lcus1_serial` driver only | `numato_acm`, `hid_generic`, `sysfs_gpio` drivers |
 | CLI: `actuator add/list/probe/remove/set` | Web UI for actuator state |
 | CLI: `bind/unbind/bindings list` | `reflash_secure` |
-| CLI: `bindings actuate/release/press/status` | `post_power` sample_phase (stored, not acted on) |
+| CLI: `bindings actuate/release/press/status` | `post_power` sample_phase (refused for new bindings) |
 | `enter-recovery` / `exit-recovery` composites | Hardware fault detection (APX-not-seen heuristics) |
 | `pre_power` sample_phase | `bind test` validation harness |
 | SBC claim snapshot-checks linked channels (non-blocking) | Multi-channel coordinated bindings |

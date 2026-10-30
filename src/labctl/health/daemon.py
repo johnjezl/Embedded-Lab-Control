@@ -35,6 +35,7 @@ class MonitorDaemon:
         update_status: bool = True,
         alert_on_offline: bool = True,
         alert_on_power_change: bool = True,
+        status_retention_days: Optional[int] = None,
     ):
         """
         Initialize monitoring daemon.
@@ -61,6 +62,8 @@ class MonitorDaemon:
             update_status: Whether to update SBC status in database
             alert_on_offline: Alert when SBC goes offline
             alert_on_power_change: Alert on power state changes
+            status_retention_days: Delete status history older than this
+                many days, at startup and then hourly (None: keep it all)
         """
         self.manager = manager
         self.checker = checker
@@ -71,11 +74,39 @@ class MonitorDaemon:
         self.update_status = update_status
         self.alert_on_offline = alert_on_offline
         self.alert_on_power_change = alert_on_power_change
+        self.status_retention_days = status_retention_days
 
         self._running = False
         self._last_status: dict[str, Status] = {}
         self._last_power: dict[str, str] = {}
         self._last_power_check: float = 0.0  # monotonic time of last power probe
+        self._last_prune: Optional[float] = None  # monotonic time of last prune
+
+    PRUNE_INTERVAL = 3600.0  # seconds between status-history prunes
+
+    def _prune_status_log(self, now_monotonic: float) -> None:
+        """Delete status history past ``status_retention_days``, at most
+        once per PRUNE_INTERVAL. A failure is logged and retried next
+        interval; it never stops the health checks."""
+        if self.status_retention_days is None:
+            return
+        if (
+            self._last_prune is not None
+            and now_monotonic - self._last_prune < self.PRUNE_INTERVAL
+        ):
+            return
+        self._last_prune = now_monotonic
+        try:
+            deleted = self.manager.cleanup_old_status_logs(self.status_retention_days)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Pruning status history failed: %s", e)
+            return
+        if deleted:
+            logger.info(
+                "Pruned %d status history entries older than %d days",
+                deleted,
+                self.status_retention_days,
+            )
 
     def _should_check_power(self, now_monotonic: float) -> bool:
         """Return True if this tick should include the power probe."""
@@ -270,6 +301,7 @@ class MonitorDaemon:
         while self._running:
             try:
                 start_time = time.monotonic()
+                self._prune_status_log(start_time)
                 results = self.run_once()
                 elapsed = time.monotonic() - start_time
 

@@ -444,6 +444,13 @@ def _get_agent_name() -> str:
     return _AGENT_NAME or f"unnamed-{_SESSION_ID[:16]}"
 
 
+def _has_agent_name() -> bool:
+    """True when claims would record a real name: one set with agent_name
+    (this call or earlier in the session) or the authenticated user's."""
+    user = _authenticated_user()
+    return bool(user) or bool(_AGENT_NAME)
+
+
 def _set_agent_name(name: str) -> None:
     global _AGENT_NAME
     user = _authenticated_user()
@@ -1512,6 +1519,9 @@ def assign_serial_port(
 ) -> str:
     """Assign a serial port to an SBC.
 
+    The ser2net TCP port is chosen automatically: one above the highest in
+    use, and at least the lab's serial.base_tcp_port. The reply names it.
+
     Args:
         sbc_name: Name of the SBC
         port_type: Type of port: console, jtag, or debug
@@ -1544,6 +1554,7 @@ def assign_serial_port(
             device_path=device,
             baud_rate=baud_rate,
             alias=alias,
+            base_tcp_port=_get_config().serial.base_tcp_port,
         )
         return (
             f"Assigned {port_type} port to {sbc_name}: {device} (tcp:{port.tcp_port})"
@@ -3481,7 +3492,7 @@ def get_activity_for_sbc_resource(sbc_name: str) -> str:
 @_with_mcp_activity
 def claim_sbc(
     sbc_name: str,
-    duration_minutes: int = 30,
+    duration_minutes: int | None = None,
     reason: str = "",
     agent_name: str | None = None,
     context: dict | None = None,
@@ -3492,11 +3503,15 @@ def claim_sbc(
 
     Args:
         sbc_name: Name of the SBC to claim
-        duration_minutes: How long to hold (default 30; must be within
-            claims.min_duration_minutes..max_duration_minutes)
+        duration_minutes: How long to hold (default: the lab's
+            claims.default_duration_minutes, 30 unless configured; must be
+            within claims.min_duration_minutes..max_duration_minutes)
         reason: Human-readable reason, recorded in the audit log
             (optional; "no reason given" when omitted)
-        agent_name: Self-declared agent identifier
+        agent_name: Self-declared agent identifier, kept for the rest of
+            the session. Without one, claims are recorded under the
+            authenticated user's name, or "unnamed-..." without auth; a
+            lab with claims.require_agent_name refuses the claim then.
         context: Optional metadata (git branch, ticket, etc.)
     """
     from labctl.core.models import (
@@ -3507,10 +3522,23 @@ def claim_sbc(
         UnknownSBCError,
     )
 
-    if agent_name:
-        _set_agent_name(agent_name)
+    if agent_name and agent_name.strip():
+        _set_agent_name(agent_name.strip())
 
     config = _get_config()
+    if config.claims.require_agent_name and not _has_agent_name():
+        return json.dumps(
+            {
+                "error": "agent_name_required",
+                "message": (
+                    "This lab requires claims to name the agent "
+                    "(claims.require_agent_name): call claim_sbc again with "
+                    'agent_name="<who you are>"'
+                ),
+            }
+        )
+    if duration_minutes is None:
+        duration_minutes = config.claims.default_duration_minutes
     duration_s = duration_minutes * 60
     min_s = config.claims.min_duration_minutes * 60
     max_s = config.claims.max_duration_minutes * 60
@@ -4203,7 +4231,8 @@ def bind(
         mode: "latch" or "momentary".
         active_when: "closed" or "open" — physical state == "asserted".
         pulse_ms: Required when mode="momentary".
-        sample_phase: "pre_power", "post_power", or "none".
+        sample_phase: "pre_power" (set before every power-on) or "none".
+            "post_power" is refused: it isn't implemented yet.
         notes: Optional free-text note (wiring photo URL, etc.).
     """
     from labctl.core.models import ChannelState, SamplePhase, ShapeMode
@@ -4214,6 +4243,10 @@ def bind(
         phase = SamplePhase(sample_phase)
     except ValueError as e:
         return f"Error: {e}"
+    if phase is SamplePhase.POST_POWER:
+        from labctl.core.models import POST_POWER_REFUSED
+
+        return f"Error: {POST_POWER_REFUSED}"
 
     if shape_mode is ShapeMode.MOMENTARY and pulse_ms is None:
         return "Error: pulse_ms is required when mode='momentary'"

@@ -293,6 +293,47 @@ class TestBindCommand:
         assert "always be" in result.output
         assert "asserted" in result.output
 
+    def test_bind_post_power_refused(self, runner, lab):
+        _add_relay(runner, lab.config_path)
+        result = runner.invoke(
+            main,
+            [
+                "-c",
+                str(lab.config_path),
+                "bind",
+                "jetson-nano-2",
+                "recovery_mode",
+                "--actuator",
+                "relay-1",
+                "--channel",
+                "1",
+                "--mode",
+                "latch",
+                "--phase",
+                "post-power",
+            ],
+        )
+        assert result.exit_code == 2
+        assert "post-power bindings aren't implemented yet" in result.output
+        assert lab.manager.get_binding_by_target(lab.sbc.id, "recovery_mode") is None
+
+    def test_stored_post_power_listed_inactive(self, runner, lab):
+        _add_relay(runner, lab.config_path)
+        base = ["-c", str(lab.config_path)]
+        bind = base + ["bind", "jetson-nano-2", "recovery_mode"]
+        bind += ["--actuator", "relay-1", "--channel", "1", "--mode", "latch"]
+        assert runner.invoke(main, bind).exit_code == 0
+        lab.manager.db.execute_modify("UPDATE bindings SET sample_phase = 'post_power'")
+        result = runner.invoke(main, base + ["bindings", "list"])
+        assert result.exit_code == 0, result.output
+        assert "post_power*" in result.output
+        assert "never applied around power-on" in result.output
+        result = runner.invoke(
+            main, base + ["bindings", "status", "jetson-nano-2", "recovery_mode"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "phase=post_power (inactive: post_power" in result.output
+
     def test_bind_unknown_sbc(self, runner, lab):
         _add_relay(runner, lab.config_path)
         result = runner.invoke(

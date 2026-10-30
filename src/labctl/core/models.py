@@ -608,8 +608,18 @@ class SamplePhase(str, Enum):
     """When the binding's value is consequential relative to power."""
 
     PRE_POWER = "pre_power"
-    POST_POWER = "post_power"
+    POST_POWER = "post_power"  # stored by older versions; never acted on
     NONE = "none"
+
+
+# post_power was accepted before anything acted on it. New bindings can't
+# use it; ones already stored are shown as inactive.
+POST_POWER_REFUSED = (
+    "post-power bindings aren't implemented yet: nothing would set the "
+    "relay after power-on. Use phase none (or pre-power for a strap that "
+    "must be set before power-on)"
+)
+POST_POWER_INACTIVE = "inactive: post_power isn't acted on yet"
 
 
 class DesiredState(str, Enum):
@@ -790,6 +800,8 @@ class Binding:
             "desired_state": self.desired_state.value,
             "notes": self.notes,
         }
+        if self.sample_phase is SamplePhase.POST_POWER:
+            data["shape"]["sample_phase_note"] = POST_POWER_INACTIVE
         if self.sbc_name:
             data["sbc_name"] = self.sbc_name
         if self.actuator_name:

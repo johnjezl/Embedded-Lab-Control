@@ -394,8 +394,9 @@ labctl -c /etc/labctl/config.yaml claims list
 ```
 
 (These open the service's database: being in the `labctl` group is
-enough only if the database file and its directory are group-writable;
-otherwise prefix them with `sudo -u labctl`.)
+enough only if the database file and its directory are group-writable,
+as `install-services.sh` makes `/var/lib/labctl/db/labctl.db`; otherwise
+prefix them with `sudo -u labctl`.)
 
 The name after the last `:` in the activity log comes from the key: if it
 is another agent's name, the two share a key. `claims list` shows the

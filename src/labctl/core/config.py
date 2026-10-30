@@ -142,6 +142,43 @@ def _positive_int(section: dict, key: str, default: int) -> int:
     return value
 
 
+def _tcp_port(section: dict, key: str, default: int) -> int:
+    """Read a TCP port number (1-65535); anything else keeps the default,
+    with a warning."""
+    value = section.get(key)
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535:
+        _warn_once(
+            "Config: %s must be a TCP port number (1-65535), got %r; using %d",
+            key,
+            value,
+            default,
+        )
+        return default
+    return value
+
+
+# Keys earlier versions documented but never acted on; they were removed.
+# A config that still sets one gets a warning, not an error.
+_REMOVED_KEYS = {
+    "proxy": ("enabled", "log_retention_days", "idle_timeout"),
+    "health": ("update_status_on_check",),
+}
+
+
+def _warn_removed_keys(data: dict) -> None:
+    for section, keys in _REMOVED_KEYS.items():
+        values = _section(data, section)
+        for key in keys:
+            if key in values:
+                _warn_once(
+                    "Config: %s.%s is no longer supported and is ignored",
+                    section,
+                    key,
+                )
+
+
 def _safety_flag(section: dict, key: str, default: bool = True) -> bool:
     """Read an on/off safety switch: only an explicit boolean counts.
 
@@ -254,14 +291,11 @@ class Ser2NetConfig:
 class ProxyConfig:
     """Multi-client serial proxy configuration."""
 
-    enabled: bool = True
     port_base: int = 5500
     port_range: int = 100  # Ports 5500-5599 available
     write_policy: str = "first"  # first, all, queue
     log_dir: Path = field(default_factory=lambda: _default_data_dir() / "logs")
-    log_retention_days: int = 7
     max_clients: int = 10
-    idle_timeout: int = 3600  # seconds
 
 
 @dataclass
@@ -283,13 +317,12 @@ class HealthConfig:
     min_sleep_seconds: float = 1.0  # floor on between-cycle sleep
     ping_timeout: float = 2.0  # seconds
     serial_timeout: float = 2.0  # seconds
-    status_retention_days: int = 30  # days to keep status history
+    status_retention_days: int = 30  # days the monitor keeps status history
     alert_log_path: Path = field(
         default_factory=lambda: _default_data_dir() / "alerts.log"
     )
     alert_on_offline: bool = True
     alert_on_power_change: bool = True
-    update_status_on_check: bool = True  # auto-update SBC status
 
 
 @dataclass
@@ -549,10 +582,11 @@ class Config:
         claims_data = _section(data, "claims")
         mcp_data = _section(data, "mcp")
         database_data = _section(data, "database")
+        _warn_removed_keys(data)
 
         serial = SerialConfig(
             dev_dir=_expand_path(serial_data.get("dev_dir", "/dev/lab")),
-            base_tcp_port=serial_data.get("base_tcp_port", 4000),
+            base_tcp_port=_tcp_port(serial_data, "base_tcp_port", 4000),
             default_baud=serial_data.get("default_baud", 115200),
         )
 
@@ -564,16 +598,13 @@ class Config:
         )
 
         proxy = ProxyConfig(
-            enabled=proxy_data.get("enabled", True),
             port_base=proxy_data.get("port_base", 5500),
             port_range=proxy_data.get("port_range", 100),
             write_policy=proxy_data.get("write_policy", "first"),
             log_dir=_expand_path(
                 proxy_data.get("log_dir", str(_default_data_dir() / "logs"))
             ),
-            log_retention_days=proxy_data.get("log_retention_days", 7),
             max_clients=proxy_data.get("max_clients", 10),
-            idle_timeout=proxy_data.get("idle_timeout", 3600),
         )
 
         health = HealthConfig(
@@ -582,7 +613,9 @@ class Config:
             min_sleep_seconds=health_data.get("min_sleep_seconds", 1.0),
             ping_timeout=health_data.get("ping_timeout", 2.0),
             serial_timeout=health_data.get("serial_timeout", 2.0),
-            status_retention_days=health_data.get("status_retention_days", 30),
+            status_retention_days=_positive_int(
+                health_data, "status_retention_days", 30
+            ),
             alert_log_path=_expand_path(
                 health_data.get(
                     "alert_log_path",
@@ -591,7 +624,6 @@ class Config:
             ),
             alert_on_offline=health_data.get("alert_on_offline", True),
             alert_on_power_change=health_data.get("alert_on_power_change", True),
-            update_status_on_check=health_data.get("update_status_on_check", True),
         )
 
         auth_users = []
@@ -693,14 +725,11 @@ class Config:
                 "enabled": self.ser2net.enabled,
             },
             "proxy": {
-                "enabled": self.proxy.enabled,
                 "port_base": self.proxy.port_base,
                 "port_range": self.proxy.port_range,
                 "write_policy": self.proxy.write_policy,
                 "log_dir": str(self.proxy.log_dir),
-                "log_retention_days": self.proxy.log_retention_days,
                 "max_clients": self.proxy.max_clients,
-                "idle_timeout": self.proxy.idle_timeout,
             },
             "health": {
                 "check_interval": self.health.check_interval,
@@ -712,7 +741,6 @@ class Config:
                 "alert_log_path": str(self.health.alert_log_path),
                 "alert_on_offline": self.health.alert_on_offline,
                 "alert_on_power_change": self.health.alert_on_power_change,
-                "update_status_on_check": self.health.update_status_on_check,
             },
             "auth": {
                 "enabled": self.auth.enabled,
@@ -936,16 +964,26 @@ def _load_config(
     return config
 
 
+def _env_int(text: str) -> int | str:
+    """An environment value as a whole number, or the text unchanged (so
+    the caller's check rejects it with the value in the warning)."""
+    try:
+        return int(text)
+    except ValueError:
+        return text
+
+
 def _apply_env_overrides(config: Config) -> Config:
     """Apply environment variable overrides to config."""
     if "LABCTL_DEV_DIR" in os.environ:
         config.serial.dev_dir = _expand_path(os.environ["LABCTL_DEV_DIR"])
 
     if "LABCTL_BASE_TCP_PORT" in os.environ:
-        try:
-            config.serial.base_tcp_port = int(os.environ["LABCTL_BASE_TCP_PORT"])
-        except ValueError:
-            pass
+        config.serial.base_tcp_port = _tcp_port(
+            {"LABCTL_BASE_TCP_PORT": _env_int(os.environ["LABCTL_BASE_TCP_PORT"])},
+            "LABCTL_BASE_TCP_PORT",
+            config.serial.base_tcp_port,
+        )
 
     if "LABCTL_DATABASE_PATH" in os.environ:
         config.database_path = _expand_path(os.environ["LABCTL_DATABASE_PATH"])
@@ -963,11 +1001,7 @@ def _apply_env_overrides(config: Config) -> Config:
 
     # Proxy overrides
     if "LABCTL_PROXY_ENABLED" in os.environ:
-        config.proxy.enabled = os.environ["LABCTL_PROXY_ENABLED"].lower() in (
-            "true",
-            "1",
-            "yes",
-        )
+        _warn_once("LABCTL_PROXY_ENABLED is no longer supported and is ignored")
 
     if "LABCTL_PROXY_PORT_BASE" in os.environ:
         try:

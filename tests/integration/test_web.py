@@ -415,6 +415,17 @@ class TestWebAuditAttribution:
         assert data["device"] == "/dev/lab/new-device"
         assert data["baud_rate"] == 9600
 
+    def test_assign_port_auto_tcp_uses_base_tcp_port(self, app, client, sample_sbc):
+        """serial.base_tcp_port sets where auto-assignment starts."""
+        app.config["LABCTL_CONFIG"].serial.base_tcp_port = 6200
+        response = client.post(
+            "/api/sbcs/test-pi/ports",
+            data=json.dumps({"type": "console", "device": "/dev/lab/new-device"}),
+            content_type="application/json",
+        )
+        assert response.status_code == 201
+        assert json.loads(response.data)["tcp_port"] == 6200
+
     def test_assign_port_invalid_type(self, client, sample_sbc):
         """Test assigning port with invalid type fails."""
         response = client.post(
@@ -467,6 +478,25 @@ class TestPowerEndpoints:
 
         data = json.loads(response.data)
         assert "action is required" in data["error"]
+
+    @pytest.mark.parametrize(
+        "body", [{"action": 1}, {"action": None}, {"action": ["on"]}, ["action"], "on"]
+    )
+    def test_power_action_non_string_action(self, client, manager, sample_sbc, body):
+        """A non-string action, or a body that isn't an object, is a 400."""
+        manager.assign_power_plug(
+            sample_sbc.id,
+            plug_type=PlugType.TASMOTA,
+            address="192.168.1.100",
+        )
+
+        response = client.post(
+            "/api/sbcs/test-pi/power",
+            data=json.dumps(body),
+            content_type="application/json",
+        )
+        assert response.status_code == 400
+        assert "action is required" in json.loads(response.data)["error"]
 
     def test_power_action_invalid_action(self, client, manager, sample_sbc):
         """Test power action with invalid action fails."""
