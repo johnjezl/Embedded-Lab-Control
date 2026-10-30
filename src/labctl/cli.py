@@ -5056,7 +5056,7 @@ def renew_cmd(ctx: click.Context, sbc_name: str, duration: str | None) -> None:
 @click.option("--reason", "-r", required=True, help="Why the override is needed")
 @click.pass_context
 def force_release_cmd(ctx: click.Context, sbc_name: str, reason: str) -> None:
-    """Override — forcibly release another user's active claim.
+    """Override — forcibly release an SBC's active claim, whoever holds it.
 
     Recorded in the activity log with the reason.
     """

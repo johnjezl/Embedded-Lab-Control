@@ -625,7 +625,7 @@ picocom or minicom (for direct serial access)
 
 ## Appendix B: Testing Strategy
 
-### Unit Tests (188 at M7; 1985 tests collected in total on 2026-10-29)
+### Unit Tests (188 at M7; 2038 tests collected in total on 2026-10-29)
 - ✅ Database operations (test_database.py - 8 tests)
 - ✅ Model serialization (test_manager.py - 19 tests)
 - ✅ Config loading (test_config.py - 17 tests)

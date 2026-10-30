@@ -171,7 +171,10 @@ mcp:
 # database:
 #   timeout_seconds: 10.0
 
-# Database path for SBC and resource tracking
+# Database path for SBC and resource tracking. `~` is the home of whoever
+# runs labctl: in /etc/labctl/config.yaml use an absolute path (e.g.
+# /var/lib/labctl/.config/labctl/labctl.db, which install-services.sh
+# writes), or each user and the services get a database of their own.
 database_path: ~/.config/labctl/labctl.db
 
 # Logging level (DEBUG, INFO, WARNING, ERROR); WARNING when unset

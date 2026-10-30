@@ -177,7 +177,7 @@ Every command has `--help`. This section lists the commands; see
 | `labctl claim <sbc> -r "<reason>" [-d 2h]` | Claim exclusive access to an SBC (`--reason` is required) |
 | `labctl release <sbc>` | Release your active claim |
 | `labctl renew <sbc>` | Extend your active claim |
-| `labctl force-release <sbc> -r "<reason>"` | Override: release someone else's claim |
+| `labctl force-release <sbc> -r "<reason>"` | Override: release the active claim, whoever holds it (yours too) |
 | `labctl request-release <sbc> -r "<reason>"` | Politely ask the claimant to release |
 | `labctl claims list` | List all active claims |
 | `labctl claims show <sbc>` | Show the active claim on one SBC |
@@ -651,7 +651,7 @@ labctl with the `web,mcp,kasa,sdwire` extras into `/opt/labctl/venv`, linked as
 `/etc/sudoers.d/labctl` for `udevadm` and `systemctl restart ser2net`.
 It enables and starts `labctl-web` and `labctl-monitor`; `labctl-mcp` is
 installed but not enabled. For USB relays, also install the `actuators` extra
-into the venv (`/opt/labctl/venv/bin/pip install "<checkout>[actuators]"`).
+into the venv (`sudo /opt/labctl/venv/bin/pip install "<checkout>[actuators]"`).
 
 `labctl-mcp` runs `labctl mcp --http 8080`, which binds 127.0.0.1. To
 reach it from other machines, add `--host` in a systemd drop-in
