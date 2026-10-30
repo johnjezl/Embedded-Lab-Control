@@ -2559,6 +2559,32 @@ class TestSer2netGenerateClaims:
         assert result.exit_code == 0, result.output
         assert None not in self._ports(manager).values()
 
+    @pytest.mark.parametrize("sudo_user, refused", [("alice", False), ("bob", True)])
+    def test_sudo_keeps_the_invoking_users_claim(
+        self, runner, tmp_path, monkeypatch, sudo_user, refused
+    ):
+        """`sudo labctl ser2net generate --install` (euid 0, SUDO_USER) acts
+        for the user who ran sudo: their own CLI claim doesn't refuse it;
+        someone else's still does."""
+        import getpass
+
+        cfg, target, manager = self._lab(tmp_path)
+        monkeypatch.setattr(getpass, "getuser", lambda: "alice")
+        claimed = runner.invoke(main, ["-c", str(cfg), "claim", "held", "-r", "mine"])
+        assert claimed.exit_code == 0, claimed.output
+
+        monkeypatch.setattr(getpass, "getuser", lambda: "root")
+        monkeypatch.setattr("os.geteuid", lambda: 0)
+        monkeypatch.setenv("SUDO_USER", sudo_user)
+        result = self._install(runner, cfg)
+        if refused:
+            assert result.exit_code == 1
+            assert "'held' is claimed by 'alice'" in result.output
+            assert not target.exists()
+        else:
+            assert result.exit_code == 0, result.output
+            assert None not in self._ports(manager).values()
+
     def test_claims_disabled_not_refused(self, runner, tmp_path):
         cfg, _, manager = self._lab(tmp_path)
         cfg.write_text(cfg.read_text() + "claims:\n  enabled: false\n")

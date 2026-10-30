@@ -147,8 +147,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   to the registration). `serial udev --install` refuses when the new rules
   would remove or re-point a `/dev/lab/<name>` link such a board uses
   (every link, if the installed rules file can't be read). Both take
-  `--override-claim`. `serial remove` now asks for confirmation only on a
-  terminal, like the other destructive commands. MCP
+  `--override-claim`. `serial remove` asks for confirmation only on a
+  terminal; without one it refuses unless `--yes` (see the no-terminal
+  entry above). MCP
   `remove_serial_device` refuses an adapter a board someone else has
   claimed has a port on, the same way.
 - Writing a board's SD card fails closed when the board has no power plug
