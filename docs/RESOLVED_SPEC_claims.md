@@ -601,8 +601,14 @@ are sufficient.
 ## Open Questions
 
 1. **Interaction with `/deploy-and-test` skill:** should the skill
-   auto-claim for the duration of its run? Probably yes. Design
-   decision for skill update alongside Phase B.
+   auto-claim for the duration of its run? **Resolved (issue #2):** the
+   tools never claim on their own. The skill claims explicitly after a
+   successful build, sizes the claim for the run, renews it between
+   long steps and releases it on every path; long tool calls
+   (`boot_test`, `serial_capture`, `sdwire_update`, `flash_image`, CLI
+   `boot-test`) keep a claim the caller already holds alive and stop
+   between steps once it is lost. See `skills/deploy-and-test.md` and
+   the claims section of `docs/MCP_SERVER.md`.
 2. **PID recycling on long-lived deployments:** `mcp-stdio:<pid>-<start_epoch>`
    is safe against recycling because `start_epoch` changes when a
    PID is reused, but the sweeper must verify *both* match when

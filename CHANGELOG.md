@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added (#2: long calls keep the caller's claim alive)
+- A claim's deadline moved only when a call started, so one long call
+  (a 10-run `boot_test`, a long `serial_capture`, flashing a large
+  image) could outlast it, and another agent could then claim the board
+  and power-cycle it mid-run. MCP `boot_test`, `serial_capture`,
+  `sdwire_update` and `flash_image`, and CLI `boot-test`, now heartbeat a
+  claim the caller already holds on the board from a background thread
+  while they run (every quarter of the claim's duration, 5-60 s). They
+  never claim a board for the caller.
+- Boot tests check again before each run's power cycle and stop
+  (`STOPPED after N of M runs: <reason>`; the CLI exits 1) once the
+  caller's claim is lost (released, force-released or expired), someone
+  else claims the board or a board sharing its hardware, or, over MCP
+  with `claims.require_claim`, nobody holds it. A CLI test started with
+  `--override-claim` stops only for the loss of the user's own claim.
+- `sdwire_update` and `flash_image` with `reboot=true` leave the board
+  off, and say why, when the caller's claim was lost while the card was
+  being written.
+- `/deploy-and-test` skill: claim after a successful build, sizing the
+  claim for the run (for `boot_test`, at least runs × (timeout + cycle
+  delay + a few seconds) plus the deploy and a margin); renew it between
+  long steps; release it on every path (deploy failure, boot timeout, a
+  confirmation not given). Resolves the claims spec's open question on
+  the skill.
+
 ### Changed (#41: options and config keys that did nothing)
 - `serial.base_tcp_port` (and `LABCTL_BASE_TCP_PORT`) now sets where TCP
   port auto-assignment starts (`port assign` without `-t`, MCP, REST, web,

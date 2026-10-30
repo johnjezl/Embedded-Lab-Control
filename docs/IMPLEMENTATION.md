@@ -898,7 +898,8 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
 - ✅ #40 SD card never switched away from a board that may be running
   (closes #23); strict `allow_admin_actuator_ops`; stored cycle delay
   range-checked; udev rules `root:dialout 0660`
-- ☐ #41 Code gaps from the audit. Behaviour part (not merged yet):
+- ✅ #41 Code gaps from the audit (#42 safety part, #43 behaviour part).
+  Behaviour part:
   `serial.base_tcp_port` (`ser2net generate --install` saves missing TCP
   ports with it), `ser2net.config_file` honoured by `--install` (atomic
   where possible), `health.status_retention_days` pruning (keeps what uptime needs; 0 keeps all; schema v12
@@ -907,3 +908,11 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
   refused, `ports --all`, unused proxy/health keys removed, no-terminal
   prompts need `--yes`, group-writable `/var/lib/labctl/db`, REST power
   400 for a bad `action`
+- ☐ #2 Long calls keep the caller's claim alive (not merged yet):
+  `ClaimKeepalive` (`labctl/core/claim_keepalive.py`) heartbeats a claim
+  the caller already holds during MCP `boot_test`, `serial_capture`,
+  `sdwire_update`, `flash_image` and CLI `boot-test`; boot tests stop
+  between runs once it is lost or someone else claims the board, and
+  card writes skip the reboot then. The `/deploy-and-test` skill claims
+  after the build, sizes the claim, renews it and releases it on every
+  path

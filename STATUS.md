@@ -5,16 +5,18 @@
 - **Milestone**: Public PyPI release (`embedded-lab-control`)
 - **Sub-task**: next is P2 (PyPI release); Phase 0 and Phase 1 (safety)
   are done
-- **Status**: `main` has everything merged through PR #40, all deployed
-  to tarrasque (#39/#40 on 2026-10-30). In progress before P2: #41, the
-  code gaps the docs audit found (unused options and config keys, a
-  group-writable services database, prompts without a terminal).
+- **Status**: `main` has everything merged through PR #43; deployed to
+  tarrasque through #40 (#39/#40 on 2026-10-30). #42 and #43 (#41, the
+  code gaps the docs audit found) are merged but not deployed. In
+  progress before P2: #2 (long calls keep the caller's claim alive;
+  `/deploy-and-test` claim handling).
   Phase 1 (WS1–WS5, PRs #13–#18), claim enforcement on every surface
   (D013, PRs #22/#24/#25), image uploads + MCP TLS (D014, PR #26) and
   the fixes since (PRs #28–#40) are in. See `docs/IMPLEMENTATION.md`.
 - **Open follow-ups**: #19 (remaining by-path root operations in the
   install/update scripts), #38 (BoardPower refactor: one board-level
-  power operation with a structured result), #41 (in progress).
+  power operation with a structured result, and a lab-wide per-outlet
+  lock), #2 (in progress).
 
 ## Last Session
 

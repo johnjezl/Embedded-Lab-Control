@@ -451,3 +451,55 @@ class TestUnsavedOutputIsReported:
 
         assert result.output_errors == []
         assert "NOT saved" not in result.format_summary()
+
+
+class TestBeforeRunCheck:
+    """before_run_fn (issue #2): checked before each run's power cycle;
+    a reason stops the test there."""
+
+    def _run(self, before_run_fn, runs=4):
+        from labctl.serial.capture import CaptureResult
+
+        power = MagicMock()
+        with (
+            patch("labctl.serial.boot_test.capture_serial_output") as cap,
+            patch("labctl.serial.boot_test.time.sleep"),
+        ):
+            cap.return_value = CaptureResult(
+                output="ok", lines=1, pattern_matched=True, elapsed_seconds=1.0
+            )
+            result = run_boot_test(
+                sbc_name="test-sbc",
+                expect_pattern="ok",
+                tcp_host="localhost",
+                tcp_port=4000,
+                power_cycle_fn=power,
+                runs=runs,
+                timeout=10.0,
+                before_run_fn=before_run_fn,
+            )
+        return result, power
+
+    def test_called_before_every_run(self):
+        calls = []
+        result, power = self._run(lambda: calls.append(1))
+        assert len(calls) == 4
+        assert power.call_count == 4
+        assert result.stopped_reason is None
+        assert "STOPPED" not in result.format_summary()
+
+    def test_reason_stops_before_the_power_cycle(self):
+        answers = iter([None, None, "claim lost"])
+        result, power = self._run(lambda: next(answers))
+        assert power.call_count == 2
+        assert len(result.runs) == 2
+        assert result.stopped_reason == "claim lost"
+        summary = result.format_summary()
+        assert "STOPPED after 2 of 4 runs: claim lost" in summary
+        assert "Result: 2/2 boots successful" in summary
+
+    def test_stop_before_the_first_run(self):
+        result, power = self._run(lambda: "claimed by bob")
+        power.assert_not_called()
+        assert result.runs == []
+        assert "STOPPED after 0 of 4 runs" in result.format_summary()

@@ -6587,7 +6587,9 @@ def boot_test_cmd(
     cycle waits the largest stored cycle delay (`edit --cycle-delay`)
     among the boards on the SBC's plug outlet, a board without one
     counting as 3 s, between off and on, and sets the pre_power relays
-    first.
+    first. A claim you hold on the SBC is kept alive while the test runs;
+    the test stops (exit 1) before a run once that claim is lost or
+    another user claims the SBC (unless started with --override-claim).
 
     \b
     Examples:
@@ -6697,25 +6699,42 @@ def boot_test_cmd(
     )
     click.echo("")
 
+    # The test can outlast the user's claim on the board: keep it alive,
+    # and stop between runs once it is lost or (unless the user overrode
+    # a claim to start) someone else claims the board.
+    from labctl.core.claim_keepalive import ClaimKeepalive
+
+    keepalive = ClaimKeepalive(
+        manager,
+        sbc_name,
+        _cli_claim_actor(),
+        enabled=ctx.obj["config"].claims.enabled,
+        recheck=not ctx.params.get("override_claim"),
+    )
+
     try:
-        result = run_boot_test(
-            sbc_name=sbc_name,
-            expect_pattern=expect_pattern,
-            tcp_host="localhost",
-            tcp_port=sbc.console_port.tcp_port,
-            power_cycle_fn=power_cycle_fn,
-            runs=runs,
-            timeout=timeout,
-            deploy_fn=deploy_fn,
-            image=image,
-            dest=dest,
-            partition=partition,
-            output_dir=output_dir,
-            progress_fn=progress,
-        )
+        with keepalive:
+            result = run_boot_test(
+                sbc_name=sbc_name,
+                expect_pattern=expect_pattern,
+                tcp_host="localhost",
+                tcp_port=sbc.console_port.tcp_port,
+                power_cycle_fn=power_cycle_fn,
+                runs=runs,
+                timeout=timeout,
+                deploy_fn=deploy_fn,
+                image=image,
+                dest=dest,
+                partition=partition,
+                output_dir=output_dir,
+                progress_fn=progress,
+                before_run_fn=keepalive.checkpoint,
+            )
 
         click.echo("")
         click.echo(result.format_summary())
+        if result.stopped_reason:
+            sys.exit(1)
 
     except RuntimeError as e:
         click.echo(f"\nError: {e}", err=True)

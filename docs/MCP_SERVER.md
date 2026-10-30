@@ -407,7 +407,9 @@ whether the board is switched off (`will_do.power_off`):
 `sdwire_update` then power-cycles it (waiting the outlet's minimum, as
 for `power_cycle`), `flash_image` powers it
 on. With `reboot=true` the `pre_power` relays are checked before anything
-is switched.
+is switched. Both keep the caller's claim alive while they write, and
+with `reboot=true` leave the board off if the claim was lost meanwhile
+(see [Claims](#claims-exclusive-access-coordination)).
 
 `sdwire_ls`, `sdwire_cat` and `sdwire_info` don't change the card or the
 board's power. A card already on the host is read in place and left there.
@@ -430,14 +432,14 @@ moves the card to the host, and the read tools then read it in place. They retur
 
 | Tool | Parameters | Description |
 |------|------------|-------------|
-| `serial_capture` | `port_name`, `timeout`, `until_pattern`, `tail` | Capture serial output until timeout or pattern match |
+| `serial_capture` | `port_name`, `timeout`, `until_pattern`, `tail` | Capture serial output until timeout or pattern match. A long capture keeps the caller's claim on the board alive ([below](#claims-exclusive-access-coordination)) |
 | `serial_send` | `port_name`, `data`, `newline`, `capture_timeout`, `capture_until`, `keys`, `data_hex` | Send data to serial port, optionally capture response. Control characters can't travel in `data` (clients drop them), so name keys in `keys` (`["F11"]`, `["Down", "Enter"]`, `["Ctrl-C"]`; xterm encodings, not yet checked on real firmware; a short pause between keys; function keys differ by terminal type, so firmware that ignores one needs its own sequence as `data_hex`) or give raw bytes as `data_hex`; `newline` defaults to off with either. The confirmation shows the exact bytes (`will_do.bytes_hex`) |
 
 ### Boot Testing
 
 | Tool | Parameters | Description |
 |------|------------|-------------|
-| `boot_test` | `sbc_name`, `expect_pattern`, `runs`, `timeout`, `image`, `dest`, `partition`, `output_dir` | Automated boot reliability testing with deploy and serial capture. `image` is an uploaded image's name or a path in `allowed_read_paths`; `output_dir` must be in `allowed_write_paths` |
+| `boot_test` | `sbc_name`, `expect_pattern`, `runs`, `timeout`, `image`, `dest`, `partition`, `output_dir` | Automated boot reliability testing with deploy and serial capture. `image` is an uploaded image's name or a path in `allowed_read_paths`; `output_dir` must be in `allowed_write_paths`. Keeps the caller's claim alive while it runs and stops between runs once the claim is lost or someone else claims the board ([below](#claims-exclusive-access-coordination)) |
 
 ### Actuators and Bindings
 
@@ -524,6 +526,27 @@ meanwhile, which then blocks the re-claim). Claiming a board you already hold (e
 earlier session) returns `"status": "already_claimed"` and renews it for
 the requested duration (without re-checking boards it shares hardware
 with).
+
+**Long calls keep the caller's claim alive** (issue #2). A claim's
+deadline otherwise moves only when a call starts, so one long call could
+outlast it. While `boot_test`, `serial_capture`, `sdwire_update` and
+`flash_image` run, a claim the caller already holds on the board is
+heartbeated in the background (every quarter of the claim's duration,
+between 5 and 60 s). Nothing is claimed for a caller who holds no claim.
+Between steps they check again and stop rather than act on a board the
+caller no longer holds:
+
+- `boot_test` checks before each run's power cycle. It stops, with
+  `STOPPED after N of M runs: <reason>` in its result, when the caller's
+  claim was lost meanwhile (released, force-released or expired), when
+  someone else has claimed the board or a board sharing its hardware, or
+  (with `claims.require_claim`) when nobody holds it.
+- `sdwire_update` and `flash_image` with `reboot=true` check before the
+  reboot: if the claim was lost, the card is written but the board is
+  **left off**, and the result says why.
+
+A claim still has to cover the gaps between calls: size it for the whole
+workflow, and `renew_sbc_claim` between long steps.
 
 With `claims.require_claim: true` (default `false`), the tools that name
 a board (all of the above except `actuator_set`/`actuator_remove`) also
