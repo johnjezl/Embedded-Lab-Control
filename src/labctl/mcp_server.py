@@ -422,7 +422,12 @@ def _sbc_to_dict(sbc) -> dict:
 _SERVER_START_EPOCH = int(_time_mod.time())
 _SESSION_ID = f"mcp-stdio:{os.getpid()}-{_SERVER_START_EPOCH}"
 _SESSION_KIND = "mcp-stdio"
-_AGENT_NAME: str | None = None  # stdio / unauthenticated HTTP
+# Names set with agent_name, kept for later calls. Over stdio the process
+# is one client, so one name. Over HTTP only per authenticated user: an
+# unauthenticated HTTP server serves many clients, so a name is used for
+# the call that gives it and never remembered (it would name every
+# other client's claims and releases too).
+_AGENT_NAME: str | None = None  # stdio only
 _USER_AGENT_NAMES: dict[str, str] = {}  # authenticated HTTP, per user
 
 
@@ -437,26 +442,34 @@ def _get_session_id() -> str:
     return f"{_SESSION_ID}:{user}" if user else _SESSION_ID
 
 
-def _get_agent_name() -> str:
+def _remembered_agent_name() -> str | None:
+    """A name set earlier by this caller: the authenticated user's own, or
+    over stdio the process's. None for unauthenticated HTTP."""
     user = _authenticated_user()
     if user:
         return _USER_AGENT_NAMES.get(user) or user
-    return _AGENT_NAME or f"unnamed-{_SESSION_ID[:16]}"
+    return _AGENT_NAME if _SESSION_KIND == "mcp-stdio" else None
 
 
-def _has_agent_name() -> bool:
-    """True when claims would record a real name: one set with agent_name
-    (this call or earlier in the session) or the authenticated user's."""
-    user = _authenticated_user()
-    return bool(user) or bool(_AGENT_NAME)
+def _get_agent_name(call_name: str | None = None) -> str:
+    """The name to record: this call's agent_name, else the caller's
+    remembered or authenticated name, else an ``unnamed-...`` placeholder."""
+    return call_name or _remembered_agent_name() or f"unnamed-{_SESSION_ID[:16]}"
+
+
+def _has_agent_name(call_name: str | None = None) -> bool:
+    """True when claims would record a real name (not the placeholder)."""
+    return bool(call_name or _remembered_agent_name())
 
 
 def _set_agent_name(name: str) -> None:
+    """Remember ``name`` for this caller's later calls (not over
+    unauthenticated HTTP, whose clients can't be told apart)."""
     global _AGENT_NAME
     user = _authenticated_user()
     if user:
         _USER_AGENT_NAMES[user] = name
-    else:
+    elif _SESSION_KIND == "mcp-stdio":
         _AGENT_NAME = name
 
 
@@ -3508,10 +3521,12 @@ def claim_sbc(
             within claims.min_duration_minutes..max_duration_minutes)
         reason: Human-readable reason, recorded in the audit log
             (optional; "no reason given" when omitted)
-        agent_name: Self-declared agent identifier, kept for the rest of
-            the session. Without one, claims are recorded under the
-            authenticated user's name, or "unnamed-..." without auth; a
-            lab with claims.require_agent_name refuses the claim then.
+        agent_name: Self-declared agent identifier. Kept for later calls
+            over stdio and per authenticated user over HTTP; an
+            unauthenticated HTTP server uses it for this call only. Without
+            one, the claim is recorded under the remembered or
+            authenticated name, else "unnamed-..."; a lab with
+            claims.require_agent_name refuses an unnamed claim.
         context: Optional metadata (git branch, ticket, etc.)
     """
     from labctl.core.models import (
@@ -3522,11 +3537,12 @@ def claim_sbc(
         UnknownSBCError,
     )
 
-    if agent_name and agent_name.strip():
-        _set_agent_name(agent_name.strip())
+    call_name = agent_name.strip() if isinstance(agent_name, str) else ""
+    if call_name:
+        _set_agent_name(call_name)
 
     config = _get_config()
-    if config.claims.require_agent_name and not _has_agent_name():
+    if config.claims.require_agent_name and not _has_agent_name(call_name):
         return json.dumps(
             {
                 "error": "agent_name_required",
@@ -3557,7 +3573,7 @@ def claim_sbc(
     manager = _get_manager()
     claim_args = dict(
         sbc_name=sbc_name,
-        agent_name=_get_agent_name(),
+        agent_name=_get_agent_name(call_name),
         session_id=_get_session_id(),
         session_kind=_SESSION_KIND,
         duration_seconds=duration_s,
@@ -4243,10 +4259,6 @@ def bind(
         phase = SamplePhase(sample_phase)
     except ValueError as e:
         return f"Error: {e}"
-    if phase is SamplePhase.POST_POWER:
-        from labctl.core.models import POST_POWER_REFUSED
-
-        return f"Error: {POST_POWER_REFUSED}"
 
     if shape_mode is ShapeMode.MOMENTARY and pulse_ms is None:
         return "Error: pulse_ms is required when mode='momentary'"
@@ -4278,16 +4290,19 @@ def bind(
     if claim_err:
         return claim_err
 
-    binding = manager.create_binding(
-        sbc.id,
-        purpose,
-        ch.id,
-        shape_mode=shape_mode,
-        shape_active=shape_active,
-        momentary_pulse_ms=pulse_ms,
-        sample_phase=phase,
-        notes=notes,
-    )
+    try:
+        binding = manager.create_binding(
+            sbc.id,
+            purpose,
+            ch.id,
+            shape_mode=shape_mode,
+            shape_active=shape_active,
+            momentary_pulse_ms=pulse_ms,
+            sample_phase=phase,
+            notes=notes,
+        )
+    except ValueError as e:  # e.g. post_power, which isn't implemented
+        return f"Error: {e}"
     return json.dumps({"bound": _binding_to_dict(binding)})
 
 

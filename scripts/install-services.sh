@@ -163,32 +163,9 @@ echo "[ok] Secured service config: $LABCTL_CONFIG/config.yaml (labctl:labctl, 64
 # writable. Setgid (2775): the -wal/-shm files SQLite creates next to it
 # are in the labctl group, with the database file's mode (664). Not sticky:
 # whichever process closes the database last removes them.
-if [ -L "$LABCTL_DB_DIR" ]; then
-    echo "[ok] $LABCTL_DB_DIR is a symlink; leaving it (and its permissions) as is"
-else
-    "${ADMIN_FILES[@]}" secure-dir "$LABCTL_DB_DIR" labctl labctl 2775
-    # Root reads only root's own /etc/labctl/config.yaml here.
-    DB_PATH=$("$LABCTL_VENV/bin/python" -I -c '
-import sys, yaml
-with open(sys.argv[1]) as f:
-    data = yaml.safe_load(f)
-print(data.get("database_path", "") if isinstance(data, dict) else "")
-' "$SYSTEM_CONFIG_FILE")
-    if [ "$DB_PATH" = "$LABCTL_DB_DIR/labctl.db" ]; then
-        "${ADMIN_FILES[@]}" create "$DB_PATH" labctl labctl 664
-        for extra in "$DB_PATH-wal" "$DB_PATH-shm"; do
-            if [ "$("${ADMIN_FILES[@]}" state "$extra")" = regular ]; then
-                "${ADMIN_FILES[@]}" secure "$extra" labctl labctl 664
-            fi
-        done
-        echo "[ok] Database $DB_PATH (labctl:labctl, 664; group-writable directory)"
-    else
-        echo "[!] database_path in $SYSTEM_CONFIG_FILE is ${DB_PATH:-unset}, not"
-        echo "    $LABCTL_DB_DIR/labctl.db: labctl group members can't write it from"
-        echo "    the CLI (they'd need sudo -u labctl). To move it there, see"
-        echo "    \"Moving the database\" in README.md."
-    fi
-fi
+# See labctl.core.admin_files.shared_db (shared with update.sh).
+"${ADMIN_FILES[@]}" shared-db "$SYSTEM_CONFIG_FILE" "$LABCTL_DB_DIR" labctl labctl ||
+    echo "[!!] Continuing; fix the database permissions above and rerun."
 
 # 4. Set up udev rules file (group-writable so labctl users don't need sudo)
 echo "[+] Setting up udev rules file..."

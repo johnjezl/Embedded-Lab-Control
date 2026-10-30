@@ -27,7 +27,7 @@ All milestones (M1-M7) complete; Phase 0 and Phase 1 (safety) of the PyPI releas
 - Python 3.10+
 - Click (CLI)
 - Flask (web/API)
-- SQLite (database, schema v11)
+- SQLite (database, schema v12)
 - ser2net (serial over TCP)
 - MCP SDK (AI integration via Model Context Protocol)
 - python-kasa (TP-Link Kasa smart plug/strip control)

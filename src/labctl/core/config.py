@@ -142,6 +142,23 @@ def _positive_int(section: dict, key: str, default: int) -> int:
     return value
 
 
+def _non_negative_int(section: dict, key: str, default: int) -> int:
+    """Read a whole number of 0 or more; anything else keeps the default,
+    with a warning."""
+    value = section.get(key)
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        _warn_once(
+            "Config: %s must be a whole number (0 or more), got %r; using %d",
+            key,
+            value,
+            default,
+        )
+        return default
+    return value
+
+
 def _tcp_port(section: dict, key: str, default: int) -> int:
     """Read a TCP port number (1-65535); anything else keeps the default,
     with a warning."""
@@ -317,7 +334,8 @@ class HealthConfig:
     min_sleep_seconds: float = 1.0  # floor on between-cycle sleep
     ping_timeout: float = 2.0  # seconds
     serial_timeout: float = 2.0  # seconds
-    status_retention_days: int = 30  # days the monitor keeps status history
+    # Days the monitor keeps status history; 0 keeps all of it.
+    status_retention_days: int = 30
     alert_log_path: Path = field(
         default_factory=lambda: _default_data_dir() / "alerts.log"
     )
@@ -613,7 +631,7 @@ class Config:
             min_sleep_seconds=health_data.get("min_sleep_seconds", 1.0),
             ping_timeout=health_data.get("ping_timeout", 2.0),
             serial_timeout=health_data.get("serial_timeout", 2.0),
-            status_retention_days=_positive_int(
+            status_retention_days=_non_negative_int(
                 health_data, "status_retention_days", 30
             ),
             alert_log_path=_expand_path(

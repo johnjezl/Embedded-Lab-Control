@@ -286,7 +286,11 @@ class TestStatusRetentionConfig:
         config = Config.from_dict({"health": {"status_retention_days": 7}})
         assert config.health.status_retention_days == 7
 
-    @pytest.mark.parametrize("value", [0, -3, "7", 1.5])
+    def test_zero_keeps_all(self):
+        config = Config.from_dict({"health": {"status_retention_days": 0}})
+        assert config.health.status_retention_days == 0
+
+    @pytest.mark.parametrize("value", [-3, "7", 1.5, True])
     def test_invalid_keeps_default(self, caplog, value):
         with caplog.at_level(logging.WARNING):
             config = Config.from_dict({"health": {"status_retention_days": value}})

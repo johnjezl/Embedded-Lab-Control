@@ -669,7 +669,7 @@ class TestMigrationV11:
         columns, rows, version = self._upgrade(path)
         assert "file_id" in columns
         assert rows == [("old.img", "bot", None)]
-        assert version == SCHEMA_VERSION == 11
+        assert version == SCHEMA_VERSION
 
     def test_v10_without_images_table_gets_one(self, tmp_path):
         path = tmp_path / "labctl.db"
@@ -681,7 +681,7 @@ class TestMigrationV11:
         columns, rows, version = self._upgrade(path)
         assert "file_id" in columns
         assert rows == []
-        assert version == 11
+        assert version == SCHEMA_VERSION
 
     def test_released_v10_unchanged(self, tmp_path):
         # Also the path a second process starting at the same time takes:
@@ -702,7 +702,67 @@ class TestMigrationV11:
         assert before == after
         assert columns.count("file_id") == 1
         assert rows == [("old.img", "bot", None)]
-        assert version == 11
+        assert version == SCHEMA_VERSION
+
+
+class TestMigrationV12:
+    """v12 indexes status_log(logged_at), which the monitor's age-based
+    pruning (health.status_retention_days) filters on."""
+
+    def _index_names(self, path):
+        conn = sqlite3.connect(path)
+        try:
+            return {
+                r[0]
+                for r in conn.execute(
+                    "SELECT name FROM sqlite_master"
+                    " WHERE type = 'index' AND tbl_name = 'status_log'"
+                )
+            }
+        finally:
+            conn.close()
+
+    def test_fresh_database_has_index(self, tmp_path):
+        path = tmp_path / "labctl.db"
+        Database(path).initialize()
+        assert "idx_status_log_logged_at" in self._index_names(path)
+
+    def test_v11_upgraded(self, tmp_path):
+        path = tmp_path / "labctl.db"
+        Database(path).initialize()
+        conn = sqlite3.connect(path)
+        conn.executescript("""
+            DROP INDEX idx_status_log_logged_at;
+            INSERT INTO sbcs (name) VALUES ('pi');
+            INSERT INTO status_log (sbc_id, status) VALUES (1, 'online');
+            DELETE FROM schema_version;
+            INSERT INTO schema_version (version) VALUES (11);
+            """)
+        conn.commit()
+        conn.close()
+        assert "idx_status_log_logged_at" not in self._index_names(path)
+
+        db = Database(path)
+        db.initialize()
+        assert "idx_status_log_logged_at" in self._index_names(path)
+        with db.connect() as conn:
+            version = conn.execute("SELECT MAX(version) FROM schema_version")
+            assert version.fetchone()[0] == SCHEMA_VERSION == 12
+            assert conn.execute("SELECT COUNT(*) FROM status_log").fetchone()[0] == 1
+
+    def test_pruning_query_uses_index(self, tmp_path):
+        path = tmp_path / "labctl.db"
+        Database(path).initialize()
+        conn = sqlite3.connect(path)
+        plan = " ".join(
+            str(r[-1])
+            for r in conn.execute(
+                "EXPLAIN QUERY PLAN DELETE FROM status_log"
+                " WHERE logged_at < datetime('now', '-30 days')"
+            )
+        )
+        conn.close()
+        assert "idx_status_log_logged_at" in plan
 
 
 class TestConcurrency:

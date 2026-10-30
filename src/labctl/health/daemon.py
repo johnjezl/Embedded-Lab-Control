@@ -63,7 +63,8 @@ class MonitorDaemon:
             alert_on_offline: Alert when SBC goes offline
             alert_on_power_change: Alert on power state changes
             status_retention_days: Delete status history older than this
-                many days, at startup and then hourly (None: keep it all)
+                many days, at startup and then hourly (None or 0: keep it
+                all)
         """
         self.manager = manager
         self.checker = checker
@@ -88,7 +89,7 @@ class MonitorDaemon:
         """Delete status history past ``status_retention_days``, at most
         once per PRUNE_INTERVAL. A failure is logged and retried next
         interval; it never stops the health checks."""
-        if self.status_retention_days is None:
+        if not self.status_retention_days:  # None or 0: keep everything
             return
         if (
             self._last_prune is not None

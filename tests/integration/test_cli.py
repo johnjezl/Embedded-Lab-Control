@@ -2172,17 +2172,89 @@ class TestSer2netGenerate:
         assert f"not writing {target}" in result.output
         assert victim.read_text() == "keep\n"
 
-    def test_missing_tcp_port_uses_base(self, runner, tmp_path):
-        cfg, _, manager = self._lab(tmp_path, base=5100)
-        # Rows saved without a TCP port (the column is nullable).
+    def _drop_tcp_ports(self, manager):
+        """Rows saved without a TCP port (the column is nullable)."""
         manager.db.execute_modify(
             "UPDATE serial_ports SET tcp_port = NULL WHERE device_path != ?",
             ("/dev/lab/a",),
         )
-        result = runner.invoke(main, ["-c", str(cfg), "ser2net", "generate"])
+
+    def _tcp_ports(self, manager):
+        return {p.device_path: p.tcp_port for p in manager.list_serial_ports()}
+
+    def test_preview_shows_would_assign_and_saves_nothing(self, tmp_path):
+        cfg, _, manager = self._lab(tmp_path, base=5100)
+        self._drop_tcp_ports(manager)
+        result = CliRunner().invoke(main, ["-c", str(cfg), "ser2net", "generate"])
         assert result.exit_code == 0, result.output
-        # a kept 5100; b and c each get the next free port, not 4000.
-        assert "localhost,5100\n" in result.output
-        assert "localhost,5101\n" in result.output
-        assert "localhost,5102\n" in result.output
-        assert "4000" not in result.output
+        # a keeps 5100; b and c are left out of the config, not given 4000.
+        assert "localhost,5100\n" in result.stdout
+        assert "/dev/lab/b" not in result.stdout
+        assert "4000" not in result.stdout
+        assert "Would assign TCP port 5101 to b console (/dev/lab/b)" in result.stderr
+        assert "Would assign TCP port 5102 to c console (/dev/lab/c)" in result.stderr
+        assert self._tcp_ports(manager) == {
+            "/dev/lab/a": 5100,
+            "/dev/lab/b": None,
+            "/dev/lab/c": None,
+        }
+
+    def test_install_assigns_and_saves(self, runner, tmp_path):
+        cfg, target, manager = self._lab(tmp_path, base=5100)
+        self._drop_tcp_ports(manager)
+        result = runner.invoke(
+            main, ["-c", str(cfg), "ser2net", "generate", "--install"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "Assigned TCP port 5101 to b console (/dev/lab/b)" in result.output
+        assert "Assigned TCP port 5102 to c console (/dev/lab/c)" in result.output
+        assert self._tcp_ports(manager) == {
+            "/dev/lab/a": 5100,
+            "/dev/lab/b": 5101,
+            "/dev/lab/c": 5102,
+        }
+        text = target.read_text()
+        for port in (5100, 5101, 5102):
+            assert f"localhost,{port}\n" in text
+
+    def test_install_refuses_past_65535(self, runner, tmp_path):
+        cfg, target, manager = self._lab(tmp_path, base=5100)
+        self._drop_tcp_ports(manager)
+        manager.db.execute_modify(
+            "UPDATE serial_ports SET tcp_port = 65535 WHERE device_path = ?",
+            ("/dev/lab/a",),
+        )
+        result = runner.invoke(
+            main, ["-c", str(cfg), "ser2net", "generate", "--install"]
+        )
+        assert result.exit_code == 1
+        assert "No TCP port left to auto-assign" in result.output
+        assert not target.exists()
+        assert self._tcp_ports(manager)["/dev/lab/b"] is None
+
+    def test_permission_message_names_configured_path(self, runner, tmp_path):
+        cfg, target, _ = self._lab(tmp_path)
+        with patch(
+            "labctl.cli.write_ser2net_config", side_effect=PermissionError(13, "no")
+        ):
+            result = runner.invoke(
+                main, ["-c", str(cfg), "ser2net", "generate", "--install"]
+            )
+        assert result.exit_code == 1
+        assert f"permission denied writing {target}" in result.output
+        assert "install-services.sh" not in result.output
+
+    def test_permission_message_for_etc_path(self, runner, tmp_path):
+        cfg, _, _ = self._lab(tmp_path)
+        cfg.write_text(
+            cfg.read_text().replace(str(tmp_path / "ser2net.yaml"), "/etc/ser2net.yaml")
+        )
+        with patch(
+            "labctl.cli.write_ser2net_config", side_effect=PermissionError(13, "no")
+        ):
+            result = runner.invoke(
+                main, ["-c", str(cfg), "ser2net", "generate", "--install"]
+            )
+        assert result.exit_code == 1
+        assert "permission denied writing /etc/ser2net.yaml" in result.output
+        assert "install-services.sh makes it group-writable" in result.output

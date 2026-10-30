@@ -769,8 +769,11 @@ def create_claim(sbc_name: str):
         return error
     reason = data.get("reason") or "web claim"
     agent_name = data.get("agent_name")
-    if isinstance(agent_name, str):
-        agent_name = agent_name.strip()
+    if agent_name is None:
+        agent_name = ""
+    if not isinstance(reason, str) or not isinstance(agent_name, str):
+        return jsonify({"error": "reason and agent_name must be strings"}), 400
+    agent_name = agent_name.strip()
     if not agent_name:
         # Without auth there is no user to name the claim after.
         if config.claims.require_agent_name and not claims.web_actor().owner:
@@ -787,8 +790,6 @@ def create_claim(sbc_name: str):
                 400,
             )
         agent_name = claims.web_user_name()
-    if not isinstance(reason, str) or not isinstance(agent_name, str):
-        return jsonify({"error": "reason and agent_name must be strings"}), 400
 
     manager = g.manager
     actor = claims.web_actor()

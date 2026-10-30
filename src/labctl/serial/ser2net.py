@@ -178,24 +178,107 @@ if __name__ == "__main__":
 
 
 def write_ser2net_config(path: str, content: str) -> None:
-    """Write ``content`` to the ser2net config at absolute ``path``.
+    """Replace the ser2net config at absolute ``path`` with ``content``.
 
     `ser2net generate --install` may run as root (sudo), with the path
-    taken from ``ser2net.config_file``. The file is opened without
-    following a symlink on any path component, must be a regular file
-    with a single link (or not exist yet: it is then created 0644), and
-    is rewritten in place, so its owner and mode (``root:labctl 664``
-    from install-services.sh) are kept.
-    """
-    from labctl.core.safe_open import open_file_nofollow
+    taken from ``ser2net.config_file``. Nothing is followed: the directory
+    is opened with no symlink on any component, and an existing file must
+    be a regular file with a single link.
 
-    fd = open_file_nofollow(path, os.O_WRONLY | os.O_CREAT, 0o644)
+    The write is atomic: a temporary file is created in the same directory
+    (relative to that directory descriptor), given the existing file's
+    owner and mode (0644 for a new one), fsynced, and renamed over the old
+    file. A labctl group member without write access to the directory
+    (/etc) but with it to the file (install-services.sh makes
+    /etc/ser2net.yaml group-writable) can't create the temporary file;
+    the existing file is then rewritten in place instead.
+    """
+    import secrets
+
+    from labctl.core.safe_open import open_dir_nofollow, open_regular_nonblocking
+
+    if not os.path.isabs(path):
+        raise ValueError(f"ser2net config path must be absolute: {path!r}")
+    directory, name = os.path.split(path)
+    data = content.encode()
+    dir_fd = open_dir_nofollow(directory)
+    try:
+        existing = _existing_single_link(name, dir_fd, path, open_regular_nonblocking)
+        tmp_name = f".{name}.labctl-{secrets.token_hex(4)}"
+        try:
+            tmp = os.open(
+                tmp_name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=dir_fd,
+            )
+        except PermissionError:
+            if existing is None:
+                raise
+            _rewrite_in_place(name, dir_fd, path, data, open_regular_nonblocking)
+            return
+        try:
+            try:
+                if existing is not None and (
+                    os.fstat(tmp).st_uid,
+                    os.fstat(tmp).st_gid,
+                ) != (existing.st_uid, existing.st_gid):
+                    os.fchown(tmp, existing.st_uid, existing.st_gid)
+            except PermissionError:
+                # Not root, and the file is someone else's: keep it theirs.
+                os.close(tmp)
+                tmp = None
+                os.unlink(tmp_name, dir_fd=dir_fd)
+                _rewrite_in_place(name, dir_fd, path, data, open_regular_nonblocking)
+                return
+            mode = existing.st_mode & 0o7777 if existing is not None else 0o644
+            os.fchmod(tmp, mode)
+            _write_all(tmp, data)
+            os.fsync(tmp)
+            os.close(tmp)
+            tmp = None
+            os.rename(tmp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+            os.fsync(dir_fd)
+        except BaseException:
+            if tmp is not None:
+                os.close(tmp)
+            try:
+                os.unlink(tmp_name, dir_fd=dir_fd)
+            except FileNotFoundError:
+                pass
+            raise
+    finally:
+        os.close(dir_fd)
+
+
+def _existing_single_link(name, dir_fd, path, opener):
+    """The existing file's stat (None if missing); refuses a symlink, a
+    non-regular file or one with more than one hard link."""
+    try:
+        fd = opener(name, os.O_RDONLY, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return None
+    try:
+        st = os.fstat(fd)
+    finally:
+        os.close(fd)
+    if st.st_nlink != 1:
+        raise OSError(errno.EMLINK, f"{path} has more than one hard link")
+    return st
+
+
+def _rewrite_in_place(name, dir_fd, path, data, opener):
+    fd = opener(name, os.O_WRONLY, dir_fd=dir_fd)
     try:
         if os.fstat(fd).st_nlink != 1:
             raise OSError(errno.EMLINK, f"{path} has more than one hard link")
         os.ftruncate(fd, 0)
-        data = content.encode()
-        while data:
-            data = data[os.write(fd, data) :]
+        _write_all(fd, data)
+        os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    while data:
+        data = data[os.write(fd, data) :]

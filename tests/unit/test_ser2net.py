@@ -204,7 +204,7 @@ class TestWriteSer2netConfig:
         assert path.read_text() == "a: 1\n"
         assert stat.S_IMODE(path.stat().st_mode) == 0o644
 
-    def test_rewrites_in_place_keeping_mode(self, tmp_path):
+    def test_replaces_atomically_keeping_mode(self, tmp_path):
         import stat
 
         from labctl.serial.ser2net import write_ser2net_config
@@ -216,7 +216,56 @@ class TestWriteSer2netConfig:
         write_ser2net_config(str(path), "new\n")
         assert path.read_text() == "new\n"
         assert stat.S_IMODE(path.stat().st_mode) == 0o664
+        assert path.stat().st_ino != inode  # renamed over, not rewritten
+        assert [p.name for p in tmp_path.iterdir()] == ["ser2net.yaml"]
+
+    def test_failed_write_keeps_old_file_and_no_temp(self, tmp_path, monkeypatch):
+        from labctl.serial import ser2net
+
+        path = tmp_path / "ser2net.yaml"
+        path.write_text("old\n")
+
+        def boom(fd):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(ser2net.os, "fsync", boom)
+        with pytest.raises(OSError, match="No space"):
+            ser2net.write_ser2net_config(str(path), "new\n")
+        assert path.read_text() == "old\n"
+        assert [p.name for p in tmp_path.iterdir()] == ["ser2net.yaml"]
+
+    def test_unwritable_directory_rewrites_in_place(self, tmp_path):
+        """A labctl group member can write /etc/ser2net.yaml but not /etc."""
+        import stat
+
+        from labctl.serial.ser2net import write_ser2net_config
+
+        etc = tmp_path / "etc"
+        etc.mkdir()
+        path = etc / "ser2net.yaml"
+        path.write_text("old content\n")
+        path.chmod(0o664)
+        inode = path.stat().st_ino
+        etc.chmod(0o555)
+        try:
+            write_ser2net_config(str(path), "new\n")
+        finally:
+            etc.chmod(0o755)
+        assert path.read_text() == "new\n"
         assert path.stat().st_ino == inode
+        assert stat.S_IMODE(path.stat().st_mode) == 0o664
+
+    def test_unwritable_directory_new_file_refused(self, tmp_path):
+        from labctl.serial.ser2net import write_ser2net_config
+
+        etc = tmp_path / "etc"
+        etc.mkdir()
+        etc.chmod(0o555)
+        try:
+            with pytest.raises(PermissionError):
+                write_ser2net_config(str(etc / "ser2net.yaml"), "x\n")
+        finally:
+            etc.chmod(0o755)
 
     def test_symlink_refused(self, tmp_path):
         from labctl.serial.ser2net import write_ser2net_config

@@ -33,7 +33,8 @@ serial:
 # ser2net integration
 ser2net:
   # Path to ser2net configuration file: `ser2net generate --install`
-  # writes it (in place; a symlink or hard link there is refused) and
+  # replaces it atomically (in place for a user who can write the file
+  # but not its directory; a symlink or hard link there is refused) and
   # `ports`/`connect` read TCP ports from it. install-services.sh makes
   # only /etc/ser2net.yaml group-writable; for another path, set that up.
   config_file: /etc/ser2net.yaml
@@ -56,7 +57,8 @@ ser2net:
 #   min_sleep_seconds: 1.0
 #   ping_timeout: 2.0
 #   serial_timeout: 2.0
-#   status_retention_days: 30  # the monitor deletes older status history (hourly)
+#   status_retention_days: 30  # the monitor deletes older status history
+#                              # (hourly); 0 keeps all of it
 #   alert_log_path: ~/.local/share/labctl/alerts.log  # default: $XDG_DATA_HOME/labctl/alerts.log
 #   alert_on_offline: true
 #   alert_on_power_change: true

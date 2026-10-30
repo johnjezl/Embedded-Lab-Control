@@ -3369,7 +3369,8 @@ def ser2net_group() -> None:
     is_flag=True,
     help=(
         "Write the config to ser2net.config_file (default /etc/ser2net.yaml), "
-        "in place; refuses a symlink or hard link there"
+        "replacing it atomically; refuses a symlink or hard link there. "
+        "Saves a TCP port for any port that has none first."
     ),
 )
 @click.pass_context
@@ -3378,9 +3379,10 @@ def ser2net_generate_cmd(
 ) -> None:
     """Generate ser2net configuration from database.
 
-    A port with no TCP port recorded gets the next free one from
-    serial.base_tcp_port up, as `port assign` would (in the generated
-    config only; the database isn't changed).
+    A port with no TCP port recorded: with --install it is assigned one
+    and saved, exactly as `port assign` without -t would (one above the
+    highest in use, at least serial.base_tcp_port); without --install the
+    port is left out of the config and the number it would get is shown.
     """
     config: Config = ctx.obj["config"]
     manager = _get_manager(ctx)
@@ -3397,22 +3399,57 @@ def ser2net_generate_cmd(
     for sbc in manager.list_sbcs():
         sbc_names[sbc.id] = sbc.name
 
-    # Convert to Ser2NetPort objects. Ports without a TCP port take the
-    # ones auto-assignment would give next, one each.
-    next_free = manager.next_tcp_port(config.serial.base_tcp_port)
+    def label(db_port) -> str:
+        sbc_name = sbc_names.get(db_port.sbc_id, f"sbc{db_port.sbc_id}")
+        return f"{sbc_name} {db_port.port_type.value} ({db_port.device_path})"
+
+    # Ports without a TCP port: saved through the same path as `port
+    # assign` with --install; otherwise only reported, so no number that
+    # isn't saved ends up in a config.
+    missing = [p for p in db_ports if not p.tcp_port]
+    if install:
+        for db_port in missing:
+            try:
+                saved = manager.assign_serial_port(
+                    sbc_id=db_port.sbc_id,
+                    port_type=db_port.port_type,
+                    device_path=db_port.device_path,
+                    tcp_port=None,
+                    baud_rate=db_port.baud_rate,
+                    alias=db_port.alias,
+                    serial_device_id=db_port.serial_device_id,
+                    base_tcp_port=config.serial.base_tcp_port,
+                )
+            except ValueError as e:
+                click.echo(f"Error: {label(db_port)}: {e}", err=True)
+                sys.exit(1)
+            click.echo(f"Assigned TCP port {saved.tcp_port} to {label(db_port)}")
+        if missing:
+            db_ports = manager.list_serial_ports()
+    elif missing:
+        would = manager.next_tcp_port(config.serial.base_tcp_port)
+        for db_port in missing:
+            note = f"TCP port {would}" if would <= 65535 else "no TCP port (none left)"
+            click.echo(
+                f"Would assign {note} to {label(db_port)}; left out of this "
+                "config (--install assigns and saves it)",
+                err=True,
+            )
+            would += 1
+
+    # Convert to Ser2NetPort objects
     ports = []
     for db_port in db_ports:
+        if not db_port.tcp_port:
+            continue
         sbc_name = sbc_names.get(db_port.sbc_id, f"sbc{db_port.sbc_id}")
         port_name = db_port.alias or f"{sbc_name}-{db_port.port_type.value}"
-        tcp_port = db_port.tcp_port
-        if not tcp_port:
-            tcp_port, next_free = next_free, next_free + 1
 
         ports.append(
             Ser2NetPort(
                 name=port_name,
                 device=db_port.device_path,
-                tcp_port=tcp_port,
+                tcp_port=db_port.tcp_port,
                 baud=db_port.baud_rate,
             )
         )
@@ -3425,10 +3462,14 @@ def ser2net_generate_cmd(
         try:
             write_ser2net_config(ser2net_path, config_content)
         except PermissionError:
+            hint = (
+                "join the labctl group (install-services.sh makes it "
+                "group-writable) or use sudo"
+                if ser2net_path == "/etc/ser2net.yaml"
+                else "make it writable for you, or use sudo"
+            )
             click.echo(
-                f"Error: permission denied writing {ser2net_path}. Join the "
-                "labctl group (install-services.sh makes /etc/ser2net.yaml "
-                "group-writable) or use sudo.",
+                f"Error: permission denied writing {ser2net_path}; {hint}.",
                 err=True,
             )
             sys.exit(1)
@@ -3958,7 +3999,8 @@ def _shape_mode_choice():
 
 
 def _sample_phase_choice():
-    return click.Choice(["pre-power", "post-power", "none"])
+    # post-power isn't offered: nothing acts on it (the manager refuses it).
+    return click.Choice(["pre-power", "none"])
 
 
 def _normalize_phase(value: str):
@@ -4288,7 +4330,7 @@ def actuator_remove_cmd(
     help=(
         "When the binding's value matters: pre-power straps "
         "(recovery_mode, boot_select) are set before every power-on; "
-        "none. post-power is refused: it isn't implemented yet."
+        "none. (post-power isn't implemented yet.)"
     ),
 )
 @click.option(
@@ -4333,10 +4375,6 @@ def bind_cmd(
     shape_mode = ShapeMode(mode)
     shape_active = ChannelState(active_when)
 
-    if sample_phase == "post-power":
-        from labctl.core.models import POST_POWER_REFUSED
-
-        raise click.UsageError(POST_POWER_REFUSED)
     if shape_mode is ShapeMode.MOMENTARY and pulse_ms is None:
         raise click.UsageError("--pulse-ms is required when --mode=momentary")
     if shape_mode is ShapeMode.LATCH and pulse_ms is not None:
@@ -4358,16 +4396,20 @@ def bind_cmd(
     _check_bound_claims_cli(ctx, {ch.id}, override_claim, for_sbc=sbc_name)
     _check_claim_cli(ctx, sbc_name, override_claim, shared=False)
 
-    binding = manager.create_binding(
-        sbc.id,
-        purpose,
-        ch.id,
-        shape_mode=shape_mode,
-        shape_active=shape_active,
-        momentary_pulse_ms=pulse_ms,
-        sample_phase=_normalize_phase(sample_phase),
-        notes=notes,
-    )
+    try:
+        binding = manager.create_binding(
+            sbc.id,
+            purpose,
+            ch.id,
+            shape_mode=shape_mode,
+            shape_active=shape_active,
+            momentary_pulse_ms=pulse_ms,
+            sample_phase=_normalize_phase(sample_phase),
+            notes=notes,
+        )
+    except ValueError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
     click.echo(
         f"Bound {sbc.name}:{purpose} -> {actuator.name}[{channel}] "
         f"({mode}, active={active_when}, phase={sample_phase})"

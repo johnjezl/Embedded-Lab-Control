@@ -848,3 +848,13 @@ class TestRestRequireAgentName:
         resp = client.post("/api/claims/c", json={"reason": "r"})
         assert resp.status_code == 201
         assert manager.get_active_claim("c").agent_name == "web-operator"
+
+    @pytest.mark.parametrize("value", [0, False, [], {}, 5])
+    def test_non_string_agent_name_is_400(self, tmp_path, value):
+        """Checked before the empty test: a falsy non-string isn't "unset"."""
+        app, client, manager = _make(tmp_path, auth=False)
+        manager.create_sbc(name="c")
+        resp = client.post("/api/claims/c", json={"reason": "r", "agent_name": value})
+        assert resp.status_code == 400
+        assert "must be strings" in resp.get_json()["error"]
+        assert manager.get_active_claim("c") is None

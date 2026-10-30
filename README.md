@@ -249,7 +249,7 @@ the point here is to allow SDWire workflows without granting broader root access
 | `labctl serial repair [--apply]` | Re-link port assignments to registered adapters (dry run by default) |
 | `labctl serial capture <port> --timeout N --until <pattern>` | Capture serial output |
 | `labctl serial send <port> <data> --capture N` | Send data (plus CRLF unless `--raw`) to a serial port |
-| `labctl ser2net generate [--install]` | Generate the ser2net config from the database (`--install` writes `ser2net.config_file`, default `/etc/ser2net.yaml`) |
+| `labctl ser2net generate [--install]` | Generate the ser2net config from the database. `--install` first assigns and saves a TCP port for any port without one, then atomically replaces `ser2net.config_file` (default `/etc/ser2net.yaml`); without it such ports are left out and the port each would get is shown |
 | `labctl ser2net reload` | Restart the ser2net service |
 
 ### Boot Testing
@@ -312,8 +312,8 @@ REST) first checks those relays on the board and on every board sharing its
 outlet. If a relay can't be reached, nothing is switched. labctl then drives
 each relay to its desired state and only then applies power. If a strap fails
 after a cycle's power-off, the boards are left off rather than booting
-without it. `--phase post-power` is refused: it isn't implemented yet
-(bindings stored with it by older versions are listed as inactive). When the
+without it. There is no `--phase post-power` yet (bindings stored with it
+by older versions are listed as inactive). When the
 monitor daemon starts, it returns unheld relay channels to their default
 state and leaves asserted bindings alone.
 

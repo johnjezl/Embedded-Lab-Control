@@ -21,6 +21,10 @@ elsewhere) is already resolved. Command line::
         (creates the directory if missing)
     python -m labctl.core.admin_files create PATH USER GROUP MODE
         creates an empty file if missing, then secures it like `secure`
+    python -m labctl.core.admin_files shared-db SYSTEM_CONFIG DB_DIR USER GROUP
+        when SYSTEM_CONFIG's database_path is DB_DIR/labctl.db, makes DB_DIR
+        setgid 2775 and the database (and any -wal/-shm) 664; prints what
+        it did; exit 2 after a warning, never stopping half-way silently
     python -m labctl.core.admin_files copy SRC DST MODE [OLD_LINE NEW_LINE]...
         DST must not exist; lines equal to OLD_LINE are replaced
 """
@@ -163,6 +167,80 @@ def create(path: str, user: str, group: str, mode: int) -> None:
     secure(path, user, group, mode)
 
 
+DB_NAME = "labctl.db"
+
+
+def _configured_database_path(system_config: str) -> str:
+    """``database_path`` from the (root-owned) system config, or ""."""
+    import yaml
+
+    with open(system_config) as f:
+        data = yaml.safe_load(f)
+    value = data.get("database_path", "") if isinstance(data, dict) else ""
+    return value if isinstance(value, str) else ""
+
+
+def shared_db(system_config: str, db_dir: str, user: str, group: str) -> int:
+    """Keep the services' database writable by ``group`` (install-services.sh
+    and update.sh both call this).
+
+    Only when the system config's ``database_path`` is ``db_dir/labctl.db``:
+    ``db_dir`` setgid ``2775`` (the -wal/-shm files SQLite creates are then
+    in the group, with the database's mode; not sticky, so whichever
+    process closes the database last can remove them), the database
+    (created empty if missing) and any existing -wal/-shm ``664``. A
+    symlinked ``db_dir`` (an admin's relocation) is left alone. Prints one
+    line per outcome; returns 0, or 2 after printing a warning, so the
+    calling script carries on.
+    """
+    import yaml
+
+    db_path = os.path.join(db_dir, DB_NAME)
+    try:
+        configured = _configured_database_path(system_config)
+    except (OSError, UnicodeDecodeError, yaml.YAMLError) as e:
+        print(
+            f"[!!] Database permissions not checked: can't read "
+            f"database_path from {system_config}: {e}"
+        )
+        return 2
+    if configured != db_path:
+        print(f"[--] The services' database ({configured or 'database_path unset'})")
+        print(f"     isn't {db_path}, so {group} group members can't write it from")
+        print('     the CLI. To move it there, see "Moving the database" in README.md.')
+        return 0
+    if os.path.islink(db_dir):
+        print(f"[ok] {db_dir} is a symlink; leaving it (and its permissions) as is")
+        return 0
+    problems = []
+    try:
+        secure_dir(db_dir, user, group, 0o2775)
+        create(db_path, user, group, 0o664)
+    except (OSError, KeyError) as e:
+        print(f"[!!] Database {db_path} not made group-writable: {_reason(e)}")
+        return 2
+    for extra in (db_path + "-wal", db_path + "-shm"):
+        try:
+            if state(extra) == "regular":
+                secure(extra, user, group, 0o664)
+        except OSError as e:
+            problems.append(f"{extra}: {_reason(e)}")
+    if problems:
+        for problem in problems:
+            print(f"[!!] Left as is: {problem}")
+        return 2
+    print(f"[ok] Database {db_path} ({user}:{group}, 664; group-writable directory)")
+    return 0
+
+
+def _reason(e: BaseException) -> str:
+    if isinstance(e, KeyError):
+        return f"unknown user or group {e}"
+    if isinstance(e, UnsafeFileError):
+        return f"refusing: {e.strerror}"
+    return getattr(e, "strerror", None) or str(e)
+
+
 def copy(src: str, dst: str, mode: int, replace: dict[str, str] | None = None) -> None:
     """Copy a regular file to a new file (``O_EXCL``), neither via symlinks.
 
@@ -226,6 +304,8 @@ def main(argv: list[str]) -> int:
             secure_dir(args[0], args[1], args[2], int(args[3], 8))
         elif cmd == "create" and len(args) == 4:
             create(args[0], args[1], args[2], int(args[3], 8))
+        elif cmd == "shared-db" and len(args) == 4:
+            return shared_db(*args)
         elif cmd == "copy" and len(args) >= 3 and len(args) % 2 == 1:
             pairs = args[3:]
             copy(args[0], args[1], int(args[2], 8), dict(zip(pairs[::2], pairs[1::2])))
