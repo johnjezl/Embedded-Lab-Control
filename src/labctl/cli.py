@@ -1350,11 +1350,11 @@ def info_cmd(ctx: click.Context, name: str) -> None:
     type=float,
     default=None,
     help=(
-        "Per-SBC power-cycle off→on delay (seconds). Used as both the "
+        "Per-SBC power-cycle off→on delay (seconds, 0-86400). Used as both the "
         "default and the floor for CLI `power cycle --delay`, and as the "
         "delay of `enter-recovery`/`exit-recovery`; other reboots (MCP, "
         "REST, sdwire --reboot, boot-test) don't use it. Pass a negative "
-        "number to clear the override and fall back to the default "
+        "number (e.g. -1) to clear the override and fall back to the default "
         f"({DEFAULT_POWER_CYCLE_DELAY_SECONDS}s)."
     ),
 )
