@@ -1239,3 +1239,26 @@ class TestPowerHelpers:
         ((_, log),) = [e for e in controller.events if isinstance(e, tuple)]
         assert (1, True, WriteOutcome.OK) in log
         assert (2, True, WriteOutcome.OK) in log
+
+    def test_recovery_sharer_strap_failure_says_boards_left_off(
+        self, lab, controller, monkeypatch
+    ):
+        _make_binding(lab)
+        other = self._sharer(lab)
+        real_apply = runtime.apply_pre_power_bindings
+
+        def fail_for_sharer(manager, board):
+            if board.name == other.name:
+                raise runtime.ActuationError("pre_power binding: device_gone")
+            real_apply(manager, board)
+
+        monkeypatch.setattr(runtime, "apply_pre_power_bindings", fail_for_sharer)
+        with pytest.raises(runtime.ActuationError) as exc:
+            runtime.enter_recovery(
+                lab.manager, lab.sbc, controller, delay_s=0, sleep_fn=lambda s: None
+            )
+        assert str(exc.value).endswith(
+            "'jetson-nano-2' and the boards sharing its outlet ('board-b') "
+            "were left powered off"
+        )
+        controller.power_on.assert_not_called()

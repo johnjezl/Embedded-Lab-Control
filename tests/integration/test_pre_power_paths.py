@@ -264,7 +264,9 @@ class TestCli:
         lab.driver.next_write_outcome = WriteOutcome.WRITE_FAILED
         result = lab.run("sdwire", "flash", "board", str(image), "--yes")
         assert result.exit_code == 1
-        assert "Error: flashed, but the power cycle failed: " in result.output
+        assert "Error: flashed, but the power cycle failed and board may be off: " in (
+            result.output
+        )
         assert "'board' was left powered off" in result.output
         lab.controller.power_on.assert_not_called()
 

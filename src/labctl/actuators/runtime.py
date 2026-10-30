@@ -774,6 +774,15 @@ def _apply_pre_power(manager, boards) -> None:
         raise ActuationError(str(e)) from e
 
 
+def _apply_after_power_off(manager, sbc, boards) -> None:
+    """_apply_pre_power once the outlet is off: a failure says the boards
+    were left off (they aren't powered on without their straps)."""
+    try:
+        _apply_pre_power(manager, boards)
+    except ActuationError as e:
+        raise ActuationError(f"{e}; {_left_off(sbc, boards)}") from e
+
+
 def power_on_with_bindings(manager, sbc, controller) -> bool:
     """Drive the pre_power bindings of ``sbc`` (and of any board sharing
     its plug outlet), then power it on.
@@ -814,10 +823,7 @@ def power_cycle_with_bindings(
     if not controller.power_off():
         raise RuntimeError(f"power_off failed on {sbc.name!r}")
     (sleep_fn or time.sleep)(delay_s)
-    try:
-        _apply_pre_power(manager, boards)
-    except ActuationError as e:
-        raise ActuationError(f"{e}; {_left_off(sbc, boards)}") from e
+    _apply_after_power_off(manager, sbc, boards)
     return controller.power_on()
 
 
@@ -865,7 +871,7 @@ def enter_recovery(
     # 3. Engage recovery strap.
     actuate_binding(manager, binding)
     # 4. Power on (re-applies the strap via apply_pre_power_bindings).
-    _apply_pre_power(manager, boards)
+    _apply_after_power_off(manager, sbc, boards)
     if not controller.power_on():
         raise ActuationError(f"power_on failed on {sbc.name!r}")
 
@@ -901,7 +907,7 @@ def exit_recovery(
         raise ActuationError(f"power_off failed on {sbc.name!r}")
     sleep_fn(delay_s)
     release_binding(manager, binding)
-    _apply_pre_power(manager, boards)
+    _apply_after_power_off(manager, sbc, boards)
     if not controller.power_on():
         raise ActuationError(f"power_on failed on {sbc.name!r}")
 
