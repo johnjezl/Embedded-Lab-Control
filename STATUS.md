@@ -6,8 +6,7 @@
 - **Sub-task**: P2 (PyPI release), PR F (publish): release workflow
   (`.github/workflows/release.yml`, trusted publishing, TestPyPI then
   PyPI behind the protected `pypi` environment), version 0.2.0 and the
-  CHANGELOG release section, `docs/RELEASING.md`; uncommitted on
-  `feat/p2-publish`. PR E (release prep, #45) is merged. Phase 0 and
+  CHANGELOG release section, `docs/RELEASING.md`; PR #46. PR E (release prep, #45) is merged. Phase 0 and
   Phase 1 (safety) are done
 - **Status**: `main` has everything merged through #45; deployed to
   tarrasque through #43 (#44 and #45 not yet). Next: merge PR F,

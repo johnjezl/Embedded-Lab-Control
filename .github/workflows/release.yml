@@ -36,12 +36,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # Full history, to check the tagged commit is on main.
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       # No pip cache: a release build shouldn't restore state other
-      # workflows can write.
+      # workflows can write (ci.yml skips its cache when called from here).
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
@@ -84,6 +86,12 @@ jobs:
             printf '\nFull notes: [CHANGELOG.md](%s/%s/blob/v%s/CHANGELOG.md)\n' \
               "${GITHUB_SERVER_URL}" "${GITHUB_REPOSITORY}" "${version}" >> summary.md
             mv summary.md release-notes.md
+          fi
+          # Only a commit already on main is released: a tag pushed on a
+          # feature branch would otherwise use up the version on TestPyPI.
+          if [ "${REF_TYPE}" = "tag" ] && ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::Tag '${TAG}' is not on main. Merge the release PR first, then tag main."
+            exit 1
           fi
           echo "VERSION=${version}" >> "${GITHUB_ENV}"
 
@@ -134,9 +142,14 @@ jobs:
           name: dist
           path: dist/
 
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      # Pinned by commit (v1.14.3): this job holds the publishing token.
+      # skip-existing: a re-run after a partial upload doesn't fail on the
+      # files already there (an index never accepts a changed file under
+      # the same name, so nothing is overwritten).
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
 
   publish-pypi:
     name: publish to PyPI
@@ -156,7 +169,9 @@ jobs:
           name: dist
           path: dist/
 
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          skip-existing: true
 
   github-release:
     name: GitHub Release
@@ -177,13 +192,19 @@ jobs:
           name: release-notes
 
       # --verify-tag: refuse to create a tag; the pushed one must exist.
+      # A PEP 440 pre-release (a/b/rc/dev) is marked as one, so it never
+      # becomes the repository's "Latest" release.
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: >-
-          gh release create "${TAG}" dist/*
-          --repo "${GITHUB_REPOSITORY}"
-          --title "${TAG}"
-          --notes-file release-notes.md
-          --verify-tag
+        run: |
+          prerelease=()
+          if [[ "${TAG}" =~ (a|b|rc|\.dev)[0-9]+$ ]]; then
+            prerelease=(--prerelease)
+          fi
+          gh release create "${TAG}" dist/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${TAG}" \
+            --notes-file release-notes.md \
+            --verify-tag "${prerelease[@]}"
