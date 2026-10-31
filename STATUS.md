@@ -3,22 +3,24 @@
 ## Current State
 
 - **Milestone**: Public PyPI release (`embedded-lab-control`)
-- **Sub-task**: P2 (PyPI release), PR E release prep in progress
-  (lab-specific files removed, generic `HARDWARE_MAP.md`, `MANIFEST.in`,
-  install-the-extra errors, README PyPI install, CI triggers); PR F
-  (publish workflow, 0.2.0) next. Phase 0 and Phase 1 (safety) are done
-- **Status**: `main` has everything merged through PR #43; deployed to
-  tarrasque through #40 (#39/#40 on 2026-10-30). #42 and #43 (#41, the
-  code gaps the docs audit found) are merged but not deployed. In
-  progress before P2: #2 (long calls keep the caller's claim alive;
-  `/deploy-and-test` claim handling).
-  Phase 1 (WS1–WS5, PRs #13–#18), claim enforcement on every surface
-  (D013, PRs #22/#24/#25), image uploads + MCP TLS (D014, PR #26) and
-  the fixes since (PRs #28–#40) are in. See `docs/IMPLEMENTATION.md`.
+- **Sub-task**: P2 (PyPI release), PR F (publish): release workflow
+  (`.github/workflows/release.yml`, trusted publishing, TestPyPI then
+  PyPI behind the protected `pypi` environment), version 0.2.0 and the
+  CHANGELOG release section, `docs/RELEASING.md`; uncommitted on
+  `feat/p2-publish`. PR E (release prep, #45) is merged. Phase 0 and
+  Phase 1 (safety) are done
+- **Status**: `main` has everything merged through #45; deployed to
+  tarrasque through #43 (#44 and #45 not yet). Next: merge PR F,
+  do the one-time PyPI/TestPyPI/GitHub-environment setup in
+  `docs/RELEASING.md`, tag `v0.2.0` and approve the `pypi` deployment
+  (user). Phase 1 (WS1–WS5, PRs #13–#18), claim enforcement on every
+  surface (D013, PRs #22/#24/#25), image uploads + MCP TLS (D014, PR #26)
+  and the fixes since (PRs #28–#44) are in. See `docs/IMPLEMENTATION.md`.
 - **Open follow-ups**: #19 (remaining by-path root operations in the
   install/update scripts), #38 (BoardPower refactor: one board-level
   power operation with a structured result, and a lab-wide per-outlet
-  lock), #2 (in progress).
+  lock); the sudoers gap for the SDWire `sudo` commands (IMPLEMENTATION
+  Phase 2).
 
 ## Last Session
 

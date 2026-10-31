@@ -1,0 +1,189 @@
+name: Release
+
+# Pushing a version tag (vX.Y.Z, matching labctl.__version__) runs the CI
+# gates, builds the sdist and wheel once, publishes them to TestPyPI, then
+# to PyPI once the `pypi` environment's reviewer approves, and finally
+# creates the GitHub Release. Publishing uses PyPI trusted publishing
+# (OIDC): there are no API tokens. See docs/RELEASING.md.
+#
+# workflow_dispatch runs the gates and the build/checks only (e.g. on main
+# before tagging); the publish jobs run for tag pushes alone.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Least privilege: everything reads the repository only, except the jobs
+# that ask for more below (id-token for publishing, contents: write for
+# the GitHub Release).
+permissions:
+  contents: read
+
+# One release run per ref at a time; never cancel a run that may be
+# halfway through publishing.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: CI gates
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: build and check distributions
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # No pip cache: a release build shouldn't restore state other
+      # workflows can write.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # The tag name comes in through env, never interpolated into the
+      # script. labctl/__init__.py imports nothing, so reading the version
+      # from src/ needs no install.
+      - name: Check version, tag and CHANGELOG
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(PYTHONPATH=src python -c 'import labctl; print(labctl.__version__)')"
+          echo "labctl.__version__ = ${version}"
+          if [ "${REF_TYPE}" = "tag" ] && [ "${TAG}" != "v${version}" ]; then
+            echo "::error::Tag '${TAG}' does not match labctl.__version__ '${version}' (expected tag 'v${version}'). Bump src/labctl/__init__.py or fix the tag."
+            exit 1
+          fi
+          # Release notes: the CHANGELOG section for this version, from its
+          # heading up to the next "## " heading or the link definitions
+          # at the end of the file.
+          awk -v hdr="## [${version}]" '
+            index($0, hdr) == 1 { found = 1; next }
+            found && (/^## / || /^\[[^]]+\]: /) { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            msg="CHANGELOG.md has no '## [${version}]' section"
+            if [ "${REF_TYPE}" = "tag" ]; then
+              echo "::error::${msg}"
+              exit 1
+            fi
+            echo "::warning::${msg} (needed before tagging)"
+          fi
+          # GitHub caps a release body at 125000 characters: past that,
+          # keep the summary (everything before the first "### ") and link
+          # the full section.
+          if [ "$(wc -c < release-notes.md)" -gt 120000 ]; then
+            awk '/^### /{exit} {print}' release-notes.md > summary.md
+            printf '\nFull notes: [CHANGELOG.md](%s/%s/blob/v%s/CHANGELOG.md)\n' \
+              "${GITHUB_SERVER_URL}" "${GITHUB_REPOSITORY}" "${version}" >> summary.md
+            mv summary.md release-notes.md
+          fi
+          echo "VERSION=${version}" >> "${GITHUB_ENV}"
+
+      - name: Build
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+
+      # Exactly one sdist and one wheel, named for this version.
+      - name: Check distributions
+        run: |
+          ls -l dist/
+          test "$(find dist -maxdepth 1 -type f | wc -l)" -eq 2
+          test -f "dist/embedded_lab_control-${VERSION}.tar.gz"
+          test -f "dist/embedded_lab_control-${VERSION}-py3-none-any.whl"
+          python -m twine check --strict dist/*
+
+      - name: Upload distributions
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-notes
+          path: release-notes.md
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-testpypi:
+    name: publish to TestPyPI
+    needs: build
+    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/project/embedded-lab-control/
+    permissions:
+      id-token: write # trusted publishing (OIDC)
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    name: publish to PyPI
+    needs: publish-testpypi
+    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Protected environment: waits for the required reviewer's approval.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/embedded-lab-control/
+    permissions:
+      id-token: write # trusted publishing (OIDC)
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    name: GitHub Release
+    needs: publish-pypi
+    if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the release
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist/
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-notes
+
+      # --verify-tag: refuse to create a tag; the pushed one must exist.
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: >-
+          gh release create "${TAG}" dist/*
+          --repo "${GITHUB_REPOSITORY}"
+          --title "${TAG}"
+          --notes-file release-notes.md
+          --verify-tag

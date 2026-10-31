@@ -6,6 +6,78 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-31
+
+First release on PyPI, as `embedded-lab-control` (the import package and
+the CLI are still `labctl`): `pipx install "embedded-lab-control[web,mcp]"`,
+adding `kasa`, `sdwire` and `actuators` as needed (see the README for what
+each extra enables). Python 3.10-3.13; the `sdwire` extra needs 3.12+, and
+Kasa KLAP v2 devices need 3.11+. Everything below the upgrade notes is
+the full history since development started; there was no earlier public
+release.
+
+**Highlights**
+
+- MCP server on the mcp 2.x SDK, over stdio or HTTP (API-key auth, TLS,
+  image uploads), with a two-step confirmation for destructive tools and
+  a deny-all allowlist for host file paths.
+- Hardware claims enforced on every surface (CLI, REST, web UI, MCP),
+  including boards that share a plug outlet, SDWire, console adapter or
+  relay channel; long calls keep the caller's claim alive.
+- Power control for Tasmota, Kasa (incl. KLAP v2 strips) and Shelly;
+  SDWire SD-card multiplexers; USB relay actuators with per-board
+  bindings (`pre_power` straps applied on every power-on path); ser2net
+  serial access with udev-stable names; health monitoring; activity
+  stream.
+- Session-based web UI and REST API with optional HTTPS.
+
+**Upgrading from a source install (`labctl` 0.1.0)**
+
+- The distribution was renamed `labctl` → `embedded-lab-control`.
+  `scripts/update.sh` and `scripts/install-services.sh` uninstall the old
+  distribution first; if you upgrade a venv by hand, run
+  `pip uninstall labctl` before installing (both own `labctl/`, and
+  removing the old one later would delete the new install's files).
+- The database migrates itself to schema v12 on first use.
+- `labctl mcp --http PORT` now really binds PORT (it always used 8000):
+  the shipped unit's server moves to `127.0.0.1:8080`. Clients wired to
+  `:8000` must move. A non-loopback `--host` requires `auth.enabled`;
+  HTTP clients then send `Authorization: Bearer <api_key>`.
+- MCP host file access is deny-all until `mcp.allowed_read_paths` /
+  `mcp.allowed_write_paths` are set (`flash_image`, `sdwire_update`
+  copies, `boot_test`); `update.sh` creates `/var/lib/labctl/images` and
+  `/var/lib/labctl/output` and prints the snippet to add. The CLI is
+  unaffected.
+- Destructive MCP tools return a plan and a `confirm_token` first
+  (`mcp.confirm_destructive`, `mcp.confirm_exempt`).
+- Commands that operate or reconfigure a board another user has claimed
+  are refused unless overridden (`--override-claim`, REST
+  `"override_claim": true`, operators only on REST/web), and the override
+  is logged.
+- Removed config keys (`proxy.enabled`, `proxy.log_retention_days`,
+  `proxy.idle_timeout`, `health.update_status_on_check`) are ignored
+  with a warning. Several commands that used to read a confirmation from
+  stdin now need `--yes` without a terminal.
+- After updating a host with generated udev rules, run
+  `labctl serial udev --install --reload` (rules are now
+  `root:dialout 0660`).
+
+**For packagers**: `mcp>=2.2,<3` pulls in `mcp-types` (pinned exactly
+by mcp), `httpx2` and `opentelemetry-api`. The sdist includes the tests,
+config samples and systemd units, docs and scripts; the wheel carries only
+the `labctl` package.
+
+### Added (P2 publish)
+- Release workflow (`.github/workflows/release.yml`): pushing a `vX.Y.Z`
+  tag runs the CI gates (`ci.yml`, now also callable as a reusable
+  workflow), checks the tag matches `labctl.__version__` and that this
+  file has the version's section, builds and `twine check`s the sdist
+  and wheel once, publishes them to TestPyPI and then, after approval of
+  the protected `pypi` environment, to PyPI with trusted publishing (no
+  API tokens), and creates the GitHub Release. Running it by hand only
+  builds and checks. `docs/RELEASING.md` has the one-time setup, the
+  release steps and what to do when a step fails.
+
 ### Changed (P2 release prep)
 - A command whose optional dependency is missing now says which extra to
   install, in one line, instead of a traceback or `pip install <package>`:
@@ -597,7 +669,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   activity-log actors), not `mcp-stdio`; the dead-session sweep covers both.
 - **Package renamed for PyPI**: the distribution is now
   `embedded-lab-control` (`pip install embedded-lab-control`); the import
-  package and CLI remain `labctl`. Version `0.2.0.dev0`, single-sourced from
+  package and CLI remain `labctl`. The version is single-sourced from
   `labctl.__version__` (also used by `/api/health` and the web footer, which
   previously hard-coded `0.1.0`). License metadata is now the SPDX
   expression `MIT`, and the LICENSE file ships in the wheel and sdist.
@@ -1441,8 +1513,5 @@ claim composition, CLI surface, and MCP tools.
 ### Fixed
 - Nothing yet
 
----
-
-## Version History
-
-_No releases yet. Development starting with Milestone 1._
+[Unreleased]: https://github.com/johnjezl/Embedded-Lab-Control/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/johnjezl/Embedded-Lab-Control/releases/tag/v0.2.0

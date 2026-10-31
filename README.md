@@ -801,6 +801,7 @@ flake8 src/ tests/
 - [Claude Code Agents](https://github.com/johnjezl/Embedded-Lab-Control/blob/main/docs/CLAUDE_CODE_AGENTS.md) - One API key per agent, setup and launch
 - [Operations](https://github.com/johnjezl/Embedded-Lab-Control/blob/main/docs/OPERATIONS.md) - What every command and tool changes
 - [Security Policy](https://github.com/johnjezl/Embedded-Lab-Control/blob/main/SECURITY.md) - Reporting vulnerabilities
+- [Releasing](https://github.com/johnjezl/Embedded-Lab-Control/blob/main/docs/RELEASING.md) - Publishing a version to PyPI
 
 ## License
 
