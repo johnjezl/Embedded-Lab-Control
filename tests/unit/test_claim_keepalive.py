@@ -84,11 +84,6 @@ class TestHeartbeatHeldClaim:
         assert manager.heartbeat_held_claim("pi-1", ALICE) is False
         assert manager.get_active_claim("pi-1") is None
 
-    def test_heartbeat_claim_uses_it(self, manager):
-        _claim(manager)
-        assert manager.heartbeat_claim("pi-1", "s-alice") is True
-        assert manager.heartbeat_claim("pi-1", "s-bob") is False
-
     def test_touch_claim_reports_a_zero_row_update(self, manager):
         claim = _claim(manager)
         assert manager.touch_claim(claim) is True

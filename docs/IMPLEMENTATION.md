@@ -678,7 +678,7 @@ preventing destructive interference between concurrent workflows.
 - ✅ Structured exception hierarchy (`ClaimConflict`, `ClaimNotFoundError`,
   `NotClaimantError`, `UnknownSBCError`)
 - ✅ `ResourceManager` ops: `claim_sbc`, `release_claim`, `renew_claim`,
-  `heartbeat_claim`, `get_active_claim`, `list_active_claims`,
+  `heartbeat_held_claim`, `get_active_claim`, `list_active_claims`,
   `list_claim_history`, `force_release_claim`, `expire_stale_claims`,
   `record_release_request`
 - ✅ Concurrent-acquisition race handled: expire-stale sweep runs inside

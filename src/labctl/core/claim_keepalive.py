@@ -1,7 +1,9 @@
 """Keep a caller's claim alive during one long operation (issue #2).
 
 A claim's deadline slides only when a call that touches the board starts
-(:meth:`ResourceManager.heartbeat_claim`), so a single long call
+(the call's claim check: :meth:`ResourceManager.check_claim`, which
+heartbeats the caller's claim with :meth:`ResourceManager.touch_claim`),
+so a single long call
 (``boot_test``, a long ``serial_capture``, flashing a card) could outlast
 the claim, and another agent could then claim the board and power-cycle
 it mid-run. :class:`ClaimKeepalive` heartbeats the claim the caller

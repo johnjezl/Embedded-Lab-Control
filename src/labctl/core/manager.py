@@ -2118,17 +2118,6 @@ class ResourceManager:
             raise ClaimNotFoundError(f"No active claim on SBC '{sbc_name}'")
         return self._get_claim_by_id(claim.id)
 
-    def heartbeat_claim(
-        self, sbc_name: str, session_id: str, owner: Optional[str] = None
-    ) -> bool:
-        """Advance last_activity and expires_at on the claim, if any.
-
-        Called from every claimant tool path (reads and writes). Silent
-        no-op when no claim exists or a different session holds it, so
-        that non-claim-aware callers don't need special handling.
-        """
-        return self.heartbeat_held_claim(sbc_name, ClaimActor(session_id, owner))
-
     def heartbeat_held_claim(self, sbc_name: str, actor: ClaimActor) -> bool:
         """Heartbeat ``actor``'s active claim on ``sbc_name``; True if it
         still holds one (and it was heartbeated), False otherwise.
