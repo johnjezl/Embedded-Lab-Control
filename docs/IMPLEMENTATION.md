@@ -774,7 +774,7 @@ annotated read-only by design: it writes only probe bookkeeping).
 - ✅ A4 Fix `labctl mcp --http PORT` ignoring PORT; add `--host`
   (default `127.0.0.1`)
 - ✅ A5 `tests/unit/test_mcp_server.py` green (was 157 errors + 12 failures)
-- ✅ B1 Package metadata: name, `0.2.0.dev0` (single-sourced from
+- ✅ B1 Package metadata: name, version (then `0.2.0.dev0`; single-sourced from
   `labctl.__version__`), author, URLs, SPDX license, 3.13 classifier
 - ✅ B2 `sdwire` extra gated on Python ≥ 3.12; `sdwire_stub` test fixture
 - ✅ B3 Fix Python 3.10 import crash in `labctl.sdwire` (`datetime.UTC`)

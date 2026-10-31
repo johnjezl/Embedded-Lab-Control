@@ -87,15 +87,22 @@ Optionally, a tag ruleset (Settings → Rules) restricting who may create
 ## If a step fails
 
 A version's file names can be uploaded only once to each index, even
-after deleting them (yanking doesn't free them either).
+after deleting them (yanking doesn't free them either). Builds are not
+byte-reproducible, so once anything is on TestPyPI, re-run only with
+"Re-run failed jobs" on the same run (it reuses that run's `dist`
+artifact); never "Re-run all jobs" or a moved tag, which rebuild.
 
 - **CI or build fails** (nothing uploaded): fix it on `main` through a
   PR, then move the tag: `git push --delete origin vX.Y.Z`,
-  `git tag -d vX.Y.Z`, and tag and push again.
-- **A publish job fails** (before uploading, or partway: re-runs skip files
-  already uploaded) (e.g. a pending-publisher or
+  `git tag -d vX.Y.Z`, and tag and push again. First make sure no earlier
+  run for that tag is still waiting (e.g. at the `pypi` approval):
+  reject or cancel it, or the new run queues behind it.
+- **A publish job fails before uploading** (e.g. a pending-publisher or
   environment name mismatch: the error names the claims PyPI received):
   fix the settings and use "Re-run failed jobs" on the same run.
+- **A publish job fails partway** (one file uploaded, the other not): the
+  re-run fails on the file already there. Release the next patch
+  version.
 - **TestPyPI has it but it's broken**: reject the `pypi` deployment.
   X.Y.Z is used up on TestPyPI, so fix it and release the next patch
   version (X.Y.Z+1) with its own CHANGELOG section.

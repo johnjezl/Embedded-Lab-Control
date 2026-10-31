@@ -143,13 +143,11 @@ jobs:
           path: dist/
 
       # Pinned by commit (v1.14.3): this job holds the publishing token.
-      # skip-existing: a re-run after a partial upload doesn't fail on the
-      # files already there (an index never accepts a changed file under
-      # the same name, so nothing is overwritten).
+      # No skip-existing: builds aren't byte-reproducible, so a rebuilt
+      # X.Y.Z must fail here rather than let untested files reach PyPI.
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           repository-url: https://test.pypi.org/legacy/
-          skip-existing: true
 
   publish-pypi:
     name: publish to PyPI
@@ -170,8 +168,6 @@ jobs:
           path: dist/
 
       - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
-        with:
-          skip-existing: true
 
   github-release:
     name: GitHub Release
