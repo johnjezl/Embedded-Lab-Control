@@ -18,33 +18,27 @@
 - **Open follow-ups**: #19 (remaining by-path root operations in the
   install/update scripts), #38 (BoardPower refactor: one board-level
   power operation with a structured result, and a lab-wide per-outlet
-  lock); the sudoers gap for the SDWire `sudo` commands (IMPLEMENTATION
-  Phase 2).
+  lock); #47 (SDWire `sudo` commands: kept a manual rule, decided
+  2026-10-31; the scripts should detect and print it); #48 coverage;
+  #49 flaky/slow tests; #50 guard tests against real `sudo`; #51 systemd
+  timestamps in other zones; #52 document allowlist/SD-mux assumptions;
+  #9 serial flow control.
 
 ## Last Session
 
-- **Date**: 2026-10-29
-- **Branch**: `main`
-- **Completed** (PRs #28–#37 deployed; #39, #40 not yet):
-  - #28: tests never load the machine's real config or database;
-    schema v11 repairs a pre-release `images` table
-  - #29: `labctl mcp --http` waits for a busy port; `update.sh` waits
-    through systemd auto-restarts
-  - #30, #31: Kasa KLAP v2 (python-kasa ≥ 0.12 on 3.11+); KLAP-discovered
-    strips controlled per outlet again
-  - #32: `list_images` tells stdio sessions how to get an image in
-  - #34: MCP `serial_send` `keys` / `data_hex` for control characters
-  - #35: relay open failures reported cleanly, with a group hint
-  - #37: `pre_power` bindings applied on every power-on path (#36),
-    including boards sharing an outlet; relays checked before switching
-  - #39: docs, README, CLI help and MCP tool descriptions audited
-    against the code
-  - #40: the SD card never leaves a board that may be running (`sdwire
-    flash`/`update`, `boot-test` deploy; closes #23); strict
-    `allow_admin_actuator_ops`; stored cycle delay range-checked; udev
-    rules `root:dialout 0660`
-- **Pending**: deploy #39/#40 (then `labctl serial udev --install
-  --reload`); P2 (PyPI release); follow-ups #19, #38
+- **Date**: 2026-10-31
+- **Branch**: `main` (PR work in worktrees)
+- **Completed**:
+  - #42, #43: #41 safety and config fixes (deployed 2026-10-30)
+  - #44: long calls keep the caller's claim alive (#2; deployed
+    2026-10-30)
+  - #45: P2 release prep (lab-specific files removed, generic adapter
+    guide, sdist with tests/config/docs, one-line missing-extra errors,
+    PyPI install docs, CI triggers)
+  - #46: release workflow (trusted publishing), version 0.2.0, CHANGELOG
+    release section, `docs/RELEASING.md`
+  - Issues #47-#52 filed from the Phase 0 scratch list
+- **Next**: tag `v0.2.0` on main and approve the `pypi` deployment (user)
 
 ## Earlier Session (Activity Stream)
 
