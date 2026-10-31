@@ -21,7 +21,7 @@ Centralized management system for embedded development lab resources. Provides d
 7. Update `STATUS.md` at session start/end
 
 ## Current State
-All milestones (M1-M7) complete; the PyPI release is done: 0.2.0 is published as `embedded-lab-control` (releases: `docs/RELEASING.md`). Additional features: authentication (session-based web + API key), MCP server (stdio or HTTP with API-key auth and TLS, two-step confirmation for destructive tools, host path allowlist, image uploads), hardware claims enforced on every surface, activity stream, serial device management, Kasa power strip support, SDWire, USB relay actuators with per-board bindings (`pre_power` straps applied on every power-on path), HTTPS.
+All milestones (M1-M7) complete; the PyPI release (P2 publish) is done, with the SDWire sudoers follow-up deferred to #47: 0.2.0 is published as `embedded-lab-control` (releases: `docs/RELEASING.md`). Additional features: authentication (session-based web + API key), MCP server (stdio or HTTP with API-key auth and TLS, two-step confirmation for destructive tools, host path allowlist, image uploads), hardware claims enforced on every surface, activity stream, serial device management, Kasa power strip support, SDWire, USB relay actuators with per-board bindings (`pre_power` straps applied on every power-on path), HTTPS.
 
 ## Tech Stack
 - Python 3.10+
