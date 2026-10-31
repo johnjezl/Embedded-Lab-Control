@@ -759,8 +759,9 @@ preventing destructive interference between concurrent workflows.
 **Goal**: Publish labctl on PyPI as `embedded-lab-control` (CLI stays
 `labctl`). Phases: P0 installable/SDK, P1 safety, P2 release, P3 docs,
 P4 showcase. The Phase 0 scratch list of out-of-scope findings was
-folded into the 0.2.0 CHANGELOG section (open items go to issues) and
-removed.
+folded into the 0.2.0 CHANGELOG section and removed; its open items
+are issues #47-#52 or were already resolved (`actuator_probe` stays
+annotated read-only by design: it writes only probe bookkeeping).
 
 ### Phase 0: Installable + mcp 2.x SDK
 

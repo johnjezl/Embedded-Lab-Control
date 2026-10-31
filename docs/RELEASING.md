@@ -44,7 +44,8 @@ publisher into a normal one.
   self-review" off: you push the tag and approve the deployment).
   Under deployment branches and tags, choose "Selected branches and tags"
   and add the tag rule `v*`.
-- `testpypi`: no reviewer needed; optionally the same `v*` tag rule.
+- `testpypi`: no reviewer needed, but add the same `v*` tag rule, so only a
+  tag (never a branch) can deploy to it.
 
 Optionally, a tag ruleset (Settings → Rules) restricting who may create
 `v*` tags.
@@ -66,15 +67,16 @@ Optionally, a tag ruleset (Settings → Rules) restricting who may create
 
 3. Watch the run (`gh run watch`, or the Actions tab) until
    `publish-testpypi` succeeds and `publish-pypi` is waiting.
-4. Check the TestPyPI upload in a scratch venv (dependencies come from
-   PyPI):
+4. Check the TestPyPI upload in a scratch venv. Take only labctl's wheel
+   from TestPyPI and every dependency from PyPI (anyone can register a
+   dependency's name on TestPyPI):
 
    ```bash
    python3 -m venv /tmp/labctl-rc
+   /tmp/labctl-rc/bin/pip download --no-deps --no-cache-dir -d /tmp/labctl-rc/dl \
+       --index-url https://test.pypi.org/simple/ "embedded-lab-control==X.Y.Z"
    /tmp/labctl-rc/bin/pip install --no-cache-dir \
-       --index-url https://test.pypi.org/simple/ \
-       --extra-index-url https://pypi.org/simple/ \
-       "embedded-lab-control[web,mcp]==X.Y.Z"
+       "$(ls /tmp/labctl-rc/dl/embedded_lab_control-X.Y.Z-*.whl)[web,mcp]"
    /tmp/labctl-rc/bin/labctl --version
    /tmp/labctl-rc/bin/labctl --help
    ```
@@ -90,7 +92,8 @@ after deleting them (yanking doesn't free them either).
 - **CI or build fails** (nothing uploaded): fix it on `main` through a
   PR, then move the tag: `git push --delete origin vX.Y.Z`,
   `git tag -d vX.Y.Z`, and tag and push again.
-- **A publish job fails before uploading** (e.g. a pending-publisher or
+- **A publish job fails** (before uploading, or partway: re-runs skip files
+  already uploaded) (e.g. a pending-publisher or
   environment name mismatch: the error names the claims PyPI received):
   fix the settings and use "Re-run failed jobs" on the same run.
 - **TestPyPI has it but it's broken**: reject the `pypi` deployment.
@@ -100,5 +103,6 @@ after deleting them (yanking doesn't free them either).
   the next patch version. Use a post release (`X.Y.Z.post1`) only for a
   packaging or metadata fix with no code change.
 - **github-release fails**: re-run the job, or create the release by hand
-  with `gh release create vX.Y.Z dist/* --verify-tag` from the run's
-  `dist` artifact.
+  from the run's `dist` and `release-notes` artifacts:
+  `gh release create vX.Y.Z dist/* --verify-tag --title vX.Y.Z --notes-file release-notes.md`
+  (add `--prerelease` for an a/b/rc/dev version).

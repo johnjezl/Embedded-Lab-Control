@@ -41,7 +41,9 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
+          # No cache when called from the release workflow: a release run
+          # shouldn't restore state other workflows can write.
+          cache: ${{ github.workflow != 'Release' && 'pip' || '' }}
           cache-dependency-path: pyproject.toml
 
       # The sdwire extra carries a `python_version >= '3.12'` marker, so it
