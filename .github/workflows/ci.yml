@@ -2,19 +2,23 @@ name: CI
 
 # Pushes run only on main; other branches are tested through their pull
 # request, so a same-repo PR branch doesn't run twice. workflow_dispatch
-# allows a run by hand (Actions tab or `gh workflow run CI`).
+# allows a run by hand (Actions tab or `gh workflow run CI`). workflow_call
+# lets release.yml run these same gates before it builds and publishes.
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 # Least privilege: jobs only need to read the repository.
 permissions:
   contents: read
 
 # Superseded PR runs are cancelled; pushes to main always run to
-# completion so every commit gets a verdict.
+# completion so every commit gets a verdict. (Called from release.yml,
+# github.workflow is "Release" and the event is the tag push, so the group
+# differs from the caller's and nothing is cancelled.)
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}

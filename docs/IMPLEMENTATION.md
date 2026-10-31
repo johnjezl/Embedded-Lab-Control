@@ -758,8 +758,9 @@ preventing destructive interference between concurrent workflows.
 
 **Goal**: Publish labctl on PyPI as `embedded-lab-control` (CLI stays
 `labctl`). Phases: P0 installable/SDK, P1 safety, P2 release, P3 docs,
-P4 showcase. Scratch list of out-of-scope findings:
-`docs/development/RELEASE_NOTES_PHASE0.md`.
+P4 showcase. The Phase 0 scratch list of out-of-scope findings was
+folded into the 0.2.0 CHANGELOG section (open items go to issues) and
+removed.
 
 ### Phase 0: Installable + mcp 2.x SDK
 
@@ -787,8 +788,7 @@ P4 showcase. Scratch list of out-of-scope findings:
 
 ### Phase 1: Safety
 
-Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
-(P1 section).
+Decisions: D012.
 
 - WS1 Quick hardening — merged (PR #13, 5 review rounds)
   - ✅ Web `SECRET_KEY`: random per process when not configured (was the
@@ -860,8 +860,7 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
 
 ### Phase 2: Release
 
-First public version: 0.2.0. Scratch list:
-`docs/development/RELEASE_NOTES_PHASE0.md` (P2 section).
+First public version: 0.2.0. Release process: `docs/RELEASING.md`.
 
 - PR E: release prep
   - ✅ Lab-specific files removed (`config/udev/99-lab-serial.rules`,
@@ -881,13 +880,19 @@ First public version: 0.2.0. Scratch list:
   - ✅ CI runs on pushes to `main`, on pull requests (no double runs)
     and by hand (`workflow_dispatch`)
 - PR F: publish
-  - ☐ Trusted-publishing workflow (`id-token: write`)
-  - ☐ Version 0.2.0 + CHANGELOG release section
+  - ✅ Trusted-publishing workflow (`.github/workflows/release.yml`): a
+    `v*` tag runs the CI gates (`ci.yml` via `workflow_call`), builds
+    and checks once (tag = `v` + `labctl.__version__`, CHANGELOG section,
+    `twine check --strict`), publishes to TestPyPI, then to PyPI behind
+    the protected `pypi` environment, and creates the GitHub Release;
+    `docs/RELEASING.md` covers setup and steps
+  - ✅ Version 0.2.0 + CHANGELOG release section (summary, upgrade
+    notes, packager note); Phase 0 scratch list folded in and removed
 - ☐ Publish to TestPyPI, then PyPI (user)
 - ☐ sudoers gap: the SDWire `sudo` commands (`dd`, `mount`, `umount`,
   `sync`, `partprobe`, `parted`, `blkid`) are not in the rule
-  `install-services.sh` writes; decide whether the script grants them
-  (see the P2 section of the scratch list)
+  `install-services.sh` writes (the README documents a manual per-user
+  rule); decide whether the script grants them
 
 ## Feature: Actuators (USB relays + per-target bindings)
 
