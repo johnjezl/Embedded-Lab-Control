@@ -50,7 +50,7 @@ mcp = [
     "mcp>=2.2,<3",
 ]
 # PyPI sdwire requires Python >= 3.12; on older interpreters the extra
-# installs nothing and SDWire commands report "sdwire package not installed".
+# installs nothing and SDWire commands say the extra needs Python 3.12+.
 sdwire = [
     "sdwire>=0.3; python_version >= '3.12'",
 ]

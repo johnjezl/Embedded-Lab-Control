@@ -3,41 +3,33 @@
 # Read only by scripts/generate-udev-rules.py (--mapping FILE); labctl
 # itself never reads it. The current workflow registers adapters in the
 # database instead: `labctl serial add <name> <usb_path>`, then
-# `labctl serial udev --install --reload`.
+# `labctl serial udev --install --reload` (see docs/HARDWARE_MAP.md).
 #
 # This file maps physical USB paths to logical device names (symlinks
 # /dev/lab/<name>). Only usb_path and name are used; vendor and model are
 # informational (the generated rule comments use the detected device's
-# vendor/model instead). USB paths can be discovered using:
-# ./scripts/discover-usb-serial.sh
+# vendor/model instead). USB paths can be discovered using
+# `labctl serial discover` or ./scripts/discover-usb-serial.sh.
 #
-# Copy this file to port-mapping.yaml and customize for your setup.
+# Every path and name below is a placeholder. Copy this file (e.g. to
+# my-port-mapping.yaml), replace them with your own, then:
+#   ./scripts/generate-udev-rules.py --mapping my-port-mapping.yaml \
+#       --output 99-lab-serial.rules
 
 ports:
-  # ST-Link debugger on hub port 1-10.1.2
-  - usb_path: "1-10.1.2"
-    name: "stlink-debug"
+  # Adapters on a hub in host port 2 (bus 1)
+  - usb_path: "1-2.1"
+    name: "board1-console"
+    vendor: "Silicon_Labs"
+    model: "CP2102"
+
+  - usb_path: "1-2.3"
+    name: "board2-console"
+    vendor: "QinHeng"
+    model: "CH340"
+
+  # Debug probe behind a second hub on port 4 of the first
+  - usb_path: "1-2.4.1"
+    name: "debug-probe"
     vendor: "STMicroelectronics"
-    model: "STM32_STLink"
-
-  # Console ports for SBCs
-  - usb_path: "1-10.1.3"
-    name: "sbc1-console"
-    vendor: "Silicon_Labs"
-    model: "CP2102"
-
-  - usb_path: "1-10.1.4"
-    name: "sbc2-console"
-    vendor: "Silicon_Labs"
-    model: "CP2102"
-
-  # Additional serial adapters
-  - usb_path: "1-10.3"
-    name: "dev-serial1"
-    vendor: "QinHeng"
-    model: "CH340"
-
-  - usb_path: "1-10.4"
-    name: "dev-serial2"
-    vendor: "QinHeng"
-    model: "CH340"
+    model: "STLink"

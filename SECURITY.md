@@ -2,8 +2,7 @@
 
 ## Supported versions
 
-labctl is pre-1.0 and not yet published on PyPI (it will be, as
-`embedded-lab-control`); install it from this repository. Security fixes
+labctl is pre-1.0; its PyPI distribution name is `embedded-lab-control`. Security fixes
 go into the latest version only; upgrade to get them.
 
 ## Reporting a vulnerability

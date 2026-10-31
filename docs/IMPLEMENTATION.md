@@ -858,6 +858,37 @@ Decisions: D012. Scratch list: `docs/development/RELEASE_NOTES_PHASE0.md`
   `delete_image`, uploader-or-operator replace/delete (schema v10),
   `labctl mcp --cert/--key`
 
+### Phase 2: Release
+
+First public version: 0.2.0. Scratch list:
+`docs/development/RELEASE_NOTES_PHASE0.md` (P2 section).
+
+- PR E: release prep
+  - ✅ Lab-specific files removed (`config/udev/99-lab-serial.rules`,
+    `config/udev/port-mapping.yaml`, `config/ser2net/labctl-ser2net.yaml`;
+    placeholder paths in `port-mapping.yaml.example`); `install-udev.sh`
+    takes the rules file as an argument and refuses non-rules;
+    `docs/HARDWARE_MAP.md` rewritten as a generic guide to mapping USB
+    serial adapters
+  - ✅ `MANIFEST.in`: sdist carries tests, config, docs, scripts, skills,
+    `CHANGELOG.md`, `SECURITY.md`; wheel stays code-only
+  - ✅ Friendly "install the extra" errors for `web` (incl. `labctl
+    user`), `mcp`, `kasa`, `sdwire` (with the Python 3.12 note) and
+    `actuators` (`labctl/extras.py`); only the extra's own package
+    counts as missing
+  - ✅ README: PyPI install (pipx/pip), what each extra enables, Python
+    version notes
+  - ✅ CI runs on pushes to `main`, on pull requests (no double runs)
+    and by hand (`workflow_dispatch`)
+- PR F: publish
+  - ☐ Trusted-publishing workflow (`id-token: write`)
+  - ☐ Version 0.2.0 + CHANGELOG release section
+- ☐ Publish to TestPyPI, then PyPI (user)
+- ☐ sudoers gap: the SDWire `sudo` commands (`dd`, `mount`, `umount`,
+  `sync`, `partprobe`, `parted`, `blkid`) are not in the rule
+  `install-services.sh` writes; decide whether the script grants them
+  (see the P2 section of the scratch list)
+
 ## Feature: Actuators (USB relays + per-target bindings)
 
 **Spec**: `docs/SPEC_actuators.md`

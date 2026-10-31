@@ -18,6 +18,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
+from labctl.extras import BrokenExtraError, MissingExtraError, is_missing
+
 logger = logging.getLogger(__name__)
 
 
@@ -44,10 +46,10 @@ class SDWireController:
                 get_sdwire_devices,
                 get_sdwirec_devices,
             )
-        except ImportError:
-            raise RuntimeError(
-                "sdwire package not installed. Install with: pip install sdwire"
-            )
+        except ImportError as e:
+            if not is_missing(e, "sdwire"):
+                raise BrokenExtraError("sdwire", e) from e
+            raise MissingExtraError("sdwire") from e
 
         all_devices = []
         try:
@@ -114,6 +116,8 @@ class SDWireController:
 
             return None
 
+        except (MissingExtraError, BrokenExtraError):
+            raise  # not "no card": say why sdwire can't be used
         except RuntimeError:
             return None
 
@@ -121,6 +125,8 @@ class SDWireController:
         """The reader's block device node, whether or not it has media."""
         try:
             node = getattr(self._get_device(), "block_dev", None)
+        except (MissingExtraError, BrokenExtraError):
+            raise
         except RuntimeError:
             return None
         return node if node and os.path.exists(node) else None
@@ -1062,10 +1068,10 @@ def discover_sdwire_devices() -> list[dict]:
             get_sdwire_devices,
             get_sdwirec_devices,
         )
-    except ImportError:
-        raise RuntimeError(
-            "sdwire package not installed. Install with: pip install sdwire"
-        )
+    except ImportError as e:
+        if not is_missing(e, "sdwire"):
+            raise BrokenExtraError("sdwire", e) from e
+        raise MissingExtraError("sdwire") from e
 
     results = []
     seen_serials = set()

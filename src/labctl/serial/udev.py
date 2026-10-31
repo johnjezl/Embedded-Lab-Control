@@ -22,7 +22,8 @@ UDEV_HEADER = """\
 #
 # Devices are root:dialout 0660: the labctl services (in dialout) and
 # ser2net (root) open them; users outside dialout reach consoles through
-# ser2net, but can't drive relays or use `labctl console --direct`.
+# ser2net, but can't drive relays or open a console that has no ser2net
+# port (`labctl console` then opens the device itself).
 """
 
 
@@ -134,7 +135,7 @@ def device_group_note(group: str = "dialout") -> str | None:
         return None
     access = (
         f"the devices are root:{group} 0660, so you can't open them directly "
-        f"(relays from the CLI, `labctl console --direct`) until "
+        f"(relays from the CLI, `labctl console` without ser2net) until "
     )
     if member:
         return access + (

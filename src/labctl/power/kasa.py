@@ -27,6 +27,7 @@ import time
 from functools import lru_cache
 
 from labctl.core.config import load_config
+from labctl.extras import BrokenExtraError, MissingExtraError, is_missing
 from labctl.power.base import PowerController, PowerState
 
 logger = logging.getLogger(__name__)
@@ -114,7 +115,12 @@ def _klap_v2_hint() -> str:
 
 @lru_cache(maxsize=1)
 def _get_cached_kasa_credentials():
-    """Load Kasa credentials once per process."""
+    """Load Kasa credentials once per process.
+
+    A missing python-kasa raises ModuleNotFoundError instead of returning
+    None: lru_cache doesn't cache exceptions, so the outcome isn't fixed
+    for the life of the process.
+    """
     try:
         from kasa import Credentials
 
@@ -124,6 +130,8 @@ def _get_cached_kasa_credentials():
             return Credentials(config.kasa.username, config.kasa.password)
         logger.debug("No Kasa credentials configured")
     except Exception as e:
+        if isinstance(e, ImportError) and is_missing(e, "kasa"):
+            raise
         logger.warning("Failed to load Kasa credentials: %s", e)
     return None
 
@@ -132,7 +140,7 @@ class KasaController(PowerController):
     """
     Power controller for TP-Link Kasa devices.
 
-    Requires python-kasa package: pip install python-kasa
+    Requires python-kasa (the [kasa] extra).
 
     Supports both single plugs (HS103, EP10, etc.) and multi-outlet
     power strips (HS300, KP303, EP40, etc.). For strips, use plug_index
@@ -145,7 +153,11 @@ class KasaController(PowerController):
 
     def _load_credentials(self):
         """Load Kasa credentials from config, returning Credentials or None."""
-        return _get_cached_kasa_credentials()
+        try:
+            return _get_cached_kasa_credentials()
+        except ModuleNotFoundError:
+            # python-kasa is missing; _run_async reports the [kasa] extra.
+            return None
 
     async def _discover_and_update(self):
         """Discover the device at self.address and fetch its state.
@@ -296,10 +308,10 @@ class KasaController(PowerController):
                         total_attempts,
                     )
                 return result
-            except ImportError:
-                raise RuntimeError(
-                    "python-kasa not installed. Install with: pip install python-kasa"
-                )
+            except ImportError as e:
+                if not is_missing(e, "kasa"):
+                    raise BrokenExtraError("kasa", e) from e
+                raise MissingExtraError("kasa") from e
             except RuntimeError:
                 raise
             except Exception as e:

@@ -50,8 +50,7 @@ pip install '.[mcp]'
 sudo /opt/labctl/venv/bin/pip install /path/to/Embedded-Lab-Control[mcp]
 ```
 
-The package is not on PyPI yet. Once it is published,
-`pip install 'embedded-lab-control[mcp]'` works too.
+Or install from PyPI: `pip install 'embedded-lab-control[mcp]'`.
 
 ## Starting the Server
 

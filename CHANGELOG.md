@@ -6,6 +6,53 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed (P2 release prep)
+- A command whose optional dependency is missing now says which extra to
+  install, in one line, instead of a traceback or `pip install <package>`:
+  `labctl web` (and REST) and `labctl user hash-password`/`add`/`verify`
+  (werkzeug) → `[web]`, `labctl mcp` → `[mcp]`, Kasa plugs → `[kasa]`,
+  SDWire → `[sdwire]`, USB relays → `[actuators]`. Each message gives
+  `pip install "embedded-lab-control[<extra>]"` and the `pipx inject`
+  equivalent with the extra's version floors for the running Python;
+  the same text reaches the CLI, REST and MCP (`labctl/extras.py`).
+  Below Python 3.12 the SDWire message says it needs 3.12+ (the extra
+  installs nothing there) and gives no install command. Only the extra's
+  own package being absent is reported this way: an installed but broken
+  or incompatible one gets its own one-line error carrying the real
+  ImportError and the versions the extra wants (still an error line,
+  not a traceback). A missing Kasa library
+  no longer also logs a "Failed to load Kasa credentials" warning, and
+  isn't remembered for the life of the process.
+- README: install from PyPI with pipx or pip, a table of what each extra
+  enables, and Python version notes; the source install and the
+  systemd install from a git checkout (`scripts/install-services.sh`)
+  are unchanged.
+- `docs/HARDWARE_MAP.md` is now a generic guide to mapping USB serial
+  adapters (USB paths, `labctl serial discover/add/udev`, assigning
+  ports, troubleshooting) with placeholder paths and names.
+- `scripts/install-udev.sh` requires the rules file as its argument (it
+  defaulted to a repository file that no longer exists) and refuses a
+  file with no `SYMLINK` assignment or with a non-comment line that
+  isn't a udev rule, such as the message `labctl serial udev` prints
+  when no adapters are registered. The README and `HARDWARE_MAP.md` note
+  that installing a rules file by hand skips the claim check
+  `labctl serial udev --install` makes. `labctl ports -v` with no ports points
+  at `labctl serial discover` instead of `discover-usb-serial.sh`.
+- The source distribution now includes the tests, `config/` (sample
+  config, systemd units, udev mapping example), `docs/`, `scripts/`,
+  `skills/`, `CHANGELOG.md` and `SECURITY.md` (`MANIFEST.in`); the wheel
+  is unchanged. The test suite passes from an unpacked sdist.
+- CI runs on pushes to `main`, on pull requests (so a PR branch is
+  tested once, not twice) and by hand (`workflow_dispatch`).
+
+### Removed (P2 release prep)
+- This lab's `config/udev/99-lab-serial.rules`,
+  `config/udev/port-mapping.yaml` and `config/ser2net/labctl-ser2net.yaml`.
+  Rules are generated with `labctl serial udev` and the ser2net config
+  with `labctl ser2net generate`; `config/udev/port-mapping.yaml.example`
+  (now with placeholder paths and names) remains for the legacy
+  `generate-udev-rules.py`.
+
 ### Added (#2: long calls keep the caller's claim alive)
 - A claim's deadline moved only when a call started, so one long call
   (a 10-run `boot_test`, a long `serial_capture`, flashing a large

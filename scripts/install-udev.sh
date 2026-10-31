@@ -1,37 +1,65 @@
 #!/bin/bash
 #
-# install-udev.sh - Install udev rules for lab serial devices
+# install-udev.sh - Install a udev rules file for lab serial devices
 #
-# This script copies the generated udev rules to /etc/udev/rules.d/,
+# This script copies a generated udev rules file to /etc/udev/rules.d/,
 # reloads the udev daemon, and triggers the rules to create symlinks.
 #
 # Usage:
-#   sudo ./install-udev.sh [rules-file]
+#   sudo ./install-udev.sh RULES_FILE
 #
-# If no rules file is specified, uses config/udev/99-lab-serial.rules
+# Generate RULES_FILE from the adapters registered with labctl:
+#   labctl serial udev > 99-lab-serial.rules
+# (or, legacy, from a mapping file with scripts/generate-udev-rules.py).
+# `labctl serial udev --install --reload` installs the rules itself when
+# you can write /etc/udev/rules.d/99-lab-serial.rules; this script is
+# for installing a file you have generated and checked.
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-DEFAULT_RULES="$PROJECT_DIR/config/udev/99-lab-serial.rules"
 DEST_DIR="/etc/udev/rules.d"
 DEST_FILE="$DEST_DIR/99-lab-serial.rules"
 
-# Check for root
-if [[ $EUID -ne 0 ]]; then
-    echo "Error: This script must be run as root (use sudo)" >&2
+usage() {
+    echo "Usage: sudo $0 RULES_FILE" >&2
+    echo "" >&2
+    echo "Generate a rules file first, from the adapters registered with labctl:" >&2
+    echo "  labctl serial add <name> <usb-path>   # for each adapter" >&2
+    echo "  labctl serial udev > 99-lab-serial.rules" >&2
+}
+
+if [[ $# -ne 1 ]]; then
+    usage
     exit 1
 fi
-
-# Get rules file
-RULES_FILE="${1:-$DEFAULT_RULES}"
+RULES_FILE="$1"
 
 if [[ ! -f "$RULES_FILE" ]]; then
     echo "Error: Rules file not found: $RULES_FILE" >&2
     echo "" >&2
-    echo "Generate rules first with:" >&2
-    echo "  ./scripts/generate-udev-rules.py --output config/udev/99-lab-serial.rules" >&2
+    usage
+    exit 1
+fi
+
+# `labctl serial udev` prints a message instead of rules when no adapters
+# are registered; don't install that. Require at least one SYMLINK
+# assignment outside comments (the pattern labctl's own parser uses, `_RULE_SYMLINK_RE` in
+# labctl/serial/udev.py), and every other non-comment line to start like
+# a udev rule (KEY, optional {attr}, operator).
+if ! grep -vE '^[[:space:]]*#' "$RULES_FILE" | grep -qE '(^|[^[:alnum:]_])SYMLINK[[:space:]]*\+?=[[:space:]]*"'; then
+    echo "Error: $RULES_FILE contains no udev rules (no SYMLINK assignment)" >&2
+    exit 1
+fi
+BAD_LINE=$(grep -nvE '^[[:space:]]*(#.*)?$|^[[:space:]]*[A-Za-z_]+(\{[^}]*\})?[[:space:]]*(==|!=|\+=|-=|:=|=)' "$RULES_FILE" | head -n 1 || true)
+if [[ -n "$BAD_LINE" ]]; then
+    echo "Error: $RULES_FILE has a line that isn't a udev rule:" >&2
+    echo "  $BAD_LINE" >&2
+    exit 1
+fi
+
+# Check for root
+if [[ $EUID -ne 0 ]]; then
+    echo "Error: This script must be run as root (use sudo)" >&2
     exit 1
 fi
 

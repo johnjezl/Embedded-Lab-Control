@@ -5,22 +5,29 @@ generate-udev-rules.py - Generate udev rules for deterministic USB serial naming
 This script generates udev rules that create symlinks under /dev/lab/ for
 USB serial devices based on their physical USB port path.
 
+Legacy: labctl now keeps adapters in its database and generates the same
+rules itself (`labctl serial add <name> <usb-path>`, then
+`labctl serial udev`); see docs/HARDWARE_MAP.md. This script is kept for
+setups that still describe adapters in a mapping file.
+
 Usage:
     # Interactive mode - discover devices and prompt for names
     ./generate-udev-rules.py
 
-    # From mapping file
-    ./generate-udev-rules.py --mapping mapping.yaml
+    # From a mapping file (start from config/udev/port-mapping.yaml.example)
+    ./generate-udev-rules.py --mapping my-port-mapping.yaml
 
-    # Output to file
-    ./generate-udev-rules.py --output /etc/udev/rules.d/99-lab-serial.rules
+    # Output to a file, then install it
+    ./generate-udev-rules.py --mapping my-port-mapping.yaml \
+        --output 99-lab-serial.rules
+    sudo ./install-udev.sh 99-lab-serial.rules
 
 Mapping file format (YAML):
     ports:
-      - usb_path: "1-10.1.3"
-        name: "sbc1-console"
-      - usb_path: "1-10.1.4"
-        name: "sbc2-console"
+      - usb_path: "1-2.1"
+        name: "board1-console"
+      - usb_path: "1-2.3"
+        name: "board2-console"
 """
 
 import argparse

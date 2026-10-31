@@ -22,8 +22,51 @@ Centralized management system for embedded development lab resources. Provides d
 
 - Linux, Python 3.10+. Some extras need newer Python: Kasa devices that use
   KLAP v2 authentication need 3.11+ (`python-kasa` 0.12), and the `sdwire`
-  extra installs nothing below 3.12 (SDWire commands then report the package
-  as missing).
+  extra installs nothing below 3.12 (SDWire commands then say so).
+- `ser2net` for remote serial consoles (`sudo apt install ser2net`).
+
+### Install from PyPI
+
+The distribution is `embedded-lab-control`; the command is `labctl`.
+With [pipx](https://pipx.pypa.io/) (its own virtual environment, `labctl`
+on your `PATH`):
+
+```bash
+pipx install "embedded-lab-control[web,mcp,kasa,sdwire,actuators]"
+```
+
+or with pip, in a virtual environment:
+
+```bash
+python3 -m venv ~/.venvs/labctl
+~/.venvs/labctl/bin/pip install "embedded-lab-control[web,mcp,kasa,sdwire,actuators]"
+```
+
+Pick the extras you need; the core package (SBC records, serial ports,
+ser2net, Tasmota and Shelly plugs, claims) needs none:
+
+| Extra | Enables | Installs |
+|-------|---------|----------|
+| `web` | `labctl web`: dashboard and REST API; `labctl user hash-password`, `add` and `verify` (password hashing for web logins and API-key users) | Flask, Flask-SocketIO |
+| `mcp` | `labctl mcp`: MCP server for AI tools | `mcp` SDK 2.x |
+| `kasa` | TP-Link Kasa plugs and strips | `python-kasa` (0.12+ on Python 3.11+, 0.7.7 on 3.10: no KLAP v2) |
+| `sdwire` | SDWire SD card muxes (`labctl sdwire ...`) | `sdwire`, Python 3.12+ only |
+| `actuators` | USB relay boards (LCUS-1) | `pyserial` |
+
+A command whose extra is missing says which one to install, e.g.
+`pip install "embedded-lab-control[web]"`, or with pipx,
+`pipx inject embedded-lab-control "flask>=3.0" "flask-socketio>=5.0"`.
+
+labctl runs on built-in defaults; to configure it, start from
+[`config/labctl.yaml.example`](https://github.com/johnjezl/Embedded-Lab-Control/blob/main/config/labctl.yaml.example) (also in the
+source distribution) saved as `~/.config/labctl/config.yaml` (see
+[Config file search order](#config-file-search-order)).
+
+The PyPI package is the CLI and services' code only. The shared,
+system-wide install with systemd services (`scripts/install-services.sh`)
+runs from a git checkout; see [Systemd Services](#systemd-services).
+
+### Install from source
 
 ```bash
 # System packages
@@ -32,19 +75,12 @@ sudo apt install python3-venv ser2net
 # Clone repository
 git clone https://github.com/johnjezl/Embedded-Lab-Control.git
 cd Embedded-Lab-Control
-```
 
-### Setup
-
-labctl is not on PyPI yet, so install it from a checkout:
-
-```bash
 # Create virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
 
-# Install with the extras you need: web (dashboard/REST), mcp (AI
-# integration), kasa (TP-Link plugs), sdwire (SD muxes), actuators (USB relays)
+# Install with the extras you need (see the table above)
 pip install -e ".[web,mcp,kasa,sdwire,actuators]"
 
 # Copy example config (a personal config; see "Config file search order")
@@ -52,15 +88,14 @@ mkdir -p ~/.config/labctl
 cp config/labctl.yaml.example ~/.config/labctl/config.yaml
 ```
 
-Once the package is published, `pip install 'embedded-lab-control[web,mcp]'`
-(the distribution name; the command is still `labctl`) will work as well.
+### Serial device names
 
 Deterministic `/dev/lab/<name>` serial names come from udev rules generated
 from the adapters you register:
 
 ```bash
 labctl serial discover                 # find adapters and their USB paths
-labctl serial add sbc1-console 1-10.1.3
+labctl serial add board1-console 1-2.1 # name the adapter on USB path 1-2.1
 labctl serial udev > 99-lab-serial.rules   # generate the rules
 cat 99-lab-serial.rules                    # check: rules, not a message
 sudo install -m 644 99-lab-serial.rules /etc/udev/rules.d/
@@ -73,10 +108,13 @@ install, `install-services.sh` makes the rules file writable by the
 `labctl` group (`root:labctl 0664`), and members of that group can update
 it with `labctl serial udev --install --reload`, without `sudo`; on such a
 host use that instead of the `sudo install` above, which resets the file
-to `root:root 0644`.
+to `root:root 0644`. Prefer `--install` wherever you can write the file:
+it refuses to remove or re-point a link a board claimed by someone else
+uses, while installing a file by hand checks nothing, so look at
+`labctl claims list` first.
 
-For a shared, system-wide install with systemd services, see
-[Systemd Services](#systemd-services).
+[docs/HARDWARE_MAP.md](https://github.com/johnjezl/Embedded-Lab-Control/blob/main/docs/HARDWARE_MAP.md) walks through finding USB
+paths, registering adapters, installing the rules and troubleshooting.
 
 ### Config file search order
 
@@ -94,7 +132,7 @@ refuse to start on any config that didn't load.
 
 > **Warning:** a personal `~/.config/labctl/config.yaml` wins over the shared
 > `/etc/labctl/config.yaml`. On a system install, a personal config left over
-> from the Setup step silently points labctl at a different database than the
+> from a personal install silently points labctl at a different database than the
 > services use. Remove it, or pass `-c /etc/labctl/config.yaml`. Either way,
 > you must be in the `labctl` group: `install-services.sh` makes
 > `/etc/labctl` readable only by it (`sudo usermod -aG labctl $USER`, then
@@ -134,7 +172,7 @@ labctl web --port 5000
 ## CLI Reference
 
 Every command has `--help`. This section lists the commands; see
-[docs/OPERATIONS.md](docs/OPERATIONS.md) for what each one changes.
+[docs/OPERATIONS.md](https://github.com/johnjezl/Embedded-Lab-Control/blob/main/docs/OPERATIONS.md) for what each one changes.
 
 ### Global Options
 
@@ -577,7 +615,7 @@ Power-on and cycle set the pre_power relays first
 | 429 | A cycle requested while another cycle of the same outlet is running, or within 5 s of the outlet's last one |
 | 500 | The plug failed, or a strap failed after a cycle's power-off (the board may be off) |
 
-See [docs/OPERATIONS.md](docs/OPERATIONS.md) for the full claim and REST
+See [docs/OPERATIONS.md](https://github.com/johnjezl/Embedded-Lab-Control/blob/main/docs/OPERATIONS.md) for the full claim and REST
 error codes.
 
 ## MCP Server (AI Integration)
@@ -589,7 +627,7 @@ Install the MCP dependency from a checkout (the `[mcp]` extra):
 
 ```bash
 pip install -e ".[mcp]"
-# after publication on PyPI: pip install 'embedded-lab-control[mcp]'
+# or from PyPI: pip install 'embedded-lab-control[mcp]'
 ```
 
 **Resources** (read-only data): `lab://sbcs`, `lab://sbcs/{name}`, `lab://power/{name}`,
@@ -606,7 +644,7 @@ pip install -e ".[mcp]"
 **Uploads**: clients upload builds over HTTP to the MCP server
 (`PUT /images/<name>`, same API key) and pass the bare name to
 `flash_image`, `sdwire_update` or `boot_test`, so an agent can build on
-another machine ([Uploading images](docs/MCP_SERVER.md#uploading-images)).
+another machine ([Uploading images](https://github.com/johnjezl/Embedded-Lab-Control/blob/main/docs/MCP_SERVER.md#uploading-images)).
 
 **Prompts**: `debug_sbc` (guided SBC debugging), `lab_report` (comprehensive status)
 
@@ -617,13 +655,13 @@ See `docs/MCP_SERVER.md` for full tool parameters and usage.
 are reachable only under directories you allowlist in `mcp.allowed_*_paths`
 (none by default); the HTTP transport binds loopback and requires the web
 users' API keys (`Authorization: Bearer`) when `auth.enabled` is set. See
-[Security Considerations](docs/MCP_SERVER.md#security-considerations).
+[Security Considerations](https://github.com/johnjezl/Embedded-Lab-Control/blob/main/docs/MCP_SERVER.md#security-considerations).
 
 ### Claude Desktop / Claude Code Configuration
 
 For several Claude Code agents sharing the lab (each with its own API key,
 so claims keep them apart), see
-[Connecting Claude Code agents](docs/CLAUDE_CODE_AGENTS.md).
+[Connecting Claude Code agents](https://github.com/johnjezl/Embedded-Lab-Control/blob/main/docs/CLAUDE_CODE_AGENTS.md).
 
 For a single local client over stdio, add to your MCP client configuration
 (reading `/etc/labctl/config.yaml` requires the `labctl` group; otherwise
@@ -756,13 +794,13 @@ flake8 src/ tests/
 
 ## Documentation
 
-- [Implementation Plan](docs/IMPLEMENTATION.md) - Development roadmap and status
-- [Hardware Map](docs/HARDWARE_MAP.md) - USB device identification
-- [Decision Log](docs/DECISIONS.md) - Architecture decisions
-- [MCP Server](docs/MCP_SERVER.md) - AI integration, security model
-- [Claude Code Agents](docs/CLAUDE_CODE_AGENTS.md) - One API key per agent, setup and launch
-- [Operations](docs/OPERATIONS.md) - What every command and tool changes
-- [Security Policy](SECURITY.md) - Reporting vulnerabilities
+- [Implementation Plan](https://github.com/johnjezl/Embedded-Lab-Control/blob/main/docs/IMPLEMENTATION.md) - Development roadmap and status
+- [Mapping USB Serial Adapters](https://github.com/johnjezl/Embedded-Lab-Control/blob/main/docs/HARDWARE_MAP.md) - Stable `/dev/lab` names from USB paths
+- [Decision Log](https://github.com/johnjezl/Embedded-Lab-Control/blob/main/docs/DECISIONS.md) - Architecture decisions
+- [MCP Server](https://github.com/johnjezl/Embedded-Lab-Control/blob/main/docs/MCP_SERVER.md) - AI integration, security model
+- [Claude Code Agents](https://github.com/johnjezl/Embedded-Lab-Control/blob/main/docs/CLAUDE_CODE_AGENTS.md) - One API key per agent, setup and launch
+- [Operations](https://github.com/johnjezl/Embedded-Lab-Control/blob/main/docs/OPERATIONS.md) - What every command and tool changes
+- [Security Policy](https://github.com/johnjezl/Embedded-Lab-Control/blob/main/SECURITY.md) - Reporting vulnerabilities
 
 ## License
 
