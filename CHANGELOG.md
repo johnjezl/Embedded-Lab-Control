@@ -1510,8 +1510,5 @@ claim composition, CLI surface, and MCP tools.
 - Moved documentation files to docs/ folder (AGENT_RULES.md, IMPLEMENTATION.md, DECISIONS.md)
 - Fixed README.md and CLAUDE.md paths to reference docs/ folder
 
-### Fixed
-- Nothing yet
-
 [Unreleased]: https://github.com/johnjezl/Embedded-Lab-Control/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/johnjezl/Embedded-Lab-Control/releases/tag/v0.2.0
