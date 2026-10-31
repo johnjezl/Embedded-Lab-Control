@@ -131,8 +131,9 @@ udev, either:
   the same, keeps a backup of the old file and lists `/dev/lab`
   afterwards. Neither checks claims the way `--install` does: before
   replacing the rules by hand, check `labctl claims list` for boards whose
-  links change. On a system install, prefer `--install` above: copying a
-  file in also resets its ownership to `root:root 0644`.
+  links change. On a system install, prefer `--install` above: both of these
+  leave the file `0644` (`sudo install` also makes it `root:root`), so the
+  `labctl` group can no longer update it with `--install`.
 
 The devices are `root:dialout 0660`; to open them directly (relays from
 the CLI, or `labctl console` on a port without ser2net), join `dialout`:

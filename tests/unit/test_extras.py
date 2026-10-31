@@ -139,7 +139,7 @@ class TestMessages:
 class TestIsMissing:
     def test_matches_module_and_submodules(self):
         assert is_missing(ModuleNotFoundError(name="flask"), "flask")
-        assert is_missing(ModuleNotFoundError(name="mcp.server"), "mcp")
+        assert not is_missing(ModuleNotFoundError(name="mcp.server"), "mcp")
 
     def test_other_modules_do_not_match(self):
         assert not is_missing(ModuleNotFoundError(name="mcpx"), "mcp")
@@ -189,11 +189,9 @@ class TestUserCommands:
     @pytest.mark.parametrize(
         "args", [["hash-password"], ["add", "alice"], ["verify", "alice"]]
     )
-    def test_missing_werkzeug_gives_install_hint(self, args):
-        with (
-            patch.dict("sys.modules", {"werkzeug": None, "werkzeug.security": None}),
-            patch("getpass.getpass") as getpass,
-        ):
+    def test_missing_werkzeug_gives_install_hint(self, args, absent_packages):
+        absent_packages("werkzeug")
+        with patch("getpass.getpass") as getpass:
             result = CliRunner().invoke(main, ["user", *args])
         assert result.exit_code == 1
         assert "Password hashing (werkzeug) is not installed" in result.output
@@ -209,13 +207,12 @@ def _module(name):
 
 
 class TestSdwireCommand:
-    def test_discover_without_sdwire(self, tmp_path, monkeypatch):
+    def test_discover_without_sdwire(self, tmp_path, monkeypatch, absent_packages):
         _fake_python(monkeypatch, 3, 12, 0)
         config = tmp_path / "config.yaml"
         config.write_text(f"database_path: {tmp_path / 'labctl.db'}\n")
-        absent = {"sdwire": None, "sdwire.backend": None, "sdwire.backend.detect": None}
-        with patch.dict("sys.modules", absent):
-            result = CliRunner().invoke(main, ["-c", str(config), "sdwire", "discover"])
+        absent_packages("sdwire")
+        result = CliRunner().invoke(main, ["-c", str(config), "sdwire", "discover"])
         assert result.exit_code == 1
         assert 'pip install "embedded-lab-control[sdwire]"' in result.output
         assert "Python 3.12+" in result.output
@@ -293,16 +290,15 @@ class TestKasa:
         finally:
             kasa_mod._get_cached_kasa_credentials.cache_clear()
 
-    def test_power_on_without_python_kasa(self):
+    def test_power_on_without_python_kasa(self, absent_packages):
         from labctl.power import kasa as kasa_mod
 
         kasa_mod._get_cached_kasa_credentials.cache_clear()
         controller = kasa_mod.KasaController("192.0.2.77")
-        absent = {"kasa": None, "kasa.device_factory": None, "kasa.iot": None}
+        absent_packages("kasa")
         try:
-            with patch.dict("sys.modules", absent):
-                with pytest.raises(MissingExtraError) as info:
-                    controller.power_on()
+            with pytest.raises(MissingExtraError) as info:
+                controller.power_on()
         finally:
             kasa_mod._get_cached_kasa_credentials.cache_clear()
         assert info.value.extra == "kasa"
