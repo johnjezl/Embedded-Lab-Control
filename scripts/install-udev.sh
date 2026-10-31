@@ -42,9 +42,18 @@ if [[ ! -f "$RULES_FILE" ]]; then
 fi
 
 # `labctl serial udev` prints a message instead of rules when no adapters
-# are registered; don't install that.
-if ! grep -q 'SYMLINK' "$RULES_FILE"; then
-    echo "Error: $RULES_FILE contains no udev rules (no SYMLINK lines)" >&2
+# are registered; don't install that. Require at least one SYMLINK
+# assignment (the pattern labctl's own parser uses, `_RULE_SYMLINK_RE` in
+# labctl/serial/udev.py), and every other non-comment line to start like
+# a udev rule (KEY, optional {attr}, operator).
+if ! grep -qE 'SYMLINK[[:space:]]*\+?=[[:space:]]*"' "$RULES_FILE"; then
+    echo "Error: $RULES_FILE contains no udev rules (no SYMLINK assignment)" >&2
+    exit 1
+fi
+BAD_LINE=$(grep -nvE '^[[:space:]]*(#.*)?$|^[[:space:]]*[A-Za-z_]+(\{[^}]*\})?[[:space:]]*(==|!=|\+=|-=|:=|=)' "$RULES_FILE" | head -n 1 || true)
+if [[ -n "$BAD_LINE" ]]; then
+    echo "Error: $RULES_FILE has a line that isn't a udev rule:" >&2
+    echo "  $BAD_LINE" >&2
     exit 1
 fi
 

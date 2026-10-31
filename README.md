@@ -47,7 +47,7 @@ ser2net, Tasmota and Shelly plugs, claims) needs none:
 
 | Extra | Enables | Installs |
 |-------|---------|----------|
-| `web` | `labctl web`: dashboard and REST API | Flask, Flask-SocketIO |
+| `web` | `labctl web`: dashboard and REST API; `labctl user hash-password`, `add` and `verify` (password hashing for web logins and API-key users) | Flask, Flask-SocketIO |
 | `mcp` | `labctl mcp`: MCP server for AI tools | `mcp` SDK 2.x |
 | `kasa` | TP-Link Kasa plugs and strips | `python-kasa` (0.12+ on Python 3.11+, 0.7.7 on 3.10: no KLAP v2) |
 | `sdwire` | SDWire SD card muxes (`labctl sdwire ...`) | `sdwire`, Python 3.12+ only |
@@ -55,7 +55,7 @@ ser2net, Tasmota and Shelly plugs, claims) needs none:
 
 A command whose extra is missing says which one to install, e.g.
 `pip install "embedded-lab-control[web]"`, or with pipx,
-`pipx inject embedded-lab-control flask flask-socketio`.
+`pipx inject embedded-lab-control "flask>=3.0" "flask-socketio>=5.0"`.
 
 labctl runs on built-in defaults; to configure it, start from
 [`config/labctl.yaml.example`](https://github.com/johnjezl/Embedded-Lab-Control/blob/main/config/labctl.yaml.example) (also in the
@@ -95,7 +95,7 @@ from the adapters you register:
 
 ```bash
 labctl serial discover                 # find adapters and their USB paths
-labctl serial add sbc1-console 1-2.3   # name the adapter on USB path 1-2.3
+labctl serial add board1-console 1-2.1 # name the adapter on USB path 1-2.1
 labctl serial udev > 99-lab-serial.rules   # generate the rules
 cat 99-lab-serial.rules                    # check: rules, not a message
 sudo install -m 644 99-lab-serial.rules /etc/udev/rules.d/
@@ -108,7 +108,10 @@ install, `install-services.sh` makes the rules file writable by the
 `labctl` group (`root:labctl 0664`), and members of that group can update
 it with `labctl serial udev --install --reload`, without `sudo`; on such a
 host use that instead of the `sudo install` above, which resets the file
-to `root:root 0644`.
+to `root:root 0644`. Prefer `--install` wherever you can write the file:
+it refuses to remove or re-point a link a board claimed by someone else
+uses, while installing a file by hand checks nothing, so look at
+`labctl claims list` first.
 
 [docs/HARDWARE_MAP.md](https://github.com/johnjezl/Embedded-Lab-Control/blob/main/docs/HARDWARE_MAP.md) walks through finding USB
 paths, registering adapters, installing the rules and troubleshooting.

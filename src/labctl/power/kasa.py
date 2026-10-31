@@ -27,7 +27,7 @@ import time
 from functools import lru_cache
 
 from labctl.core.config import load_config
-from labctl.extras import MissingExtraError
+from labctl.extras import MissingExtraError, is_missing
 from labctl.power.base import PowerController, PowerState
 
 logger = logging.getLogger(__name__)
@@ -115,19 +115,23 @@ def _klap_v2_hint() -> str:
 
 @lru_cache(maxsize=1)
 def _get_cached_kasa_credentials():
-    """Load Kasa credentials once per process."""
+    """Load Kasa credentials once per process.
+
+    A missing python-kasa raises ModuleNotFoundError instead of returning
+    None: lru_cache doesn't cache exceptions, so the outcome isn't fixed
+    for the life of the process.
+    """
     try:
         from kasa import Credentials
-    except ImportError:
-        # _run_async reports the missing [kasa] extra; no warning here.
-        return None
-    try:
+
         config = load_config()
         if config.kasa.username and config.kasa.password:
             logger.debug("Loaded Kasa credentials for user: %s", config.kasa.username)
             return Credentials(config.kasa.username, config.kasa.password)
         logger.debug("No Kasa credentials configured")
     except Exception as e:
+        if isinstance(e, ImportError) and is_missing(e, "kasa"):
+            raise
         logger.warning("Failed to load Kasa credentials: %s", e)
     return None
 
@@ -149,7 +153,11 @@ class KasaController(PowerController):
 
     def _load_credentials(self):
         """Load Kasa credentials from config, returning Credentials or None."""
-        return _get_cached_kasa_credentials()
+        try:
+            return _get_cached_kasa_credentials()
+        except ModuleNotFoundError:
+            # python-kasa is missing; _run_async reports the [kasa] extra.
+            return None
 
     async def _discover_and_update(self):
         """Discover the device at self.address and fetch its state.
@@ -301,6 +309,8 @@ class KasaController(PowerController):
                     )
                 return result
             except ImportError as e:
+                if not is_missing(e, "kasa"):
+                    raise
                 raise MissingExtraError("kasa") from e
             except RuntimeError:
                 raise

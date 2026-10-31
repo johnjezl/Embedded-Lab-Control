@@ -50,7 +50,7 @@ from labctl.actuators.base import (
     WriteOutcome,
     device_permission_hint,
 )
-from labctl.extras import missing_extra_message
+from labctl.extras import is_missing, missing_extra_message
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +94,8 @@ class Lcus1SerialDriver(RelayDriver):
         try:
             import serial  # type: ignore
         except ImportError as e:
+            if not is_missing(e, "serial"):
+                raise
             raise DriverError(
                 f"lcus1_serial driver: {missing_extra_message('actuators')}"
             ) from e
@@ -206,7 +208,9 @@ class Lcus1SerialDriver(RelayDriver):
 
         try:
             import serial  # type: ignore
-        except ImportError:
+        except ImportError as e:
+            if not is_missing(e, "serial"):
+                raise
             return ProbeOutcome(
                 result=ProbeResult.UNKNOWN, detail=missing_extra_message("actuators")
             )
