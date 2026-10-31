@@ -3,17 +3,14 @@
 ## Current State
 
 - **Milestone**: Public PyPI release (`embedded-lab-control`)
-- **Sub-task**: P2 (PyPI release), PR F (publish): release workflow
-  (`.github/workflows/release.yml`, trusted publishing, TestPyPI then
-  PyPI behind the protected `pypi` environment), version 0.2.0 and the
-  CHANGELOG release section, `docs/RELEASING.md`; PR #46. PR E (release prep, #45) is merged. Phase 0 and
-  Phase 1 (safety) are done
-- **Status**: `main` has everything merged through #45; deployed to
-  tarrasque through #43 (#44 and #45 not yet). Next: merge PR F,
-  do the one-time PyPI/TestPyPI/GitHub-environment setup in
-  `docs/RELEASING.md`, tag `v0.2.0` and approve the `pypi` deployment
-  (user). Phase 1 (WS1–WS5, PRs #13–#18), claim enforcement on every
-  surface (D013, PRs #22/#24/#25), image uploads + MCP TLS (D014, PR #26)
+- **Sub-task**: P2 (PyPI release) done: 0.2.0 published to PyPI and
+  GitHub Releases 2026-10-31 (PRs #45, #46); 0.2.1 prepared (README
+  Features list, #53). Phase 0 and Phase 1 (safety) are done
+- **Status**: `main` has everything merged through #53; deployed to
+  tarrasque through #44 (#45 onward not yet: friendly extra errors,
+  packaging, docs). Next: tag `v0.2.1` and approve the `pypi`
+  deployment (user); then the open follow-ups. Phase 1 (WS1–WS5, PRs
+  #13–#18), claim enforcement on every surface (D013, PRs #22/#24/#25), image uploads + MCP TLS (D014, PR #26)
   and the fixes since (PRs #28–#44) are in. See `docs/IMPLEMENTATION.md`.
 - **Open follow-ups**: #19 (remaining by-path root operations in the
   install/update scripts), #38 (BoardPower refactor: one board-level
@@ -38,7 +35,11 @@
   - #46: release workflow (trusted publishing), version 0.2.0, CHANGELOG
     release section, `docs/RELEASING.md`
   - Issues #47-#52 filed from the Phase 0 scratch list
-- **Next**: tag `v0.2.0` on main and approve the `pypi` deployment (user)
+  - 0.2.0 tagged and published to PyPI, TestPyPI and GitHub Releases;
+    clean install from PyPI checked
+  - #53: README Features list covers SDWire, relays, boot testing, MCP
+  - 0.2.1 prep: version and CHANGELOG section
+- **Next**: tag `v0.2.1` on main and approve the `pypi` deployment (user)
 
 ## Earlier Session (Activity Stream)
 

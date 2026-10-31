@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-31
+
+Documentation-only release: the PyPI project page lists every feature.
+
 ### Changed
 
 - The README's Features list (the PyPI project page) now covers SDWire SD
@@ -1515,5 +1519,6 @@ claim composition, CLI surface, and MCP tools.
 - Moved documentation files to docs/ folder (AGENT_RULES.md, IMPLEMENTATION.md, DECISIONS.md)
 - Fixed README.md and CLAUDE.md paths to reference docs/ folder
 
-[Unreleased]: https://github.com/johnjezl/Embedded-Lab-Control/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/johnjezl/Embedded-Lab-Control/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/johnjezl/Embedded-Lab-Control/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/johnjezl/Embedded-Lab-Control/releases/tag/v0.2.0
