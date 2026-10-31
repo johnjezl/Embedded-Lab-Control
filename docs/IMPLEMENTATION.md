@@ -893,7 +893,8 @@ First public version: 0.2.0. Release process: `docs/RELEASING.md`.
 - ☐ sudoers gap: the SDWire `sudo` commands (`dd`, `mount`, `umount`,
   `sync`, `partprobe`, `parted`, `blkid`) are not in the rule
   `install-services.sh` writes (the README documents a manual per-user
-  rule); decide whether the script grants them
+  rule). Decided 2026-10-31: keep it manual; the scripts should detect a
+  missing rule and print it (#47)
 
 ## Feature: Actuators (USB relays + per-target bindings)
 
