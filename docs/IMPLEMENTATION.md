@@ -27,7 +27,7 @@ This document outlines the phased implementation of the Lab Controller System. E
 | Auth | Authentication | Web login, API keys, CSRF |
 | Claims | Hardware claims | Exclusive access coordination (PR #1; enforcement PRs #22/#24/#25) |
 | Actuators | USB relays + bindings | Relay channels bound to (SBC, purpose); `pre_power` straps (PR #4, #37) |
-| Release | PyPI release | P0 installable, P1 safety (done); P2 publish (next) |
+| Release | PyPI release | P0 installable, P1 safety, P2 publish (done; 0.2.0 on PyPI 2026-10-31) |
 
 ---
 
@@ -889,7 +889,8 @@ First public version: 0.2.0. Release process: `docs/RELEASING.md`.
     `docs/RELEASING.md` covers setup and steps
   - ✅ Version 0.2.0 + CHANGELOG release section (summary, upgrade
     notes, packager note); Phase 0 scratch list folded in and removed
-- ☐ Publish to TestPyPI, then PyPI (user)
+- ✅ Publish to TestPyPI, then PyPI (user): 0.2.0 published 2026-10-31
+  with its GitHub Release; 0.2.1 (README Features list, #53) prepared
 - ☐ sudoers gap: the SDWire `sudo` commands (`dd`, `mount`, `umount`,
   `sync`, `partprobe`, `parted`, `blkid`) are not in the rule
   `install-services.sh` writes (the README documents a manual per-user
