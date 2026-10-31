@@ -172,3 +172,36 @@ def test_override_claim_still_stops_for_a_new_claim(lab, hardware):
     assert result.exit_code == 1, result.output
     assert cycle.call_count == 1
     assert "'pi-d' is now claimed by 'agent-y'" in result.output
+
+
+def test_claim_taken_after_the_override_check_still_stops(lab, hardware):
+    """Only the claims the --override-claim check overrode (announced and
+    logged) are exempt: one taken right after it, before the test starts,
+    stops the test before its first run."""
+    import labctl.cli as cli
+
+    run, manager = lab
+    cycle, _ = hardware
+    _claim(manager, "mcp-http:1:agent-x", "agent-x")
+    sharer = manager.create_sbc(name="pi-d", project="test")
+    manager.assign_power_plug(sharer.id, PlugType.TASMOTA, "10.0.0.6", 1)
+    real = cli._reboot_cycle_delay
+
+    def claim_then_delay(mgr, sbc):
+        manager.claim_sbc(
+            sbc_name="pi-d",
+            agent_name="agent-y",
+            session_id="mcp-http:2:agent-y",
+            session_kind="mcp-http",
+            duration_seconds=600,
+            reason="r",
+        )
+        return real(mgr, sbc)
+
+    with patch.object(cli, "_reboot_cycle_delay", claim_then_delay):
+        result = run(*ARGS, "--override-claim")
+    assert result.exit_code == 1, result.output
+    assert "Overriding 'agent-x's claim on 'pi-c'." in result.output
+    cycle.assert_not_called()
+    assert "'pi-d' is now claimed by 'agent-y'" in result.output
+    assert "Result: STOPPED before the first run" in result.output

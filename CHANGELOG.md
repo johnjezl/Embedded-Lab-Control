@@ -16,7 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   while they run (every quarter of the claim's current duration, 5-60 s,
   so a renew to a shorter claim is followed). They never claim a board
   for the caller. Each heartbeat is one conditional UPDATE
-  (`ResourceManager.heartbeat_held_claim`, also used by
+  (`ResourceManager.heartbeat_held_claim`, which replaces the unused
   `heartbeat_claim`) that never revives a released, expired or
   taken-over claim; `touch_claim` now says whether a row changed. A
   database error is a missed heartbeat (the call goes on) until the

@@ -161,8 +161,9 @@ who ran sudo (`SUDO_USER`), not root, so e.g. `sudo labctl serial udev
 --install` keeps your own claims yours; the activity log names that user
 too. `boot-test` can outlast a claim: it keeps the user's own claim on
 the board alive while it runs, and checks again before each run's power
-cycle, stopping (exit 1, `STOPPED after N of M runs`, `Result:
-INCOMPLETE`) once another user claims the board or one sharing its
+cycle, stopping (exit 1, `STOPPED after N of M runs`, and `Result:
+INCOMPLETE, ...` or `Result: STOPPED before the first run ...` instead
+of a pass rate) once another user claims the board or one sharing its
 hardware, or that claim is lost. Claims overridden with
 `--override-claim` at the start don't stop it; a claim taken after the
 start does. MCP `boot_test`,

@@ -306,11 +306,12 @@ def _check_claim_cli(
     if override:
         # Say whose claims this acts on, unless the confirmation question
         # already named them (--yes, no terminal, a command that doesn't
-        # ask, or a claim made while the question was waiting).
-        _announce_override(
-            _all_conflicts(ctx, sbc_name, shared=shared, direct=direct),
-            "Overriding",
-        )
+        # ask, or a claim made while the question was waiting). Their ids
+        # are kept in ctx.obj["overridden_claims"] for a command that
+        # rechecks claims later (boot-test).
+        conflicts = _all_conflicts(ctx, sbc_name, shared=shared, direct=direct)
+        _announce_override(conflicts, "Overriding")
+        ctx.obj.setdefault("overridden_claims", set()).update(c.id for c in conflicts)
     claim = _cli_claim_conflict(
         ctx, sbc_name, override=override, shared=shared, direct=direct, probe=probe
     )
@@ -6706,15 +6707,12 @@ def boot_test_cmd(
     # one taken after the start does.
     from labctl.core.claim_keepalive import ClaimKeepalive
 
-    overridden = (
-        _all_conflicts(ctx, sbc_name) if ctx.params.get("override_claim") else []
-    )
     keepalive = ClaimKeepalive(
         manager,
         sbc_name,
         _cli_claim_actor(),
         enabled=ctx.obj["config"].claims.enabled,
-        allowed_claim_ids={c.id for c in overridden},
+        allowed_claim_ids=ctx.obj.get("overridden_claims", ()),
     )
 
     try:

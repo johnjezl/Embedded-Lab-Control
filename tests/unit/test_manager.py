@@ -8,6 +8,7 @@ import pytest
 from labctl.core.manager import get_manager
 from labctl.core.models import (
     AddressType,
+    ClaimActor,
     ClaimConflict,
     ClaimNotFoundError,
     NotClaimantError,
@@ -1778,7 +1779,7 @@ class TestClaimExpiryAndHeartbeat:
             reason="r",
         )
         time.sleep(1.05)
-        assert manager.heartbeat_claim("sbc1", "s1") is True
+        assert manager.heartbeat_held_claim("sbc1", ClaimActor("s1")) is True
         fresh = manager.get_active_claim("sbc1")
         assert fresh.last_activity > original.last_activity
         assert fresh.expires_at > original.expires_at
@@ -1793,11 +1794,13 @@ class TestClaimExpiryAndHeartbeat:
             duration_seconds=60,
             reason="r",
         )
-        assert manager.heartbeat_claim("sbc1", "other-session") is False
+        assert (
+            manager.heartbeat_held_claim("sbc1", ClaimActor("other-session")) is False
+        )
 
     def test_heartbeat_with_no_claim_returns_false(self, manager):
         manager.create_sbc(name="sbc1")
-        assert manager.heartbeat_claim("sbc1", "any") is False
+        assert manager.heartbeat_held_claim("sbc1", ClaimActor("any")) is False
 
     def test_heartbeat_prevents_expiry(self, manager):
         """A short-duration claim survives past its original deadline
@@ -1815,7 +1818,7 @@ class TestClaimExpiryAndHeartbeat:
         # would have expired, but heartbeats push it forward.
         for _ in range(3):
             time.sleep(1.05)
-            assert manager.heartbeat_claim("sbc1", "s1") is True
+            assert manager.heartbeat_held_claim("sbc1", ClaimActor("s1")) is True
 
         # Should still be active despite 3s elapsed on a 2s claim
         assert manager.get_active_claim("sbc1") is not None
