@@ -87,22 +87,23 @@ Delete or fold into the real release notes before publishing.
 - ~~No LICENSE file~~ — resolved by `11ad19f` on main (MIT, © 2026 John
   Jezl). Verified: wheel ships `dist-info/licenses/LICENSE` with
   `License-Expression: MIT` / `License-File: LICENSE`; sdist includes it.
-- sdist contains only `src/`, `README.md`, `pyproject.toml`: no tests,
-  `CHANGELOG.md`, `config/` (systemd units, sample config) or `docs/`. Decide
-  what a PyPI sdist should carry (`MANIFEST.in`).
-- Only `labctl mcp` gives a friendly "install the extra" error on a bare
-  install. Other extra-gated commands (`web` → flask, `kasa`, `sdwire`,
-  actuators → pyserial) likely still surface raw `ModuleNotFoundError`s or
-  RuntimeErrors naming `pip install sdwire` rather than the extra.
-- sdwire error text says `pip install sdwire`; on Python < 3.12 that cannot
-  succeed. Consider mentioning the 3.12 requirement.
+- ~~sdist contains only `src/`, `README.md`, `pyproject.toml`~~ — resolved
+  in P2 PR E: `MANIFEST.in` adds tests, `config/`, `docs/` (minus
+  `docs/development`), `scripts/`, `skills/`, `CHANGELOG.md`,
+  `SECURITY.md`; the suite passes from an unpacked sdist. Wheel unchanged.
+- ~~Only `labctl mcp` gives a friendly "install the extra" error~~ —
+  resolved in P2 PR E: `web`, `kasa`, `sdwire` and `actuators` name their
+  extra too (`labctl/extras.py`), with the `pipx inject` equivalent.
+- ~~sdwire error text says `pip install sdwire`~~ — resolved in P2 PR E:
+  it names the `[sdwire]` extra and says it needs Python 3.12+ (and, below
+  3.12, that the extra installs nothing).
 - ~~Repo-wide lint debt~~ — resolved in `ea3a13a` (black/isort/flake8 clean,
   tools pinned exactly in the `dev` extra).
 - CI notes (from writing `.github/workflows/ci.yml`):
   - Test coverage is **68%** (`cli.py` 51%, `mcp_server.py` 78%); CI reports
     it but does not gate on it. AGENT_RULES aims for > 80%.
-  - Push + pull_request triggers mean a same-repo PR branch runs twice.
-    Consider `push: branches: [main]` once the PR flow is settled.
+  - ~~Push + pull_request triggers mean a same-repo PR branch runs
+    twice~~ — resolved in P2 PR E (`push: branches: [main]` + `pull_request`).
   - Python 3.11 and 3.13 have only been exercised by CI, not locally.
   - Runners have passwordless sudo; the suite passed locally in a sandbox
     that hid `/etc/labctl`, `~/.config/labctl` and `ser2net`, but any test

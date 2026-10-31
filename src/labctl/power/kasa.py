@@ -27,6 +27,7 @@ import time
 from functools import lru_cache
 
 from labctl.core.config import load_config
+from labctl.extras import MissingExtraError
 from labctl.power.base import PowerController, PowerState
 
 logger = logging.getLogger(__name__)
@@ -117,7 +118,10 @@ def _get_cached_kasa_credentials():
     """Load Kasa credentials once per process."""
     try:
         from kasa import Credentials
-
+    except ImportError:
+        # _run_async reports the missing [kasa] extra; no warning here.
+        return None
+    try:
         config = load_config()
         if config.kasa.username and config.kasa.password:
             logger.debug("Loaded Kasa credentials for user: %s", config.kasa.username)
@@ -132,7 +136,7 @@ class KasaController(PowerController):
     """
     Power controller for TP-Link Kasa devices.
 
-    Requires python-kasa package: pip install python-kasa
+    Requires python-kasa (the [kasa] extra).
 
     Supports both single plugs (HS103, EP10, etc.) and multi-outlet
     power strips (HS300, KP303, EP40, etc.). For strips, use plug_index
@@ -296,10 +300,8 @@ class KasaController(PowerController):
                         total_attempts,
                     )
                 return result
-            except ImportError:
-                raise RuntimeError(
-                    "python-kasa not installed. Install with: pip install python-kasa"
-                )
+            except ImportError as e:
+                raise MissingExtraError("kasa") from e
             except RuntimeError:
                 raise
             except Exception as e:

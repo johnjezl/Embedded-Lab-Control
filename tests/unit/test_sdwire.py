@@ -1039,7 +1039,7 @@ class TestDiscoverSDWireDevices:
         from labctl.sdwire.controller import discover_sdwire_devices
 
         with patch.dict("sys.modules", self._SDWIRE_ABSENT):
-            with pytest.raises(RuntimeError, match="sdwire package not installed"):
+            with pytest.raises(RuntimeError, match=r"embedded-lab-control\[sdwire\]"):
                 discover_sdwire_devices()
 
     def test_get_device_import_error(self):
@@ -1047,7 +1047,7 @@ class TestDiscoverSDWireDevices:
         ctrl = SDWireController("any_serial")
 
         with patch.dict("sys.modules", self._SDWIRE_ABSENT):
-            with pytest.raises(RuntimeError, match="sdwire package not installed"):
+            with pytest.raises(RuntimeError, match=r"embedded-lab-control\[sdwire\]"):
                 ctrl._get_device()
 
 

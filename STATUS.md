@@ -3,8 +3,10 @@
 ## Current State
 
 - **Milestone**: Public PyPI release (`embedded-lab-control`)
-- **Sub-task**: next is P2 (PyPI release); Phase 0 and Phase 1 (safety)
-  are done
+- **Sub-task**: P2 (PyPI release), PR E release prep in progress
+  (lab-specific files removed, generic `HARDWARE_MAP.md`, `MANIFEST.in`,
+  install-the-extra errors, README PyPI install, CI triggers); PR F
+  (publish workflow, 0.2.0) next. Phase 0 and Phase 1 (safety) are done
 - **Status**: `main` has everything merged through PR #43; deployed to
   tarrasque through #40 (#39/#40 on 2026-10-30). #42 and #43 (#41, the
   code gaps the docs audit found) are merged but not deployed. In

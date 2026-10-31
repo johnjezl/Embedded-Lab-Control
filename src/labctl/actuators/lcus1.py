@@ -50,6 +50,7 @@ from labctl.actuators.base import (
     WriteOutcome,
     device_permission_hint,
 )
+from labctl.extras import missing_extra_message
 
 logger = logging.getLogger(__name__)
 
@@ -93,7 +94,9 @@ class Lcus1SerialDriver(RelayDriver):
         try:
             import serial  # type: ignore
         except ImportError as e:
-            raise DriverError("pyserial is required for the lcus1_serial driver") from e
+            raise DriverError(
+                f"lcus1_serial driver: {missing_extra_message('actuators')}"
+            ) from e
 
         if not transport.device_path:
             raise DriverError("lcus1_serial driver requires transport.device_path")
@@ -205,7 +208,7 @@ class Lcus1SerialDriver(RelayDriver):
             import serial  # type: ignore
         except ImportError:
             return ProbeOutcome(
-                result=ProbeResult.UNKNOWN, detail="pyserial not installed"
+                result=ProbeResult.UNKNOWN, detail=missing_extra_message("actuators")
             )
 
         try:

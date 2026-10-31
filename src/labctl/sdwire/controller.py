@@ -18,6 +18,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
+from labctl.extras import MissingExtraError
+
 logger = logging.getLogger(__name__)
 
 
@@ -44,10 +46,8 @@ class SDWireController:
                 get_sdwire_devices,
                 get_sdwirec_devices,
             )
-        except ImportError:
-            raise RuntimeError(
-                "sdwire package not installed. Install with: pip install sdwire"
-            )
+        except ImportError as e:
+            raise MissingExtraError("sdwire") from e
 
         all_devices = []
         try:
@@ -1062,10 +1062,8 @@ def discover_sdwire_devices() -> list[dict]:
             get_sdwire_devices,
             get_sdwirec_devices,
         )
-    except ImportError:
-        raise RuntimeError(
-            "sdwire package not installed. Install with: pip install sdwire"
-        )
+    except ImportError as e:
+        raise MissingExtraError("sdwire") from e
 
     results = []
     seen_serials = set()
