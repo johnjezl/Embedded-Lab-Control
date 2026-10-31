@@ -1,6 +1,7 @@
 """Unit tests for resource manager."""
 
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -25,6 +26,32 @@ def manager(tmp_path):
     """Create a resource manager with test database."""
     db_path = tmp_path / "test.db"
     return get_manager(db_path)
+
+
+class _FakeClock:
+    """The claim code's ``datetime.now()``, stopped until ``advance``."""
+
+    def __init__(self):
+        self.now = datetime.now()
+
+    def advance(self, seconds):
+        self.now += timedelta(seconds=seconds)
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """Freeze ``datetime.now()`` in the manager and models; tests move it
+    with ``clock.advance(s)`` instead of sleeping (#49)."""
+    fake = _FakeClock()
+
+    class _ClockDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fake.now if tz is None else fake.now.astimezone(tz)
+
+    monkeypatch.setattr("labctl.core.manager.datetime", _ClockDatetime)
+    monkeypatch.setattr("labctl.core.models.datetime", _ClockDatetime)
+    return fake
 
 
 class TestSBCOperations:
@@ -1679,7 +1706,7 @@ class TestClaimRelease:
 class TestClaimExpiryAndHeartbeat:
     """Expiry sweep, renewal, and heartbeat semantics."""
 
-    def test_expire_stale_releases_past_deadline(self, manager):
+    def test_expire_stale_releases_past_deadline(self, manager, clock):
         manager.create_sbc(name="sbc1")
         # Claim with a 1-second duration; wait longer than grace
         manager.claim_sbc(
@@ -1690,7 +1717,7 @@ class TestClaimExpiryAndHeartbeat:
             duration_seconds=1,
             reason="short",
         )
-        time.sleep(1.2)
+        clock.advance(1.2)
         # grace=0 lets the sweep release immediately past the deadline
         count = manager.expire_stale_claims(grace_seconds=0)
         assert count == 1
@@ -1699,7 +1726,7 @@ class TestClaimExpiryAndHeartbeat:
         assert history[0].release_reason == ReleaseReason.EXPIRED
         assert history[0].released_by == "system"
 
-    def test_expired_claim_not_considered_active(self, manager):
+    def test_expired_claim_not_considered_active(self, manager, clock):
         manager.create_sbc(name="sbc1")
         manager.claim_sbc(
             sbc_name="sbc1",
@@ -1709,11 +1736,11 @@ class TestClaimExpiryAndHeartbeat:
             duration_seconds=1,
             reason="short",
         )
-        time.sleep(1.2)
+        clock.advance(1.2)
         # Even before a sweep runs, is_active (deadline-based) is False
         assert manager.get_active_claim("sbc1") is None
 
-    def test_reclaim_over_expired_without_explicit_sweep(self, manager):
+    def test_reclaim_over_expired_without_explicit_sweep(self, manager, clock):
         """Acquisition must succeed when the old claim is past its deadline,
         even if no sweep has run — claim_sbc sweeps inside the transaction."""
         manager.create_sbc(name="sbc1")
@@ -1725,7 +1752,7 @@ class TestClaimExpiryAndHeartbeat:
             duration_seconds=1,
             reason="short",
         )
-        time.sleep(1.2)
+        clock.advance(1.2)
         # grace=0 so the in-transaction sweep fires
         claim = manager.claim_sbc(
             sbc_name="sbc1",
@@ -1739,7 +1766,7 @@ class TestClaimExpiryAndHeartbeat:
         assert claim.is_active
         assert claim.agent_name == "b"
 
-    def test_renew_extends_deadline(self, manager):
+    def test_renew_extends_deadline(self, manager, clock):
         manager.create_sbc(name="sbc1")
         original = manager.claim_sbc(
             sbc_name="sbc1",
@@ -1749,7 +1776,7 @@ class TestClaimExpiryAndHeartbeat:
             duration_seconds=60,
             reason="r",
         )
-        time.sleep(1.05)
+        clock.advance(1.05)
         renewed = manager.renew_claim("sbc1", "s1", duration_seconds=120)
         assert renewed.renewal_count == original.renewal_count + 1
         assert renewed.duration_seconds == 120
@@ -1768,7 +1795,7 @@ class TestClaimExpiryAndHeartbeat:
         with pytest.raises(NotClaimantError):
             manager.renew_claim("sbc1", "s2")
 
-    def test_heartbeat_advances_last_activity(self, manager):
+    def test_heartbeat_advances_last_activity(self, manager, clock):
         manager.create_sbc(name="sbc1")
         original = manager.claim_sbc(
             sbc_name="sbc1",
@@ -1778,7 +1805,7 @@ class TestClaimExpiryAndHeartbeat:
             duration_seconds=60,
             reason="r",
         )
-        time.sleep(1.05)
+        clock.advance(1.05)
         assert manager.heartbeat_held_claim("sbc1", ClaimActor("s1")) is True
         fresh = manager.get_active_claim("sbc1")
         assert fresh.last_activity > original.last_activity
@@ -1802,7 +1829,7 @@ class TestClaimExpiryAndHeartbeat:
         manager.create_sbc(name="sbc1")
         assert manager.heartbeat_held_claim("sbc1", ClaimActor("any")) is False
 
-    def test_heartbeat_prevents_expiry(self, manager):
+    def test_heartbeat_prevents_expiry(self, manager, clock):
         """A short-duration claim survives past its original deadline
         when heartbeats keep pushing the deadline forward."""
         manager.create_sbc(name="sbc1")
@@ -1817,11 +1844,15 @@ class TestClaimExpiryAndHeartbeat:
         # Heartbeat 3 times across 3 seconds — original 2s deadline
         # would have expired, but heartbeats push it forward.
         for _ in range(3):
-            time.sleep(1.05)
+            clock.advance(1.05)
             assert manager.heartbeat_held_claim("sbc1", ClaimActor("s1")) is True
 
         # Should still be active despite 3s elapsed on a 2s claim
         assert manager.get_active_claim("sbc1") is not None
+        # ...and without heartbeats the 2s deadline still applies
+        clock.advance(2.1)
+        assert manager.get_active_claim("sbc1") is None
+        assert manager.heartbeat_held_claim("sbc1", ClaimActor("s1")) is False
 
 
 class TestClaimListing:
@@ -1944,7 +1975,7 @@ class TestDeleteSBCGatedByClaim:
 class TestDeadSessionRelease:
     """Session liveness check for mcp-stdio claims."""
 
-    def test_dead_pid_releases_claim(self, manager):
+    def test_dead_pid_releases_claim(self, manager, clock):
         """Claim by a dead PID gets released after grace expires."""
         from unittest.mock import patch
 
@@ -1957,7 +1988,7 @@ class TestDeadSessionRelease:
             duration_seconds=1,
             reason="test",
         )
-        time.sleep(1.2)
+        clock.advance(1.2)
 
         with patch.object(type(manager), "_is_pid_alive", return_value=False):
             count = manager.release_dead_sessions(grace_seconds=0)
@@ -1966,7 +1997,7 @@ class TestDeadSessionRelease:
         history = manager.list_claim_history("sbc1")
         assert history[0].release_reason == ReleaseReason.SESSION_LOST
 
-    def test_alive_pid_not_released(self, manager):
+    def test_alive_pid_not_released(self, manager, clock):
         """Claim by a living PID is left alone."""
         from unittest.mock import patch
 
@@ -1979,7 +2010,7 @@ class TestDeadSessionRelease:
             duration_seconds=1,
             reason="test",
         )
-        time.sleep(1.2)
+        clock.advance(1.2)
 
         # Same process: it started before the session epoch was recorded.
         with (
@@ -1992,7 +2023,7 @@ class TestDeadSessionRelease:
 
         assert count == 0
 
-    def test_cli_session_skipped(self, manager):
+    def test_cli_session_skipped(self, manager, clock):
         """CLI claims are not subject to PID liveness checks."""
         manager.create_sbc(name="sbc1")
         manager.claim_sbc(
@@ -2003,7 +2034,7 @@ class TestDeadSessionRelease:
             duration_seconds=1,
             reason="test",
         )
-        time.sleep(1.2)
+        clock.advance(1.2)
         count = manager.release_dead_sessions(grace_seconds=0)
         assert count == 0
 
@@ -2032,7 +2063,7 @@ class TestSessionLivenessPidRecycling:
 
     EPOCH = 1700000000  # session epoch embedded in the session ID
 
-    def _expired_claim(self, manager, session_id):
+    def _expired_claim(self, manager, clock, session_id):
         manager.create_sbc(name="sbc1")
         manager.claim_sbc(
             sbc_name="sbc1",
@@ -2042,7 +2073,7 @@ class TestSessionLivenessPidRecycling:
             duration_seconds=1,
             reason="test",
         )
-        time.sleep(1.2)
+        clock.advance(1.2)
 
     def _release(self, manager, *, pid_alive, started):
         from unittest.mock import patch
@@ -2053,9 +2084,9 @@ class TestSessionLivenessPidRecycling:
         ):
             return manager.release_dead_sessions(grace_seconds=0)
 
-    def test_recycled_pid_releases_as_session_lost(self, manager):
+    def test_recycled_pid_releases_as_session_lost(self, manager, clock):
         """PID alive but its process started after the session: not ours."""
-        self._expired_claim(manager, f"mcp-stdio:4242-{self.EPOCH}")
+        self._expired_claim(manager, clock, f"mcp-stdio:4242-{self.EPOCH}")
 
         count = self._release(manager, pid_alive=True, started=self.EPOCH + 3600.0)
 
@@ -2063,38 +2094,38 @@ class TestSessionLivenessPidRecycling:
         history = manager.list_claim_history("sbc1")
         assert history[0].release_reason == ReleaseReason.SESSION_LOST
 
-    def test_original_process_kept(self, manager):
+    def test_original_process_kept(self, manager, clock):
         """PID alive and started before the epoch: the original session."""
-        self._expired_claim(manager, f"mcp-stdio:4242-{self.EPOCH}")
+        self._expired_claim(manager, clock, f"mcp-stdio:4242-{self.EPOCH}")
 
         assert self._release(manager, pid_alive=True, started=self.EPOCH - 5.0) == 0
 
-    def test_start_within_slack_kept(self, manager):
+    def test_start_within_slack_kept(self, manager, clock):
         """Rounding / small clock slew must not make a live session look dead."""
-        self._expired_claim(manager, f"mcp-stdio:4242-{self.EPOCH}")
+        self._expired_claim(manager, clock, f"mcp-stdio:4242-{self.EPOCH}")
 
         assert self._release(manager, pid_alive=True, started=self.EPOCH + 1.5) == 0
 
-    def test_dead_pid_released_without_reading_start(self, manager):
-        self._expired_claim(manager, f"mcp-stdio:4242-{self.EPOCH}")
+    def test_dead_pid_released_without_reading_start(self, manager, clock):
+        self._expired_claim(manager, clock, f"mcp-stdio:4242-{self.EPOCH}")
 
         assert self._release(manager, pid_alive=False, started=None) == 1
 
-    def test_unreadable_start_time_falls_back_to_pid_check(self, manager):
+    def test_unreadable_start_time_falls_back_to_pid_check(self, manager, clock):
         """Non-Linux or /proc unreadable: behave as before (PID only)."""
-        self._expired_claim(manager, f"mcp-stdio:4242-{self.EPOCH}")
+        self._expired_claim(manager, clock, f"mcp-stdio:4242-{self.EPOCH}")
 
         assert self._release(manager, pid_alive=True, started=None) == 0
 
-    def test_recycled_pid_detected_for_user_session(self, manager):
+    def test_recycled_pid_detected_for_user_session(self, manager, clock):
         """Authenticated MCP HTTP IDs end in ":<username>"; the epoch is
         still parsed, so a recycled PID is still caught."""
-        self._expired_claim(manager, f"mcp-stdio:4242-{self.EPOCH}:alice")
+        self._expired_claim(manager, clock, f"mcp-stdio:4242-{self.EPOCH}:alice")
 
         assert self._release(manager, pid_alive=True, started=self.EPOCH + 3600.0) == 1
 
-    def test_session_id_without_epoch_uses_pid_only(self, manager):
-        self._expired_claim(manager, "mcp-stdio:4242")
+    def test_session_id_without_epoch_uses_pid_only(self, manager, clock):
+        self._expired_claim(manager, clock, "mcp-stdio:4242")
 
         count = self._release(manager, pid_alive=True, started=self.EPOCH + 3600.0)
 
@@ -2117,12 +2148,12 @@ class TestSessionLivenessPidRecycling:
     @pytest.mark.skipif(
         not Path("/proc/self/stat").exists(), reason="needs Linux /proc"
     )
-    def test_real_recycled_pid_detected(self, manager):
+    def test_real_recycled_pid_detected(self, manager, clock):
         """End to end with real /proc: our live PID + an epoch from before
         this process existed looks exactly like a recycled PID."""
         import os
 
-        self._expired_claim(manager, f"mcp-stdio:{os.getpid()}-{self.EPOCH}")
+        self._expired_claim(manager, clock, f"mcp-stdio:{os.getpid()}-{self.EPOCH}")
 
         assert manager.release_dead_sessions(grace_seconds=0) == 1
 

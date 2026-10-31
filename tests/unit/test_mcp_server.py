@@ -479,6 +479,7 @@ class TestMcpSDWireResource:
 
 
 @pytest.mark.usefixtures("allow_tmp_host_paths")
+@pytest.mark.usefixtures("no_sleep")
 class TestMcpSDWireTools:
     """Tests for SDWire MCP tools."""
 
@@ -2077,6 +2078,7 @@ class TestMcpSerialTools:
 
 
 @pytest.mark.usefixtures("allow_tmp_host_paths")
+@pytest.mark.usefixtures("no_sleep")
 class TestMcpFlashImage:
     """Tests for MCP flash_image tool."""
 
@@ -3570,6 +3572,7 @@ class TestMcpBindingVerbs:
         assert data["binding"]["desired_state"] == "released"
 
 
+@pytest.mark.usefixtures("no_sleep")
 class TestMcpRecoveryComposites:
     def test_enter_recovery_blocked_without_claim(self, actuator_lab):
         from labctl.mcp_server import enter_recovery

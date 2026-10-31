@@ -2,7 +2,7 @@
 
 import os
 import time
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -22,10 +22,9 @@ from labctl.services import (
 def pacific_tz():
     """Run the test with the process timezone set to US Pacific.
 
-    strptime's %Z only accepts UTC/GMT and the *local* zone names, and
-    systemd prints timestamps in the host's local zone. A "PDT" sample
-    therefore only parses when the process is on Pacific time — which the
-    dev host is, but CI runners (UTC) are not.
+    Only UTC/GMT and the process's own zone abbreviations can be resolved,
+    so a "PDT" sample parses only when the process is on Pacific time,
+    which CI runners (UTC) are not.
     """
     old = os.environ.get("TZ")
     os.environ["TZ"] = "America/Los_Angeles"
@@ -54,16 +53,31 @@ class TestParsing:
         assert props["NRestarts"] == "2"
         assert props["Result"] == "success"
 
-    def test_parse_systemd_timestamp_valid(self, pacific_tz):
+    def test_parse_systemd_timestamp_local_zone(self, pacific_tz):
         dt = _parse_systemd_timestamp("Sun 2026-04-19 16:08:26 PDT")
-        assert dt is not None
-        assert dt.year == 2026 and dt.month == 4 and dt.day == 19
+        assert dt == datetime(2026, 4, 19, 23, 8, 26, tzinfo=timezone.utc)
+
+    def test_parse_systemd_timestamp_utc_on_another_zone(self, pacific_tz):
+        """UTC is read as UTC, not as local time (#51)."""
+        dt = _parse_systemd_timestamp("Sun 2026-04-19 23:08:26 UTC")
+        assert dt == datetime(2026, 4, 19, 23, 8, 26, tzinfo=timezone.utc)
 
     def test_parse_systemd_timestamp_utc_any_host(self):
-        """A UTC host's systemd output parses regardless of process TZ."""
+        """A UTC timestamp parses regardless of process TZ."""
         dt = _parse_systemd_timestamp("Sun 2026-04-19 23:08:26 UTC")
-        assert dt is not None
-        assert dt.year == 2026 and dt.month == 4 and dt.day == 19
+        assert dt == datetime(2026, 4, 19, 23, 8, 26, tzinfo=timezone.utc)
+
+    def test_parse_systemd_timestamp_no_zone_is_local(self, pacific_tz):
+        dt = _parse_systemd_timestamp("2026-04-19 16:08:26")
+        assert dt == datetime(2026, 4, 19, 23, 8, 26, tzinfo=timezone.utc)
+
+    def test_parse_systemd_timestamp_unresolvable_zone(self, pacific_tz):
+        """Another zone's abbreviation is ambiguous ("CST"), so no guess."""
+        assert _parse_systemd_timestamp("Sun 2026-04-19 18:08:26 CST") is None
+
+    def test_parse_systemd_timestamp_garbage(self):
+        assert _parse_systemd_timestamp("yesterday") is None
+        assert _parse_systemd_timestamp("Sun 2026-04-19") is None
 
     def test_parse_systemd_timestamp_empty(self):
         assert _parse_systemd_timestamp("") is None
@@ -101,15 +115,17 @@ class TestCheckService:
         show_output = (
             "ActiveState=active\n"
             "SubState=running\n"
-            "ActiveEnterTimestamp=Sun 2026-04-19 16:08:26 PDT\n"
+            "ActiveEnterTimestamp=Sun 2026-04-19 23:08:26 UTC\n"
             "NRestarts=0\n"
             "ExecMainStatus=0\n"
             "Result=success\n"
             "LoadState=loaded\n"
         )
+        show_envs = []
 
-        def fake_run(cmd, timeout=5.0):
+        def fake_run(cmd, timeout=5.0, env=None):
             if "show" in cmd:
+                show_envs.append(env)
                 return 0, show_output
             return 0, ""
 
@@ -123,6 +139,11 @@ class TestCheckService:
         assert status.sub_state == "running"
         assert status.n_restarts == 0
         assert status.healthy
+        # systemctl is asked for UTC timestamps, which always parse (#51)
+        assert show_envs[0]["TZ"] == "UTC"
+        assert status.active_since == datetime(
+            2026, 4, 19, 23, 8, 26, tzinfo=timezone.utc
+        )
         # We skip journal fetch for healthy services
         assert status.recent_errors == []
 
@@ -143,7 +164,7 @@ class TestCheckService:
         )
         calls: list[list[str]] = []
 
-        def fake_run(cmd, timeout=5.0):
+        def fake_run(cmd, timeout=5.0, env=None):
             calls.append(cmd)
             if "show" in cmd:
                 return 0, show_output
@@ -168,7 +189,7 @@ class TestCheckService:
     def test_not_loaded_unit_reports_error(self):
         show_output = "ActiveState=inactive\nLoadState=not-found\n"
 
-        def fake_run(cmd, timeout=5.0):
+        def fake_run(cmd, timeout=5.0, env=None):
             return 0, show_output
 
         with (

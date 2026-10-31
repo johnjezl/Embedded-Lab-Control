@@ -5,8 +5,10 @@
 - **Milestone**: Public PyPI release (`embedded-lab-control`)
 - **Sub-task**: P2 (PyPI release) done: 0.2.0 published to PyPI and
   GitHub Releases 2026-10-31 (PRs #45, #46); 0.2.1 prepared (README
-  Features list, #53). Phase 0 and Phase 1 (safety) are done
-- **Status**: `main` has everything merged through #53; deployed to
+  Features list #53; services uptime #51; faster tests that can't reach
+  the network #49). Phase 0 and Phase 1 (safety) are done
+- **Status**: `main` has everything merged through #54 plus the #49/#51
+  PR; deployed to
   tarrasque through #44 (#45 onward not yet: friendly extra errors,
   packaging, docs). Next: tag `v0.2.1` and approve the `pypi`
   deployment (user); then the open follow-ups. Phase 1 (WS1–WS5, PRs
@@ -17,8 +19,7 @@
   power operation with a structured result, and a lab-wide per-outlet
   lock); #47 (SDWire `sudo` commands: kept a manual rule, decided
   2026-10-31; the scripts should detect and print it); #48 coverage;
-  #49 flaky/slow tests; #50 guard tests against real `sudo`; #51 systemd
-  timestamps in other zones; #52 document allowlist/SD-mux assumptions;
+  #50 guard tests against real `sudo`; #52 document allowlist/SD-mux assumptions;
   #9 serial flow control.
 
 ## Last Session
@@ -39,6 +40,9 @@
     clean install from PyPI checked
   - #53: README Features list covers SDWire, relays, boot testing, MCP
   - 0.2.1 prep: version and CHANGELOG section
+  - #51: `labctl services status` asks systemctl for UTC times
+  - #49: tests refuse non-loopback network access; fake clock and no
+    settle sleeps (full run ~15 → ~11 min)
 - **Next**: tag `v0.2.1` on main and approve the `pypi` deployment (user)
 
 ## Earlier Session (Activity Stream)

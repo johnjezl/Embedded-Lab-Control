@@ -9,10 +9,12 @@ run `systemctl` against each unit individually.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 # Units labctl depends on. First three are labctl's own; ser2net is
@@ -66,7 +68,9 @@ def _format_duration(delta: timedelta) -> str:
     return f"{secs}s"
 
 
-def _run(cmd: list[str], timeout: float = 5.0) -> tuple[int, str]:
+def _run(
+    cmd: list[str], timeout: float = 5.0, env: Optional[dict[str, str]] = None
+) -> tuple[int, str]:
     """Run a subprocess and capture combined output."""
     try:
         result = subprocess.run(
@@ -75,6 +79,7 @@ def _run(cmd: list[str], timeout: float = 5.0) -> tuple[int, str]:
             text=True,
             timeout=timeout,
             check=False,
+            env=env,
         )
         return result.returncode, (result.stdout or "") + (result.stderr or "")
     except FileNotFoundError as e:
@@ -94,24 +99,34 @@ def _parse_systemctl_show(output: str) -> dict[str, str]:
 
 
 def _parse_systemd_timestamp(value: str) -> Optional[datetime]:
-    """Parse a systemd timestamp like 'Sun 2026-04-19 16:08:26 PDT'.
+    """Parse a systemd timestamp like 'Sun 2026-04-19 23:08:26 UTC'.
 
-    Returns None for empty / sentinel values ("n/a", "0", "").
+    Returns an aware datetime, or None for empty / sentinel values ("n/a",
+    "0", "") and for a zone abbreviation that can't be resolved.
+    check_service asks systemctl for UTC, so that is the normal case. A
+    timestamp without a zone, or in the process's own zone (e.g. "PDT" on
+    a Pacific host), is read as local time. Any other abbreviation is
+    ambiguous ("CST" is three different offsets) and gives None.
     """
     if not value or value in {"n/a", "0"}:
         return None
-    # Format example: "Sun 2026-04-19 16:08:26 PDT"
-    for fmt in (
-        "%a %Y-%m-%d %H:%M:%S %Z",
-        "%Y-%m-%d %H:%M:%S %Z",
-        "%a %Y-%m-%d %H:%M:%S",
-        "%Y-%m-%d %H:%M:%S",
-    ):
+    text = value.strip()
+    zone = None
+    head, _, last = text.rpartition(" ")
+    if head and last.isalpha():
+        text, zone = head, last
+    for fmt in ("%a %Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
         try:
-            dt = datetime.strptime(value, fmt)
-            return dt.astimezone()
+            dt = datetime.strptime(text, fmt)
+            break
         except ValueError:
             continue
+    else:
+        return None
+    if zone is not None and zone.upper() in {"UTC", "GMT"}:
+        return dt.replace(tzinfo=timezone.utc)
+    if zone is None or zone in time.tzname:
+        return dt.astimezone()
     return None
 
 
@@ -172,7 +187,10 @@ def check_service(unit: str) -> ServiceStatus:
             "-p",
             "ActiveState,SubState,ActiveEnterTimestamp,NRestarts,"
             "ExecMainStatus,Result,LoadState",
-        ]
+        ],
+        # systemctl prints timestamps in its own time zone; UTC is the one
+        # zone abbreviation that always parses back unambiguously.
+        env={**os.environ, "TZ": "UTC", "LC_ALL": "C"},
     )
     if code != 0:
         status.error = out.strip() or f"systemctl show exited {code}"

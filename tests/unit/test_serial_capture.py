@@ -335,11 +335,15 @@ class TestCaptureSerialOutput:
         port = srv.getsockname()[1]
         srv.listen(1)
 
+        captured = threading.Event()
+
         def serve():
             client, _ = srv.accept()
-            # Send a line with newline, then a prompt without newline
+            # Send a line with newline, then a prompt without newline, and
+            # hold the connection open until the capture is done: it has
+            # to match the prompt, not stop at end of stream.
             client.sendall(b"booting...\nslmos>")
-            time.sleep(2)
+            captured.wait(5)
             client.close()
 
         t = threading.Thread(target=serve, daemon=True)
@@ -355,6 +359,7 @@ class TestCaptureSerialOutput:
             assert result.elapsed_seconds < 4.0  # Should not wait full timeout
             assert "slmos>" in result.output
         finally:
+            captured.set()
             srv.close()
             t.join(timeout=2)
 

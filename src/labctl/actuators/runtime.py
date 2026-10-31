@@ -475,7 +475,7 @@ def release_binding(manager, binding: Binding) -> None:
         )
 
 
-def press_binding(manager, binding: Binding, *, sleep_fn=time.sleep) -> None:
+def press_binding(manager, binding: Binding, *, sleep_fn=None) -> None:
     """Pulse a momentary binding to active for momentary_pulse_ms then back.
 
     Both writes must succeed. If the second write fails the channel may
@@ -509,7 +509,7 @@ def press_binding(manager, binding: Binding, *, sleep_fn=time.sleep) -> None:
                 raise ActuationError(f"press: failed to assert: {out1.value}")
             manager.update_channel_state(channel.id, active)
 
-            sleep_fn(binding.momentary_pulse_ms / 1000.0)
+            (sleep_fn or time.sleep)(binding.momentary_pulse_ms / 1000.0)
 
             out2 = _drive(driver, channel.channel_index, inactive)
         if out2 is not WriteOutcome.OK:
@@ -970,7 +970,7 @@ def enter_recovery(
     controller,
     *,
     delay_s=None,
-    sleep_fn=time.sleep,
+    sleep_fn=None,
 ) -> None:
     """Power-aware "enter USB Force Recovery (or equivalent)" composite.
 
@@ -1010,7 +1010,7 @@ def enter_recovery(
     if not controller.power_off():
         raise ActuationError(f"power_off failed on {sbc.name!r}")
     # 2. Settling delay.
-    sleep_fn(delay_s)
+    (sleep_fn or time.sleep)(delay_s)
     # 3. Engage recovery strap.
     actuate_binding(manager, binding)
     # 4. Power on (re-applies the strap via apply_pre_power_bindings).
@@ -1025,7 +1025,7 @@ def exit_recovery(
     controller,
     *,
     delay_s=None,
-    sleep_fn=time.sleep,
+    sleep_fn=None,
 ) -> None:
     """Power-aware "leave recovery" composite.
 
@@ -1051,7 +1051,7 @@ def exit_recovery(
 
     if not controller.power_off():
         raise ActuationError(f"power_off failed on {sbc.name!r}")
-    sleep_fn(delay_s)
+    (sleep_fn or time.sleep)(delay_s)
     release_binding(manager, binding)
     _apply_after_power_off(manager, sbc, boards)
     if not controller.power_on():
