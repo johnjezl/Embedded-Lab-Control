@@ -116,6 +116,8 @@ class SDWireController:
 
             return None
 
+        except (MissingExtraError, BrokenExtraError):
+            raise  # not "no card": say why sdwire can't be used
         except RuntimeError:
             return None
 
@@ -123,6 +125,8 @@ class SDWireController:
         """The reader's block device node, whether or not it has media."""
         try:
             node = getattr(self._get_device(), "block_dev", None)
+        except (MissingExtraError, BrokenExtraError):
+            raise
         except RuntimeError:
             return None
         return node if node and os.path.exists(node) else None

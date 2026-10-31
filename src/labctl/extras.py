@@ -60,11 +60,18 @@ class BrokenExtraError(RuntimeError):
 def broken_extra_message(
     extra: str, error: ImportError, what: str | None = None
 ) -> str:
-    """One line for an extra whose package is installed but won't import."""
+    """One line for an extra whose package is installed but won't import.
+
+    No install command: reinstalling brings back the same newest version
+    when that version is the incompatible one, and the right command
+    depends on how labctl was installed (pipx, a venv, a git checkout).
+    """
     what = what or EXTRAS[extra]
+    packages = ", ".join(extra_packages(extra))
     return (
-        f"{what} failed to import ({error}); reinstall the [{extra}] extra: "
-        f'pip install --force-reinstall "{DIST_NAME}[{extra}]"'
+        f"{what} is installed but failed to import ({error}): a dependency "
+        f"is missing or the installed version is incompatible (the [{extra}] "
+        f"extra wants {packages})"
     )
 
 

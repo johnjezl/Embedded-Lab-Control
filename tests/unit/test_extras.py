@@ -244,8 +244,13 @@ class TestOtherImportErrorsKeepTheirCause:
                 discover_sdwire_devices()
             assert not isinstance(info.value, MissingExtraError)
             assert isinstance(info.value.__cause__, ImportError)
-            with pytest.raises(BrokenExtraError, match="reinstall the \\[sdwire\\]"):
+            with pytest.raises(BrokenExtraError, match=r"sdwire>=0\.3"):
                 SDWireController("any")._get_device()
+            # Not mistaken for "no card": the block-device helpers pass it on.
+            with pytest.raises(BrokenExtraError):
+                SDWireController("any").get_block_device()
+            with pytest.raises(BrokenExtraError):
+                SDWireController("any")._block_node()
 
     def test_kasa_incompatible(self):
         from labctl.power import kasa as kasa_mod
@@ -280,6 +285,7 @@ class TestOtherImportErrorsKeepTheirCause:
         with pytest.raises(DriverError, match="failed to import.*termios") as info:
             driver.open(Transport(device_path="/nonexistent/relay"))
         assert "not installed" not in str(info.value)
+        assert "pip install" not in str(info.value)
         driver._transport = Transport(device_path="/nonexistent/relay")
         outcome = driver.probe()
         assert outcome.result == ProbeResult.UNKNOWN
