@@ -2118,7 +2118,9 @@ class ResourceManager:
             raise ClaimNotFoundError(f"No active claim on SBC '{sbc_name}'")
         return self._get_claim_by_id(claim.id)
 
-    def heartbeat_held_claim(self, sbc_name: str, actor: ClaimActor) -> bool:
+    def heartbeat_held_claim(
+        self, sbc_name: str, actor: ClaimActor, claim_id: Optional[int] = None
+    ) -> bool:
         """Heartbeat ``actor``'s active claim on ``sbc_name``; True if it
         still holds one (and it was heartbeated), False otherwise.
 
@@ -2126,7 +2128,9 @@ class ResourceManager:
         deadline, and held by ``actor`` (:meth:`ClaimActor.holds`), so a
         claim released or taken over meanwhile is never revived. The new
         deadline is computed from the row's own duration, so a renew to
-        another duration is respected. Unknown SBCs raise UnknownSBCError.
+        another duration is respected. With ``claim_id``, only that claim
+        counts (not a later one by the same holder). Unknown SBCs raise
+        UnknownSBCError.
         """
         sbc_id = self._require_sbc_id(sbc_name)
         now = self._fmt_ts(datetime.now())
@@ -2139,8 +2143,19 @@ class ResourceManager:
                 ) || '000'
             WHERE sbc_id = ? AND released_at IS NULL AND expires_at >= ?
               AND (session_id = ? OR (COALESCE(?, '') != '' AND owner = ?))
+              AND (? IS NULL OR id = ?)
             """,
-            (now, now, sbc_id, now, actor.session_id, actor.owner, actor.owner),
+            (
+                now,
+                now,
+                sbc_id,
+                now,
+                actor.session_id,
+                actor.owner,
+                actor.owner,
+                claim_id,
+                claim_id,
+            ),
         )
         return changed > 0
 

@@ -553,10 +553,15 @@ caller no longer holds:
   '<other board>' is now claimed by '<agent>'` when someone else claimed
   it or a board sharing its hardware.
 
-A database error during these checks counts as a missed heartbeat; only
-when the claim's deadline passes without a successful one does it count
-as lost. If the claim can't be read when the call starts, the call goes
-on without keeping it alive (logged).
+These checks follow the claim the call started with: if it was released
+and the same user claimed the board again (say from another session),
+the call still stops. A database error during them counts as a missed
+heartbeat; only when the claim's deadline passes without a successful
+one does it count as lost. A caller holding no claim has no deadline,
+so its call stops once the checks have failed for 60 s in a row
+(`claims on '<sbc>' couldn't be checked for 60 s`). If the claim can't
+be read when the call starts, the call goes on without keeping it alive
+(logged).
 
 A claim still has to cover the gaps between calls: size it for the whole
 workflow, and `renew_sbc_claim` between long steps.
