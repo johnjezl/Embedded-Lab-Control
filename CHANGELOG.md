@@ -19,8 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   installs nothing there) and gives no install command. Only the extra's
   own package being absent is reported this way: an installed but broken
   or incompatible one gets its own one-line error carrying the real
-  ImportError and a reinstall hint (still an error line, not a
-  traceback). A missing Kasa library
+  ImportError and the versions the extra wants (still an error line,
+  not a traceback). A missing Kasa library
   no longer also logs a "Failed to load Kasa credentials" warning, and
   isn't remembered for the life of the process.
 - README: install from PyPI with pipx or pip, a table of what each extra
