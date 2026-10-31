@@ -224,8 +224,8 @@ class TestThread:
         beat = threading.Event()
         real = manager.heartbeat_held_claim
 
-        def heartbeat(sbc, actor):
-            result = real(sbc, actor)
+        def heartbeat(sbc, actor, **kwargs):
+            result = real(sbc, actor, **kwargs)
             beat.set()
             return result
 
@@ -380,3 +380,59 @@ class TestCheckpoint:
             ka._deadline = 0.0
             reason = ka.checkpoint()
         assert reason.kind == LOST and "database error" in reason
+
+
+class TestRoundThree:
+    def test_heartbeat_held_claim_with_another_claim_id(self, manager):
+        claim = _claim(manager)
+        assert manager.heartbeat_held_claim("pi-1", ALICE, claim_id=claim.id)
+        assert not manager.heartbeat_held_claim("pi-1", ALICE, claim_id=claim.id + 1)
+
+    def test_reclaim_by_the_same_owner_is_not_the_original_claim(self, manager):
+        """Force-released, then claimed again by the same user (e.g. from
+        another session): the operation that started under the first claim
+        must still stop."""
+        _claim(manager)
+        with ClaimKeepalive(manager, "pi-1", ALICE, interval=3600) as ka:
+            manager.force_release_claim("pi-1", reason="r")
+            _claim(manager, ClaimActor(session_id="s-alice-2", owner="alice"))
+            reason = ka.checkpoint()
+            assert reason.kind == LOST
+            assert ka.beat() is False
+
+    def test_reclaim_by_the_same_owner_isnt_heartbeated(self, manager):
+        _claim(manager)
+        ka = ClaimKeepalive(manager, "pi-1", ALICE, interval=3600).start()
+        try:
+            manager.force_release_claim("pi-1", reason="r")
+            _claim(manager, ClaimActor(session_id="s-alice-2", owner="alice"))
+            _age(manager, -10)
+            before = _expires_at(manager)
+            assert ka.beat() is False
+            assert _expires_at(manager) == before
+        finally:
+            ka.stop()
+
+    def test_unclaimed_run_goes_on_after_one_database_error(self, manager, monkeypatch):
+        with ClaimKeepalive(manager, "pi-1", ALICE) as ka:
+            monkeypatch.setattr(manager, "sbcs_sharing_hardware_with", _db_down)
+            assert ka.checkpoint() is None
+
+    def test_unclaimed_run_stops_when_checks_keep_failing(self, manager, monkeypatch):
+        from labctl.core.claim_keepalive import UNCHECKED, UNCHECKED_LIMIT_SECONDS
+
+        with ClaimKeepalive(manager, "pi-1", ALICE) as ka:
+            monkeypatch.setattr(manager, "sbcs_sharing_hardware_with", _db_down)
+            ka._last_checked -= UNCHECKED_LIMIT_SECONDS + 1
+            reason = ka.checkpoint()
+        assert reason.kind == UNCHECKED
+        assert "couldn't be checked for 60 s" in reason
+
+    def test_a_successful_check_resets_the_window(self, manager, monkeypatch):
+        from labctl.core.claim_keepalive import UNCHECKED_LIMIT_SECONDS
+
+        with ClaimKeepalive(manager, "pi-1", ALICE) as ka:
+            ka._last_checked -= UNCHECKED_LIMIT_SECONDS + 1
+            assert ka.checkpoint() is None  # succeeds: window restarts
+            monkeypatch.setattr(manager, "sbcs_sharing_hardware_with", _db_down)
+            assert ka.checkpoint() is None

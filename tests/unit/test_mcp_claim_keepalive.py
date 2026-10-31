@@ -69,8 +69,8 @@ def _count_touches(manager):  # noqa: F811
     touched = threading.Event()
     real = manager.heartbeat_held_claim
 
-    def heartbeat(sbc_name, actor):
-        result = real(sbc_name, actor)
+    def heartbeat(sbc_name, actor, **kwargs):
+        result = real(sbc_name, actor, **kwargs)
         calls.append(sbc_name)
         touched.set()
         return result

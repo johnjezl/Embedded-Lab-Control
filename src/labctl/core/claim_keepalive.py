@@ -44,11 +44,17 @@ logger = logging.getLogger(__name__)
 MAX_INTERVAL_SECONDS = 60.0
 MIN_INTERVAL_SECONDS = 5.0
 
+#: A caller holding no claim has no deadline to go by: when the claim
+#: recheck has failed (database errors) for this long without a success,
+#: the operation stops rather than run on unchecked.
+UNCHECKED_LIMIT_SECONDS = 60.0
+
 # StopReason.kind values.
 LOST = "lost"  # the caller's own claim is gone
 CLAIMED = "claimed"  # someone else holds a claim on the board or a sharer
 REQUIRED = "required"  # claims.require_claim and nobody holds it
 GONE = "gone"  # the board was deleted
+UNCHECKED = "unchecked"  # claims couldn't be checked for too long
 
 
 class StopReason(str):
@@ -98,12 +104,16 @@ class ClaimKeepalive:
         self._interval = interval
         #: The actor held the board's claim when the operation started.
         self.held = False
+        #: That claim's id: a later claim (even by the same holder) is not it.
+        self.claim_id: Optional[int] = None
         #: Why the claim counts as lost, once it does.
         self.lost_reason: Optional[StopReason] = None
         self.beats = 0
         self._duration = 0.0
         # Monotonic time by which the claim expires unless heartbeated.
         self._deadline = 0.0
+        # Monotonic time of the last recheck that succeeded (or the start).
+        self._last_checked = time.monotonic()
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -113,6 +123,7 @@ class ClaimKeepalive:
     def start(self) -> "ClaimKeepalive":
         if not self.enabled:
             return self
+        self._last_checked = time.monotonic()
         try:
             claim = self.manager.get_open_claim(self.sbc_name)
         except UnknownSBCError:
@@ -128,6 +139,7 @@ class ClaimKeepalive:
         if claim is None or not claim.is_active or not self.actor.holds(claim):
             return self
         self.held = True
+        self.claim_id = claim.id
         self._duration = float(claim.duration_seconds or 0)
         remaining = (claim.expires_at.timestamp() - time.time()) if claim else 0
         self._deadline = time.monotonic() + max(0.0, remaining)
@@ -187,7 +199,7 @@ class ClaimKeepalive:
                 return False
             try:
                 still_held = self.manager.heartbeat_held_claim(
-                    self.sbc_name, self.actor
+                    self.sbc_name, self.actor, claim_id=self.claim_id
                 )
             except UnknownSBCError:
                 self.lost_reason = StopReason(
@@ -235,14 +247,17 @@ class ClaimKeepalive:
         ``check_claim``, nobody else may hold a claim on the board or a
         board sharing its hardware (``recheck``; ``require_claim`` too),
         and only then is the actor's own claim heartbeated: it must still
-        be held. Never raises: a database error counts as a missed check
-        until the claim's deadline has passed.
+        be held (the same claim the operation started with). Never raises:
+        a database error counts as a missed check until the claim's
+        deadline has passed, or, for a caller holding no claim, until the
+        checks have failed for UNCHECKED_LIMIT_SECONDS.
         """
         if not self.enabled:
             return None
         if self.recheck:
             try:
                 reason = self._recheck()
+                self._last_checked = time.monotonic()
             except Exception:
                 logger.warning(
                     "Claim check for %s failed; going on",
@@ -250,11 +265,21 @@ class ClaimKeepalive:
                     exc_info=True,
                 )
                 reason = None
-                if self.held and time.monotonic() >= self._deadline:
+                now = time.monotonic()
+                if self.held and now >= self._deadline:
                     reason = StopReason(
                         f"the claim on '{self.sbc_name}' couldn't be checked "
                         "before it expired (database error)",
                         LOST,
+                    )
+                elif (
+                    not self.held
+                    and now - self._last_checked >= UNCHECKED_LIMIT_SECONDS
+                ):
+                    reason = StopReason(
+                        f"claims on '{self.sbc_name}' couldn't be checked for "
+                        f"{UNCHECKED_LIMIT_SECONDS:.0f} s (database error)",
+                        UNCHECKED,
                     )
             if reason:
                 return reason
@@ -272,13 +297,21 @@ class ClaimKeepalive:
             return StopReason(f"SBC '{self.sbc_name}' no longer exists", GONE)
         for i, board in enumerate(boards):
             try:
-                self.manager.check_claim(
+                claim = self.manager.check_claim(
                     board,
                     self.actor,
                     require_claim=self.require_claim and i == 0,
                     include_shared=False,
                     heartbeat=False,
                 )
+                if (
+                    i == 0
+                    and self.held
+                    and (claim is None or claim.id != self.claim_id)
+                ):
+                    # Released or expired, or replaced by a later claim (even
+                    # one by the same holder): not the claim we started with.
+                    return self._mark_lost()
             except UnknownSBCError:
                 if i == 0:
                     return StopReason(f"SBC '{self.sbc_name}' no longer exists", GONE)

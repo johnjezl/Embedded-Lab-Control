@@ -81,9 +81,9 @@ def test_heartbeats_the_users_own_claim(lab, hardware):
     touched = []
     real = ResourceManager.heartbeat_held_claim
 
-    def heartbeat(self, sbc_name, actor):
+    def heartbeat(self, sbc_name, actor, **kwargs):
         touched.append(actor.session_id)
-        return real(self, sbc_name, actor)
+        return real(self, sbc_name, actor, **kwargs)
 
     with patch.object(ResourceManager, "heartbeat_held_claim", heartbeat):
         result = run(*ARGS)

@@ -20,8 +20,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `heartbeat_claim`) that never revives a released, expired or
   taken-over claim; `touch_claim` now says whether a row changed. A
   database error is a missed heartbeat (the call goes on) until the
-  claim's deadline passes without a successful one; if the claim can't
-  be read when the call starts, it runs without keepalive (logged).
+  claim's deadline passes without a successful one, or, for a caller
+  holding no claim, until the checks have failed for 60 s in a row; if
+  the claim can't be read when the call starts, it runs without
+  keepalive (logged). The keepalive follows the claim the call started
+  with (its heartbeat matches that claim's id): a claim released and
+  taken again, even by the same user, counts as lost.
 - Boot tests check again before each run's power cycle and stop once
   someone else claims the board or a board sharing its hardware, the
   caller's claim is lost (released, force-released or expired), or, over
