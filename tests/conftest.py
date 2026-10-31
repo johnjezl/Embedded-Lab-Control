@@ -106,3 +106,37 @@ def sdwire_stub(monkeypatch):
     monkeypatch.setitem(sys.modules, "sdwire.backend", backend)
     monkeypatch.setitem(sys.modules, "sdwire.backend.detect", detect)
     return detect
+
+
+class _AbsentPackages:
+    """Import hook that reports ``packages`` as not installed."""
+
+    def __init__(self, packages):
+        self.packages = set(packages)
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname in self.packages:
+            raise ModuleNotFoundError(f"No module named {fullname!r}", name=fullname)
+        return None
+
+
+@pytest.fixture
+def absent_packages(monkeypatch):
+    """Make top-level packages look uninstalled, as on a bare install.
+
+    ``absent_packages("sdwire")`` drops ``sdwire`` and its submodules from
+    ``sys.modules`` and blocks re-importing them, so ``from
+    sdwire.backend.detect import ...`` raises ModuleNotFoundError naming
+    ``sdwire`` itself (a None entry in sys.modules names the submodule
+    instead). monkeypatch restores everything afterwards.
+    """
+
+    def block(*packages):
+        for name in list(sys.modules):
+            if any(name == p or name.startswith(p + ".") for p in packages):
+                monkeypatch.delitem(sys.modules, name)
+        monkeypatch.setattr(
+            sys, "meta_path", [_AbsentPackages(packages), *sys.meta_path]
+        )
+
+    return block

@@ -82,15 +82,16 @@ def missing_extra_message(extra: str, what: str | None = None) -> str:
 
 
 def is_missing(error: ImportError, *modules: str) -> bool:
-    """True when ``error`` says one of ``modules`` (or a submodule) is
-    not installed.
+    """True when ``error`` says one of ``modules`` is not installed.
 
     Lets callers translate only the optional package's absence. Any
     other ImportError, including ``cannot import name`` from an
     installed but incompatible version (a plain ImportError, not
-    ModuleNotFoundError), keeps its real cause.
+    ModuleNotFoundError), keeps its real cause, as does a missing
+    submodule (``kasa.iot``): the package is there, but not a version
+    labctl can use.
     """
     if not isinstance(error, ModuleNotFoundError):
         return False
     name = error.name or ""
-    return any(name == m or name.startswith(m + ".") for m in modules)
+    return name in modules

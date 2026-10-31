@@ -1026,29 +1026,21 @@ class TestDiscoverSDWireDevices:
 
         assert result == []
 
-    # A None entry in sys.modules makes `import sdwire...` raise ImportError,
-    # simulating the optional package being absent (e.g. on Python < 3.12).
-    _SDWIRE_ABSENT = {
-        "sdwire": None,
-        "sdwire.backend": None,
-        "sdwire.backend.detect": None,
-    }
-
-    def test_discover_import_error(self):
+    def test_discover_import_error(self, absent_packages):
         """discover_sdwire_devices raises a helpful error without sdwire."""
         from labctl.sdwire.controller import discover_sdwire_devices
 
-        with patch.dict("sys.modules", self._SDWIRE_ABSENT):
-            with pytest.raises(RuntimeError, match=r"embedded-lab-control\[sdwire\]"):
-                discover_sdwire_devices()
+        absent_packages("sdwire")
+        with pytest.raises(RuntimeError, match=r"\[sdwire\] extra"):
+            discover_sdwire_devices()
 
-    def test_get_device_import_error(self):
+    def test_get_device_import_error(self, absent_packages):
         """SDWireController._get_device raises a helpful error without sdwire."""
         ctrl = SDWireController("any_serial")
 
-        with patch.dict("sys.modules", self._SDWIRE_ABSENT):
-            with pytest.raises(RuntimeError, match=r"embedded-lab-control\[sdwire\]"):
-                ctrl._get_device()
+        absent_packages("sdwire")
+        with pytest.raises(RuntimeError, match=r"\[sdwire\] extra"):
+            ctrl._get_device()
 
 
 class TestValidation:

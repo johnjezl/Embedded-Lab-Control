@@ -627,7 +627,7 @@ Install the MCP dependency from a checkout (the `[mcp]` extra):
 
 ```bash
 pip install -e ".[mcp]"
-# after publication on PyPI: pip install 'embedded-lab-control[mcp]'
+# or from PyPI: pip install 'embedded-lab-control[mcp]'
 ```
 
 **Resources** (read-only data): `lab://sbcs`, `lab://sbcs/{name}`, `lab://power/{name}`,
