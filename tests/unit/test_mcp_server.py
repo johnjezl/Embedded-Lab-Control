@@ -4007,7 +4007,7 @@ class TestMcpCliCommand:
         assert result.exit_code == 0, result.output
         run.assert_called_once_with(transport="stdio")
 
-    def test_missing_mcp_extra_gives_install_hint(self):
+    def test_missing_mcp_extra_gives_install_hint(self, absent_packages, monkeypatch):
         """A bare `pip install embedded-lab-control` has no mcp SDK."""
         import sys
 
@@ -4015,17 +4015,11 @@ class TestMcpCliCommand:
 
         from labctl.cli import main
 
-        # None in sys.modules makes `import mcp...` raise ModuleNotFoundError;
-        # dropping labctl.mcp_server forces the CLI to re-import it.
-        absent = {
-            "mcp": None,
-            "mcp.server": None,
-            "mcp.server.mcpserver": None,
-            "labctl.mcp_server": None,
-        }
-        with patch.dict("sys.modules", absent):
-            del sys.modules["labctl.mcp_server"]
-            result = CliRunner().invoke(main, ["mcp"])
+        # Dropping labctl.mcp_server forces the CLI to re-import it against
+        # the missing SDK; monkeypatch puts it back afterwards.
+        absent_packages("mcp")
+        monkeypatch.delitem(sys.modules, "labctl.mcp_server", raising=False)
+        result = CliRunner().invoke(main, ["mcp"])
         assert result.exit_code == 1
         assert "embedded-lab-control[mcp]" in result.output
         assert "Traceback" not in result.output
