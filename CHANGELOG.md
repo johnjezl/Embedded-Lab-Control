@@ -8,12 +8,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [0.2.1] - 2026-10-31
 
-Documentation-only release: the PyPI project page lists every feature.
+Bug-fix and documentation release: `labctl services status` uptime works
+whatever zone systemd prints, the PyPI project page lists every feature,
+and the test suite is faster and can no longer reach the network.
 
 ### Changed
 
 - The README's Features list (the PyPI project page) now covers SDWire SD
   card muxing, USB relay actuators, boot testing and the MCP server.
+
+### Fixed
+
+- `labctl services status` uptime no longer depends on Python recognising
+  the zone abbreviation systemctl prints (it gave no uptime for anything
+  but UTC/GMT or the process's own zone): systemctl is now asked for UTC,
+  and a UTC time is read as UTC rather than as local time (#51).
+
+### Tests
+
+- The suite can no longer reach the network: connections and datagrams to
+  anything but loopback are refused at once (`tests/conftest.py`). Fixture
+  devices use LAN addresses, which could be real hardware on a lab network,
+  and about 20 tests each waited out a 5 s timeout on them (#49).
+- Claim expiry and heartbeat tests use a fake clock instead of real sleeps
+  (one failed under load), and power-cycle, card-switch and boot settle
+  delays are skipped in tests that don't check them. A full local run
+  drops from about 15 to 11 minutes (#49).
 
 ## [0.2.0] - 2026-10-31
 

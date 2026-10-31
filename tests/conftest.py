@@ -2,8 +2,11 @@
 Shared pytest fixtures for labctl tests.
 """
 
+import errno
+import ipaddress
 import os
 import site
+import socket
 import sys
 import types
 
@@ -57,6 +60,66 @@ def _no_real_config(_isolated_home, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(_isolated_home / ".local" / "share"))
     # Child Pythons would look for user site-packages under the new HOME.
     monkeypatch.setenv("PYTHONUSERBASE", _USER_BASE)
+
+
+def _is_loopback(address) -> bool:
+    if not isinstance(address, tuple):  # AF_UNIX path, abstract name
+        return True
+    host = address[0]
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.split("%", 1)[0]).is_loopback
+    except ValueError:  # an unresolved name: could be anywhere
+        return False
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch):
+    """Refuse connections and datagrams to anything but loopback (#49).
+
+    Fixture plugs and hosts use LAN addresses (192.168.1.x), which can be
+    real devices on a lab network and otherwise cost a 5 s timeout each
+    where nothing answers. Refusing at once with ENETUNREACH takes the
+    same unreachable-device path in labctl without touching the network.
+    """
+
+    def refuse(address):
+        raise OSError(
+            errno.ENETUNREACH, f"tests may not reach {address!r} (tests/conftest.py)"
+        )
+
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+    real_sendto = socket.socket.sendto
+
+    def connect(self, address):
+        if not _is_loopback(address):
+            refuse(address)
+        return real_connect(self, address)
+
+    def connect_ex(self, address):
+        if not _is_loopback(address):
+            return errno.ENETUNREACH
+        return real_connect_ex(self, address)
+
+    def sendto(self, data, *args):
+        address = args[-1]
+        if not _is_loopback(address):
+            refuse(address)
+        return real_sendto(self, data, *args)
+
+    monkeypatch.setattr(socket.socket, "connect", connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", connect_ex)
+    monkeypatch.setattr(socket.socket, "sendto", sendto)
+
+
+@pytest.fixture
+def no_sleep(monkeypatch):
+    """``time.sleep`` returns at once: settle delays (power off, card
+    switch, the 3 s minimum power cycle) don't have to pass for real (#49).
+    Tests that check a delay patch ``time.sleep`` themselves on top."""
+    monkeypatch.setattr("time.sleep", lambda seconds: None)
 
 
 @pytest.fixture(autouse=True)

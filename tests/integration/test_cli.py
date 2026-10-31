@@ -982,6 +982,7 @@ class TestSdwireReadSafety:
         assert "Failed to restore SD card to DUT mode" in result.output
 
 
+@pytest.mark.usefixtures("no_sleep")
 class TestSdwireWritePowerFlow:
     """Write commands should still attempt power-off before host switching."""
 

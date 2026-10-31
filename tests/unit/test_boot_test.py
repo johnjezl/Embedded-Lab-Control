@@ -124,6 +124,7 @@ class TestBootTestResult:
         assert "no deploy" in summary
 
 
+@pytest.mark.usefixtures("no_sleep")
 class TestRunBootTest:
     """Tests for run_boot_test."""
 
@@ -329,6 +330,7 @@ class TestRunBootTest:
         assert "connection refused" in result.runs[0].error
 
 
+@pytest.mark.usefixtures("no_sleep")
 class TestRunFileWritesDoNotFollowLinks:
     """Review #4 of #14: output_dir may be group-writable; a link planted at
     run_NN.txt must not redirect DUT-controlled output to another file."""
@@ -399,6 +401,7 @@ class TestRunFileWritesDoNotFollowLinks:
         assert (out / "run_02.txt").read_text() == "slmos>"
 
 
+@pytest.mark.usefixtures("no_sleep")
 class TestUnsavedOutputIsReported:
     """Review #7 of #14: a run file that can't be written must not vanish
     silently; the summary (what MCP returns) has to say so."""
