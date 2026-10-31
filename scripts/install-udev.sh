@@ -46,7 +46,7 @@ fi
 # assignment outside comments (the pattern labctl's own parser uses, `_RULE_SYMLINK_RE` in
 # labctl/serial/udev.py), and every other non-comment line to start like
 # a udev rule (KEY, optional {attr}, operator).
-if ! grep -vE '^[[:space:]]*#' "$RULES_FILE" | grep -qE 'SYMLINK[[:space:]]*\+?=[[:space:]]*"'; then
+if ! grep -vE '^[[:space:]]*#' "$RULES_FILE" | grep -qE '(^|[^[:alnum:]_])SYMLINK[[:space:]]*\+?=[[:space:]]*"'; then
     echo "Error: $RULES_FILE contains no udev rules (no SYMLINK assignment)" >&2
     exit 1
 fi

@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
 
-from labctl.extras import MissingExtraError, is_missing
+from labctl.extras import BrokenExtraError, MissingExtraError, is_missing
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ class SDWireController:
             )
         except ImportError as e:
             if not is_missing(e, "sdwire"):
-                raise
+                raise BrokenExtraError("sdwire", e) from e
             raise MissingExtraError("sdwire") from e
 
         all_devices = []
@@ -1066,7 +1066,7 @@ def discover_sdwire_devices() -> list[dict]:
         )
     except ImportError as e:
         if not is_missing(e, "sdwire"):
-            raise
+            raise BrokenExtraError("sdwire", e) from e
         raise MissingExtraError("sdwire") from e
 
     results = []

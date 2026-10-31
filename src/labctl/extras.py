@@ -44,6 +44,30 @@ class MissingExtraError(RuntimeError):
         super().__init__(missing_extra_message(extra, what))
 
 
+class BrokenExtraError(RuntimeError):
+    """An optional dependency is installed but fails to import (a
+    dependency of it is missing, or the version is incompatible).
+
+    A RuntimeError, like MissingExtraError, so callers report it the same
+    way, but with the real ImportError in the message.
+    """
+
+    def __init__(self, extra: str, error: ImportError, what: str | None = None):
+        self.extra = extra
+        super().__init__(broken_extra_message(extra, error, what))
+
+
+def broken_extra_message(
+    extra: str, error: ImportError, what: str | None = None
+) -> str:
+    """One line for an extra whose package is installed but won't import."""
+    what = what or EXTRAS[extra]
+    return (
+        f"{what} failed to import ({error}); reinstall the [{extra}] extra: "
+        f'pip install --force-reinstall "{DIST_NAME}[{extra}]"'
+    )
+
+
 def extra_packages(extra: str) -> tuple[str, ...]:
     """The extra's requirements for the running interpreter."""
     if extra == "kasa":
