@@ -7368,6 +7368,20 @@ def completion_cmd(shell: str) -> None:
 # --- User Management ---
 
 
+def _werkzeug_security():
+    """werkzeug's password hashing (werkzeug comes with Flask, in the [web]
+    extra), or a one-line error naming the extra."""
+    try:
+        from werkzeug import security
+    except ModuleNotFoundError as e:
+        if not is_missing(e, "werkzeug"):
+            raise
+        raise click.ClickException(
+            missing_extra_message("web", what="Password hashing (werkzeug)")
+        ) from e
+    return security
+
+
 @main.group("user")
 def user_group():
     """User management commands for authentication."""
@@ -7382,7 +7396,7 @@ def hash_password_cmd():
     """
     import getpass
 
-    from werkzeug.security import generate_password_hash
+    generate_password_hash = _werkzeug_security().generate_password_hash
 
     password = getpass.getpass("Password: ")
     if not password:
@@ -7416,7 +7430,7 @@ def user_add_cmd(username: str):
     import getpass
     import secrets
 
-    from werkzeug.security import generate_password_hash
+    generate_password_hash = _werkzeug_security().generate_password_hash
 
     password = getpass.getpass("Password: ")
     if not password:
@@ -7443,7 +7457,7 @@ def user_verify_cmd(ctx: click.Context, username: str):
     """Verify a password against the config for a user."""
     import getpass
 
-    from werkzeug.security import check_password_hash
+    check_password_hash = _werkzeug_security().check_password_hash
 
     config: Config = ctx.obj["config"]
     if not config.auth.enabled:

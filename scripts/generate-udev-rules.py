@@ -24,10 +24,10 @@ Usage:
 
 Mapping file format (YAML):
     ports:
+      - usb_path: "1-2.1"
+        name: "board1-console"
       - usb_path: "1-2.3"
-        name: "sbc1-console"
-      - usb_path: "1-2.4"
-        name: "sbc2-console"
+        name: "board2-console"
 """
 
 import argparse
