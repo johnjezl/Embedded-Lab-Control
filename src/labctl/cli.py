@@ -29,6 +29,7 @@ from labctl.core.models import (
     PortType,
     Status,
 )
+from labctl.extras import is_missing, missing_extra_message
 from labctl.power import PowerController, PowerState
 from labctl.serial.ser2net import (
     Ser2NetPort,
@@ -908,7 +909,7 @@ def ports_cmd(ctx: click.Context, show_all: bool) -> None:
     if not lab_ports:
         click.echo(f"No ports configured in {dev_dir}/")
         if verbose:
-            click.echo("Run discover-usb-serial.sh to find connected devices")
+            click.echo("Run 'labctl serial discover' to find connected devices")
     else:
         # Print table header
         click.echo(f"{'NAME':<20} {'DEVICE':<15} {'TCP PORT':<10}")
@@ -6331,14 +6332,9 @@ def mcp_cmd(
     except ModuleNotFoundError as e:
         # Only translate a missing `mcp` SDK (the optional extra); any other
         # missing module is a real bug and should keep its traceback.
-        if e.name != "mcp" and not (e.name or "").startswith("mcp."):
+        if not is_missing(e, "mcp"):
             raise
-        raise click.ClickException(
-            "MCP support is not installed. "
-            "Install the [mcp] extra: pip install -e '.[mcp]' from a "
-            "checkout (or pip install 'embedded-lab-control[mcp]' once "
-            "published on PyPI)"
-        ) from e
+        raise click.ClickException(missing_extra_message("mcp")) from e
 
     if check:
         _mcp_check(http_port, host, cert, key)
@@ -6471,7 +6467,13 @@ def web_cmd(
     key: str | None,
 ) -> None:
     """Start the web dashboard server."""
-    from labctl.web import create_app
+    try:
+        from labctl.web import create_app
+    except ModuleNotFoundError as e:
+        # Flask comes with the [web] extra.
+        if not is_missing(e, "flask"):
+            raise
+        raise click.ClickException(missing_extra_message("web")) from e
 
     config: Config = ctx.obj["config"]
     if config.load_errors:

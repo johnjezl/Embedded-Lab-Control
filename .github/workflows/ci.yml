@@ -1,14 +1,17 @@
 name: CI
 
+# Pushes run only on main; other branches are tested through their pull
+# request, so a same-repo PR branch doesn't run twice.
 on:
   push:
+    branches: [main]
   pull_request:
 
 # Least privilege: jobs only need to read the repository.
 permissions:
   contents: read
 
-# Superseded PR runs are cancelled; pushes (e.g. to main) always run to
+# Superseded PR runs are cancelled; pushes to main always run to
 # completion so every commit gets a verdict.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}

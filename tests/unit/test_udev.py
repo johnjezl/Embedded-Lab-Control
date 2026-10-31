@@ -178,7 +178,7 @@ class TestDeviceGroupNote:
         monkeypatch.setattr("os.getgroups", lambda: [1000])
         note = device_group_note()
         assert "sudo usermod -aG dialout bob" in note
-        assert "console --direct" in note
+        assert "console` without ser2net" in note
 
     def test_member_without_new_login_is_told_to_log_in(self, monkeypatch, dialout):
         """Added with usermod, but this session predates it."""
