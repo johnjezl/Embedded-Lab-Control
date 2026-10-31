@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- The README's Features list (the PyPI project page) now covers SDWire SD
+  card muxing, USB relay actuators, boot testing and the MCP server.
+
 ## [0.2.0] - 2026-10-31
 
 First release on PyPI, as `embedded-lab-control` (the import package and
