@@ -8,7 +8,7 @@ Centralized management system for embedded development lab resources. Provides d
 - **Remote Serial Console** - TCP access via ser2net with multi-client support
 - **Smart Plug Power Control** - Supports Tasmota, Kasa, and Shelly devices
 - **SD Card Multiplexing** - SDWire control: switch the card between host and board, flash images, and list, read, copy or delete files on its partitions without touching the card
-- **USB Relay Actuators** - Drive board straps and buttons (recovery mode, boot select, reset) through LCUS-1 relays bound per board; `pre_power` straps are set before every power-on
+- **USB Relay Actuators** - Drive board straps and buttons (recovery mode, boot select, reset) through LCUS-1 relays bound per board; `pre_power` straps are driven to their desired state before every power-on
 - **Boot Testing** - Optionally deploy a file to the SD card, then power-cycle N times, and count the boots that print an expected pattern
 - **Web Dashboard** - Browser-based monitoring and control
 - **REST API** - Programmatic access to all features
@@ -17,7 +17,7 @@ Centralized management system for embedded development lab resources. Provides d
 - **Hardware Claims** - Exclusive-access coordination for long-running SBC workflows
 - **Session Logging** - Capture serial output with rotation and compression
 - **Authentication** - Session-based web login and API key auth (optional, disabled by default)
-- **MCP Server** - AI assistants manage the lab over stdio or HTTP, with API-key auth, TLS, and two-step confirmation for destructive tools
+- **MCP Server** - AI assistants manage the lab over stdio or HTTP, with optional API-key auth and TLS, and two-step confirmation for destructive tools
 - **Claude Code Skill** - an example `/deploy-and-test` skill orchestrates build, deploy, boot, and serial capture over MCP ([install](#claude-code-skill-deploy-and-test))
 
 ## Installation
