@@ -1,7 +1,8 @@
 """Tests for the install-the-extra messages on a bare install.
 
-A None entry in sys.modules makes importing that module raise
-ModuleNotFoundError, which is how a missing optional package looks.
+Missing packages are simulated with the ``absent_packages`` fixture
+(tests/conftest.py), which makes the import fail the way a bare install
+does, with ModuleNotFoundError naming the package itself.
 """
 
 import sys
@@ -13,7 +14,13 @@ from click.testing import CliRunner
 
 from labctl import extras
 from labctl.cli import main
-from labctl.extras import EXTRAS, MissingExtraError, is_missing, missing_extra_message
+from labctl.extras import (
+    EXTRAS,
+    BrokenExtraError,
+    MissingExtraError,
+    is_missing,
+    missing_extra_message,
+)
 
 PYPROJECT = Path(__file__).resolve().parents[2] / "pyproject.toml"
 
@@ -137,7 +144,7 @@ class TestMessages:
 
 
 class TestIsMissing:
-    def test_matches_module_and_submodules(self):
+    def test_matches_only_the_top_level_module(self):
         assert is_missing(ModuleNotFoundError(name="flask"), "flask")
         assert not is_missing(ModuleNotFoundError(name="mcp.server"), "mcp")
 
@@ -221,7 +228,8 @@ class TestSdwireCommand:
 
 class TestOtherImportErrorsKeepTheirCause:
     """Only the extra's own package being absent is reported as a missing
-    extra; an installed but broken or incompatible one is not."""
+    extra; an installed but broken or incompatible one gets a
+    BrokenExtraError (still a RuntimeError) carrying the real cause."""
 
     def test_sdwire_incompatible(self):
         from labctl.sdwire.controller import SDWireController, discover_sdwire_devices
@@ -232,10 +240,11 @@ class TestOtherImportErrorsKeepTheirCause:
             "sdwire.backend.detect": _module("sdwire.backend.detect"),
         }
         with patch.dict("sys.modules", present):
-            with pytest.raises(ImportError) as info:
+            with pytest.raises(BrokenExtraError, match="cannot import name") as info:
                 discover_sdwire_devices()
             assert not isinstance(info.value, MissingExtraError)
-            with pytest.raises(ImportError):
+            assert isinstance(info.value.__cause__, ImportError)
+            with pytest.raises(BrokenExtraError, match="reinstall the \\[sdwire\\]"):
                 SDWireController("any")._get_device()
 
     def test_kasa_incompatible(self):
@@ -248,7 +257,7 @@ class TestOtherImportErrorsKeepTheirCause:
                 patch.dict("sys.modules", {"kasa": _module("kasa")}),
                 patch.object(controller, "_load_credentials", return_value=None),
             ):
-                with pytest.raises(ImportError, match="cannot import name"):
+                with pytest.raises(BrokenExtraError, match="cannot import name"):
                     controller.power_on()
         finally:
             kasa_mod._get_cached_kasa_credentials.cache_clear()
@@ -256,7 +265,7 @@ class TestOtherImportErrorsKeepTheirCause:
     def test_pyserial_dependency_missing(self, monkeypatch):
         import builtins
 
-        from labctl.actuators import Transport
+        from labctl.actuators import DriverError, ProbeResult, Transport
         from labctl.actuators.lcus1 import Lcus1SerialDriver
 
         real_import = builtins.__import__
@@ -268,11 +277,13 @@ class TestOtherImportErrorsKeepTheirCause:
 
         monkeypatch.setattr(builtins, "__import__", fake_import)
         driver = Lcus1SerialDriver(expected_channel_count=1)
-        with pytest.raises(ModuleNotFoundError, match="termios"):
+        with pytest.raises(DriverError, match="failed to import.*termios") as info:
             driver.open(Transport(device_path="/nonexistent/relay"))
+        assert "not installed" not in str(info.value)
         driver._transport = Transport(device_path="/nonexistent/relay")
-        with pytest.raises(ModuleNotFoundError, match="termios"):
-            driver.probe()
+        outcome = driver.probe()
+        assert outcome.result == ProbeResult.UNKNOWN
+        assert "termios" in outcome.detail
 
 
 class TestKasa:

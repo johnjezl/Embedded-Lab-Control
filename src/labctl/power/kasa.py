@@ -27,7 +27,7 @@ import time
 from functools import lru_cache
 
 from labctl.core.config import load_config
-from labctl.extras import MissingExtraError, is_missing
+from labctl.extras import BrokenExtraError, MissingExtraError, is_missing
 from labctl.power.base import PowerController, PowerState
 
 logger = logging.getLogger(__name__)
@@ -310,7 +310,7 @@ class KasaController(PowerController):
                 return result
             except ImportError as e:
                 if not is_missing(e, "kasa"):
-                    raise
+                    raise BrokenExtraError("kasa", e) from e
                 raise MissingExtraError("kasa") from e
             except RuntimeError:
                 raise
