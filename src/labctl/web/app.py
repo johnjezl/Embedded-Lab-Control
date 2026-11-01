@@ -9,7 +9,7 @@ from pathlib import Path
 from flask import Flask, g, jsonify, redirect, request, session, url_for
 
 from labctl import __version__
-from labctl.core import audit
+from labctl.core import audit, timeutil
 from labctl.core.config import Config, load_config
 from labctl.core.manager import ResourceManager, get_manager
 from labctl.web.auth import (
@@ -51,6 +51,8 @@ def create_app(config: Config | None = None) -> Flask:
 
     app.config["LABCTL_CONFIG"] = config
     app.jinja_env.globals["labctl_version"] = __version__
+    # Stored times are UTC; pages show local time with the zone (#63).
+    app.jinja_env.filters["localtime"] = timeutil.db_local
 
     # SECRET_KEY signs the session cookie, which carries the CSRF token even
     # when auth is disabled, so it must never be a known constant. Without a

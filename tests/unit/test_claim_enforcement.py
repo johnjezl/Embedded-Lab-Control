@@ -3,7 +3,7 @@ ResourceManager.check_claim."""
 
 import logging
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -597,7 +597,9 @@ class TestReclaimInGrace:
         manager.db.execute_modify(
             "UPDATE claims SET expires_at = ? WHERE sbc_id = ?",
             (
-                manager._fmt_ts(datetime.now() - timedelta(seconds=seconds_ago)),
+                manager._fmt_ts(
+                    datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+                ),
                 sbc_id,
             ),
         )
@@ -646,7 +648,7 @@ class TestReclaimLogsReplacedClaim:
         # Expired, but inside the default 60 s grace period.
         manager.db.execute_modify(
             "UPDATE claims SET expires_at = ?",
-            (manager._fmt_ts(datetime.now() - timedelta(seconds=5)),),
+            (manager._fmt_ts(datetime.now(timezone.utc) - timedelta(seconds=5)),),
         )
         _claim(manager, session_id="s-alice-2")
         actions = [

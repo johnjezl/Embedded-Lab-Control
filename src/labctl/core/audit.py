@@ -27,8 +27,10 @@ import json
 import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Iterator, Optional
+
+from labctl.core import timeutil
 
 if TYPE_CHECKING:
     from labctl.core.database import Database
@@ -151,18 +153,15 @@ def _serialize_details(details: Optional[dict]) -> Optional[str]:
 
 
 def _now_ms() -> str:
-    """ISO8601 timestamp with millisecond precision."""
-    return (
-        datetime.now().strftime("%Y-%m-%d %H:%M:%S.")
-        + f"{datetime.now().microsecond // 1000:03d}"
-    )
+    """The current time as stored (UTC, #63), to the millisecond."""
+    return timeutil.to_db(timeutil.now())[:-3]
 
 
 def row_to_event_dict(row) -> dict[str, Any]:
     """Convert an audit_log row to the public event representation."""
     return {
         "id": row["id"],
-        "logged_at": row["logged_at"],
+        "logged_at": timeutil.db_iso(row["logged_at"]),
         "actor": row["actor"] or "internal",
         "source": row["source"] or "internal",
         "action": row["action"],
@@ -203,8 +202,11 @@ def query_events(
             where.append(f"{column} = ?")
             params.append(value)
     if since:
+        # An ISO timestamp (with an offset, or UTC without one) compared
+        # with the stored UTC text.
+        parsed = timeutil.from_db(since)
         where.append("logged_at >= ?")
-        params.append(since)
+        params.append(timeutil.to_db(parsed)[:-3] if parsed else since)
     if after_id is not None:
         where.append("id > ?")
         params.append(int(after_id))
@@ -220,9 +222,7 @@ def query_events(
 
 def prune_old_events(db: "Database", *, older_than_days: int = 30) -> int:
     """Delete audit events older than the given retention window."""
-    cutoff = (datetime.now() - timedelta(days=int(older_than_days))).strftime(
-        "%Y-%m-%d %H:%M:%S.%f"
-    )[:-3]
+    cutoff = timeutil.to_db(timeutil.now() - timedelta(days=int(older_than_days)))[:-3]
     return db.execute_modify(
         """
         DELETE FROM audit_log

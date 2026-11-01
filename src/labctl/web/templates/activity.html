@@ -117,6 +117,17 @@
     })[c]);
   }
 
+  // logged_at is UTC (ISO, "Z"); show it in the browser's local time.
+  function localTime(iso) {
+    const d = iso ? new Date(iso) : null;
+    if (!d || isNaN(d)) return iso || '';
+    return d.toLocaleString(undefined, {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false, timeZoneName: 'short',
+    });
+  }
+
   function renderRow(event, isNew) {
     const row = document.createElement('div');
     row.className = 'activity-row' + (isNew ? ' row-new' : '');
@@ -125,7 +136,7 @@
     const actor = event.agent ? event.agent + ' (' + event.actor + ')' : event.actor;
     const details = formatDetails(event.details);
     row.innerHTML = `
-      <div class="col-ts">${esc(event.logged_at)}</div>
+      <div class="col-ts" title="${esc(event.logged_at)}">${esc(localTime(event.logged_at))}</div>
       <div class="col-actor" title="${esc(actor)}">${esc(actor)}</div>
       <div class="col-source source-${esc(event.source)}">${esc(event.source)}</div>
       <div class="col-action">${esc(event.action)}</div>

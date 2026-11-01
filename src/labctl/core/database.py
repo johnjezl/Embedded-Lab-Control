@@ -33,7 +33,7 @@ from typing import Generator, Optional
 logger = logging.getLogger(__name__)
 
 # Current schema version
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 # Default SQLite busy-timeout when the Database is constructed without an
 # explicit value (e.g. tests, direct callers). Matches Config.database
@@ -734,6 +734,24 @@ class Database:
                     " ON audit_log(agent, logged_at DESC)"
                 )
 
+        if from_version < 14:
+            # v14 (#63): timestamps labctl wrote from Python were naive local
+            # time (claims' acquired_at/last_activity/expires_at, activity
+            # logged_at); everything is UTC now, as CURRENT_TIMESTAMP columns
+            # already were. Converted in this host's local zone; in the
+            # repeated hour of a DST fall-back, the first (daylight)
+            # occurrence is assumed.
+            # Not idempotent (a second pass would shift again), so take the
+            # write lock and re-check: another process may have just done it.
+            if not conn.in_transaction:
+                conn.execute("BEGIN IMMEDIATE")
+            done = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()
+            if (done[0] or 0) < 14:
+                _local_to_utc(
+                    conn, "claims", ("acquired_at", "last_activity", "expires_at")
+                )
+                _local_to_utc(conn, "audit_log", ("logged_at",), millis=True)
+
         # OR IGNORE: tolerate a concurrent process that has already
         # bumped schema_version to the current value during a race.
         conn.execute(
@@ -892,6 +910,42 @@ def get_database(
     db = Database(db_path, timeout_seconds=timeout_seconds)
     db.initialize()
     return db
+
+
+def _local_to_utc(
+    conn: sqlite3.Connection, table: str, columns: tuple, *, millis: bool = False
+) -> None:
+    """Rewrite naive local-time ``columns`` of ``table`` as UTC (schema v14).
+    A missing table, or a value that isn't a timestamp, is left alone."""
+    from datetime import datetime, timezone
+
+    has_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+    ).fetchone()
+    if not has_table:
+        return
+    present = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+    for column in columns:
+        if column not in present:
+            continue
+        rows = conn.execute(
+            f"SELECT id, {column} FROM {table} WHERE {column} IS NOT NULL"
+        ).fetchall()
+        for row_id, value in rows:
+            try:
+                local = datetime.fromisoformat(str(value).replace("T", " "))
+            except ValueError:
+                continue
+            if local.tzinfo is not None:
+                continue  # already carries its offset
+            # Naive astimezone() reads the value as local time (fold=0: the
+            # first occurrence of a repeated hour).
+            utc = local.astimezone(timezone.utc).replace(tzinfo=None)
+            text = utc.strftime("%Y-%m-%d %H:%M:%S.%f")
+            conn.execute(
+                f"UPDATE {table} SET {column} = ? WHERE id = ?",
+                (text[:-3] if millis else text, row_id),
+            )
 
 
 def _executescript_atomic(conn: sqlite3.Connection, sql: str) -> None:

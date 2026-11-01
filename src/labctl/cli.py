@@ -19,7 +19,7 @@ import click
 
 from labctl import __version__
 from labctl.actuators.runtime import DEFAULT_CYCLE_DELAY_SECONDS
-from labctl.core import audit
+from labctl.core import audit, timeutil
 from labctl.core.config import Config, load_config
 from labctl.core.manager import ResourceManager, get_manager
 from labctl.core.models import (
@@ -5332,7 +5332,7 @@ def _print_claim_row(claim) -> None:
         if claim.time_remaining is not None
         else None
     )
-    expires_display = claim.expires_at.strftime("%H:%M:%S") if claim.expires_at else "?"
+    expires_display = timeutil.local(claim.expires_at, "%H:%M:%S %Z")
     click.echo(
         f"  {claim.sbc_name:<15} held by {claim.agent_name} "
         f"({claim.session_kind}, expires {expires_display}, "
@@ -5442,9 +5442,7 @@ def claim_cmd(
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
 
-    expires = (
-        claim.expires_at.strftime("%Y-%m-%d %H:%M:%S") if claim.expires_at else "?"
-    )
+    expires = timeutil.local(claim.expires_at)
     click.echo(
         f"Claimed '{sbc_name}' as '{claim.agent_name}' until {expires} "
         f"({_format_remaining(int(claim.time_remaining.total_seconds()))} from now)"
@@ -5505,9 +5503,7 @@ def renew_cmd(ctx: click.Context, sbc_name: str, duration: str | None) -> None:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
 
-    expires = (
-        claim.expires_at.strftime("%Y-%m-%d %H:%M:%S") if claim.expires_at else "?"
-    )
+    expires = timeutil.local(claim.expires_at)
     click.echo(f"Renewed claim on '{sbc_name}' until {expires}")
 
 
@@ -5624,16 +5620,8 @@ def claims_history_cmd(ctx: click.Context, sbc_name: str, last: int) -> None:
     click.echo(f"Last {len(history)} claim(s) on '{sbc_name}':")
     for claim in history:
         reason_str = claim.release_reason.value if claim.release_reason else "unknown"
-        acquired = (
-            claim.acquired_at.strftime("%Y-%m-%d %H:%M:%S")
-            if claim.acquired_at
-            else "?"
-        )
-        released = (
-            claim.released_at.strftime("%Y-%m-%d %H:%M:%S")
-            if claim.released_at
-            else "?"
-        )
+        acquired = timeutil.local(claim.acquired_at)
+        released = timeutil.local(claim.released_at)
         click.echo(
             f"  {claim.agent_name} ({claim.session_kind}): "
             f"{acquired} → {released}  [{reason_str}]"
@@ -7028,10 +7016,10 @@ def activity_group() -> None:
 def _parse_since(since: str) -> str:
     """Parse a relative time spec like "5m", "2h", "1d" into an ISO timestamp.
 
-    Returns the ISO8601 string (UTC-naive, matching CURRENT_TIMESTAMP writes).
+    Returns the stored-time text (UTC, #63) to compare ``logged_at`` with.
     Raises click.BadParameter on malformed input.
     """
-    from datetime import datetime, timedelta
+    from datetime import timedelta
 
     since = since.strip().lower()
     if not since:
@@ -7044,8 +7032,8 @@ def _parse_since(since: str) -> str:
         n = int(since[:-1])
     except ValueError as e:
         raise click.BadParameter(f"Invalid number: {since[:-1]}") from e
-    cutoff = datetime.now() - timedelta(**{units[unit]: n})
-    return cutoff.strftime("%Y-%m-%d %H:%M:%S")
+    cutoff = timeutil.now() - timedelta(**{units[unit]: n})
+    return timeutil.to_db(cutoff)[:-3]
 
 
 def _compact_actor(actor: str) -> str:
@@ -7099,7 +7087,8 @@ def _format_activity_row(row, *, compact: bool = False) -> str:
     used by the at-a-glance tail in ``labctl status``. The full-detail
     layout is preserved for ``labctl activity tail``.
     """
-    ts = row["logged_at"] or ""
+    # Stored in UTC; shown in local time with the zone (#63).
+    ts = timeutil.db_local(row["logged_at"], "%Y-%m-%d %H:%M:%S %Z")
     actor = row["actor"] or "internal"
     agent = row["agent"] if "agent" in row.keys() else None
     action = row["action"] or ""

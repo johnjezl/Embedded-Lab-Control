@@ -295,13 +295,14 @@ class TestQueryAndPrune:
         assert len(events) == 1
         assert events[0]["action"] == "new"
 
-    def test_prune_uses_local_wall_clock_cutoff(self, db, monkeypatch):
-        class FixedDateTime:
-            @staticmethod
-            def now():
-                return datetime(2026, 4, 20, 0, 30, 0)
+    def test_prune_uses_a_utc_cutoff(self, db, monkeypatch):
+        """logged_at and the cutoff are both UTC (#63)."""
+        from datetime import timezone
 
-        monkeypatch.setattr(audit, "datetime", FixedDateTime)
+        monkeypatch.setattr(
+            "labctl.core.timeutil.now",
+            lambda: datetime(2026, 4, 20, 0, 30, 0, tzinfo=timezone.utc),
+        )
         db.execute_insert(
             """
             INSERT INTO audit_log (
@@ -338,7 +339,7 @@ class TestSchemaV6:
     def test_schema_version_is_current(self):
         from labctl.core.database import SCHEMA_VERSION
 
-        assert SCHEMA_VERSION == 13
+        assert SCHEMA_VERSION == 14
 
     def test_fresh_db_has_power_cache_columns(self, db):
         cols = {r["name"] for r in db.execute("PRAGMA table_info(sbcs)")}

@@ -539,7 +539,7 @@ class TestRestClaims:
         client, manager = lab
         claim = _claim(manager, "c", owner="bot2")
         manager.db.execute_modify(
-            "UPDATE claims SET expires_at = datetime('now', 'localtime', "
+            "UPDATE claims SET expires_at = datetime('now', "
             "'-10 seconds') WHERE id = ?",
             (claim.id,),
         )

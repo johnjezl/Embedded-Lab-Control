@@ -11,6 +11,7 @@ from typing import Optional
 
 from flask import g, render_template, request, session, url_for
 
+from labctl.core import timeutil
 from labctl.core.models import (
     ClaimActor,
     ClaimConflict,
@@ -95,7 +96,7 @@ def claimed_error(sbc_name: str, claim, *, override_hint: bool = True) -> dict:
         f" (it shares hardware with '{sbc_name}')" if holder_board != sbc_name else ""
     )
     if claim.is_active:
-        until = f"until {claim.expires_at.isoformat()}" if claim.expires_at else ""
+        until = f"until {timeutil.iso(claim.expires_at)}" if claim.expires_at else ""
         hints = [
             "Wait for the claim to expire or be released",
             f"Ask for it: POST /api/claims/{holder_board}/request-release",

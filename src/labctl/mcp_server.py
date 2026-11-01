@@ -31,7 +31,7 @@ from mcp.server.mcpserver import MCPServer
 from mcp.types import ToolAnnotations
 
 from labctl import __version__
-from labctl.core import audit
+from labctl.core import audit, timeutil
 
 # All logging must go to stderr (stdout is the JSON-RPC channel for stdio transport)
 logging.basicConfig(
@@ -538,11 +538,11 @@ def _claimed_error(sbc_name: str, claim) -> str:
         f" (it shares hardware with '{sbc_name}')" if holder_board != sbc_name else ""
     )
     if claim.is_active:
-        until = f"until {claim.expires_at.isoformat()}"
+        until = f"until {timeutil.iso(claim.expires_at)}"
     else:
         # Past its deadline but inside the grace period.
         until = (
-            f"(expired at {claim.expires_at.isoformat()}; it can be claimed "
+            f"(expired at {timeutil.iso(claim.expires_at)}; it can be claimed "
             f"once its {_get_config().claims.grace_period_seconds}s grace "
             "period ends)"
         )

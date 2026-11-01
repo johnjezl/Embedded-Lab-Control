@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterable, Optional
 
-from labctl.core import audit
+from labctl.core import audit, timeutil
 from labctl.core.database import DEFAULT_TIMEOUT_SECONDS as DEFAULT_DB_TIMEOUT
 from labctl.core.database import Database, get_database
 from labctl.core.models import (
@@ -1609,7 +1609,8 @@ class ResourceManager:
 
     @classmethod
     def _fmt_ts(cls, dt: datetime) -> str:
-        return dt.strftime(cls._TS_FMT)
+        """``dt`` as stored: UTC (#63)."""
+        return timeutil.to_db(dt)
 
     def _load_pending_requests(self, claim: Claim) -> None:
         rows = self.db.execute(
@@ -1652,7 +1653,7 @@ class ResourceManager:
         Returns the number of claims released by this sweep. Safe to call
         repeatedly; only unreleased rows with an elapsed deadline are touched.
         """
-        cutoff = self._fmt_ts(datetime.now() - timedelta(seconds=grace_seconds))
+        cutoff = self._fmt_ts(timeutil.now() - timedelta(seconds=grace_seconds))
         with self.db.connect() as conn:
             self._begin_write(conn)
             expired = self._release_expired(conn, cutoff)
@@ -1805,7 +1806,7 @@ class ResourceManager:
               AND c.session_kind IN ('mcp-stdio', 'mcp-http')
             """)
         released = 0
-        cutoff = datetime.now() - timedelta(seconds=grace_seconds)
+        cutoff = timeutil.now() - timedelta(seconds=grace_seconds)
         for row in rows:
             claim = Claim.from_row(row)
             # Parse "mcp-<transport>:<pid>-<epoch>" (epoch optional for old IDs)
@@ -1861,7 +1862,7 @@ class ResourceManager:
         Only rows with a non-NULL ``released_at`` are eligible. Active
         (unreleased) claims are never pruned.
         """
-        cutoff = self._fmt_ts(datetime.now() - timedelta(days=older_than_days))
+        cutoff = self._fmt_ts(timeutil.now() - timedelta(days=older_than_days))
         count = self.db.execute_modify(
             """
             DELETE FROM claims
@@ -1963,7 +1964,7 @@ class ResourceManager:
 
         check_no_channel_busy_for_sbc(self, sbc_id)
         context_json = json.dumps(context) if context else None
-        cutoff = self._fmt_ts(datetime.now() - timedelta(seconds=grace_seconds))
+        cutoff = self._fmt_ts(timeutil.now() - timedelta(seconds=grace_seconds))
 
         with self.db.connect() as conn:
             # Release expired claims (on any SBC) within the same
@@ -1974,7 +1975,7 @@ class ResourceManager:
             # from its own holder: re-claiming replaces it straight away.
             replaced = self._release_expired(
                 conn,
-                self._fmt_ts(datetime.now()),
+                self._fmt_ts(timeutil.now()),
                 holder=(sbc_id, session_id, owner),
             )
 
@@ -1992,7 +1993,7 @@ class ResourceManager:
             if existing is not None:
                 raise ClaimConflict(Claim.from_row(existing))
 
-            now = datetime.now()
+            now = timeutil.now()
             expires_at = now + timedelta(seconds=duration_seconds)
             cursor = conn.execute(
                 """
@@ -2190,7 +2191,7 @@ class ResourceManager:
         new_duration = (
             duration_seconds if duration_seconds is not None else claim.duration_seconds
         )
-        now = datetime.now()
+        now = timeutil.now()
         new_expiry = now + timedelta(seconds=new_duration)
         updated = self.db.execute_modify(
             """
@@ -2239,7 +2240,7 @@ class ResourceManager:
         UnknownSBCError.
         """
         sbc_id = self._require_sbc_id(sbc_name)
-        now = self._fmt_ts(datetime.now())
+        now = self._fmt_ts(timeutil.now())
         changed = self.db.execute_modify(
             """
             UPDATE claims
@@ -2268,7 +2269,7 @@ class ResourceManager:
     def touch_claim(self, claim: Claim) -> bool:
         """Heartbeat an already-loaded active claim. Returns False when no
         row changed (released or past its deadline meanwhile)."""
-        now = datetime.now()
+        now = timeutil.now()
         new_expiry = now + timedelta(seconds=claim.duration_seconds)
         changed = self.db.execute_modify(
             """
@@ -2432,7 +2433,7 @@ class ResourceManager:
         """
         own = self.get_open_claim(sbc_name)
         if own is not None and not actor.holds(own):
-            cutoff = datetime.now() - timedelta(seconds=grace_seconds)
+            cutoff = timeutil.now() - timedelta(seconds=grace_seconds)
             # Same test as claim_sbc's sweep (expires_at < now - grace).
             if own.expires_at is not None and own.expires_at >= cutoff:
                 return own

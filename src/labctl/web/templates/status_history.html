@@ -24,7 +24,7 @@
         <tbody>
             {% for entry in history %}
             <tr>
-                <td class="timestamp">{{ entry.logged_at }}</td>
+                <td class="timestamp">{{ entry.logged_at | localtime }}</td>
                 <td>
                     <span class="status-badge status-{{ entry.status }}">{{ entry.status }}</span>
                 </td>

@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Claim and activity times were naive local time, so the repeated hour at
+  a DST fall-back broke them: a claim made just before the change lasted
+  an hour longer, a renewal during the repeated hour could set an earlier
+  deadline than before, and activity times were ambiguous (#63). They are
+  stored in UTC now (schema v14 converts existing rows, reading the
+  repeated hour as daylight time), compared with a UTC clock, given to
+  machines with the offset (REST, MCP, NDJSON: `…Z`), and shown to people
+  in local time with the zone (`2026-11-01 01:30:00 PST`). Released claims
+  are also pruned on time: `released_at` was UTC but the cutoff was local.
+
 ### Added
 
 - `labctl skill install / list / uninstall` (#56): the `/deploy-and-test`
