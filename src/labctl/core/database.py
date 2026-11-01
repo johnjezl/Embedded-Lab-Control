@@ -160,7 +160,7 @@ CREATE TABLE IF NOT EXISTS audit_log (
     logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     actor TEXT NOT NULL DEFAULT 'internal',     -- e.g. "cli:john", "mcp-stdio:12345-..."
     source TEXT NOT NULL DEFAULT 'internal',    -- cli | mcp | api | web | daemon | internal
-    result TEXT NOT NULL DEFAULT 'ok',          -- ok | error | forbidden
+    result TEXT NOT NULL DEFAULT 'ok',          -- ok | error | forbidden | interrupted
     claim_id INTEGER REFERENCES claims(id),
     agent TEXT                                  -- MCP agent name, NULL elsewhere
 );

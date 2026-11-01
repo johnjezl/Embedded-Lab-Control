@@ -223,7 +223,7 @@ Every command has `--help`. This section lists the commands; see
 | `labctl activity tail --actor <actor>` | Filter events by actor |
 | `labctl activity tail --agent <name>` | Filter events by MCP agent name |
 | `labctl activity tail --source <source>` | Filter events by source (`cli`, `mcp`, `api`, `web`, `daemon`, `internal`) |
-| `labctl activity tail --result <result>` | Filter events by result (`ok`, `error`, `forbidden`) |
+| `labctl activity tail --result <result>` | Filter events by result (`ok`, `error`, `forbidden`, `interrupted`) |
 | `labctl activity tail --sbc <name>` | Filter events for one SBC |
 | `labctl activity export --format ndjson` | Export activity events as NDJSON |
 
@@ -241,8 +241,11 @@ web): `power_on`, `power_off`, `power_cycle`, `enter_recovery` /
 `exit_recovery`, relay actions, `sdwire_to_host` / `sdwire_to_dut`,
 `flash_image` (image name and bytes written), `sdwire_update` (the files
 changed), `serial_send` (size only, never the data, which can be a
-password), `serial_capture` and `boot_test` (runs and passes). A failure is
-recorded with `result` `error` and the message. Claim refusals are not
+password) and `boot_test` (runs and passes; `error` if it stopped early).
+Boards sharing a plug outlet get the power event too, with `via` naming
+the board that was switched. A failure is recorded with `result` `error`
+and the message, and an action cut short (Ctrl+C) as `interrupted`. Reads
+(serial capture, `sdwire ls`/`cat`/`info`) and claim refusals (#60) are not
 recorded.
 
 ### Claims (Exclusive Access Coordination)

@@ -124,6 +124,44 @@ class TestPower:
         assert "recovery_mode" in _details(events[0])["error"]
 
 
+class TestRobustness:
+    def test_interrupt_is_recorded(self, manager, board):
+        from labctl.actuators.runtime import power_cycle_with_bindings
+
+        c = MagicMock()
+        c.power_off.return_value = True
+
+        def ctrl_c(_seconds):
+            raise KeyboardInterrupt
+
+        with pytest.raises(KeyboardInterrupt):
+            power_cycle_with_bindings(manager, board, c, 5, sleep_fn=ctrl_c)
+        (event,) = _events(manager, "power_cycle")
+        assert event["result"] == "interrupted"
+
+    def test_a_failing_summary_never_fails_the_action(self, manager, board):
+        t = audit.Target(manager.db, board)
+        assert t.run("a", lambda: None, summary=lambda r: r["x"]) is None
+        assert t.run("b", lambda: {"action": 1, "result": 2}, summary=dict)
+        assert [e["result"] for e in _events(manager, "a", "b")] == ["ok", "ok"]
+
+    def test_boards_sharing_the_outlet_get_the_event(self, manager, board):
+        from labctl.actuators.runtime import power_cycle_with_bindings
+
+        other = manager.create_sbc(name="pi-b")
+        manager.assign_power_plug(
+            other.id, plug_type=PlugType.TASMOTA, address="10.9.9.9"
+        )
+        c = MagicMock()
+        c.power_off.return_value = c.power_on.return_value = True
+        power_cycle_with_bindings(manager, board, c, 5, sleep_fn=lambda s: None)
+        events = _events(manager, "power_cycle")
+        assert [(e["entity_name"], _details(e).get("via")) for e in events] == [
+            ("pi", None),
+            ("pi-b", "pi"),
+        ]
+
+
 class TestSdwire:
     def test_bound_controller_records(self, manager, board):
         from labctl.sdwire.controller import SDWireController
@@ -195,27 +233,12 @@ class TestSerialAndBootTest:
         assert _details(event) == {"bytes_sent": 9}
         assert "hunter2" not in (event["details"] or "")
 
-    def test_capture_recorded(self, manager, board):
-        from labctl.serial.capture import CaptureResult, capture_serial_output
+    def test_capture_is_a_read_and_not_recorded(self):
+        import inspect
 
-        with patch(
-            "labctl.serial.capture._capture_serial_output",
-            return_value=CaptureResult(output="x", lines=3, pattern_matched=True),
-        ):
-            capture_serial_output(
-                "localhost",
-                4000,
-                timeout=5,
-                until_pattern="login:",
-                target=audit.Target(manager.db, board),
-            )
-        (event,) = _events(manager, "serial_capture")
-        assert _details(event) == {
-            "timeout": 5,
-            "until": "login:",
-            "lines": 3,
-            "pattern_matched": True,
-        }
+        from labctl.serial.capture import capture_serial_output
+
+        assert "target" not in inspect.signature(capture_serial_output).parameters
 
     def test_port_target_is_the_board(self, manager, board):
         from labctl.serial.capture import port_target
@@ -256,6 +279,44 @@ class TestSerialAndBootTest:
         }
 
 
+class TestBootTestOutcome:
+    def test_stopped_test_is_an_error(self, manager, board):
+        from labctl.serial.boot_test import BootTestResult, run_boot_test
+
+        result = BootTestResult(
+            sbc_name="pi", expect_pattern="x", total_runs=3, timeout_per_run=5
+        )
+        result.stopped_reason = "claim lost"
+        with patch("labctl.serial.boot_test._run_boot_test", return_value=result):
+            run_boot_test(
+                "pi",
+                "x",
+                "localhost",
+                4000,
+                power_cycle_fn=lambda: None,
+                runs=3,
+                target=audit.Target(manager.db, board),
+            )
+        (event,) = _events(manager, "boot_test")
+        assert event["result"] == "error"
+        assert _details(event)["stopped"] == "claim lost"
+
+
+def test_claim_renew_and_release_request_carry_the_claim(manager, board):
+    claim = manager.claim_sbc(
+        sbc_name="pi",
+        agent_name="a",
+        session_id="s",
+        session_kind="cli",
+        duration_seconds=60,
+        reason="r",
+    )
+    manager.renew_claim("pi", "s", duration_seconds=120)
+    manager.record_release_request("pi", "b", "need it")
+    events = _events(manager, "claim_renew", "release_request")
+    assert [_details(e)["claim"] for e in events] == [claim.id, claim.id]
+
+
 class TestFrontEndsPassTheBoard:
     """Structural: the front ends use the recording paths, so a new call
     site can't silently skip the activity stream."""
@@ -269,18 +330,39 @@ class TestFrontEndsPassTheBoard:
                 if getattr(f, "id", None) == name or getattr(f, "attr", None) == name:
                     yield node
 
-    def test_every_sdwire_controller_is_bound_to_its_board(self):
+    # Reads: their host round trip only looks at the card, so they record
+    # nothing (spec: reads are not recorded).
+    READS = {
+        "sdwire_ls",
+        "sdwire_cat",
+        "sdwire_info",
+        "sdwire_ls_cmd",
+        "sdwire_cat_cmd",
+        "sdwire_info_cmd",
+    }
+
+    def test_every_writing_sdwire_controller_is_bound_to_its_board(self):
         found = 0
         for path in SRC.rglob("*.py"):
-            for call in self._calls(path, "SDWireController"):
-                found += 1
-                kws = {k.arg for k in call.keywords}
-                assert {"sbc", "db"} <= kws, f"{path.name}:{call.lineno}"
+            tree = ast.parse(path.read_text())
+            for fn in ast.walk(tree):
+                if not isinstance(fn, ast.FunctionDef):
+                    continue
+                for call in ast.walk(fn):
+                    if not (
+                        isinstance(call, ast.Call)
+                        and getattr(call.func, "id", None) == "SDWireController"
+                    ):
+                        continue
+                    found += 1
+                    kws = {k.arg for k in call.keywords}
+                    if fn.name in self.READS:
+                        assert not {"sbc", "db"} & kws, f"{fn.name} records a read"
+                    else:
+                        assert {"sbc", "db"} <= kws, f"{path.name}:{call.lineno}"
         assert found >= 16
 
-    @pytest.mark.parametrize(
-        "name", ["send_serial_data", "capture_serial_output", "run_boot_test"]
-    )
+    @pytest.mark.parametrize("name", ["send_serial_data", "run_boot_test"])
     def test_serial_and_boot_test_calls_pass_a_target(self, name):
         for path in (SRC / "cli.py", SRC / "mcp_server.py"):
             calls = list(self._calls(path, name))

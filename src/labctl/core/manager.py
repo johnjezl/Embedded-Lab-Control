@@ -2211,12 +2211,16 @@ class ResourceManager:
         )
         if not updated:  # released or expired meanwhile
             raise ClaimNotFoundError(f"No active claim on SBC '{sbc_name}'")
-        self._audit_log(
-            "claim_renew",
-            "sbc",
-            claim.sbc_id,
-            sbc_name,
-            f"Claim by {claim.agent_name} renewed for {new_duration}s",
+        audit.emit(
+            self.db,
+            action="claim_renew",
+            entity_type="sbc",
+            entity_id=claim.sbc_id,
+            entity_name=sbc_name,
+            details={
+                "message": f"Claim by {claim.agent_name} renewed for {new_duration}s",
+                "claim": claim.id,
+            },
         )
         return self._get_claim_by_id(claim.id)
 
@@ -2441,12 +2445,17 @@ class ResourceManager:
             """,
             (claim.id, requested_by, reason),
         )
-        self._audit_log(
-            "release_request",
-            "sbc",
-            claim.sbc_id,
-            sbc_name,
-            f"{requested_by} asked {claim.agent_name} to release: {reason}",
+        audit.emit(
+            self.db,
+            action="release_request",
+            entity_type="sbc",
+            entity_id=claim.sbc_id,
+            entity_name=sbc_name,
+            details={
+                "message": f"{requested_by} asked {claim.agent_name} to release: "
+                f"{reason}",
+                "claim": claim.id,
+            },
         )
         row = self.db.execute_one(
             "SELECT * FROM claim_requests WHERE id = ?", (request_id,)

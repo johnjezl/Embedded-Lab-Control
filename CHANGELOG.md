@@ -12,11 +12,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   (CLI, MCP, REST, web; #57 part 2): power on/off/cycle, enter/exit
   recovery, SD card switches, image flashes (image name, bytes written),
   SD card file updates (files changed), serial sends (size only, never
-  the data), serial captures and boot tests (runs, passes). They are
-  recorded in the shared code every front end calls, so a new path is
-  covered; failures are recorded as `error` with the message. Also
-  recorded now: claim renewals, release requests, and removing a board's
-  network address, power plug or SDWire assignment.
+  the data) and boot tests (runs, passes; `error` if stopped early).
+  They are recorded in the shared code every front end calls, so a new
+  path is covered. Boards sharing a plug outlet get the power event too
+  (`via` names the board switched). A failure is recorded as `error` with
+  the message, and an action cut short (Ctrl+C) as the new `interrupted`
+  result. Reads are not recorded. Also recorded now: claim renewals,
+  release requests, and removing a board's network address, power plug or
+  SDWire assignment.
 
 ### Changed
 
