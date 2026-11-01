@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- `labctl skill install / list / uninstall` (#56): the `/deploy-and-test`
+  Claude Code skill now ships in the package (so PyPI installs have it)
+  and is installed into a project's `.claude/skills/` (or `--user` for
+  `~/.claude/skills/`). An installed copy that differs is replaced or
+  removed only with `--force`; nothing is written through a symlink;
+  `--with-config` writes an example `.claude/deploy-config.json`. The
+  skill moved from `skills/deploy-and-test.md` to
+  `src/labctl/skills/deploy-and-test/SKILL.md`.
+
 - Claim refusals in the activity stream (#60): a call refused because
   someone else holds the board (or a board sharing its hardware), because
   `claims.require_claim` wants a claim, or because an agent tried an

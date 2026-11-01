@@ -18,7 +18,7 @@ Centralized management system for embedded development lab resources. Provides d
 - **Session Logging** - Capture serial output with rotation and compression
 - **Authentication** - Session-based web login and API key auth (optional, disabled by default)
 - **MCP Server** - AI assistants manage the lab over stdio or HTTP, with optional API-key auth and TLS, and two-step confirmation for destructive tools
-- **Claude Code Skill** - an example `/deploy-and-test` skill orchestrates build, deploy, boot, and serial capture over MCP ([install](#claude-code-skill-deploy-and-test))
+- **Claude Code Skill** - a bundled `/deploy-and-test` skill orchestrates build, deploy, boot, and serial capture over MCP; `labctl skill install` sets it up ([details](#claude-code-skill-deploy-and-test))
 
 ## Installation
 
@@ -714,20 +714,24 @@ point `-c` at your own config):
 
 ### Claude Code skill: /deploy-and-test
 
-`skills/deploy-and-test.md` is an example skill that builds, deploys over
-SDWire, power-cycles and checks the serial console using the labctl MCP
-tools. It is not active in this repository. Claude Code loads a skill from a
-`SKILL.md` file, with `name`/`description` frontmatter, inside a directory
-named after the skill. To install it for one project (or for all your
-projects, under `~/.claude/skills/`):
+labctl ships a Claude Code skill, `/deploy-and-test`, that builds, deploys
+over SDWire, power-cycles and checks the serial console using the labctl
+MCP tools. Install it where Claude Code loads skills (it picks it up in its
+next session):
 
-```bash
-mkdir -p <your-project>/.claude/skills/deploy-and-test
-cp skills/deploy-and-test.md <your-project>/.claude/skills/deploy-and-test/SKILL.md
-```
+| Command | Description |
+|---------|-------------|
+| `labctl skill install [-p DIR]` | Install for one project: `DIR/.claude/skills/deploy-and-test/SKILL.md` (default: the current directory) |
+| `labctl skill install --user` | Install for all your projects: `~/.claude/skills/deploy-and-test/SKILL.md` |
+| `labctl skill install --with-config` | Also write an example `.claude/deploy-config.json` (only if there is none) |
+| `labctl skill install --force` | Replace an installed copy that differs (an older version, or edited by hand) |
+| `labctl skill list [-p DIR]` | Show each bundled skill: current, differs, or not installed, in the project and for the user |
+| `labctl skill uninstall [-p DIR \| --user] [--force]` | Remove it (`--force` for an edited copy) |
 
-It expects a connected labctl MCP server, and reads per-target settings from
-`.claude/deploy-config.json`.
+The skill expects a connected labctl MCP server in the project, and reads
+per-board settings from `.claude/deploy-config.json` (`install` says where
+and shows the format). After upgrading labctl, `labctl skill list` shows
+`differs` for an install from an older version: re-run `install --force`.
 
 ## Systemd Services
 

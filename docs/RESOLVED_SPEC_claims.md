@@ -607,7 +607,7 @@ are sufficient.
    long steps and releases it on every path; long tool calls
    (`boot_test`, `serial_capture`, `sdwire_update`, `flash_image`, CLI
    `boot-test`) keep a claim the caller already holds alive and stop
-   between steps once it is lost. See `skills/deploy-and-test.md` and
+   between steps once it is lost. See `src/labctl/skills/deploy-and-test/SKILL.md` and
    the claims section of `docs/MCP_SERVER.md`.
 2. **PID recycling on long-lived deployments:** `mcp-stdio:<pid>-<start_epoch>`
    is safe against recycling because `start_epoch` changes when a

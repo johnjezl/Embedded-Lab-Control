@@ -10,7 +10,7 @@ Orchestrate the full embedded development inner loop: build, deploy to hardware,
 
 You call labctl MCP tools for all hardware operations. You do NOT interact with hardware directly.
 
-To use this skill, copy it to `.claude/skills/deploy-and-test/SKILL.md` in your project (or `~/.claude/skills/deploy-and-test/SKILL.md` for all projects).
+To use this skill, install it with `labctl skill install deploy-and-test` in your project (or `labctl skill install deploy-and-test --user` for all your projects).
 
 ### Confirming destructive tools
 

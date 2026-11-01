@@ -382,6 +382,23 @@ agent's `CLAUDE.md`:
   `sdwire_update` or `boot_test`.
 ```
 
+### The `/deploy-and-test` skill
+
+For the build → deploy → boot → check loop, install the skill labctl
+ships into the agent's project (on the machine where Claude Code runs,
+with labctl installed there):
+
+```bash
+cd <agent-project>
+labctl skill install --with-config   # .claude/skills/ + an example deploy-config.json
+```
+
+Edit `.claude/deploy-config.json` for the project's boards. The agent
+picks the skill up in its next session (`/deploy-and-test`). After
+upgrading labctl, `labctl skill list` shows `differs` for an older copy;
+`labctl skill install --force` updates it. See the README's "Claude Code
+skill" section.
+
 ## Checking an agent's identity
 
 Ask the agent to claim a spare board, then:

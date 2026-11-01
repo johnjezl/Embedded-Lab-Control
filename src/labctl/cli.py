@@ -7332,6 +7332,127 @@ def activity_export_cmd(
             click.echo(json.dumps(event, separators=(",", ":")))
 
 
+@main.group("skill")
+def skill_group() -> None:
+    """Install the Claude Code skills that ship with labctl.
+
+    A skill is installed for one project (``<dir>/.claude/skills/``, the
+    current directory by default) or for all your projects (``--user``,
+    ``~/.claude/skills/``). Claude Code picks it up in its next session.
+    """
+
+
+def _skill_location(project: Path | None, user: bool):
+    if user and project is not None:
+        raise click.UsageError("use --project or --user, not both")
+    return {"project": project, "user": user}
+
+
+_skill_project_option = click.option(
+    "--project",
+    "-p",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Project directory (default: the current directory)",
+)
+_skill_user_option = click.option(
+    "--user", is_flag=True, help="For all your projects (~/.claude/skills)"
+)
+
+
+@skill_group.command("list")
+@_skill_project_option
+def skill_list_cmd(project: Path | None) -> None:
+    """List the bundled skills and where each is installed."""
+    from labctl import claude_skills
+
+    for name in claude_skills.bundled():
+        here = claude_skills.status(name, project=project)
+        mine = claude_skills.status(name, user=True)
+        click.echo(f"{name}: project {here}; user {mine}")
+
+
+@skill_group.command("install")
+@click.argument("name", default="deploy-and-test")
+@_skill_project_option
+@_skill_user_option
+@click.option("--force", is_flag=True, help="Replace an installed copy that differs")
+@click.option(
+    "--with-config",
+    is_flag=True,
+    help="Also write an example .claude/deploy-config.json if there is none",
+)
+def skill_install_cmd(
+    name: str, project: Path | None, user: bool, force: bool, with_config: bool
+) -> None:
+    """Install a bundled skill (default: deploy-and-test)."""
+    from labctl import claude_skills
+
+    where = _skill_location(project, user)
+    try:
+        outcome = claude_skills.install(name, force=force, **where)
+    except (claude_skills.SkillError, OSError) as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    verb = {
+        "installed": "Installed",
+        "updated": "Updated",
+        "unchanged": "Already current:",
+    }[outcome.status]
+    click.echo(f"{verb} {outcome.path}")
+    if name != "deploy-and-test":
+        return
+    if user:
+        click.echo(
+            "Each project using it needs .claude/deploy-config.json (see the "
+            "skill, or run `labctl skill install --with-config` there)."
+        )
+        return
+    base = project or Path.cwd()
+    config_path = Path(os.path.realpath(base)) / claude_skills.DEPLOY_CONFIG
+    written = None
+    if with_config:
+        try:
+            written = claude_skills.write_deploy_config_template(base)
+        except (claude_skills.SkillError, OSError) as e:
+            click.echo(f"Error: {e}", err=True)
+            sys.exit(1)
+    if written:
+        click.echo(f"Wrote an example {written}: edit it for your boards.")
+    elif config_path.exists():
+        click.echo(f"Using {config_path}.")
+    else:
+        click.echo(
+            f"The skill reads per-board settings from {config_path} (not "
+            "there yet). Write an example with --with-config, or give it:\n"
+            + json.dumps(claude_skills.DEPLOY_CONFIG_EXAMPLE, indent=2)
+        )
+    click.echo("It also needs the labctl MCP server connected in that project.")
+
+
+@skill_group.command("uninstall")
+@click.argument("name", default="deploy-and-test")
+@_skill_project_option
+@_skill_user_option
+@click.option("--force", is_flag=True, help="Remove a copy that differs too")
+def skill_uninstall_cmd(
+    name: str, project: Path | None, user: bool, force: bool
+) -> None:
+    """Remove an installed skill."""
+    from labctl import claude_skills
+
+    where = _skill_location(project, user)
+    try:
+        outcome = claude_skills.uninstall(name, force=force, **where)
+    except (claude_skills.SkillError, OSError) as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    if outcome.status == "absent":
+        click.echo(f"Not installed: {outcome.path}")
+    else:
+        click.echo(f"Removed {outcome.path}")
+
+
 @main.command("completion")
 @click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]))
 def completion_cmd(shell: str) -> None:
