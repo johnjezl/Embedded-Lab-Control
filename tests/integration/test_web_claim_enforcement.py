@@ -1,5 +1,6 @@
 """Claim enforcement in the web UI and REST API (D013, part 3)."""
 
+import json
 import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -858,3 +859,68 @@ class TestRestRequireAgentName:
         assert resp.status_code == 400
         assert "must be strings" in resp.get_json()["error"]
         assert manager.get_active_claim("c") is None
+
+
+# --- Refusals are recorded (#60) ---
+
+
+def _refusals(manager):
+    rows = manager.db.execute(
+        "SELECT actor, entity_name, result, details FROM audit_log "
+        "WHERE action = 'claim_refused' ORDER BY id"
+    )
+    return [dict(r, details=json.loads(r["details"])) for r in rows]
+
+
+class TestRefusalsRecorded:
+    def test_rest_refusal_recorded_once(self, lab, power):
+        client, manager = lab
+        _claim(manager, "a")
+        resp = client.post("/api/sbcs/a/power", json={"action": "on"}, headers=BOT)
+        assert resp.status_code == 409
+        (event,) = _refusals(manager)
+        assert event["entity_name"] == "a"
+        assert event["result"] == "forbidden"
+        assert event["actor"].endswith("bot")
+        assert event["details"]["reason"] == "claimed"
+        assert event["details"]["holder"] == "holder"
+        assert event["details"]["attempted"] == "POST /api/sbcs/a/power"
+
+    def test_sharer_claim_names_the_held_board(self, lab, power):
+        client, manager = lab
+        _claim(manager, "b")
+        client.post("/api/sbcs/a/power", json={"action": "on"}, headers=BOT)
+        (event,) = _refusals(manager)
+        assert (event["entity_name"], event["details"]["held_board"]) == ("a", "b")
+
+    def test_claim_required_recorded(self, tmp_path, power):
+        app, client, manager = _make(tmp_path, require_claim=True)
+        manager.create_sbc(name="a")
+        sbc = manager.get_sbc_by_name("a")
+        manager.assign_power_plug(sbc.id, PlugType.TASMOTA, "10.0.0.5", 1)
+        client.post("/api/sbcs/a/power", json={"action": "on"}, headers=BOT)
+        (event,) = _refusals(manager)
+        assert event["details"]["reason"] == "claim_required"
+
+    def test_agent_force_release_recorded(self, lab):
+        client, manager = lab
+        _claim(manager, "a")
+        resp = client.post(
+            "/api/claims/a/force-release", json={"reason": "x"}, headers=BOT
+        )
+        assert resp.status_code == 403
+        (event,) = _refusals(manager)
+        assert event["details"]["reason"] == "not_operator"
+
+    def test_allowed_request_records_no_refusal(self, lab, power):
+        client, manager = lab
+        client.post("/api/sbcs/c/power", json={"action": "on"}, headers=BOT)
+        assert _refusals(manager) == []
+
+    def test_web_ui_refusal_recorded(self, lab, view_power):
+        client, manager = lab
+        _claim(manager, "a")
+        _login(client, "bot")
+        client.post("/sbc/a/power/on", data={"_csrf_token": _csrf(client, "/sbc/a")})
+        (event,) = _refusals(manager)
+        assert event["details"]["attempted"] == "POST /sbc/a/power/on"

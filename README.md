@@ -245,8 +245,14 @@ password) and `boot_test` (runs and passes; `error` if it stopped early).
 Boards sharing a plug outlet get the power event too, with `via` naming
 the board that was switched. A failure is recorded with `result` `error`
 and the message, and an action cut short (Ctrl+C) as `interrupted`. Reads
-(serial capture, `sdwire ls`/`cat`/`info`) and claim refusals (#60) are not
-recorded.
+(serial capture, `sdwire ls`/`cat`/`info`) are not recorded.
+
+A call refused over a claim is recorded as `claim_refused` with result
+`forbidden` (`--result forbidden`): who holds it, the board it is on (if a
+board sharing the hardware), why (`claimed`, `claim_required` or
+`not_operator`) and what was attempted (the MCP tool, `labctl` command or
+HTTP route). `power-all` records one for each board it skips. Checks that
+only look (before a prompt, a long call's keepalive) record nothing.
 
 ### Claims (Exclusive Access Coordination)
 

@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 
+- Claim refusals in the activity stream (#60): a call refused because
+  someone else holds the board (or a board sharing its hardware), because
+  `claims.require_claim` wants a claim, or because an agent tried an
+  operator-only override, is recorded as `claim_refused` with result
+  `forbidden`, naming the holder, the reason and what was attempted (MCP
+  tool, `labctl` command, HTTP route). Refused claim attempts count too,
+  and `power-all` records each board it skips. Checks that only look
+  record nothing. MCP's plan step for destructive tools now runs under the
+  caller's attribution, so a refusal there is the caller's.
+
 - Hardware actions in the activity stream, however they were started
   (CLI, MCP, REST, web; #57 part 2): power on/off/cycle, enter/exit
   recovery, SD card switches, image flashes (image name, bytes written),

@@ -913,6 +913,7 @@ def force_release_claim(sbc_name: str):
     from labctl.core.models import ClaimNotFoundError, UnknownSBCError
 
     if not claims.web_actor().operator:
+        claims.record_refusal(sbc_name, "not_operator")
         return (
             jsonify(
                 {

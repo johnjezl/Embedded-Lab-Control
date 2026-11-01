@@ -356,10 +356,15 @@ built with `sbc=`/`db=` (switch, flash, file updates; not the read
 tools' round trips); serial send (size only); `run_boot_test` (one
 event, with counts, `error` if it stopped early). Power events are also
 recorded on boards sharing the outlet (`via`). Results: `ok`, `error`,
-`forbidden` (unused yet, #60), `interrupted` (cut short, e.g. Ctrl+C).
+`forbidden` (a claim refusal, `claim_refused`), `interrupted` (cut short,
+e.g. Ctrl+C).
 `tests/unit/test_hardware_events.py` checks that every mutating MCP tool
 is mapped to what it records and that the front ends use these paths.
 `audit_log.claim_id` is never written (a foreign key to claims with no
-ON DELETE); claim IDs go in `details`. Not recorded: claim refusals
-(#60; checks are also used speculatively, e.g. before a prompt), and
-reads (serial capture, SD card ls/cat/info).
+ON DELETE); claim IDs go in `details`. Claim refusals (#60) are
+recorded where each front end refuses (the CLI's `_refuse_claimed`, MCP's
+`_claimed_error` and claim_required/not_operator answers, the web's
+`claimed_error`/`_refusal`), via `ResourceManager.record_claim_refusal`;
+`check_claim` itself records nothing, since probes, plans that pass and
+keepalive rechecks call it too. Not recorded: reads (serial capture, SD
+card ls/cat/info).
