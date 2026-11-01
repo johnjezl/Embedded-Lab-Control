@@ -9,10 +9,10 @@ Code loads it: ``<project>/.claude/skills/<name>/SKILL.md`` or
 The skills directory (``.claude/skills``) is resolved once, so a ``.claude``
 kept in a dotfiles repository and symlinked in works. Below it nothing is
 followed: ``<name>/`` is opened with ``O_NOFOLLOW`` (labctl.core.safe_open),
-``SKILL.md`` is read without following or blocking, and the new file is
-written to a temporary name and then linked (a first install, which so
-can't overwrite a copy that appeared meanwhile) or renamed (``--force``)
-into place, replacing a link rather than writing through it.
+``SKILL.md`` is read without following or blocking (a symlink or FIFO
+there is refused: remove it by hand), and the new file is written to a
+temporary name and then linked (a first install, which so can't overwrite
+a copy that appeared meanwhile) or renamed (``--force``) into place.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ import errno
 import json
 import os
 import secrets
+import stat
 from dataclasses import dataclass
 from importlib import resources
 from pathlib import Path
@@ -84,7 +85,8 @@ def _base(project: Optional[Path], user: bool) -> Path:
         return Path.home()
     base = project or Path.cwd()
     if not base.is_dir():
-        raise SkillError(f"project directory {base} does not exist")
+        what = "is not a directory" if base.exists() else "does not exist"
+        raise SkillError(f"project directory {base} {what}")
     return base
 
 
@@ -99,10 +101,10 @@ def target(name: str, *, project: Optional[Path] = None, user: bool = False) -> 
     return skills_dir(project=project, user=user) / name / SKILL_FILE
 
 
-def _read_existing(dir_fd: int) -> Optional[bytes]:
-    """The current ``SKILL.md`` in ``dir_fd``, or None. A symlink, FIFO or
-    other non-regular file there is refused (never read through, never
-    blocking on)."""
+def _read_existing(dir_fd: int, where: Path) -> Optional[bytes]:
+    """The current ``SKILL.md`` in ``dir_fd`` (``where``, for messages),
+    or None. A symlink, FIFO or other non-regular file there is refused
+    (never read through, never blocking on)."""
     try:
         fd = open_regular_nonblocking(SKILL_FILE, os.O_RDONLY, dir_fd=dir_fd)
     except FileNotFoundError:
@@ -110,7 +112,8 @@ def _read_existing(dir_fd: int) -> Optional[bytes]:
     except OSError as e:
         if e.errno in (errno.ELOOP, errno.EINVAL):
             raise SkillError(
-                f"{SKILL_FILE} there is not a regular file; not touching it"
+                f"{where} is not a regular file (a symlink?); not touching it: "
+                "remove it by hand"
             ) from e
         raise
     with os.fdopen(fd, "rb") as f:
@@ -130,7 +133,7 @@ def _open_dir(path: Path, *, create: bool) -> int:
         raise SkillError(f"{path}: {e.strerror}") from e
 
 
-def _write_new(dir_fd: int, content: bytes, *, replace: bool) -> None:
+def _write_new(dir_fd: int, content: bytes, where: Path, *, replace: bool) -> None:
     """Write ``content`` to ``SKILL.md`` in ``dir_fd`` via a temporary
     file: renamed over it with ``replace``, else linked, which fails if a
     ``SKILL.md`` appeared since it was checked (no silent overwrite)."""
@@ -148,8 +151,18 @@ def _write_new(dir_fd: int, content: bytes, *, replace: bool) -> None:
             os.link(tmp, SKILL_FILE, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
         except FileExistsError as e:
             raise SkillError(
-                f"{SKILL_FILE} appeared while installing; run install again"
+                f"{where} appeared while installing; run install again"
             ) from e
+        except OSError as e:
+            if e.errno not in (errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS):
+                raise
+            # No hard links here (sshfs, vfat, ...): rename, after making
+            # sure nothing appeared meanwhile.
+            if _read_existing(dir_fd, where) is not None:
+                raise SkillError(
+                    f"{where} appeared while installing; run install again"
+                ) from e
+            os.replace(tmp, SKILL_FILE, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
     finally:
         try:
             os.unlink(tmp, dir_fd=dir_fd)
@@ -172,7 +185,7 @@ def install(
     dir_fd = _open_dir(path.parent, create=True)
     try:
         try:
-            existing = _read_existing(dir_fd)
+            existing = _read_existing(dir_fd, path)
             if existing == content:
                 return Outcome("unchanged", path)
             if existing is not None and not force:
@@ -180,7 +193,7 @@ def install(
                     f"{path} exists and differs from the bundled skill (an "
                     "older version, or edited); pass --force to replace it"
                 )
-            _write_new(dir_fd, content, replace=existing is not None)
+            _write_new(dir_fd, content, path, replace=existing is not None)
         except OSError as e:
             raise SkillError(f"{path}: {e.strerror or e}") from e
     finally:
@@ -213,9 +226,13 @@ def uninstall(
         except FileNotFoundError:
             return Outcome("absent", path)
         except OSError as e:
-            raise SkillError(f"{path.parent}: a symlink or file is in the way") from e
+            if e.errno in (errno.ELOOP, errno.ENOTDIR):
+                raise SkillError(
+                    f"{path.parent}: a symlink or file is in the way"
+                ) from e
+            raise SkillError(f"{path.parent}: {e.strerror}") from e
         try:
-            existing = _read_existing(dir_fd)
+            existing = _read_existing(dir_fd, path)
             if existing is None:
                 return Outcome("absent", path)
             if not force and existing != content:
@@ -224,6 +241,8 @@ def uninstall(
                     "--force to remove it"
                 )
             os.unlink(SKILL_FILE, dir_fd=dir_fd)
+        except OSError as e:
+            raise SkillError(f"{path}: {e.strerror or e}") from e
         finally:
             os.close(dir_fd)
         try:
@@ -246,7 +265,7 @@ def status(name: str, *, project: Optional[Path] = None, user: bool = False) -> 
     except SkillError as e:
         return f"unreadable ({e})"
     try:
-        existing = _read_existing(dir_fd)
+        existing = _read_existing(dir_fd, path)
     except (SkillError, OSError) as e:
         return f"unreadable ({getattr(e, 'strerror', None) or e})"
     finally:
@@ -256,26 +275,41 @@ def status(name: str, *, project: Optional[Path] = None, user: bool = False) -> 
     return "current" if existing == text(name) else "differs"
 
 
+def deploy_config_path(project: Path) -> Path:
+    """Where the project's ``.claude/deploy-config.json`` is (resolved, as
+    the skills directory is)."""
+    return Path(os.path.realpath(_base(project, False) / ".claude")) / (
+        DEPLOY_CONFIG.name
+    )
+
+
 def write_deploy_config_template(project: Path) -> Optional[Path]:
     """Write an example ``.claude/deploy-config.json`` if there is none;
-    returns its path, or None when one exists already."""
-    claude = Path(os.path.realpath(_base(project, False) / ".claude"))
-    dir_fd = _open_dir(claude, create=True)
+    returns its path, or None when a regular file is there already
+    (anything else there is refused)."""
+    path = deploy_config_path(project)
+    dir_fd = _open_dir(path.parent, create=True)
     try:
         try:
             fd = os.open(
-                DEPLOY_CONFIG.name,
+                path.name,
                 os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                 0o644,
                 dir_fd=dir_fd,
             )
         except FileExistsError:
+            st = os.stat(path.name, dir_fd=dir_fd, follow_symlinks=False)
+            if not stat.S_ISREG(st.st_mode):
+                raise SkillError(
+                    f"{path} is not a regular file (a symlink?); remove it or "
+                    "point it at your config"
+                ) from None
             return None
         except OSError as e:
-            raise SkillError(f"{claude / DEPLOY_CONFIG.name}: {e.strerror}") from e
+            raise SkillError(f"{path}: {e.strerror}") from e
         with os.fdopen(fd, "w") as f:
             json.dump(DEPLOY_CONFIG_EXAMPLE, f, indent=2)
             f.write("\n")
     finally:
         os.close(dir_fd)
-    return claude / DEPLOY_CONFIG.name
+    return path
