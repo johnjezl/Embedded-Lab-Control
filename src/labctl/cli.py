@@ -4112,9 +4112,12 @@ def power_all_cmd(
         try:
             controller = PowerController.from_plug(sbc.power_plug)
             if action == "on":
-                result = power_on_with_bindings(manager, sbc, controller)
+                # Every board is switched in turn: one event each.
+                result = power_on_with_bindings(
+                    manager, sbc, controller, record_sharers=False
+                )
             else:
-                result = power_off_board(manager, sbc, controller)
+                result = power_off_board(manager, sbc, controller, record_sharers=False)
 
             if result:
                 click.echo(f"  {sbc.name}: {action.upper()} OK")

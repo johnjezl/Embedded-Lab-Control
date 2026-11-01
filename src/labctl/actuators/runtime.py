@@ -914,7 +914,7 @@ def _apply_after_power_off(manager, sbc, boards) -> None:
         raise ActuationError(f"{e}; {_left_off(sbc, boards)}") from e
 
 
-def power_on_with_bindings(manager, sbc, controller) -> bool:
+def power_on_with_bindings(manager, sbc, controller, *, record_sharers=True) -> bool:
     """Drive the pre_power bindings of ``sbc`` (and of any board sharing
     its plug outlet), then power it on.
 
@@ -926,20 +926,28 @@ def power_on_with_bindings(manager, sbc, controller) -> bool:
     switched. Returns the controller's result otherwise.
     """
 
-    def run():
+    def run(switching):
         boards = check_power_on(manager, sbc)
         _apply_pre_power(manager, boards)
+        switching()
         return controller.power_on()
 
-    return _run_on_outlet(manager, sbc, "power_on", run)
+    return _run_on_outlet(manager, sbc, "power_on", run, record_sharers=record_sharers)
 
 
-def power_off_board(manager, sbc, controller) -> bool:
+def power_off_board(manager, sbc, controller, *, record_sharers=True) -> bool:
     """Power ``sbc`` off and record it. Every path that powers a board off
     (other than inside a cycle or recovery, recorded as such) goes
     through here, so the activity stream has it whatever the front end.
-    Returns the controller's result."""
-    return _run_on_outlet(manager, sbc, "power_off", controller.power_off)
+    Returns the controller's result. ``record_sharers=False`` is for a
+    caller that switches every board itself (``power-all``), so each
+    gets one event."""
+
+    def run(switching):
+        switching()
+        return controller.power_off()
+
+    return _run_on_outlet(manager, sbc, "power_off", run, record_sharers=record_sharers)
 
 
 def _target(manager, sbc):
@@ -949,36 +957,44 @@ def _target(manager, sbc):
     return Target(getattr(manager, "db", None), sbc)
 
 
-def _run_on_outlet(manager, sbc, action, fn, *, sharer_action=None, **details):
-    """Run ``fn`` (switching ``sbc``'s plug outlet), recorded as
-    ``action`` on ``sbc`` and, with the same result, as ``sharer_action``
-    (default ``action``) with ``via=<sbc>`` on every board sharing the
-    outlet: switching the outlet switched them too (#57)."""
+def _run_on_outlet(
+    manager, sbc, action, fn, *, sharer_action=None, record_sharers=True, **details
+):
+    """Run ``fn(switching)``, recorded as ``action`` on ``sbc``. ``fn``
+    calls ``switching()`` just before it first switches the plug outlet;
+    from then on the boards sharing the outlet were switched too, so
+    each gets the same result as ``sharer_action`` (default ``action``)
+    with ``via=<sbc>`` (#57). A refusal before that records nothing on
+    them: their power was never touched."""
     target = _target(manager, sbc)
-    try:
-        sharers = [b for b in boards_on_plug(manager, sbc) if b.name != sbc.name]
-    except Exception:  # noqa: BLE001 - recording must not block power
-        logger.debug("outlet sharers of %s unknown", sbc.name, exc_info=True)
-        sharers = []
-    extra = {"via": sbc.name, **details}
-    if sharer_action is not None:
-        extra["for"] = action
+    switched = []
 
-    def record_sharers(result, **more):
+    def run():
+        return fn(lambda: switched.append(True))
+
+    def record_sharers_as(result, **more):
+        if not (record_sharers and switched):
+            return
+        try:
+            sharers = [b for b in boards_on_plug(manager, sbc) if b.name != sbc.name]
+        except Exception:  # noqa: BLE001 - recording must not break power
+            logger.debug("outlet sharers of %s unknown", sbc.name, exc_info=True)
+            return
+        extra = {"via": sbc.name, **details, **more}
+        if sharer_action is not None:
+            extra["for"] = action
         for board in sharers:
-            _target(manager, board).record(
-                sharer_action or action, result, **extra, **more
-            )
+            _target(manager, board).record(sharer_action or action, result, **extra)
 
     try:
-        value = target.run(action, fn, **details)
+        value = target.run(action, run, **details)
     except Exception as e:
-        record_sharers("error", error=str(e) or type(e).__name__)
+        record_sharers_as("error", error=str(e) or type(e).__name__)
         raise
     except BaseException as e:
-        record_sharers("interrupted", error=type(e).__name__)
+        record_sharers_as("interrupted", error=type(e).__name__)
         raise
-    record_sharers("error" if value is False else "ok")
+    record_sharers_as("error" if value is False else "ok")
     return value
 
 
@@ -1019,15 +1035,18 @@ def power_cycle_with_bindings(
     """
     delay_s = _checked_delay(manager, sbc, delay_s, "power_cycle")
 
-    def run():
+    def run(switching):
         boards = check_power_on(manager, sbc)
+        switching()
         if not controller.power_off():
             raise RuntimeError(f"power_off failed on {sbc.name!r}")
         (sleep_fn or time.sleep)(delay_s)
         _apply_after_power_off(manager, sbc, boards)
         return controller.power_on()
 
-    return _run_on_outlet(manager, sbc, "power_cycle", run, delay_s=float(delay_s))
+    return _run_on_outlet(
+        manager, sbc, "power_cycle", run, delay_seconds=float(delay_s)
+    )
 
 
 def _recovery(manager, sbc, controller, delay_s, sleep_fn, action, set_strap):
@@ -1038,7 +1057,7 @@ def _recovery(manager, sbc, controller, delay_s, sleep_fn, action, set_strap):
     # ValueError before anything is touched.
     delay_s = _checked_delay(manager, sbc, delay_s, action)
 
-    def run():
+    def run(switching):
         binding = manager.get_binding_by_target(sbc.id, "recovery_mode")
         if binding is None:
             raise ActuationError(f"no 'recovery_mode' binding on {sbc.name!r}")
@@ -1056,6 +1075,7 @@ def _recovery(manager, sbc, controller, delay_s, sleep_fn, action, set_strap):
         boards = check_power_on(manager, sbc)
 
         # 1. Power off.
+        switching()
         if not controller.power_off():
             raise ActuationError(f"power_off failed on {sbc.name!r}")
         # 2. Settling delay.
@@ -1073,7 +1093,7 @@ def _recovery(manager, sbc, controller, delay_s, sleep_fn, action, set_strap):
         action,
         run,
         sharer_action="power_cycle",
-        delay_s=float(delay_s),
+        delay_seconds=float(delay_s),
     )
 
 
