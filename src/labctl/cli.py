@@ -6827,7 +6827,6 @@ def health_check_cmd(
             if summary.recommended_status:
                 sbc = manager.get_sbc_by_name(sbc_name_key)
                 if sbc and sbc.status != summary.recommended_status:
-                    manager.update_sbc(sbc.id, status=summary.recommended_status)
                     # Build details
                     details_parts = []
                     if summary.ping_result:
@@ -6835,7 +6834,7 @@ def health_check_cmd(
                     if summary.serial_result:
                         details_parts.append(summary.serial_result.message)
                     details = "; ".join(details_parts) if details_parts else None
-                    manager.log_status(sbc.id, summary.recommended_status, details)
+                    manager.record_status(sbc.id, summary.recommended_status, details)
                     updated += 1
         if updated > 0:
             click.echo(f"\nUpdated status for {updated} SBC(s)")
@@ -6885,6 +6884,7 @@ def monitor_cmd(
       labctl monitor -i 30             # Check every 30 seconds
       labctl monitor --no-alerts       # Disable alerting
     """
+    from labctl.core import audit
     from labctl.health import (
         AlertManager,
         ConsoleAlertHandler,
@@ -6892,6 +6892,10 @@ def monitor_cmd(
         LogAlertHandler,
         MonitorDaemon,
     )
+
+    # What the daemon does on its own (relay safe-drive at start) is the
+    # daemon's, not a CLI user's.
+    audit.set_context(actor="daemon:monitor", source="daemon")
 
     manager = _get_manager(ctx)
     config: Config = ctx.obj["config"]
@@ -7100,6 +7104,7 @@ def _format_activity_row(row, *, compact: bool = False) -> str:
     """
     ts = row["logged_at"] or ""
     actor = row["actor"] or "internal"
+    agent = row["agent"] if "agent" in row.keys() else None
     action = row["action"] or ""
     target = row["entity_name"] or "-"
     result = row["result"] or "ok"
@@ -7112,7 +7117,7 @@ def _format_activity_row(row, *, compact: bool = False) -> str:
         actor_width = 12
         details_text = _compact_details(row["details"])
     else:
-        actor_display = actor
+        actor_display = f"{agent} ({actor})" if agent else actor
         actor_width = 32
         details_text = row["details"]
 
@@ -7134,6 +7139,7 @@ def _activity_query_clauses(
     source_filter: str | None,
     result_filter: str | None,
     since: str | None,
+    agent_filter: str | None = None,
 ) -> tuple[list[str], list]:
     where: list[str] = []
     params: list = []
@@ -7149,6 +7155,9 @@ def _activity_query_clauses(
     if result_filter:
         where.append("result = ?")
         params.append(result_filter)
+    if agent_filter:
+        where.append("agent = ?")
+        params.append(agent_filter)
     if since:
         where.append("logged_at >= ?")
         params.append(_parse_since(since))
@@ -7158,6 +7167,9 @@ def _activity_query_clauses(
 @activity_group.command("tail")
 @click.option("--sbc", "sbc_filter", help="Filter to a single SBC name")
 @click.option("--actor", "actor_filter", help="Filter to one actor (exact match)")
+@click.option(
+    "--agent", "agent_filter", help="Filter to one MCP agent name (exact match)"
+)
 @click.option(
     "--source",
     "source_filter",
@@ -7192,6 +7204,7 @@ def activity_tail_cmd(
     ctx: click.Context,
     sbc_filter: str | None,
     actor_filter: str | None,
+    agent_filter: str | None,
     source_filter: str | None,
     result_filter: str | None,
     since: str | None,
@@ -7207,11 +7220,11 @@ def activity_tail_cmd(
     manager = _get_manager(ctx)
 
     where, params = _activity_query_clauses(
-        sbc_filter, actor_filter, source_filter, result_filter, since
+        sbc_filter, actor_filter, source_filter, result_filter, since, agent_filter
     )
 
     sql = (
-        "SELECT id, logged_at, actor, source, action, entity_name, "
+        "SELECT id, logged_at, actor, agent, source, action, entity_name, "
         "result, details "
         "FROM audit_log"
     )
@@ -7235,7 +7248,7 @@ def activity_tail_cmd(
 
     # Follow mode: poll for new rows every 500ms.
     follow_sql = (
-        "SELECT id, logged_at, actor, source, action, entity_name, "
+        "SELECT id, logged_at, actor, agent, source, action, entity_name, "
         "result, details FROM audit_log WHERE id > ?"
     )
     follow_where = list(where)
@@ -7262,6 +7275,9 @@ def activity_tail_cmd(
 @activity_group.command("export")
 @click.option("--sbc", "sbc_filter", help="Filter to a single SBC name")
 @click.option("--actor", "actor_filter", help="Filter to one actor (exact match)")
+@click.option(
+    "--agent", "agent_filter", help="Filter to one MCP agent name (exact match)"
+)
 @click.option(
     "--source",
     "source_filter",
@@ -7298,6 +7314,7 @@ def activity_export_cmd(
     ctx: click.Context,
     sbc_filter: str | None,
     actor_filter: str | None,
+    agent_filter: str | None,
     source_filter: str | None,
     result_filter: str | None,
     since: str | None,
@@ -7315,6 +7332,7 @@ def activity_export_cmd(
         result=result_filter,
         since=_parse_since(since) if since else None,
         order_desc=False,
+        agent=agent_filter,
     )
     if export_format == "ndjson":
         for event in events:

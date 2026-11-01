@@ -69,7 +69,7 @@ Reads are not emitted. If we ever need that, it goes behind a
 | CLI      | `cli:<user>`                          | Every mutating subcommand                       |
 | MCP      | `mcp-stdio:<pid>-<epoch>` (matches claims) | Every `@mcp.tool()` that mutates            |
 | Web/API  | `web:<user>` / `api:<user>`           | Every POST/PUT/PATCH/DELETE handler             |
-| Daemon   | `daemon`                              | Status transitions, alerts triggered            |
+| Daemon   | `daemon:<name>` (`daemon:monitor`, `daemon:mcp`) | The daemon's own actions: relay safe-drive, claim expiry |
 | Internal | `internal`                            | Fallback when no boundary context is active     |
 
 ## Event schema
@@ -122,7 +122,7 @@ Canonical verb_noun form. Examples:
 - `assign_serial_port`, `remove_serial_port`, `assign_power_plug`,
   `set_network_address`
 - `serial_send`, `boot_test`
-- `status_change` (daemon — when an SBC transitions status)
+- `claim_expired` (a claim released because it ran out)
 
 ### Redaction
 
@@ -146,7 +146,7 @@ Human-readable line format:
 ```
 10:22:01.543  mcp-stdio:12345  power_on         pi-5-1   ok      (2.1s)
 10:22:04.112  cli:john         sdwire_to_host   pi-5-2   forbidden  claim held by agent-alice
-10:22:04.310  daemon           status_change    pi-5-2   ok      online -> offline
+10:22:04.310  daemon:mcp       claim_expired    pi-5-2   ok      Claim by agent-alice expired
 ```
 
 `--follow` polls the DB every 500 ms. This keeps the CLI usable even
@@ -334,8 +334,19 @@ phase commitment yet — pick up as bandwidth allows.
 ## Open questions (resolved)
 
 1. **Daemon noise** — emit every cycle or only on status change?
-   **Resolved:** only status changes.
+   **Resolved:** only status changes. **Revised (#57, 2026-10-31):** not
+   at all. Status changes are observations, and `status_log` keeps every
+   transition; a flapping board had produced most of the stream.
 2. **Separate table or unify with `status_history` / `claim_history`?**
    **Resolved:** separate — those tables are row-per-entity with a
    history; this is an append-only firehose across all entities.
 3. **Include reads?** **Resolved:** no in v1.
+
+## Implementation status (2026-10-31, #57)
+
+Built: manager mutations, claims (including expiry), CLI power commands,
+relay actions, MCP image uploads/deletes; actor/source per front end,
+`daemon:<name>` for daemons, and an `agent` column (schema v13) with the
+MCP agent name. Not yet built (#57 part 2): the low-level power, SDWire,
+serial-send and boot-test instrumentation described above, so those
+actions from MCP, REST and the web UI are not recorded.

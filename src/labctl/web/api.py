@@ -971,6 +971,7 @@ def list_activity():
       sbc=X         Filter by entity_name.
       actor=X       Filter by actor (exact match).
       source=X      cli | mcp | api | web | daemon | internal.
+      agent=X       Filter by MCP agent name (exact match).
       result=X      ok | error | forbidden.
       since=TS      ISO timestamp lower bound.
       after_id=N    Only events with id > N (for long polling).
@@ -999,5 +1000,6 @@ def list_activity():
         result=request.args.get("result"),
         since=since,
         after_id=after_id_int,
+        agent=request.args.get("agent"),
     )
     return jsonify({"events": events, "count": len(events)})

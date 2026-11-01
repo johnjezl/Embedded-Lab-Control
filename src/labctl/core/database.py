@@ -33,7 +33,7 @@ from typing import Generator, Optional
 logger = logging.getLogger(__name__)
 
 # Current schema version
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 # Default SQLite busy-timeout when the Database is constructed without an
 # explicit value (e.g. tests, direct callers). Matches Config.database
@@ -159,9 +159,10 @@ CREATE TABLE IF NOT EXISTS audit_log (
     details TEXT,
     logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     actor TEXT NOT NULL DEFAULT 'internal',     -- e.g. "cli:john", "mcp-stdio:12345-..."
-    source TEXT NOT NULL DEFAULT 'internal',    -- cli | mcp | api | daemon | internal
+    source TEXT NOT NULL DEFAULT 'internal',    -- cli | mcp | api | web | daemon | internal
     result TEXT NOT NULL DEFAULT 'ok',          -- ok | error | forbidden
-    claim_id INTEGER REFERENCES claims(id)
+    claim_id INTEGER REFERENCES claims(id),
+    agent TEXT                                  -- MCP agent name, NULL elsewhere
 );
 
 -- Hardware claims (exclusive access coordination)
@@ -278,6 +279,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_entity ON audit_log(entity_type, entity
 CREATE INDEX IF NOT EXISTS idx_audit_log_logged_at ON audit_log(logged_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor, logged_at DESC);
 CREATE INDEX IF NOT EXISTS idx_audit_log_source ON audit_log(source, logged_at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_log_agent ON audit_log(agent, logged_at DESC);
 
 -- At most one active claim per SBC (partial unique index)
 CREATE UNIQUE INDEX IF NOT EXISTS idx_claims_active_sbc
@@ -713,6 +715,23 @@ class Database:
                 conn.execute(
                     "CREATE INDEX IF NOT EXISTS idx_status_log_logged_at"
                     " ON status_log(logged_at)"
+                )
+
+        if from_version < 13:
+            # v13: the MCP agent name on activity events (audit_log.agent).
+            has_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table'"
+                " AND name = 'audit_log'"
+            ).fetchone()
+            if has_table:
+                try:
+                    conn.execute("ALTER TABLE audit_log ADD COLUMN agent TEXT")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column" not in str(e):
+                        raise
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_audit_log_agent"
+                    " ON audit_log(agent, logged_at DESC)"
                 )
 
         # OR IGNORE: tolerate a concurrent process that has already

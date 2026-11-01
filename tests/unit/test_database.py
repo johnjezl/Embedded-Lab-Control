@@ -747,7 +747,7 @@ class TestMigrationV12:
         assert "idx_status_log_logged_at" in self._index_names(path)
         with db.connect() as conn:
             version = conn.execute("SELECT MAX(version) FROM schema_version")
-            assert version.fetchone()[0] == SCHEMA_VERSION == 12
+            assert version.fetchone()[0] == SCHEMA_VERSION
             assert conn.execute("SELECT COUNT(*) FROM status_log").fetchone()[0] == 1
 
     def test_pruning_query_uses_index(self, tmp_path):

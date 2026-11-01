@@ -12,6 +12,7 @@
   .filter-chip.source-cli.active { background: #0d6efd; }
   .filter-chip.source-mcp.active { background: #6f42c1; }
   .filter-chip.source-api.active { background: #20c997; }
+  .filter-chip.source-web.active { background: #fd7e14; }
   .filter-chip.source-daemon.active { background: #6c757d; }
   .filter-chip.source-internal.active { background: #adb5bd; color: #212529; }
   .activity-status { font-size: 0.8rem; color: #6c757d; margin-left: 1rem; }
@@ -58,6 +59,7 @@
     <span class="filter-chip source-cli" data-filter="source" data-value="cli">cli</span>
     <span class="filter-chip source-mcp" data-filter="source" data-value="mcp">mcp</span>
     <span class="filter-chip source-api" data-filter="source" data-value="api">api</span>
+    <span class="filter-chip source-web" data-filter="source" data-value="web">web</span>
     <span class="filter-chip source-daemon" data-filter="source" data-value="daemon">daemon</span>
     <span class="filter-chip source-internal" data-filter="source" data-value="internal">internal</span>
     <span style="align-self: center; font-size: 0.85rem; color: #495057; margin-left: 1rem;">Result:</span>
@@ -105,19 +107,29 @@
     }
   }
 
+  // Every field can carry caller-chosen text (agent names, claim reasons,
+  // SBC names): escape it all before it goes into markup.
+  function esc(value) {
+    return String(value ?? '').replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    })[c]);
+  }
+
   function renderRow(event, isNew) {
     const row = document.createElement('div');
     row.className = 'activity-row' + (isNew ? ' row-new' : '');
     row.dataset.source = event.source;
     row.dataset.result = event.result;
+    const actor = event.agent ? event.agent + ' (' + event.actor + ')' : event.actor;
+    const details = formatDetails(event.details);
     row.innerHTML = `
-      <div class="col-ts">${event.logged_at || ''}</div>
-      <div class="col-actor" title="${event.actor}">${event.actor}</div>
-      <div class="col-source source-${event.source}">${event.source}</div>
-      <div class="col-action">${event.action}</div>
-      <div class="col-target">${event.entity_name || '-'}</div>
-      <div class="col-result result-${event.result}">${event.result}</div>
-      <div class="col-details" title="${formatDetails(event.details).replace(/"/g, '&quot;')}">${formatDetails(event.details)}</div>
+      <div class="col-ts">${esc(event.logged_at)}</div>
+      <div class="col-actor" title="${esc(actor)}">${esc(actor)}</div>
+      <div class="col-source source-${esc(event.source)}">${esc(event.source)}</div>
+      <div class="col-action">${esc(event.action)}</div>
+      <div class="col-target">${esc(event.entity_name || '-')}</div>
+      <div class="col-result result-${esc(event.result)}">${esc(event.result)}</div>
+      <div class="col-details" title="${esc(details)}">${esc(details)}</div>
     `;
     if (!matchesFilters(event)) row.style.display = 'none';
     return row;

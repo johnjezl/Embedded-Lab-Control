@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Activity stream attribution (#57, part 1):
+  - The monitor's own actions are recorded as `daemon:monitor` (source
+    `daemon`; they appeared as `cli:labctl`), and the MCP server's claim
+    sweep as `daemon:mcp` (it appeared as `internal`).
+  - Board status changes found by health checks (the monitor and
+    `labctl health-check --update`) are no longer activity events: they
+    are observations, and status history keeps every transition (web
+    `/sbc/<name>/history`). One flapping board had produced most of the
+    stream. Editing a board by hand is still recorded.
+  - MCP events carry the agent's name (from `claim_sbc agent_name=...`)
+    in a new `agent` column (schema v13), shown as `name (session)` and
+    filtered with `labctl activity tail/export --agent` or
+    `/api/activity?agent=`.
+
+### Fixed
+
+- A claim that ran out was released with no activity event; expiry is now
+  recorded as `claim_expired`, including claims released by another
+  caller's `claim_sbc`.
+- The web `/activity` page put event text into the page unescaped, so an
+  agent name, claim reason or SBC name containing markup ran as script in
+  the viewer's browser. Every field is now escaped.
+
 ## [0.2.1] - 2026-10-31
 
 Bug-fix and documentation release: `labctl services status` uptime works

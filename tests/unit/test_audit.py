@@ -336,7 +336,7 @@ class TestSchemaV6:
     def test_schema_version_is_current(self):
         from labctl.core.database import SCHEMA_VERSION
 
-        assert SCHEMA_VERSION == 12
+        assert SCHEMA_VERSION == 13
 
     def test_fresh_db_has_power_cache_columns(self, db):
         cols = {r["name"] for r in db.execute("PRAGMA table_info(sbcs)")}

@@ -2,9 +2,14 @@
 Activity stream — structured record of every state-changing action.
 
 Each call to `emit()` writes one row to `audit_log`. The `actor`,
-`source`, and `claim_id` fields are pulled from contextvars set by
-the originating front-end (CLI, MCP, web, daemon) via the
+`source`, `agent` and `claim_id` fields are pulled from contextvars set
+by the originating front-end (CLI, MCP, web, daemon) via the
 `activity_context()` context manager.
+
+Daemons log as actor ``daemon:<name>`` with source ``daemon`` (the
+monitor is ``daemon:monitor``). ``agent`` is the name an MCP agent gave
+(``claim_sbc(agent_name=...)``), so an event can be tied to an agent and
+not only to its session ID; it is NULL elsewhere.
 
 See docs/RESOLVED_SPEC_activity_stream.md for the full design.
 """
@@ -43,6 +48,7 @@ REDACT_PLACEHOLDER = "***"
 _actor: ContextVar[str] = ContextVar("labctl_audit_actor", default="internal")
 _source: ContextVar[str] = ContextVar("labctl_audit_source", default="internal")
 _claim_id: ContextVar[Optional[int]] = ContextVar("labctl_audit_claim_id", default=None)
+_agent: ContextVar[Optional[str]] = ContextVar("labctl_audit_agent", default=None)
 
 
 @contextmanager
@@ -50,6 +56,7 @@ def activity_context(
     actor: str,
     source: str,
     claim_id: Optional[int] = None,
+    agent: Optional[str] = None,
 ) -> Iterator[None]:
     """Set the audit context for the enclosed block.
 
@@ -61,18 +68,21 @@ def activity_context(
     token_a = _actor.set(actor)
     token_s = _source.set(source)
     token_c = _claim_id.set(claim_id)
+    token_g = _agent.set(agent)
     try:
         yield
     finally:
         _actor.reset(token_a)
         _source.reset(token_s)
         _claim_id.reset(token_c)
+        _agent.reset(token_g)
 
 
 def set_context(
     actor: str,
     source: str,
     claim_id: Optional[int] = None,
+    agent: Optional[str] = None,
 ) -> None:
     """Set the audit context for the remainder of this contextvars context.
 
@@ -83,6 +93,13 @@ def set_context(
     _actor.set(actor)
     _source.set(source)
     _claim_id.set(claim_id)
+    _agent.set(agent)
+
+
+def set_agent(agent: Optional[str]) -> None:
+    """Name the agent for the rest of the current context (e.g. once an
+    MCP tool call has learned it, so the call's own events carry it)."""
+    _agent.set(agent)
 
 
 def current_actor() -> str:
@@ -95,6 +112,10 @@ def current_source() -> str:
 
 def current_claim_id() -> Optional[int]:
     return _claim_id.get()
+
+
+def current_agent() -> Optional[str]:
+    return _agent.get()
 
 
 def _redact(obj: Any) -> Any:
@@ -154,6 +175,7 @@ def row_to_event_dict(row) -> dict[str, Any]:
         "result": row["result"] or "ok",
         "details": row["details"],
         "claim_id": row["claim_id"],
+        "agent": row["agent"] if "agent" in row.keys() else None,
     }
 
 
@@ -168,6 +190,7 @@ def query_events(
     since: Optional[str] = None,
     after_id: Optional[int] = None,
     order_desc: bool = True,
+    agent: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Query audit_log rows with the standard activity filters."""
     where: list[str] = []
@@ -177,6 +200,7 @@ def query_events(
         (actor, "actor"),
         (source, "source"),
         (result, "result"),
+        (agent, "agent"),
     ):
         if value:
             where.append(f"{column} = ?")
@@ -223,6 +247,7 @@ def emit(
     actor: Optional[str] = None,
     source: Optional[str] = None,
     claim_id: Optional[int] = None,
+    agent: Optional[str] = None,
 ) -> None:
     """Record a single activity event.
 
@@ -237,6 +262,7 @@ def emit(
         actor: Override the contextvar actor (rare; usually leave None).
         source: Override the contextvar source.
         claim_id: Override the contextvar claim id.
+        agent: Override the contextvar agent name.
 
     Never raises — audit failures are logged but do not propagate.
     """
@@ -244,13 +270,14 @@ def emit(
         effective_actor = actor if actor is not None else _actor.get()
         effective_source = source if source is not None else _source.get()
         effective_claim = claim_id if claim_id is not None else _claim_id.get()
+        effective_agent = agent if agent is not None else _agent.get()
         details_text = _serialize_details(details)
         db.execute_insert(
             """
             INSERT INTO audit_log (
                 action, entity_type, entity_id, entity_name,
-                details, logged_at, actor, source, result, claim_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                details, logged_at, actor, source, result, claim_id, agent
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 action,
@@ -263,6 +290,7 @@ def emit(
                 effective_source,
                 result,
                 effective_claim,
+                effective_agent,
             ),
         )
     except Exception as e:  # noqa: BLE001
