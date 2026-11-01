@@ -69,7 +69,8 @@ Reads are not emitted. If we ever need that, it goes behind a
 | CLI      | `cli:<user>`                          | Every mutating subcommand                       |
 | MCP      | `mcp-stdio:<pid>-<epoch>` (matches claims) | Every `@mcp.tool()` that mutates            |
 | Web/API  | `web:<user>` / `api:<user>`           | Every POST/PUT/PATCH/DELETE handler             |
-| Daemon   | `daemon:<name>` (`daemon:monitor`, `daemon:mcp`) | The daemon's own actions: relay safe-drive, claim expiry |
+| Daemon   | `daemon:<name>` (`daemon:monitor`, `daemon:mcp`) | The daemon's own actions: relay safe-drive, dead-session releases |
+| System   | `system`                              | A claim that ran out (`claim_expired`), whoever's call swept it |
 | Internal | `internal`                            | Fallback when no boundary context is active     |
 
 ## Event schema
@@ -146,7 +147,7 @@ Human-readable line format:
 ```
 10:22:01.543  mcp-stdio:12345  power_on         pi-5-1   ok      (2.1s)
 10:22:04.112  cli:john         sdwire_to_host   pi-5-2   forbidden  claim held by agent-alice
-10:22:04.310  daemon:mcp       claim_expired    pi-5-2   ok      Claim by agent-alice expired
+10:22:04.310  system           claim_expired    pi-5-2   ok      Claim by agent-alice expired
 ```
 
 `--follow` polls the DB every 500 ms. This keeps the CLI usable even

@@ -1160,6 +1160,13 @@ class TestStatusHistoryPruningKeepsUptime:
     cutoff, so a board stable for longer than the retention keeps its
     uptime figures."""
 
+    @staticmethod
+    def _set_status(manager, sbc_id, status):
+        """The current status alone; update_sbc would add a history row."""
+        manager.db.execute_modify(
+            "UPDATE sbcs SET status = ? WHERE id = ?", (status.value, sbc_id)
+        )
+
     def _row(self, manager, sbc_id, status, days_ago, hours_ago=0):
         manager.db.execute_insert(
             "INSERT INTO status_log (sbc_id, status, logged_at) VALUES"
@@ -1179,7 +1186,7 @@ class TestStatusHistoryPruningKeepsUptime:
 
     def test_board_stable_longer_than_retention(self, manager):
         sbc = manager.create_sbc(name="stable")
-        manager.update_sbc(sbc.id, status=Status.ONLINE)
+        self._set_status(manager, sbc.id, Status.ONLINE)
         self._row(manager, sbc.id, "offline", 101)
         self._row(manager, sbc.id, "online", 100)
 
@@ -1196,7 +1203,7 @@ class TestStatusHistoryPruningKeepsUptime:
 
     def test_flapping_history_pruned_but_uptime_unchanged(self, manager):
         sbc = manager.create_sbc(name="flappy")
-        manager.update_sbc(sbc.id, status=Status.ONLINE)
+        self._set_status(manager, sbc.id, Status.ONLINE)
         for days in range(60, 40, -1):  # old flapping, all past the cutoff
             self._row(manager, sbc.id, "offline", days, 12)
             self._row(manager, sbc.id, "online", days, 6)
@@ -1217,7 +1224,7 @@ class TestStatusHistoryPruningKeepsUptime:
 
     def test_offline_board_keeps_its_last_online(self, manager):
         sbc = manager.create_sbc(name="dead")
-        manager.update_sbc(sbc.id, status=Status.OFFLINE)
+        self._set_status(manager, sbc.id, Status.OFFLINE)
         self._row(manager, sbc.id, "online", 90)
         self._row(manager, sbc.id, "offline", 80)
         manager.cleanup_old_status_logs(30)
@@ -1360,7 +1367,7 @@ class TestStatusHistoryPruningKeepsUptime:
         """CURRENT_TIMESTAMP has one-second resolution: an online and an
         offline row in the same second are ordered by id (logging order)."""
         up = manager.create_sbc(name="came-up")
-        manager.update_sbc(up.id, status=Status.ONLINE)
+        self._set_status(manager, up.id, Status.ONLINE)
         manager.db.execute_insert(
             "INSERT INTO status_log (sbc_id, status, logged_at)"
             " VALUES (?, 'offline', datetime('now', '-1 hours'))",
@@ -1374,7 +1381,7 @@ class TestStatusHistoryPruningKeepsUptime:
         assert manager.get_uptime(up.id)["current_uptime_seconds"] >= 3600 - 5
 
         down = manager.create_sbc(name="went-down")
-        manager.update_sbc(down.id, status=Status.ONLINE)
+        self._set_status(manager, down.id, Status.ONLINE)
         manager.db.execute_insert(
             "INSERT INTO status_log (sbc_id, status, logged_at)"
             " VALUES (?, 'online', datetime('now', '-1 hours'))",

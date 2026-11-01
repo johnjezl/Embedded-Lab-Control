@@ -5751,6 +5751,21 @@ class TestMcpActivityAgent:
         assert create[-1]["agent"] is None
         assert create[-1]["source"] == "mcp"
 
+    def test_authenticated_user_without_a_name_has_no_agent(self, claims_env):
+        """The username is in the session ID already; agent is only a name
+        the agent gave."""
+        from labctl import mcp_server
+
+        with (
+            patch("labctl.mcp_server._SESSION_KIND", "mcp-http"),
+            patch("labctl.mcp_server._authenticated_user", return_value="alice"),
+            patch.dict("labctl.mcp_server._USER_AGENT_NAMES", clear=True),
+        ):
+            mcp_server.add_sbc(name="new-board")
+        create = [e for e in self._events(claims_env) if e["action"] == "create"]
+        assert create[-1]["agent"] is None
+        assert create[-1]["actor"].endswith(":alice")
+
     def test_unauthenticated_http_name_only_on_its_call(self, claims_env):
         from labctl import mcp_server
 

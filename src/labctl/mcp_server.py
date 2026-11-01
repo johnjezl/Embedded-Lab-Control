@@ -452,6 +452,16 @@ def _remembered_agent_name() -> str | None:
     return _AGENT_NAME if _SESSION_KIND == "mcp-stdio" else None
 
 
+def _given_agent_name() -> str | None:
+    """The agent name this caller gave earlier (claim_sbc agent_name), for
+    the activity stream; unlike _remembered_agent_name, never the bare
+    username, which the session ID already carries."""
+    user = _authenticated_user()
+    if user:
+        return _USER_AGENT_NAMES.get(user)
+    return _AGENT_NAME if _SESSION_KIND == "mcp-stdio" else None
+
+
 def _get_agent_name(call_name: str | None = None) -> str:
     """The name to record: this call's agent_name, else the caller's
     remembered or authenticated name, else an ``unnamed-...`` placeholder."""
@@ -965,9 +975,7 @@ def _with_mcp_activity(func):
         # is the name the caller gave (claim_sbc agent_name), if any.
         with (
             _HARDWARE_LOCK,
-            audit.activity_context(
-                _get_session_id(), "mcp", agent=_remembered_agent_name()
-            ),
+            audit.activity_context(_get_session_id(), "mcp", agent=_given_agent_name()),
         ):
             return func(*args, **kwargs)
 

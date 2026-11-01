@@ -45,6 +45,7 @@ class ActivityEvent:
     result: str
     details: Optional[str]  # JSON string as stored
     claim_id: Optional[int]
+    agent: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -59,6 +60,7 @@ class ActivityEvent:
             "result": self.result,
             "details": self.details,
             "claim_id": self.claim_id,
+            "agent": self.agent,
         }
 
     def to_sse(self) -> str:
@@ -80,6 +82,7 @@ def _row_to_event(row) -> ActivityEvent:
         result=row["result"] or "ok",
         details=row["details"],
         claim_id=row["claim_id"],
+        agent=row["agent"] if "agent" in row.keys() else None,
     )
 
 

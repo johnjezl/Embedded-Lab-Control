@@ -229,7 +229,8 @@ Every command has `--help`. This section lists the commands; see
 
 Each event records who acted: `cli:<user>`, `web:<user>` / `api:<user>`, an
 MCP session ID (`mcp-stdio:<pid>-<epoch>`, or `mcp-http:...:<user>`), or a
-daemon (`daemon:monitor`, or `daemon:mcp` for the MCP server's claim sweep).
+daemon (`daemon:monitor`, or `daemon:mcp` for the MCP server's claim sweep),
+or `system` for a claim that ran out (`claim_expired`).
 MCP events also carry the agent name the agent gave (`claim_sbc
 agent_name=...`), shown as `name (session)`. Board status changes found by
 health checks are not activity events; they are in each board's status
