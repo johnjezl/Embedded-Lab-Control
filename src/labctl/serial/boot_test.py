@@ -208,6 +208,61 @@ def run_boot_test(
     output_dir_fd: Optional[int] = None,
     progress_fn=None,
     before_run_fn=None,
+    *,
+    target=None,
+) -> BootTestResult:
+    """:func:`_run_boot_test`, recorded as ``boot_test`` against
+    ``target`` (an audit.Target for the SBC) when given: one event for
+    the test, with its counts. Its power cycles, deploy and card switches
+    are recorded by the code that does them."""
+    args = (
+        sbc_name,
+        expect_pattern,
+        tcp_host,
+        tcp_port,
+        power_cycle_fn,
+        runs,
+        timeout,
+        deploy_fn,
+        image,
+        dest,
+        partition,
+        output_dir,
+        output_dir_fd,
+        progress_fn,
+        before_run_fn,
+    )
+    if target is None:
+        return _run_boot_test(*args)
+    return target.run(
+        "boot_test",
+        lambda: _run_boot_test(*args),
+        summary=lambda r: {
+            "completed_runs": len(r.runs),
+            "passed": r.passed_count,
+            "stopped": r.stopped_reason,
+        },
+        runs=runs,
+        image=os.path.basename(image) if image else None,
+    )
+
+
+def _run_boot_test(
+    sbc_name: str,
+    expect_pattern: str,
+    tcp_host: str,
+    tcp_port: int,
+    power_cycle_fn,
+    runs: int = 10,
+    timeout: float = 30.0,
+    deploy_fn=None,
+    image: str | None = None,
+    dest: str | None = None,
+    partition: int = 1,
+    output_dir: str | None = None,
+    output_dir_fd: Optional[int] = None,
+    progress_fn=None,
+    before_run_fn=None,
 ) -> BootTestResult:
     """Run automated boot reliability test.
 

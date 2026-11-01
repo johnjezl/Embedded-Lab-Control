@@ -345,9 +345,17 @@ phase commitment yet — pick up as bandwidth allows.
 
 ## Implementation status (2026-10-31, #57)
 
-Built: manager mutations, claims (including expiry), CLI power commands,
-relay actions, MCP image uploads/deletes; actor/source per front end,
-`daemon:<name>` for daemons, and an `agent` column (schema v13) with the
-MCP agent name. Not yet built (#57 part 2): the low-level power, SDWire,
-serial-send and boot-test instrumentation described above, so those
-actions from MCP, REST and the web UI are not recorded.
+Built: manager mutations, claims (claim, renew, release requests, expiry,
+force release), relay actions, MCP image uploads/deletes; actor/source
+per front end, `daemon:<name>` for daemons, and an `agent` column
+(schema v13) with the MCP agent name. Hardware actions are recorded in
+the shared code every front end calls, through `audit.Target`: the
+runtime's `power_on_with_bindings`, `power_off_board`,
+`power_cycle_with_bindings` and recovery composites; `SDWireController`
+built with `sbc=`/`db=` (switch, flash, file updates); serial send and
+capture (size only for sends); `run_boot_test` (one event, with counts).
+`tests/unit/test_hardware_events.py` checks that every mutating MCP tool
+is mapped to what it records and that the front ends use these paths.
+`audit_log.claim_id` is never written (a foreign key to claims with no
+ON DELETE); claim IDs go in `details`. Not recorded: claim refusals
+(checks are also used speculatively, e.g. before a prompt), and reads.

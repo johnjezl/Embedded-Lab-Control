@@ -121,7 +121,7 @@ def no_plug_refusal(sbc) -> str:
     )
 
 
-def power_off_before_host_switch(sbc, *, no_plug_ok: bool = False) -> None:
+def power_off_before_host_switch(manager, sbc, *, no_plug_ok: bool = False) -> None:
     """Switch ``sbc`` off before its SD card goes to the host.
 
     Raises RuntimeError, before the card is touched, when the board can't
@@ -135,10 +135,11 @@ def power_off_before_host_switch(sbc, *, no_plug_ok: bool = False) -> None:
         if no_plug_ok:
             return
         raise NoPlugError(no_plug_refusal(sbc))
+    from labctl.actuators.runtime import power_off_board
     from labctl.power import PowerController
 
     try:
-        ok = PowerController.from_plug(sbc.power_plug).power_off()
+        ok = power_off_board(manager, sbc, PowerController.from_plug(sbc.power_plug))
     except Exception as e:
         ok, why = False, f": {e}"
     else:
@@ -165,7 +166,7 @@ def deploy_to_card(manager, sbc, ctrl, write) -> None:
         ctrl.ensure_present()
     except Exception as e:
         raise RuntimeError(f"{e}; nothing changed") from e
-    power_off_before_host_switch(sbc)
+    power_off_before_host_switch(manager, sbc)
     try:
         ctrl.switch_to_host()
         time.sleep(2)

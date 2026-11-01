@@ -1320,8 +1320,10 @@ def power_off(sbc_name: str) -> str:
         return f"Error: No power plug assigned to '{sbc_name}'"
 
     try:
+        from labctl.actuators.runtime import power_off_board
+
         controller = PowerController.from_plug(sbc.power_plug)
-        if controller.power_off():
+        if power_off_board(manager, sbc, controller):
             result = f"Power OFF: {sbc_name}"
             advisory = _claim_advisory(manager, sbc_name)
             return f"{result}\n\n{advisory}" if advisory else result
@@ -2038,7 +2040,9 @@ def sdwire_to_dut(sbc_name: str) -> str:
         return f"Error: No SDWire assigned to '{sbc_name}'"
 
     try:
-        ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+        ctrl = SDWireController(
+            sbc.sdwire.serial_number, sbc.sdwire.device_type, sbc=sbc, db=manager.db
+        )
         ctrl.switch_to_dut()
         result = f"SD card switched to DUT: {sbc_name}"
         advisory = _claim_advisory(manager, sbc_name)
@@ -2081,7 +2085,9 @@ def sdwire_to_host(sbc_name: str, force: bool = False) -> str:
         return guard_err
 
     try:
-        ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+        ctrl = SDWireController(
+            sbc.sdwire.serial_number, sbc.sdwire.device_type, sbc=sbc, db=manager.db
+        )
         ctrl.switch_to_host()
         # Wait until the card is actually readable, so a follow-up call
         # (e.g. sdwire_ls) sees it on the host instead of racing USB
@@ -2176,7 +2182,9 @@ def sdwire_update(
     if path_err:
         return path_err
 
-    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    ctrl = SDWireController(
+        sbc.sdwire.serial_number, sbc.sdwire.device_type, sbc=sbc, db=manager.db
+    )
     keepalive = None
 
     try:
@@ -2206,7 +2214,7 @@ def sdwire_update(
         from labctl.sdwire.power_guard import power_off_before_host_switch
 
         try:
-            power_off_before_host_switch(sbc, no_plug_ok=no_plug_ok)
+            power_off_before_host_switch(manager, sbc, no_plug_ok=no_plug_ok)
         except RuntimeError as e:
             return f"Error: {e}."
 
@@ -2307,7 +2315,9 @@ def sdwire_ls(
         return _sdwire_read_error("sbc_not_found", f"SBC '{sbc_name}' not found")
     if not sbc.sdwire:
         return _sdwire_read_error("no_sdwire", f"No SDWire assigned to '{sbc_name}'")
-    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    ctrl = SDWireController(
+        sbc.sdwire.serial_number, sbc.sdwire.device_type, sbc=sbc, db=manager.db
+    )
     needs_switch, refusal = _sdwire_read_access(sbc_name, sbc, ctrl)
     if refusal:
         return refusal
@@ -2403,7 +2413,9 @@ def sdwire_cat(
         return _sdwire_read_error("sbc_not_found", f"SBC '{sbc_name}' not found")
     if not sbc.sdwire:
         return _sdwire_read_error("no_sdwire", f"No SDWire assigned to '{sbc_name}'")
-    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    ctrl = SDWireController(
+        sbc.sdwire.serial_number, sbc.sdwire.device_type, sbc=sbc, db=manager.db
+    )
     needs_switch, refusal = _sdwire_read_access(sbc_name, sbc, ctrl)
     if refusal:
         return refusal
@@ -2503,7 +2515,9 @@ def sdwire_info(sbc_name: str) -> str:
         return _sdwire_read_error("sbc_not_found", f"SBC '{sbc_name}' not found")
     if not sbc.sdwire:
         return _sdwire_read_error("no_sdwire", f"No SDWire assigned to '{sbc_name}'")
-    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    ctrl = SDWireController(
+        sbc.sdwire.serial_number, sbc.sdwire.device_type, sbc=sbc, db=manager.db
+    )
     needs_switch, refusal = _sdwire_read_access(sbc_name, sbc, ctrl)
     if refusal:
         return refusal
@@ -2607,7 +2621,9 @@ def flash_image(
         os.close(image_fd)
         return path_err
 
-    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    ctrl = SDWireController(
+        sbc.sdwire.serial_number, sbc.sdwire.device_type, sbc=sbc, db=manager.db
+    )
     flash_ok = False
     keepalive = None
 
@@ -2631,7 +2647,7 @@ def flash_image(
         from labctl.sdwire.power_guard import power_off_before_host_switch
 
         try:
-            power_off_before_host_switch(sbc, no_plug_ok=no_plug_ok)
+            power_off_before_host_switch(manager, sbc, no_plug_ok=no_plug_ok)
         except RuntimeError as e:
             return f"Error: {e}."
 
@@ -2752,6 +2768,7 @@ def serial_capture(
     """
     from labctl.serial.capture import (
         capture_serial_output,
+        port_target,
         resolve_port,
     )
 
@@ -2783,6 +2800,7 @@ def serial_capture(
                 timeout=timeout,
                 until_pattern=until_pattern,
                 tail=tail,
+                target=port_target(manager, port),
             )
         return result.to_mcp_string(pattern=until_pattern)
     except RuntimeError as e:
@@ -2949,6 +2967,7 @@ def serial_send(
             not combined with data or keys
     """
     from labctl.serial.capture import (
+        port_target,
         resolve_port,
         send_serial_data,
     )
@@ -2983,6 +3002,7 @@ def serial_send(
             newline=False,
             capture_timeout=capture_timeout,
             capture_until=capture_until,
+            target=port_target(manager, port),
         )
         result_str = result.to_mcp_string()
         if sbc:
@@ -3045,6 +3065,7 @@ def boot_test(
     if timeout <= 0:
         return "Error: timeout must be positive"
 
+    from labctl.core.audit import Target
     from labctl.serial.boot_test import run_boot_test
 
     manager = _get_manager()
@@ -3102,7 +3123,9 @@ def boot_test(
                 raise RuntimeError(f"No SDWire assigned to '{sbc_name}'")
             from labctl.sdwire.power_guard import deploy_to_card
 
-            ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+            ctrl = SDWireController(
+                sbc.sdwire.serial_number, sbc.sdwire.device_type, sbc=sbc, db=manager.db
+            )
             # The card must not leave a running board (bus contention):
             # the board is switched off first, and nothing is deployed if
             # that fails. The first run powers it back on.
@@ -3154,6 +3177,7 @@ def boot_test(
                 output_dir=output_dir,
                 output_dir_fd=output_dir_fd,
                 before_run_fn=keepalive.checkpoint,
+                target=Target(manager.db, sbc),
             )
         result_str = result.format_summary()
         if result.stopped_reason:
@@ -4676,22 +4700,16 @@ def _sweep_claims_once() -> None:
 
     with audit.activity_context("daemon:mcp", "daemon"):
         config = _get_config()
-        manager = _get_manager()
-        grace = config.claims.grace_period_seconds
-        expired = manager.expire_stale_claims(grace_seconds=grace)
-        dead = manager.release_dead_sessions(grace_seconds=grace)
-        pruned = manager.prune_released_claims(
-            older_than_days=config.claims.auto_prune_released_after_days
+        counts = _get_manager().sweep_claims(
+            config.claims.grace_period_seconds,
+            config.claims.auto_prune_released_after_days,
         )
-        activity_pruned = manager.prune_activity_events(older_than_days=30)
-        if expired or dead or pruned or activity_pruned:
+        if any(counts.values()):
             logger.info(
-                "Claim sweep: %d expired, %d dead-session, "
-                "%d claims pruned, %d activity events pruned",
-                expired,
-                dead,
-                pruned,
-                activity_pruned,
+                "Claim sweep: %(expired)d expired, %(dead)d dead-session, "
+                "%(pruned)d claims pruned, %(activity_pruned)d activity "
+                "events pruned",
+                counts,
             )
 
 
