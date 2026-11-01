@@ -35,6 +35,7 @@ from labctl.actuators.base import (
     Transport,
     WriteOutcome,
 )
+from labctl.core import timeutil
 from labctl.core.models import (
     POST_POWER_INACTIVE,
     Actuator,
@@ -580,9 +581,7 @@ def binding_status(manager, binding: Binding) -> dict:
             "index": channel.channel_index,
             "default_state": channel.default_state.value,
             "last_state": (channel.last_state.value if channel.last_state else None),
-            "last_changed_at": (
-                channel.last_changed_at.isoformat() if channel.last_changed_at else None
-            ),
+            "last_changed_at": timeutil.iso(channel.last_changed_at),
             "cycle_count": channel.cycle_count,
         },
     }

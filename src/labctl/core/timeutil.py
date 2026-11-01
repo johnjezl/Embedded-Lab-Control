@@ -11,6 +11,7 @@ abbreviation, which keeps the repeated hour at a DST change unambiguous.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -18,9 +19,29 @@ UTC = timezone.utc
 DB_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
 
 
+# Python 3.10's fromisoformat takes only 3- or 6-digit fractions and
+# "+HH:MM" offsets: pad the fraction, and add the colon / expand "Z".
+_FRACTION = re.compile(r"(\d{2}:\d{2}:\d{2})\.(\d{1,9})")
+_OFFSET = re.compile(r"([+-]\d{2})(\d{2})$")
+
+
+def _normalize(text: str) -> str:
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    text = _OFFSET.sub(r"\1:\2", text)
+    return _FRACTION.sub(
+        lambda m: f"{m.group(1)}.{(m.group(2) + '000000')[:6]}", text, count=1
+    )
+
+
 def now() -> datetime:
     """The current time, aware UTC."""
     return datetime.now(UTC)
+
+
+def to_db_ms(dt: datetime) -> str:
+    """:func:`to_db` to the millisecond (activity ``logged_at``)."""
+    return to_db(dt)[:-3]
 
 
 def to_db(dt: datetime) -> str:
@@ -40,9 +61,7 @@ def from_db(value) -> Optional[datetime]:
     if isinstance(value, datetime):
         dt = value
     else:
-        text = str(value).strip()
-        if text.endswith("Z"):
-            text = text[:-1] + "+00:00"
+        text = _normalize(str(value).strip())
         try:
             dt = datetime.fromisoformat(text)
         except ValueError:
@@ -53,10 +72,10 @@ def from_db(value) -> Optional[datetime]:
 
 
 def iso(dt: Optional[datetime]) -> Optional[str]:
-    """``dt`` for machines: ISO-8601 UTC with ``Z``."""
+    """``dt`` for machines: ISO-8601 UTC, microseconds, ``Z``."""
     if dt is None:
         return None
-    return from_db(dt).isoformat().replace("+00:00", "Z")
+    return from_db(dt).isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 def local(dt: Optional[datetime], fmt: str = "%Y-%m-%d %H:%M:%S %Z") -> str:

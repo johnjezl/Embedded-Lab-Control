@@ -4809,7 +4809,8 @@ def bindings_status_cmd(ctx: click.Context, sbc_name: str, purpose: str) -> None
     )
     click.echo(f"Desired:    {info['binding']['desired_state']}")
     last = info["channel"]["last_state"] or "unknown"
-    when = info["channel"]["last_changed_at"] or "never"
+    changed = info["channel"]["last_changed_at"]
+    when = timeutil.db_local(changed) if changed else "never"
     click.echo(
         f"Last:       {last} (changed {when}, "
         f"{info['channel']['cycle_count']} cycle(s))"
@@ -7033,7 +7034,7 @@ def _parse_since(since: str) -> str:
     except ValueError as e:
         raise click.BadParameter(f"Invalid number: {since[:-1]}") from e
     cutoff = timeutil.now() - timedelta(**{units[unit]: n})
-    return timeutil.to_db(cutoff)[:-3]
+    return timeutil.to_db_ms(cutoff)
 
 
 def _compact_actor(actor: str) -> str:

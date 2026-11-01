@@ -164,6 +164,11 @@ class TestActivityEndpoints:
             ("bot-activity-sbc", "fw-bot")
         ]
 
+    def test_activity_api_bad_since_is_400(self, client):
+        resp = client.get("/api/activity?since=last-tuesday")
+        assert resp.status_code == 400
+        assert "not a timestamp" in resp.get_json()["error"]
+
     def test_activity_page_escapes_event_text(self, client, manager):
         """Agent names, claim reasons and SBC names are caller-chosen; the
         page escapes every field it puts into markup (#57)."""

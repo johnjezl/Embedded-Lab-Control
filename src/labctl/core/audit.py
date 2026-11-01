@@ -154,7 +154,7 @@ def _serialize_details(details: Optional[dict]) -> Optional[str]:
 
 def _now_ms() -> str:
     """The current time as stored (UTC, #63), to the millisecond."""
-    return timeutil.to_db(timeutil.now())[:-3]
+    return timeutil.to_db_ms(timeutil.now())
 
 
 def row_to_event_dict(row) -> dict[str, Any]:
@@ -205,8 +205,10 @@ def query_events(
         # An ISO timestamp (with an offset, or UTC without one) compared
         # with the stored UTC text.
         parsed = timeutil.from_db(since)
+        if parsed is None:
+            raise ValueError(f"since: not a timestamp: {since!r}")
         where.append("logged_at >= ?")
-        params.append(timeutil.to_db(parsed)[:-3] if parsed else since)
+        params.append(timeutil.to_db_ms(parsed))
     if after_id is not None:
         where.append("id > ?")
         params.append(int(after_id))
@@ -222,7 +224,7 @@ def query_events(
 
 def prune_old_events(db: "Database", *, older_than_days: int = 30) -> int:
     """Delete audit events older than the given retention window."""
-    cutoff = timeutil.to_db(timeutil.now() - timedelta(days=int(older_than_days)))[:-3]
+    cutoff = timeutil.to_db_ms(timeutil.now() - timedelta(days=int(older_than_days)))
     return db.execute_modify(
         """
         DELETE FROM audit_log

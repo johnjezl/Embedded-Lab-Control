@@ -45,6 +45,24 @@ class TestTimeutil:
         assert timeutil.iso(dt) == "2026-11-01T08:52:47.123456Z"
         assert timeutil.from_db("not a time") is None
 
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "2026-11-01 12:00:00.5",
+            "2026-11-01T12:00:00.5Z",
+            "2026-11-01T12:00:00.5000+0000",
+            "2026-11-01T04:00:00.500000-08:00",
+            "2026-11-01 12:00:00.500000000",
+        ],
+    )
+    def test_shapes_python_310_rejects(self, text):
+        assert timeutil.from_db(text) == datetime(
+            2026, 11, 1, 12, 0, 0, 500000, tzinfo=UTC
+        )
+
+    def test_machine_output_always_has_microseconds(self):
+        assert timeutil.db_iso("2026-11-01 12:00:00") == "2026-11-01T12:00:00.000000Z"
+
     def test_local_display_names_the_zone(self, pacific):
         before = datetime(2026, 11, 1, 8, 30, tzinfo=UTC)  # 01:30 PDT
         after = datetime(2026, 11, 1, 9, 30, tzinfo=UTC)  # 01:30 PST
@@ -73,7 +91,7 @@ class TestClaimsAcrossTheFallBack:
         assert renewed.expires_at > first.expires_at
         assert renewed.expires_at == clock[0] + timedelta(seconds=5400)
         assert renewed.is_active
-        assert renewed.to_dict()["expires_at"] == "2026-11-01T10:30:24Z"
+        assert renewed.to_dict()["expires_at"] == "2026-11-01T10:30:24.000000Z"
 
     def test_expiry_is_on_time(self, manager, pacific, monkeypatch):
         clock = [datetime(2026, 11, 1, 8, 50, tzinfo=UTC)]  # 01:50 PDT
@@ -138,6 +156,32 @@ class TestMigration:
         db.initialize()
         claim = db.execute_one("SELECT acquired_at FROM claims")
         assert claim["acquired_at"] == "2026-11-01 08:30:00.000000"  # 01:30 PDT
+
+    def test_sqlite_stamped_rows_are_left_alone(self, tmp_path, pacific):
+        """A value without a fraction came from DEFAULT CURRENT_TIMESTAMP,
+        which was UTC already."""
+        path = tmp_path / "labctl.db"
+        self._v13_db(
+            path, [("2026-10-31 17:00:00.000000", "2026-10-31 18:00:00.000000")]
+        )
+        conn = sqlite3.connect(path)
+        conn.execute(
+            "INSERT INTO audit_log (action, entity_type, logged_at)"
+            " VALUES ('old', 'sbc', '2026-04-01 22:14:05')"
+        )
+        conn.commit()
+        conn.close()
+        db = Database(path)
+        db.initialize()
+        row = db.execute_one("SELECT logged_at FROM audit_log WHERE action = 'old'")
+        assert row["logged_at"] == "2026-04-01 22:14:05"
+
+    def test_older_labctl_refuses_a_newer_database(self, tmp_path, monkeypatch):
+        path = tmp_path / "labctl.db"
+        Database(path).initialize()
+        monkeypatch.setattr("labctl.core.database.SCHEMA_VERSION", 13)
+        with pytest.raises(RuntimeError, match="newer than this labctl"):
+            Database(path).initialize()
 
     def test_a_second_initialize_doesnt_shift_again(self, tmp_path, pacific):
         path = tmp_path / "labctl.db"
@@ -204,7 +248,7 @@ class TestActivity:
         row = db.execute_one("SELECT logged_at FROM audit_log")
         assert row["logged_at"] == "2026-11-01 09:30:00.000"
         (event,) = audit.query_events(db)
-        assert event["logged_at"] == "2026-11-01T09:30:00Z"
+        assert event["logged_at"] == "2026-11-01T09:30:00.000000Z"
         out = CliRunner().invoke(main, ["-c", str(config), "activity", "tail"]).output
         assert "2026-11-01 01:30:00 PST" in out
 
@@ -217,3 +261,5 @@ class TestActivity:
             audit.emit(db, action="x", entity_type="sbc")
         assert audit.query_events(db, since="2026-11-01T01:00:00-08:00")
         assert not audit.query_events(db, since="2026-11-01T02:00:00-08:00")
+        with pytest.raises(ValueError, match="not a timestamp"):
+            audit.query_events(db, since="yesterday-ish")
