@@ -689,7 +689,7 @@ def _display_recent_activity(manager, *, limit: int = 5) -> None:
     import sqlite3
 
     sql = (
-        "SELECT id, logged_at, actor, source, action, entity_name, "
+        "SELECT id, logged_at, actor, agent, source, action, entity_name, "
         "result, details FROM audit_log ORDER BY id DESC LIMIT ?"
     )
     try:
@@ -7113,7 +7113,7 @@ def _format_activity_row(row, *, compact: bool = False) -> str:
     )
 
     if compact:
-        actor_display = _compact_actor(actor)
+        actor_display = agent or _compact_actor(actor)
         actor_width = 12
         details_text = _compact_details(row["details"])
     else:

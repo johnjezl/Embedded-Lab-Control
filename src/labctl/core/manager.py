@@ -399,6 +399,9 @@ class ResourceManager:
             new_name = name if name else sbc.name
             detail = f"Updated SBC {sbc.name}: " + ", ".join(changes)
             self._audit_log("update", "sbc", sbc_id, new_name, detail)
+            if status is not None and status != sbc.status:
+                # Status history keeps every transition, set by hand too.
+                self.log_status(sbc_id, status, "set by hand")
 
         return self.get_sbc(sbc_id)
 
@@ -1248,8 +1251,8 @@ class ResourceManager:
         """Store a status the health checks observed, and its history row.
 
         Not an activity event: a status is an observation, not an action
-        (#57), and status_log already keeps every transition. Setting a
-        status by hand goes through update_sbc, which is recorded.
+        (#57), and status_log keeps every transition. Setting a status by
+        hand goes through update_sbc, which records both.
         """
         self.db.execute_modify(
             "UPDATE sbcs SET status = ?, updated_at = CURRENT_TIMESTAMP"
@@ -1616,29 +1619,50 @@ class ResourceManager:
         repeatedly; only unreleased rows with an elapsed deadline are touched.
         """
         cutoff = self._fmt_ts(datetime.now() - timedelta(seconds=grace_seconds))
-        stale = self.db.execute(
+        with self.db.connect() as conn:
+            expired = self._release_expired(conn, cutoff)
+        self._record_expired(expired)
+        return len(expired)
+
+    @staticmethod
+    def _release_expired(conn, cutoff: str) -> list:
+        """Release every unreleased claim whose deadline is before
+        ``cutoff``, in the caller's transaction; return the released
+        claims (id, sbc_id, agent_name, sbc_name) for _record_expired.
+
+        Takes the write lock first (BEGIN IMMEDIATE), so no other process
+        releases or claims between the SELECT and the UPDATE: each expiry
+        is released, and recorded, exactly once.
+        """
+        if not conn.in_transaction:
+            conn.execute("BEGIN IMMEDIATE")
+        expired = conn.execute(
             """
             SELECT c.id, c.sbc_id, c.agent_name, s.name AS sbc_name
             FROM claims c JOIN sbcs s ON s.id = c.sbc_id
             WHERE c.released_at IS NULL AND c.expires_at < ?
             """,
             (cutoff,),
-        )
-        released = 0
-        for row in stale:
-            # Per row, so a claim another process released (or renewed)
-            # meanwhile is neither counted nor recorded twice.
-            if self.db.execute_modify(
-                """
+        ).fetchall()
+        if expired:
+            ids = [row["id"] for row in expired]
+            conn.execute(
+                f"""
                 UPDATE claims
                 SET released_at = CURRENT_TIMESTAMP,
                     release_reason = ?,
                     released_by = 'system'
-                WHERE id = ? AND released_at IS NULL AND expires_at < ?
+                WHERE released_at IS NULL AND id IN ({", ".join("?" * len(ids))})
                 """,
-                (ReleaseReason.EXPIRED.value, row["id"], cutoff),
-            ):
-                released += 1
+                (ReleaseReason.EXPIRED.value, *ids),
+            )
+        return expired
+
+    def _record_expired(self, expired: list) -> None:
+        """One claim_expired event per released claim. The claim ran out:
+        whoever's call swept it didn't release it, so it is the system's."""
+        for row in expired:
+            with audit.activity_context("system", "internal", claim_id=row["id"]):
                 self._audit_log(
                     "claim_expired",
                     "sbc",
@@ -1646,7 +1670,6 @@ class ResourceManager:
                     row["sbc_name"],
                     f"Claim by {row['agent_name']} expired",
                 )
-        return released
 
     @staticmethod
     def _is_pid_alive(pid: int) -> bool:
@@ -1883,30 +1906,10 @@ class ResourceManager:
         context_json = json.dumps(context) if context else None
         cutoff = self._fmt_ts(datetime.now() - timedelta(seconds=grace_seconds))
 
-        swept: list = []
         with self.db.connect() as conn:
             # Release expired claims (on any SBC) within the same
-            # transaction so the UNIQUE index reflects current reality,
-            # and remember them for the activity stream.
-            for row in conn.execute(
-                """
-                SELECT c.id, c.sbc_id, c.agent_name, s.name AS sbc_name
-                FROM claims c JOIN sbcs s ON s.id = c.sbc_id
-                WHERE c.released_at IS NULL AND c.expires_at < ?
-                """,
-                (cutoff,),
-            ).fetchall():
-                if conn.execute(
-                    """
-                    UPDATE claims
-                    SET released_at = CURRENT_TIMESTAMP,
-                        release_reason = ?,
-                        released_by = 'system'
-                    WHERE id = ? AND released_at IS NULL AND expires_at < ?
-                    """,
-                    (ReleaseReason.EXPIRED.value, row["id"], cutoff),
-                ).rowcount:
-                    swept.append(row)
+            # transaction so the UNIQUE index reflects current reality.
+            swept = self._release_expired(conn, cutoff)
             # The grace period protects an expired claim from others, not
             # from its own holder: re-claiming replaces it straight away.
             replaced = conn.execute(
@@ -1977,14 +1980,7 @@ class ResourceManager:
             )
             claim = Claim.from_row(cursor.fetchone())
 
-        for row in swept:
-            self._audit_log(
-                "claim_expired",
-                "sbc",
-                row["sbc_id"],
-                row["sbc_name"],
-                f"Claim by {row['agent_name']} expired",
-            )
+        self._record_expired(swept)
         if replaced:
             self._audit_log(
                 "claim_expired",

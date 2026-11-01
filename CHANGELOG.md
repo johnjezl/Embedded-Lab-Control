@@ -20,13 +20,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - MCP events carry the agent's name (from `claim_sbc agent_name=...`)
     in a new `agent` column (schema v13), shown as `name (session)` and
     filtered with `labctl activity tail/export --agent` or
-    `/api/activity?agent=`.
+    `/api/activity?agent=`. It is set only when the agent gave a name (an
+    authenticated user's name is already in the session ID).
 
 ### Fixed
 
 - A claim that ran out was released with no activity event; expiry is now
-  recorded as `claim_expired`, including claims released by another
-  caller's `claim_sbc`.
+  recorded as `claim_expired` by `system`, with the claim's ID, including
+  claims released by another caller's `claim_sbc`. The release is one
+  transaction.
+- A status set by hand (`labctl edit`, MCP `update_sbc`, REST, the web
+  edit form) now also goes into the board's status history.
 - The web `/activity` page put event text into the page unescaped, so an
   agent name, claim reason or SBC name containing markup ran as script in
   the viewer's browser. Every field is now escaped.

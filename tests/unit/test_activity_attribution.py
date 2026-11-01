@@ -124,6 +124,17 @@ class TestStatusIsNotAnAction:
         manager.update_sbc(sbc.id, description="bench 2")
         assert _events(db)[-1]["action"] == "update"
 
+    def test_status_set_by_hand_is_in_both(self, db):
+        manager = ResourceManager(db)
+        sbc = manager.create_sbc(name="pi")
+        manager.update_sbc(sbc.id, status=Status.ERROR)
+        manager.update_sbc(sbc.id, status=Status.ERROR)  # no change
+        assert _events(db)[-1]["action"] == "update"
+        history = manager.get_status_history(sbc.id)
+        assert [(h["status"], h["details"]) for h in history] == [
+            ("error", "set by hand")
+        ]
+
 
 class TestDaemonActor:
     def test_monitor_runs_as_daemon(self, tmp_path):
@@ -144,7 +155,7 @@ class TestDaemonActor:
         assert result.exit_code == 0, result.output
         assert seen == {"actor": "daemon:monitor", "source": "daemon"}
 
-    def test_mcp_sweep_releases_as_daemon(self, db):
+    def test_mcp_sweep_expiry_is_the_systems(self, db):
         pytest.importorskip("mcp")
         from labctl import mcp_server
         from labctl.core.config import Config
@@ -169,10 +180,42 @@ class TestDaemonActor:
             mcp_server._sweep_claims_once()
 
         expired = [e for e in _events(db) if e["action"] == "claim_expired"]
-        assert expired and expired[-1]["actor"] == "daemon:mcp"
-        assert expired[-1]["source"] == "daemon"
+        assert expired and expired[-1]["actor"] == "system"
         assert "Claim by a expired" in expired[-1]["details"]
         assert audit.current_actor() == "internal"  # scoped to the sweep
+
+    def test_mcp_sweep_runs_as_daemon(self, db):
+        pytest.importorskip("mcp")
+        from labctl import mcp_server
+        from labctl.core.config import Config
+
+        seen = {}
+
+        class Manager:
+            def __getattr__(self, name):
+                def call(*a, **k):
+                    seen.setdefault("actor", audit.current_actor())
+                    seen.setdefault("source", audit.current_source())
+                    return 0
+
+                return call
+
+        with (
+            patch.object(mcp_server, "_get_manager", return_value=Manager()),
+            patch.object(mcp_server, "_get_config", return_value=Config()),
+        ):
+            mcp_server._sweep_claims_once()
+        assert seen == {"actor": "daemon:mcp", "source": "daemon"}
+
+
+class TestBroadcasterAgent:
+    def test_web_feed_events_carry_agent(self, db):
+        from labctl.web.activity_broadcaster import ActivityBroadcaster
+
+        with audit.activity_context("mcp-stdio:1-2", "mcp", agent="fw-bot"):
+            audit.emit(db, action="power_on", entity_type="sbc", entity_name="pi")
+        events = ActivityBroadcaster(db).recent(10)
+        assert events[-1].to_dict()["agent"] == "fw-bot"
 
 
 class TestCliAgentFilter:
@@ -198,6 +241,18 @@ class TestCliAgentFilter:
         assert result.exit_code == 0, result.output
         assert "fw-bot (mcp-stdio:1-2)" in result.output
         assert "power_off" not in result.output
+
+    def test_status_view_names_the_agent(self, tmp_path):
+        from labctl.cli import _display_recent_activity
+        from labctl.core.manager import get_manager
+
+        self._setup(tmp_path)
+        manager = get_manager(tmp_path / "labctl.db")
+        runner = CliRunner()
+        with runner.isolation() as (out, _err, *_):
+            _display_recent_activity(manager)
+            text = out.getvalue().decode()
+        assert "fw-bot" in text
 
     def test_export_carries_agent(self, tmp_path):
         from labctl.cli import main
@@ -240,16 +295,24 @@ class TestClaimExpiryRecorded:
         ]
 
     def test_claiming_sweeps_and_records_other_expired_claims(self, db):
+        """Another caller's claim_sbc sweeps the expired claim: the event is
+        the system's, not that caller's, and names the claim."""
         manager = self._expired(db, "pi")
+        expired_id = db.execute_one("SELECT id FROM claims")["id"]
         manager.create_sbc(name="pi2")
-        manager.claim_sbc(
-            sbc_name="pi2",
-            agent_name="b",
-            session_id="cli-b",
-            session_kind="cli",
-            duration_seconds=60,
-            reason="r",
-            grace_seconds=0,
-        )
+        with audit.activity_context("mcp-stdio:9-9", "mcp", agent="bot-b"):
+            manager.claim_sbc(
+                sbc_name="pi2",
+                agent_name="bot-b",
+                session_id="mcp-stdio:9-9",
+                session_kind="mcp-stdio",
+                duration_seconds=60,
+                reason="r",
+                grace_seconds=0,
+            )
         expired = [e for e in _events(db) if e["action"] == "claim_expired"]
-        assert [e["entity_name"] for e in expired] == ["pi"]
+        assert [
+            (e["entity_name"], e["actor"], e["agent"], e["claim_id"]) for e in expired
+        ] == [("pi", "system", None, expired_id)]
+        claim = [e for e in _events(db) if e["action"] == "claim"][-1]
+        assert (claim["actor"], claim["agent"]) == ("mcp-stdio:9-9", "bot-b")
