@@ -830,7 +830,6 @@ class TestVerbs:
         assert "released" in result.output
 
 
-@pytest.mark.usefixtures("no_sleep")
 class TestEnterExitRecovery:
     def _setup(self, runner, lab, monkeypatch, controller_calls):
         from labctl.actuators.mock import MockRelayDriver

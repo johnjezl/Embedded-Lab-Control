@@ -1659,10 +1659,8 @@ class TestClaimCommands:
         assert result.exit_code == 0
         assert manager.get_sbc_by_name("pi-5-2") is None
 
-    def test_claims_expire_sweeps(self, claim_runner):
+    def test_claims_expire_sweeps(self, claim_runner, clock):
         """labctl claims expire releases past-deadline claims."""
-        import time
-
         runner, config, manager = claim_runner
         manager.claim_sbc(
             sbc_name="pi-5-1",
@@ -1672,7 +1670,7 @@ class TestClaimCommands:
             duration_seconds=1,
             reason="short",
         )
-        time.sleep(1.2)
+        clock.advance(1.2)
         result = runner.invoke(
             main,
             ["-c", str(config), "claims", "expire"],

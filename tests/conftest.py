@@ -9,6 +9,7 @@ import site
 import socket
 import sys
 import types
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -62,21 +63,45 @@ def _no_real_config(_isolated_home, monkeypatch):
     monkeypatch.setenv("PYTHONUSERBASE", _USER_BASE)
 
 
-def _is_loopback(address) -> bool:
-    if not isinstance(address, tuple):  # AF_UNIX path, abstract name
+_LOCAL_NAMES = {"localhost", "ip6-localhost", "ip6-loopback", "localhost.localdomain"}
+
+
+def _is_local_host(host) -> bool:
+    if isinstance(host, bytes):
+        host = host.decode("ascii", "replace")
+    if host is None or host in ("", "0.0.0.0", "::"):  # Linux: this host
         return True
-    host = address[0]
-    if host == "localhost":
+    if host in _LOCAL_NAMES:
         return True
     try:
-        return ipaddress.ip_address(host.split("%", 1)[0]).is_loopback
-    except ValueError:  # an unresolved name: could be anywhere
+        ip = ipaddress.ip_address(host.split("%", 1)[0])
+    except ValueError:  # a name to resolve: could be anywhere
         return False
+    mapped = getattr(ip, "ipv4_mapped", None)
+    return ip.is_loopback or (mapped is not None and mapped.is_loopback)
+
+
+def _is_ip_literal(host) -> bool:
+    if isinstance(host, bytes):
+        host = host.decode("ascii", "replace")
+    try:
+        ipaddress.ip_address(str(host).split("%", 1)[0])
+    except ValueError:
+        return False
+    return True
+
+
+def _is_loopback(address) -> bool:
+    # AF_UNIX paths and abstract names, AF_NETLINK (pid, groups), etc.
+    if not isinstance(address, tuple) or not isinstance(address[0], (str, bytes)):
+        return True
+    return _is_local_host(address[0])
 
 
 @pytest.fixture(autouse=True)
 def _no_network(monkeypatch):
-    """Refuse connections and datagrams to anything but loopback (#49).
+    """Refuse connections, datagrams and name lookups for anything but
+    loopback (#49).
 
     Fixture plugs and hosts use LAN addresses (192.168.1.x), which can be
     real devices on a lab network and otherwise cost a 5 s timeout each
@@ -88,6 +113,16 @@ def _no_network(monkeypatch):
         raise OSError(
             errno.ENETUNREACH, f"tests may not reach {address!r} (tests/conftest.py)"
         )
+
+    real_getaddrinfo = socket.getaddrinfo
+
+    def getaddrinfo(host, *args, **kwargs):
+        # An IP literal is parsed, not looked up; connect() still checks it.
+        if not _is_local_host(host) and not _is_ip_literal(host):
+            raise socket.gaierror(
+                socket.EAI_NONAME, f"tests may not resolve {host!r} (tests/conftest.py)"
+            )
+        return real_getaddrinfo(host, *args, **kwargs)
 
     real_connect = socket.socket.connect
     real_connect_ex = socket.socket.connect_ex
@@ -112,6 +147,7 @@ def _no_network(monkeypatch):
     monkeypatch.setattr(socket.socket, "connect", connect)
     monkeypatch.setattr(socket.socket, "connect_ex", connect_ex)
     monkeypatch.setattr(socket.socket, "sendto", sendto)
+    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
 
 
 @pytest.fixture
@@ -120,6 +156,32 @@ def no_sleep(monkeypatch):
     switch, the 3 s minimum power cycle) don't have to pass for real (#49).
     Tests that check a delay patch ``time.sleep`` themselves on top."""
     monkeypatch.setattr("time.sleep", lambda seconds: None)
+
+
+class _FakeClock:
+    """The claim code's ``datetime.now()``, stopped until ``advance``."""
+
+    def __init__(self):
+        self.now = datetime.now()
+
+    def advance(self, seconds):
+        self.now += timedelta(seconds=seconds)
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    """Freeze ``datetime.now()`` in the manager and models; tests move it
+    with ``clock.advance(s)`` instead of sleeping (#49)."""
+    fake = _FakeClock()
+
+    class _ClockDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fake.now if tz is None else fake.now.astimezone(tz)
+
+    monkeypatch.setattr("labctl.core.manager.datetime", _ClockDatetime)
+    monkeypatch.setattr("labctl.core.models.datetime", _ClockDatetime)
+    return fake
 
 
 @pytest.fixture(autouse=True)

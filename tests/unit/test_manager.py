@@ -1,7 +1,6 @@
 """Unit tests for resource manager."""
 
 import time
-from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -26,32 +25,6 @@ def manager(tmp_path):
     """Create a resource manager with test database."""
     db_path = tmp_path / "test.db"
     return get_manager(db_path)
-
-
-class _FakeClock:
-    """The claim code's ``datetime.now()``, stopped until ``advance``."""
-
-    def __init__(self):
-        self.now = datetime.now()
-
-    def advance(self, seconds):
-        self.now += timedelta(seconds=seconds)
-
-
-@pytest.fixture
-def clock(monkeypatch):
-    """Freeze ``datetime.now()`` in the manager and models; tests move it
-    with ``clock.advance(s)`` instead of sleeping (#49)."""
-    fake = _FakeClock()
-
-    class _ClockDatetime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return fake.now if tz is None else fake.now.astimezone(tz)
-
-    monkeypatch.setattr("labctl.core.manager.datetime", _ClockDatetime)
-    monkeypatch.setattr("labctl.core.models.datetime", _ClockDatetime)
-    return fake
 
 
 class TestSBCOperations:

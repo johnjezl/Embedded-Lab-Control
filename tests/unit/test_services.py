@@ -71,6 +71,13 @@ class TestParsing:
         dt = _parse_systemd_timestamp("2026-04-19 16:08:26")
         assert dt == datetime(2026, 4, 19, 23, 8, 26, tzinfo=timezone.utc)
 
+    def test_parse_systemd_timestamp_fall_back_hour(self, pacific_tz):
+        """01:30 happens twice on 2026-11-01; the abbreviation says which."""
+        pdt = _parse_systemd_timestamp("Sun 2026-11-01 01:30:00 PDT")
+        pst = _parse_systemd_timestamp("Sun 2026-11-01 01:30:00 PST")
+        assert pdt == datetime(2026, 11, 1, 8, 30, tzinfo=timezone.utc)
+        assert pst == datetime(2026, 11, 1, 9, 30, tzinfo=timezone.utc)
+
     def test_parse_systemd_timestamp_unresolvable_zone(self, pacific_tz):
         """Another zone's abbreviation is ambiguous ("CST"), so no guess."""
         assert _parse_systemd_timestamp("Sun 2026-04-19 18:08:26 CST") is None

@@ -126,6 +126,10 @@ def _parse_systemd_timestamp(value: str) -> Optional[datetime]:
     if zone is not None and zone.upper() in {"UTC", "GMT"}:
         return dt.replace(tzinfo=timezone.utc)
     if zone is None or zone in time.tzname:
+        # In the repeated fall-back hour, a standard-time abbreviation
+        # means the second occurrence.
+        if zone is not None and zone == time.tzname[0] != time.tzname[1]:
+            dt = dt.replace(fold=1)
         return dt.astimezone()
     return None
 
