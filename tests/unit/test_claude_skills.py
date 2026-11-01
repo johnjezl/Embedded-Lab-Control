@@ -105,8 +105,8 @@ class TestInstall:
         overwritten without --force."""
         real = claude_skills._read_existing
 
-        def appears(dir_fd):
-            value = real(dir_fd)
+        def appears(dir_fd, where):
+            value = real(dir_fd, where)
             fd = os.open("SKILL.md", os.O_WRONLY | os.O_CREAT, 0o644, dir_fd=dir_fd)
             os.write(fd, b"someone else's")
             os.close(fd)
@@ -156,6 +156,57 @@ class TestInstall:
         finally:
             os.umask(old)
         assert oct(out.path.stat().st_mode & 0o777) == oct(0o600)
+
+
+class TestRound2:
+    def test_symlinked_skill_file_named_in_the_error(self, proj, tmp_path):
+        d = proj / ".claude" / "skills" / "deploy-and-test"
+        d.mkdir(parents=True)
+        os.symlink(tmp_path / "x", d / "SKILL.md")
+        with pytest.raises(claude_skills.SkillError, match=str(d / "SKILL.md")):
+            claude_skills.install("deploy-and-test", project=proj, force=True)
+
+    def test_project_path_that_is_a_file(self, tmp_path):
+        f = tmp_path / "file"
+        f.write_text("")
+        with pytest.raises(claude_skills.SkillError, match="is not a directory"):
+            claude_skills.install("deploy-and-test", project=f)
+
+    def test_no_hard_links_falls_back_to_rename(self, proj, monkeypatch):
+        def no_links(*a, **k):
+            raise OSError(1, "Operation not permitted")  # EPERM, as on vfat
+
+        monkeypatch.setattr(claude_skills.os, "link", no_links)
+        out = claude_skills.install("deploy-and-test", project=proj)
+        assert out.status == "installed"
+        assert out.path.read_bytes() == claude_skills.text("deploy-and-test")
+        assert [p.name for p in out.path.parent.iterdir()] == ["SKILL.md"]
+
+    def test_dangling_deploy_config_symlink_refused(self, proj):
+        (proj / ".claude").mkdir()
+        os.symlink("missing.json", proj / ".claude" / "deploy-config.json")
+        with pytest.raises(claude_skills.SkillError, match="not a regular file"):
+            claude_skills.write_deploy_config_template(proj)
+
+    def test_cli_and_library_agree_on_the_config_path(self, proj, tmp_path, home):
+        dots = tmp_path / "dots"
+        dots.mkdir()
+        os.symlink(dots, proj / ".claude")
+        first = _run("install", "-p", str(proj), "--with-config")
+        second = _run("install", "-p", str(proj), "--with-config")
+        path = str(dots / "deploy-config.json")
+        assert path in first.output and path in second.output
+
+    def test_uninstall_errors_name_the_path(self, proj):
+        out = claude_skills.install("deploy-and-test", project=proj)
+        out.path.parent.chmod(0o555)
+        try:
+            if os.access(out.path.parent, os.W_OK):
+                pytest.skip("running as root")
+            with pytest.raises(claude_skills.SkillError, match=str(out.path)):
+                claude_skills.uninstall("deploy-and-test", project=proj)
+        finally:
+            out.path.parent.chmod(0o755)
 
 
 class TestUninstall:
