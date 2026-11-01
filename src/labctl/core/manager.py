@@ -2333,7 +2333,9 @@ class ResourceManager:
         """Record that a call on ``sbc_name`` was refused over a claim
         (#60): ``claim_refused``, result ``forbidden``. ``reason`` is
         ``claimed`` (someone else's ``claim``, possibly on a board sharing
-        its hardware), ``claim_required`` or ``not_operator``;
+        its hardware), ``claim_required``, ``not_operator`` (an agent's
+        force-release) or ``not_claimant`` (releasing or renewing someone
+        else's claim);
         ``attempted`` names the tool, command or route. The front ends call
         this where they refuse, never for checks that only look."""
         details: dict = {"reason": reason, "attempted": attempted}
@@ -2342,19 +2344,42 @@ class ResourceManager:
             if claim.sbc_name and claim.sbc_name != sbc_name:
                 details["held_board"] = claim.sbc_name
         try:  # like emit, never let recording break the refusal itself
-            sbc = self.get_sbc_by_name(sbc_name)
+            row = self.db.execute_one("SELECT id FROM sbcs WHERE name = ?", (sbc_name,))
         except Exception:  # noqa: BLE001
             logger.warning("claim refusal on %s: board lookup failed", sbc_name)
-            sbc = None
+            row = None
         audit.emit(
             self.db,
             action="claim_refused",
             entity_type="sbc",
-            entity_id=sbc.id if sbc else None,
+            entity_id=row["id"] if row else None,
             entity_name=sbc_name,
             result="forbidden",
             details={k: v for k, v in details.items() if v is not None},
         )
+
+    def record_override_refusal(self, sbc_name: str, attempted: Optional[str]) -> None:
+        """Record a non-operator's refused force-release of ``sbc_name``'s
+        claim, when there is one to release (a typo or an unclaimed board
+        is not a claim refusal)."""
+        self._record_refusal_of_held(sbc_name, "not_operator", attempted)
+
+    def record_not_claimant(self, sbc_name: str, attempted: Optional[str]) -> None:
+        """Record a refused release or renewal of someone else's claim on
+        ``sbc_name`` (``not_claimant``)."""
+        self._record_refusal_of_held(sbc_name, "not_claimant", attempted)
+
+    def _record_refusal_of_held(
+        self, sbc_name: str, reason: str, attempted: Optional[str]
+    ) -> None:
+        try:
+            claim = self.get_active_claim(sbc_name)
+        except Exception:  # noqa: BLE001 - unknown board, or lookup failed
+            claim = None
+        if claim is not None:
+            self.record_claim_refusal(
+                sbc_name, reason, claim=claim, attempted=attempted
+            )
 
     def check_claims_of(
         self, sbc_names: Iterable[str], actor: ClaimActor, *, override: bool = False

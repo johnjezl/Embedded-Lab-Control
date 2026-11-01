@@ -3857,6 +3857,8 @@ def release_sbc(sbc_name: str) -> str:
             }
         )
     except NotClaimantError:
+        if _RECORD_REFUSALS.get():
+            manager.record_not_claimant(sbc_name, _CURRENT_TOOL.get())
         return json.dumps(
             {
                 "error": "not_claimant",
@@ -3918,6 +3920,8 @@ def renew_sbc_claim(sbc_name: str, duration_minutes: int | None = None) -> str:
             }
         )
     except NotClaimantError:
+        if _RECORD_REFUSALS.get():
+            manager.record_not_claimant(sbc_name, _CURRENT_TOOL.get())
         return json.dumps(
             {
                 "error": "not_claimant",
@@ -4009,7 +4013,8 @@ def force_release_sbc(sbc_name: str, reason: str) -> str:
     from labctl.core.models import ClaimNotFoundError, UnknownSBCError
 
     if not _caller_is_operator():
-        _record_refusal(_get_manager(), sbc_name, "not_operator")
+        if _RECORD_REFUSALS.get():
+            _get_manager().record_override_refusal(sbc_name, _CURRENT_TOOL.get())
         return json.dumps(
             {
                 "error": "not_operator",

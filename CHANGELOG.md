@@ -14,7 +14,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   operator-only override, is recorded as `claim_refused` with result
   `forbidden`, naming the holder, the reason and what was attempted (MCP
   tool, `labctl` command, HTTP route). Refused claim attempts count too,
-  and `power-all` records each board it skips. Checks that only look
+  as do refused releases and renewals of someone else's claim
+  (`not_claimant`), and `power-all` records each board it skips. Checks that only look
   record nothing. MCP's plan step for destructive tools now runs under the
   caller's attribution, so a refusal there is the caller's.
 

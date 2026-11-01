@@ -215,11 +215,16 @@ def _record_cli_refusal(sbc_name: str, claim) -> None:
     ctx = click.get_current_context(silent=True)
     if ctx is None or ctx.obj is None or "config" not in ctx.obj:
         return
-    # "labctl power off" whatever the program was invoked as.
-    command = " ".join(["labctl", *ctx.command_path.split(" ")[1:]])
+    if ctx.params.get("dry_run"):
+        return  # a dry run only looks
     _get_manager(ctx).record_claim_refusal(
-        sbc_name, "claimed", claim=claim, attempted=command
+        sbc_name, "claimed", claim=claim, attempted=_labctl_command(ctx)
     )
+
+
+def _labctl_command(ctx: click.Context) -> str:
+    """ "labctl power off", whatever the program was invoked as."""
+    return " ".join(["labctl", *ctx.command_path.split(" ")[1:]])
 
 
 def _refuse_claimed(sbc_name: str, claim, *, override_hint: bool = True) -> None:
@@ -3575,6 +3580,7 @@ def ser2net_generate_cmd(
 
         blocked = [(p, c) for p in missing if (c := check(p, probe=True))]
         if blocked and not override_claim:
+            recorded: set = set()
             for db_port, claim in blocked:
                 sbc_name = sbc_names.get(db_port.sbc_id)
                 holder_board = claim.sbc_name or sbc_name
@@ -3583,7 +3589,9 @@ def ser2net_generate_cmd(
                     if holder_board == sbc_name
                     else f" (it shares hardware with '{sbc_name}')"
                 )
-                _record_cli_refusal(sbc_name, claim)
+                if (sbc_name, claim.id) not in recorded:  # once per board
+                    recorded.add((sbc_name, claim.id))
+                    _record_cli_refusal(sbc_name, claim)
                 click.echo(
                     f"  {label(db_port)}: '{holder_board}' is claimed by "
                     f"'{_holder(claim)}'{via}",
@@ -4090,9 +4098,13 @@ def power_all_cmd(
         click.echo(f"  - {sbc.name} ({plug_info}){note}")
 
     targets = [s for s in sbcs_with_plugs if override_claim or s.name not in claimed]
-    if not targets:
+
+    def record_skipped():  # each skipped board is a refusal (#60)
         for name, found in claimed.items():
             _record_cli_refusal(name, found[0])
+
+    if not targets:
+        record_skipped()
         click.echo("\nNothing to do: every board is claimed by another user.")
         sys.exit(1)
 
@@ -4101,9 +4113,8 @@ def power_all_cmd(
         f"\nPower {action.upper()} {len(targets)} SBC(s)?",
         f"powers {action} {len(targets)} SBC(s)",
     )
-    if not override_claim:  # each skipped board is a refusal (#60)
-        for name, found in claimed.items():
-            _record_cli_refusal(name, found[0])
+    if not override_claim:
+        record_skipped()
 
     # Execute power commands
     success_count = 0
@@ -5455,6 +5466,8 @@ def release_cmd(ctx: click.Context, sbc_name: str) -> None:
     try:
         manager.release_claim(sbc_name, _cli_session_id())
     except (ClaimNotFoundError, NotClaimantError, UnknownSBCError) as exc:
+        if isinstance(exc, NotClaimantError):
+            manager.record_not_claimant(sbc_name, _labctl_command(ctx))
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
     click.echo(f"Released claim on '{sbc_name}'")
@@ -5487,6 +5500,8 @@ def renew_cmd(ctx: click.Context, sbc_name: str, duration: str | None) -> None:
             sbc_name, _cli_session_id(), duration_seconds=duration_seconds
         )
     except (ClaimNotFoundError, NotClaimantError, UnknownSBCError) as exc:
+        if isinstance(exc, NotClaimantError):
+            manager.record_not_claimant(sbc_name, _labctl_command(ctx))
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
 

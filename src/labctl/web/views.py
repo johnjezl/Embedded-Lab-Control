@@ -438,7 +438,9 @@ def sbc_force_release(name: str):
         return redirect(url_for("views.index"))
 
     if not claims.web_actor().operator:
-        claims.record_refusal(name, "not_operator")
+        g.manager.record_override_refusal(
+            name, f"{flask_request.method} {flask_request.path}"
+        )
         flash(
             "Only operators may force-release a claim; your user has role 'agent'.",
             "error",
