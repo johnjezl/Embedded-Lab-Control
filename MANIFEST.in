@@ -1,16 +1,16 @@
 # Source distribution contents. The wheel is unaffected: it carries only
-# the labctl package (plus the web templates/static in package-data).
+# the labctl package (plus the web templates/static and the bundled
+# Claude Code skills in package-data).
 #
 # The sdist adds what's needed to run the tests and to install the
-# services from it: tests, config samples and systemd units, scripts,
-# docs and the example skill.
+# services from it: tests, config samples and systemd units, scripts and
+# docs.
 include README.md LICENSE CHANGELOG.md SECURITY.md pyproject.toml
 graft src
 graft tests
 graft config
 graft docs
 graft scripts
-graft skills
 
 # Development notes, not documentation.
 prune docs/development

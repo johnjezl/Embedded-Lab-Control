@@ -85,6 +85,7 @@ where = ["src"]
 labctl = [
     "web/templates/**/*.html",
     "web/static/**/*",
+    "skills/*/SKILL.md",
 ]
 
 [tool.black]
