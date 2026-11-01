@@ -3998,6 +3998,38 @@ def request_sbc_release(sbc_name: str, reason: str) -> str:
     return json.dumps({"status": "request_recorded", "sbc_name": sbc_name})
 
 
+def _force_release_refusal(sbc_name: str) -> str | None:
+    """The not_operator answer for a caller who may not force-release
+    (recorded when there is a claim to release), or None."""
+    if _caller_is_operator():
+        return None
+    if _RECORD_REFUSALS.get():
+        _get_manager().record_override_refusal(sbc_name, _CURRENT_TOOL.get())
+    return json.dumps(
+        {
+            "error": "not_operator",
+            "sbc_name": sbc_name,
+            "message": (
+                "Only operators may force-release a claim; your user "
+                "has role 'agent'."
+            ),
+            "hints": ["Ask the holder with request_sbc_release"],
+        }
+    )
+
+
+def _force_release_preview(arguments: dict) -> None:
+    """Refuse a non-operator on the first call, not after a confirm_token
+    (so the attempt is answered, and recorded, as a refusal)."""
+    refusal = _force_release_refusal(arguments.get("sbc_name"))
+    if refusal:
+        raise _PreviewRefusal(refusal)
+    return None
+
+
+_CONFIRM_PREVIEWS["force_release_sbc"] = _force_release_preview
+
+
 @mcp.tool(annotations=TOOL_ANNOTATIONS["force_release_sbc"])
 @_with_mcp_activity
 def force_release_sbc(sbc_name: str, reason: str) -> str:
@@ -4012,20 +4044,9 @@ def force_release_sbc(sbc_name: str, reason: str) -> str:
     """
     from labctl.core.models import ClaimNotFoundError, UnknownSBCError
 
-    if not _caller_is_operator():
-        if _RECORD_REFUSALS.get():
-            _get_manager().record_override_refusal(sbc_name, _CURRENT_TOOL.get())
-        return json.dumps(
-            {
-                "error": "not_operator",
-                "sbc_name": sbc_name,
-                "message": (
-                    "Only operators may force-release a claim; your user "
-                    "has role 'agent'."
-                ),
-                "hints": ["Ask the holder with request_sbc_release"],
-            }
-        )
+    refusal = _force_release_refusal(sbc_name)
+    if refusal:
+        return refusal
 
     manager = _get_manager()
     try:

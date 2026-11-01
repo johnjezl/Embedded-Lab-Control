@@ -93,7 +93,14 @@ class ClaimRequiredError(ClaimError):
 
 
 class NotOperatorError(ClaimError):
-    """Only operators may override or force-release another user's claim."""
+    """Only operators may override or force-release another user's claim.
+
+    ``claim`` is the claim the override would have acted on (None for an
+    unclaimed board under ``claims.require_claim``)."""
+
+    def __init__(self, message: str = "", claim=None):
+        super().__init__(message)
+        self.claim = claim
 
 
 @dataclass(frozen=True)

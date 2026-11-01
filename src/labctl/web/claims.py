@@ -136,7 +136,7 @@ def _refusal(exc: Exception, sbc_name: str, for_sbc: Optional[str]) -> Refusal:
     if isinstance(exc, ClaimConflict):
         return claimed_error(for_sbc or sbc_name, exc.claim), 409
     if isinstance(exc, NotOperatorError):
-        record_refusal(sbc_name, "not_operator")
+        record_refusal(sbc_name, "not_operator", exc.claim)
         return (
             {
                 "error": "not_operator",

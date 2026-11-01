@@ -2479,7 +2479,8 @@ class ResourceManager:
         if not actor.operator:
             raise NotOperatorError(
                 f"Only operators may override the claim on '{sbc_name}' "
-                f"(held by '{claim.agent_name}')"
+                f"(held by '{claim.agent_name}')",
+                claim=claim,
             )
         self._audit_log(
             "claim_override",
