@@ -1620,29 +1620,45 @@ class ResourceManager:
         """
         cutoff = self._fmt_ts(datetime.now() - timedelta(seconds=grace_seconds))
         with self.db.connect() as conn:
+            self._begin_write(conn)
             expired = self._release_expired(conn, cutoff)
         self._record_expired(expired)
         return len(expired)
 
     @staticmethod
-    def _release_expired(conn, cutoff: str) -> list:
-        """Release every unreleased claim whose deadline is before
-        ``cutoff``, in the caller's transaction; return the released
-        claims (id, sbc_id, agent_name, sbc_name) for _record_expired.
+    def _begin_write(conn) -> None:
+        """Start ``conn``'s transaction with the write lock (BEGIN
+        IMMEDIATE), so what it reads stays true until it commits. Call it
+        first: a transaction already open (Python's implicit deferred
+        BEGIN) would not hold the lock, so that is refused."""
+        if conn.in_transaction:
+            raise RuntimeError("_begin_write must start the transaction")
+        conn.execute("BEGIN IMMEDIATE")
 
-        Takes the write lock first (BEGIN IMMEDIATE), so no other process
-        releases or claims between the SELECT and the UPDATE: each expiry
-        is released, and recorded, exactly once.
+    @staticmethod
+    def _release_expired(conn, cutoff: str, holder: Optional[tuple] = None) -> list:
+        """Release unreleased claims whose deadline is before ``cutoff``,
+        in a transaction begun with _begin_write; return them (id, sbc_id,
+        agent_name, sbc_name) for _record_expired. ``holder`` =
+        (sbc_id, session_id, owner) limits it to that holder's claim on
+        that SBC. Under the write lock nothing changes between the SELECT
+        and the UPDATE, so each expiry is released, and recorded, once.
         """
         if not conn.in_transaction:
-            conn.execute("BEGIN IMMEDIATE")
+            raise RuntimeError("_release_expired needs _begin_write first")
+        where = "c.released_at IS NULL AND c.expires_at < ?"
+        params: list = [cutoff]
+        if holder is not None:
+            sbc_id, session_id, owner = holder
+            where += (
+                " AND c.sbc_id = ?"
+                " AND (c.session_id = ? OR (c.owner IS NOT NULL AND c.owner = ?))"
+            )
+            params += [sbc_id, session_id, owner]
         expired = conn.execute(
-            """
-            SELECT c.id, c.sbc_id, c.agent_name, s.name AS sbc_name
-            FROM claims c JOIN sbcs s ON s.id = c.sbc_id
-            WHERE c.released_at IS NULL AND c.expires_at < ?
-            """,
-            (cutoff,),
+            "SELECT c.id, c.sbc_id, c.agent_name, s.name AS sbc_name"
+            f" FROM claims c JOIN sbcs s ON s.id = c.sbc_id WHERE {where}",
+            params,
         ).fetchall()
         if expired:
             ids = [row["id"] for row in expired]
@@ -1658,7 +1674,7 @@ class ResourceManager:
             )
         return expired
 
-    def _record_expired(self, expired: list) -> None:
+    def _record_expired(self, expired: list, message: Optional[str] = None) -> None:
         """One claim_expired event per released claim. The claim ran out:
         whoever's call swept it didn't release it, so it is the system's."""
         for row in expired:
@@ -1668,7 +1684,7 @@ class ResourceManager:
                     "sbc",
                     row["sbc_id"],
                     row["sbc_name"],
-                    f"Claim by {row['agent_name']} expired",
+                    message or f"Claim by {row['agent_name']} expired",
                 )
 
     @staticmethod
@@ -1909,26 +1925,15 @@ class ResourceManager:
         with self.db.connect() as conn:
             # Release expired claims (on any SBC) within the same
             # transaction so the UNIQUE index reflects current reality.
+            self._begin_write(conn)
             swept = self._release_expired(conn, cutoff)
             # The grace period protects an expired claim from others, not
             # from its own holder: re-claiming replaces it straight away.
-            replaced = conn.execute(
-                """
-                UPDATE claims
-                SET released_at = CURRENT_TIMESTAMP,
-                    release_reason = ?,
-                    released_by = 'system'
-                WHERE released_at IS NULL AND sbc_id = ? AND expires_at < ?
-                  AND (session_id = ? OR (owner IS NOT NULL AND owner = ?))
-                """,
-                (
-                    ReleaseReason.EXPIRED.value,
-                    sbc_id,
-                    self._fmt_ts(datetime.now()),
-                    session_id,
-                    owner,
-                ),
-            ).rowcount
+            replaced = self._release_expired(
+                conn,
+                self._fmt_ts(datetime.now()),
+                holder=(sbc_id, session_id, owner),
+            )
 
             # Check for active claim after the sweep
             cursor = conn.execute(
@@ -1981,14 +1986,9 @@ class ResourceManager:
             claim = Claim.from_row(cursor.fetchone())
 
         self._record_expired(swept)
-        if replaced:
-            self._audit_log(
-                "claim_expired",
-                "sbc",
-                sbc_id,
-                sbc_name,
-                "Expired claim replaced by its holder's new claim",
-            )
+        self._record_expired(
+            replaced, "Expired claim replaced by its holder's new claim"
+        )
         self._audit_log(
             "claim",
             "sbc",

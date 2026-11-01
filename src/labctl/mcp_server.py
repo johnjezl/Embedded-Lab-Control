@@ -443,15 +443,6 @@ def _get_session_id() -> str:
     return f"{_SESSION_ID}:{user}" if user else _SESSION_ID
 
 
-def _remembered_agent_name() -> str | None:
-    """A name set earlier by this caller: the authenticated user's own, or
-    over stdio the process's. None for unauthenticated HTTP."""
-    user = _authenticated_user()
-    if user:
-        return _USER_AGENT_NAMES.get(user) or user
-    return _AGENT_NAME if _SESSION_KIND == "mcp-stdio" else None
-
-
 def _given_agent_name() -> str | None:
     """The agent name this caller gave earlier (claim_sbc agent_name), for
     the activity stream; unlike _remembered_agent_name, never the bare
@@ -460,6 +451,12 @@ def _given_agent_name() -> str | None:
     if user:
         return _USER_AGENT_NAMES.get(user)
     return _AGENT_NAME if _SESSION_KIND == "mcp-stdio" else None
+
+
+def _remembered_agent_name() -> str | None:
+    """A name set earlier by this caller, else the authenticated user's
+    name. None for unauthenticated HTTP without one."""
+    return _given_agent_name() or _authenticated_user()
 
 
 def _get_agent_name(call_name: str | None = None) -> str:
@@ -4672,8 +4669,9 @@ def _release_session_claims():
 
 def _sweep_claims_once() -> None:
     """One pass of the claim sweep: expire stale claims, release dead
-    sessions, prune old claims and activity. Claims it releases are
-    released by the server, so its events are ``daemon:mcp`` (#57)."""
+    sessions, prune old claims and activity. It runs as ``daemon:mcp``
+    (#57): dead-session releases are recorded so; expiries are recorded
+    as ``system`` (ResourceManager._record_expired)."""
     from labctl.core import audit
 
     with audit.activity_context("daemon:mcp", "daemon"):

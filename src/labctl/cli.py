@@ -689,8 +689,8 @@ def _display_recent_activity(manager, *, limit: int = 5) -> None:
     import sqlite3
 
     sql = (
-        "SELECT id, logged_at, actor, agent, source, action, entity_name, "
-        "result, details FROM audit_log ORDER BY id DESC LIMIT ?"
+        # SELECT *: a database not yet migrated to v13 has no agent column.
+        "SELECT * FROM audit_log ORDER BY id DESC LIMIT ?"
     )
     try:
         rows = list(manager.db.execute(sql, (int(limit),)))
@@ -7097,8 +7097,9 @@ def _compact_details(raw, *, limit: int = 25) -> str | None:
 def _format_activity_row(row, *, compact: bool = False) -> str:
     """Render a single audit_log row as a colored line.
 
-    ``compact=True`` collapses the actor to its source-kind (left of
-    the colon) and truncates the details payload to 25 characters,
+    ``compact=True`` shows the agent's name (cut to 12 characters) or
+    else the actor's source-kind (left of the colon), and truncates the
+    details payload to 25 characters,
     used by the at-a-glance tail in ``labctl status``. The full-detail
     layout is preserved for ``labctl activity tail``.
     """
@@ -7113,7 +7114,7 @@ def _format_activity_row(row, *, compact: bool = False) -> str:
     )
 
     if compact:
-        actor_display = agent or _compact_actor(actor)
+        actor_display = agent[:12] if agent else _compact_actor(actor)
         actor_width = 12
         details_text = _compact_details(row["details"])
     else:
@@ -7223,11 +7224,7 @@ def activity_tail_cmd(
         sbc_filter, actor_filter, source_filter, result_filter, since, agent_filter
     )
 
-    sql = (
-        "SELECT id, logged_at, actor, agent, source, action, entity_name, "
-        "result, details "
-        "FROM audit_log"
-    )
+    sql = "SELECT * FROM audit_log"  # without agent before v13
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY id DESC LIMIT ?"
@@ -7247,10 +7244,7 @@ def activity_tail_cmd(
         return
 
     # Follow mode: poll for new rows every 500ms.
-    follow_sql = (
-        "SELECT id, logged_at, actor, agent, source, action, entity_name, "
-        "result, details FROM audit_log WHERE id > ?"
-    )
+    follow_sql = "SELECT * FROM audit_log WHERE id > ?"
     follow_where = list(where)
     follow_params_base = list(params)
     if follow_where:
