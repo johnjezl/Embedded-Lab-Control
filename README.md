@@ -249,10 +249,12 @@ and the message, and an action cut short (Ctrl+C) as `interrupted`. Reads
 
 A call refused over a claim is recorded as `claim_refused` with result
 `forbidden` (`--result forbidden`): who holds it, the board it is on (if a
-board sharing the hardware), why (`claimed`, `claim_required` or
-`not_operator`) and what was attempted (the MCP tool, `labctl` command or
-HTTP route). `power-all` records one for each board it skips. Checks that
-only look (before a prompt, a long call's keepalive) record nothing.
+board sharing the hardware), why (`claimed`, `claim_required`,
+`not_operator` for an agent's force-release, `not_claimant` for releasing
+or renewing someone else's claim) and what was attempted (the MCP tool,
+`labctl` command or HTTP route). `power-all` records one for each board it
+skips. A check that passes, a `--dry-run`, and a long call's keepalive
+rechecks record nothing.
 
 ### Claims (Exclusive Access Coordination)
 

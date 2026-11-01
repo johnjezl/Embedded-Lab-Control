@@ -65,10 +65,16 @@ def test_record_claim_refusal(manager):
 
 
 def test_a_failed_lookup_never_breaks_the_refusal(manager):
-    with patch.object(manager, "get_sbc_by_name", side_effect=OSError("locked")):
+    with patch.object(manager.db, "execute_one", side_effect=OSError("locked")):
         manager.record_claim_refusal("a", "claimed")  # no exception
     (event,) = _refusals(manager)
     assert (event["entity_name"], event["entity_id"]) == ("a", None)
+
+
+def test_force_release_of_nothing_is_not_a_refusal(manager):
+    manager.record_override_refusal("a", "force_release_sbc")  # unclaimed
+    manager.record_override_refusal("typo", "force_release_sbc")  # unknown
+    assert _refusals(manager) == []
 
 
 def test_keepalive_recheck_records_nothing(manager):
@@ -143,6 +149,7 @@ class TestMcp:
     def test_claim_required_and_not_operator(self, mcp, manager):
         mcp_server, config = mcp
         config.claims.require_claim = True
+        _hold(manager, "b")
         with (
             patch("labctl.mcp_server._confirmation_required", return_value=False),
             patch("labctl.mcp_server._caller_is_operator", return_value=False),
@@ -159,6 +166,20 @@ class TestMcp:
         assert result["error"] == "sbc_claimed"
         (event,) = _refusals(manager)
         assert event["details"]["attempted"] == "claim_sbc"
+
+    def test_release_and_renew_of_someone_elses_claim(self, mcp, manager):
+        mcp_server, _config = mcp
+        _hold(manager, "a")
+        assert json.loads(mcp_server.release_sbc("a"))["error"] == "not_claimant"
+        assert json.loads(mcp_server.renew_sbc_claim("a"))["error"] == "not_claimant"
+        events = _refusals(manager)
+        assert [
+            (e["details"]["reason"], e["details"]["attempted"]) for e in events
+        ] == [
+            ("not_claimant", "release_sbc"),
+            ("not_claimant", "renew_sbc_claim"),
+        ]
+        assert {e["details"]["holder"] for e in events} == {"holder"}
 
     def test_allowed_call_records_no_refusal(self, mcp, manager):
         mcp_server, _config = mcp
@@ -208,6 +229,26 @@ class TestCli:
         assert [(e["entity_name"], e["details"]["attempted"]) for e in events] == [
             ("a", "labctl power-all")
         ]
+
+    def test_release_of_someone_elses_claim(self, cli, manager):
+        from labctl.cli import main
+
+        _hold(manager, "a")
+        result = CliRunner().invoke(main, ["-c", str(cli), "release", "a"])
+        assert result.exit_code == 1
+        (event,) = _refusals(manager)
+        assert event["details"]["reason"] == "not_claimant"
+        assert event["details"]["attempted"] == "labctl release"
+
+    def test_dry_run_records_nothing(self, cli, manager):
+        from labctl.cli import main
+
+        _hold(manager, "a")
+        result = CliRunner().invoke(
+            main, ["-c", str(cli), "power", "cycle", "a", "--dry-run"]
+        )
+        assert result.exit_code == 1
+        assert _refusals(manager) == []
 
     def test_allowed_command_records_no_refusal(self, cli, manager):
         from labctl.cli import main

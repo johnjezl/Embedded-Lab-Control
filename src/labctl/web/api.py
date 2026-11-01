@@ -874,6 +874,7 @@ def release_claim(sbc_name: str):
     except ClaimNotFoundError:
         return jsonify({"error": "claim_not_found"}), 404
     except NotClaimantError:
+        g.manager.record_not_claimant(sbc_name, f"{request.method} {request.path}")
         return jsonify({"error": "not_claimant"}), 403
     return jsonify({"status": "released"})
 
@@ -903,6 +904,7 @@ def renew_claim(sbc_name: str):
     except ClaimNotFoundError:
         return jsonify({"error": "claim_not_found"}), 404
     except NotClaimantError:
+        g.manager.record_not_claimant(sbc_name, f"{request.method} {request.path}")
         return jsonify({"error": "not_claimant"}), 403
     return jsonify({"status": "renewed", "claim": claim.to_dict()})
 
@@ -913,7 +915,7 @@ def force_release_claim(sbc_name: str):
     from labctl.core.models import ClaimNotFoundError, UnknownSBCError
 
     if not claims.web_actor().operator:
-        claims.record_refusal(sbc_name, "not_operator")
+        g.manager.record_override_refusal(sbc_name, f"{request.method} {request.path}")
         return (
             jsonify(
                 {

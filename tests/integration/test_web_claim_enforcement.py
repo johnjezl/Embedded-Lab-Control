@@ -912,6 +912,14 @@ class TestRefusalsRecorded:
         (event,) = _refusals(manager)
         assert event["details"]["reason"] == "not_operator"
 
+    def test_rest_release_of_someone_elses_claim(self, lab):
+        client, manager = lab
+        _claim(manager, "a")
+        resp = client.post("/api/claims/a/release", headers=BOT)
+        assert resp.status_code == 403
+        (event,) = _refusals(manager)
+        assert event["details"]["reason"] == "not_claimant"
+
     def test_allowed_request_records_no_refusal(self, lab, power):
         client, manager = lab
         client.post("/api/sbcs/c/power", json={"action": "on"}, headers=BOT)
