@@ -13,6 +13,7 @@ from labctl.actuators.runtime import (
     PrePowerCheckError,
     board_cycle_delay,
     power_cycle_with_bindings,
+    power_off_board,
     power_on_with_bindings,
 )
 from labctl.core import audit
@@ -306,7 +307,7 @@ def control_power(name: str):
         if action == "on":
             success = power_on_with_bindings(g.manager, sbc, controller)
         elif action == "off":
-            success = controller.power_off()
+            success = power_off_board(g.manager, sbc, controller)
         else:
             success = power_cycle_with_bindings(g.manager, sbc, controller, delay)
 

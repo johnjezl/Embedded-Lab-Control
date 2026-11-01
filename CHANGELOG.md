@@ -6,8 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Hardware actions in the activity stream, however they were started
+  (CLI, MCP, REST, web; #57 part 2): power on/off/cycle, enter/exit
+  recovery, SD card switches, image flashes (image name, bytes written),
+  SD card file updates (files changed), serial sends (size only, never
+  the data), serial captures and boot tests (runs, passes). They are
+  recorded in the shared code every front end calls, so a new path is
+  covered; failures are recorded as `error` with the message. Also
+  recorded now: claim renewals, release requests, and removing a board's
+  network address, power plug or SDWire assignment.
+
 ### Changed
 
+- `labctl claims expire` and the MCP server's claim sweep share one
+  helper; `claims expire` now also prunes activity older than 30 days.
+- A power cycle refused before anything was switched (a pre-power relay
+  that can't be used) is now recorded as an `error` event.
 - Activity stream attribution (#57, part 1):
   - The monitor's own actions are recorded as `daemon:monitor` (source
     `daemon`; they appeared as `cli:labctl`), and the MCP server's claim

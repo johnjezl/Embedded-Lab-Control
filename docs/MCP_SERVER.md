@@ -653,7 +653,7 @@ decisions: D011, D012, D014 in [`DECISIONS.md`](DECISIONS.md).
 | Privileged actuator tools | `actuator_add/remove/set` (raw actuator access, bypassing bindings) | off | `mcp.allow_admin_actuator_ops` |
 | Claims | An agent's claim on a board blocks other agents' calls that operate or reconfigure it; only operators may force-release; optionally, changing a board requires claiming it | on (`require_claim` off) | `claims.*`, `auth.users[].role` |
 | Serialization | One tool call (and hardware-reading resource) at a time | always | — |
-| Audit | Changes are recorded with the actor (`<session>[:<user>]`) and the agent name given to `claim_sbc` (hardware actions: #57) | always | `labctl activity tail` / `export`, web `/activity` page |
+| Audit | Every change, hardware actions included, is recorded with the actor (`<session>[:<user>]`) and the agent name given to `claim_sbc` | always | `labctl activity tail` / `export`, web `/activity` page |
 | systemd unit | `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes`: on disk, only `/var/lib/labctl` is writable, plus private `/tmp` and `/var/tmp` and the host's shared `/dev` (including `/dev/shm`). Devices are outside this: SD cards are written through the SDWire `sudo` rules (`dd`, `mount`, `partprobe`; D008b), serial ports through group permissions | as shipped | `config/systemd/labctl-mcp.service` |
 
 Every tool and resource is classified (read / db-write / shared-resource /

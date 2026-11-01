@@ -2,9 +2,16 @@
 Activity stream — structured record of every state-changing action.
 
 Each call to `emit()` writes one row to `audit_log`. The `actor`,
-`source`, `agent` and `claim_id` fields are pulled from contextvars set
-by the originating front-end (CLI, MCP, web, daemon) via the
-`activity_context()` context manager.
+`source` and `agent` fields are pulled from contextvars set by the
+originating front-end (CLI, MCP, web, daemon) via the
+`activity_context()` context manager. (`audit_log.claim_id` is a
+foreign key to claims with no ON DELETE, so nothing writes it: a value
+there would stop the claim and its SBC from being deleted. A claim's ID
+goes in `details`.)
+
+Hardware actions (power, SDWire, serial, boot tests) are recorded where
+every front end's call passes through them, with a :class:`Target`
+naming the board.
 
 Daemons log as actor ``daemon:<name>`` with source ``daemon`` (the
 monitor is ``daemon:monitor``). ``agent`` is the name an MCP agent gave
@@ -47,7 +54,6 @@ REDACT_PLACEHOLDER = "***"
 
 _actor: ContextVar[str] = ContextVar("labctl_audit_actor", default="internal")
 _source: ContextVar[str] = ContextVar("labctl_audit_source", default="internal")
-_claim_id: ContextVar[Optional[int]] = ContextVar("labctl_audit_claim_id", default=None)
 _agent: ContextVar[Optional[str]] = ContextVar("labctl_audit_agent", default=None)
 
 
@@ -55,7 +61,6 @@ _agent: ContextVar[Optional[str]] = ContextVar("labctl_audit_agent", default=Non
 def activity_context(
     actor: str,
     source: str,
-    claim_id: Optional[int] = None,
     agent: Optional[str] = None,
 ) -> Iterator[None]:
     """Set the audit context for the enclosed block.
@@ -67,21 +72,18 @@ def activity_context(
     """
     token_a = _actor.set(actor)
     token_s = _source.set(source)
-    token_c = _claim_id.set(claim_id)
     token_g = _agent.set(agent)
     try:
         yield
     finally:
         _actor.reset(token_a)
         _source.reset(token_s)
-        _claim_id.reset(token_c)
         _agent.reset(token_g)
 
 
 def set_context(
     actor: str,
     source: str,
-    claim_id: Optional[int] = None,
     agent: Optional[str] = None,
 ) -> None:
     """Set the audit context for the remainder of this contextvars context.
@@ -92,7 +94,6 @@ def set_context(
     """
     _actor.set(actor)
     _source.set(source)
-    _claim_id.set(claim_id)
     _agent.set(agent)
 
 
@@ -108,10 +109,6 @@ def current_actor() -> str:
 
 def current_source() -> str:
     return _source.get()
-
-
-def current_claim_id() -> Optional[int]:
-    return _claim_id.get()
 
 
 def current_agent() -> Optional[str]:
@@ -246,7 +243,6 @@ def emit(
     details: Optional[dict] = None,
     actor: Optional[str] = None,
     source: Optional[str] = None,
-    claim_id: Optional[int] = None,
     agent: Optional[str] = None,
 ) -> None:
     """Record a single activity event.
@@ -261,7 +257,6 @@ def emit(
         details: Structured details. Redacted and JSON-encoded.
         actor: Override the contextvar actor (rare; usually leave None).
         source: Override the contextvar source.
-        claim_id: Override the contextvar claim id.
         agent: Override the contextvar agent name.
 
     Never raises — audit failures are logged but do not propagate.
@@ -269,15 +264,14 @@ def emit(
     try:
         effective_actor = actor if actor is not None else _actor.get()
         effective_source = source if source is not None else _source.get()
-        effective_claim = claim_id if claim_id is not None else _claim_id.get()
         effective_agent = agent if agent is not None else _agent.get()
         details_text = _serialize_details(details)
         db.execute_insert(
             """
             INSERT INTO audit_log (
                 action, entity_type, entity_id, entity_name,
-                details, logged_at, actor, source, result, claim_id, agent
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                details, logged_at, actor, source, result, agent
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 action,
@@ -289,9 +283,55 @@ def emit(
                 effective_actor,
                 effective_source,
                 result,
-                effective_claim,
                 effective_agent,
             ),
         )
     except Exception as e:  # noqa: BLE001
         logger.warning("audit.emit failed for action=%s: %s", action, e)
+
+
+class Target:
+    """The board a hardware action is recorded against.
+
+    The shared code every front end goes through (power, SDWire, serial,
+    boot tests) takes one and records each action once, whichever front
+    end called it; the actor, source and agent come from the context.
+    Built from a database and an SBC (anything with ``id`` and ``name``).
+    """
+
+    def __init__(self, db: Optional["Database"], sbc: Any, entity_type: str = "sbc"):
+        self.db = db
+        self.sbc_id = getattr(sbc, "id", None)
+        self.sbc_name = getattr(sbc, "name", None)
+        self.entity_type = entity_type
+
+    def record(self, action: str, result: str = "ok", **details: Any) -> None:
+        """Record ``action`` on the board (``details`` with None values
+        dropped). Without a database (some tests) nothing is recorded."""
+        if self.db is None:
+            return
+        emit(
+            self.db,
+            action=action,
+            entity_type=self.entity_type,
+            entity_id=self.sbc_id,
+            entity_name=self.sbc_name,
+            result=result,
+            details={k: v for k, v in details.items() if v is not None} or None,
+        )
+
+    def run(self, action: str, fn, *, summary=None, **details: Any):
+        """Call ``fn()`` and record ``action``: ``error`` (with the
+        message) if it raises, which is re-raised, or returns False;
+        ``ok`` otherwise, with ``summary(value)`` (a dict) added to the
+        details if given. Returns what ``fn`` returned."""
+        try:
+            value = fn()
+        except Exception as e:
+            self.record(action, "error", error=str(e) or type(e).__name__, **details)
+            raise
+        if value is False:
+            self.record(action, "error", **details)
+        else:
+            self.record(action, **details, **(summary(value) if summary else {}))
+        return value

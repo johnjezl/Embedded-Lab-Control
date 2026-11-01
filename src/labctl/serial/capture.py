@@ -140,7 +140,45 @@ def resolve_port(manager, port_name: str):
     raise ValueError(f"'{port_name}' is not a known port alias or SBC name")
 
 
+def port_target(manager, port):
+    """The activity-stream target for a serial port: its SBC, or the port
+    itself if it has none (#57)."""
+    from types import SimpleNamespace
+
+    from labctl.core.audit import Target
+
+    sbc = manager.get_sbc(port.sbc_id) if port.sbc_id else None
+    if sbc is not None:
+        return Target(manager.db, sbc)
+    name = port.alias or port.device_path
+    return Target(manager.db, SimpleNamespace(id=port.id, name=name), "serial_port")
+
+
 def capture_serial_output(
+    tcp_host: str,
+    tcp_port: int,
+    timeout: float = 15.0,
+    until_pattern: Optional[str] = None,
+    tail: Optional[int] = None,
+    *,
+    target=None,
+) -> CaptureResult:
+    """:func:`_capture_serial_output`, recorded as ``serial_capture``
+    against ``target`` (:func:`port_target`) when given."""
+    if target is None:
+        return _capture_serial_output(tcp_host, tcp_port, timeout, until_pattern, tail)
+    return target.run(
+        "serial_capture",
+        lambda: _capture_serial_output(
+            tcp_host, tcp_port, timeout, until_pattern, tail
+        ),
+        summary=lambda r: {"lines": r.lines, "pattern_matched": r.pattern_matched},
+        timeout=timeout,
+        until=until_pattern,
+    )
+
+
+def _capture_serial_output(
     tcp_host: str,
     tcp_port: int,
     timeout: float = 15.0,
@@ -252,6 +290,41 @@ def capture_serial_output(
 
 
 def send_serial_data(
+    tcp_host: str,
+    tcp_port: int,
+    data: Union[str, list[bytes]],
+    newline: bool = True,
+    capture_timeout: Optional[float] = None,
+    capture_until: Optional[str] = None,
+    pacing: Optional[SendPacing] = None,
+    *,
+    target=None,
+) -> SendResult:
+    """:func:`_send_serial_data`, recorded as ``serial_send`` against
+    ``target`` (:func:`port_target`) when given. Only the size is recorded,
+    never the data (it can be a password typed at a login prompt)."""
+
+    def run():
+        return _send_serial_data(
+            tcp_host,
+            tcp_port,
+            data,
+            newline,
+            capture_timeout,
+            capture_until,
+            pacing,
+        )
+
+    if target is None:
+        return run()
+    return target.run(
+        "serial_send",
+        run,
+        summary=lambda r: {"bytes_sent": r.bytes_sent},
+    )
+
+
+def _send_serial_data(
     tcp_host: str,
     tcp_port: int,
     data: Union[str, list[bytes]],

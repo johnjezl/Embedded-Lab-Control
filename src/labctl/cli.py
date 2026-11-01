@@ -1775,7 +1775,9 @@ def sdwire_dut_cmd(ctx: click.Context, sbc_name: str) -> None:
         sys.exit(1)
 
     try:
-        ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+        ctrl = SDWireController(
+            sbc.sdwire.serial_number, sbc.sdwire.device_type, sbc=sbc, db=manager.db
+        )
         ctrl.switch_to_dut()
         click.echo(f"SD card switched to DUT: {sbc_name}")
     except RuntimeError as e:
@@ -1820,7 +1822,9 @@ def sdwire_host_cmd(ctx: click.Context, sbc_name: str, force: bool) -> None:
         sys.exit(1)
 
     try:
-        ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+        ctrl = SDWireController(
+            sbc.sdwire.serial_number, sbc.sdwire.device_type, sbc=sbc, db=manager.db
+        )
         ctrl.switch_to_host()
         # Return only once the card is readable, so a follow-up command or
         # MCP read sees it on the host (same as the MCP sdwire_to_host).
@@ -1949,7 +1953,9 @@ def sdwire_flash_cmd(
         click.echo("Dry run: would " + "; ".join(steps) + ". Nothing changed.")
         return
 
-    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    ctrl = SDWireController(
+        sbc.sdwire.serial_number, sbc.sdwire.device_type, sbc=sbc, db=manager.db
+    )
     flash_ok = False
 
     try:
@@ -1970,7 +1976,7 @@ def sdwire_flash_cmd(
         if sbc.power_plug:
             click.echo("Powering off SBC...")
         try:
-            power_off_before_host_switch(sbc, no_plug_ok=no_plug_ok)
+            power_off_before_host_switch(manager, sbc, no_plug_ok=no_plug_ok)
         except RuntimeError as e:
             click.echo(f"Error: {e}.", err=True)
             sys.exit(1)
@@ -2205,7 +2211,9 @@ def sdwire_update_cmd(
         click.echo("Dry run: would " + "; ".join(steps) + ". Nothing changed.")
         return
 
-    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    ctrl = SDWireController(
+        sbc.sdwire.serial_number, sbc.sdwire.device_type, sbc=sbc, db=manager.db
+    )
 
     try:
         # The relays the reboot will need are checked before the board is
@@ -2226,7 +2234,7 @@ def sdwire_update_cmd(
         if sbc.power_plug:
             click.echo(f"Powering off {sbc_name}...")
         try:
-            power_off_before_host_switch(sbc, no_plug_ok=no_plug_ok)
+            power_off_before_host_switch(manager, sbc, no_plug_ok=no_plug_ok)
         except RuntimeError as e:
             click.echo(f"Error: {e}.", err=True)
             sys.exit(1)
@@ -2348,7 +2356,9 @@ def sdwire_ls_cmd(
     if not sbc.sdwire:
         click.echo(f"Error: No SDWire assigned to '{sbc_name}'", err=True)
         sys.exit(1)
-    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    ctrl = SDWireController(
+        sbc.sdwire.serial_number, sbc.sdwire.device_type, sbc=sbc, db=manager.db
+    )
     needs_switch = _sdwire_read_needs_switch(sbc_name, sbc, ctrl, force)
     host_switched = False
     cleanup_error: RuntimeError | None = None
@@ -2460,7 +2470,9 @@ def sdwire_cat_cmd(
     if not sbc.sdwire:
         click.echo(f"Error: No SDWire assigned to '{sbc_name}'", err=True)
         sys.exit(1)
-    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    ctrl = SDWireController(
+        sbc.sdwire.serial_number, sbc.sdwire.device_type, sbc=sbc, db=manager.db
+    )
     needs_switch = _sdwire_read_needs_switch(sbc_name, sbc, ctrl, force)
     host_switched = False
     cleanup_error: RuntimeError | None = None
@@ -2558,7 +2570,9 @@ def sdwire_info_cmd(ctx: click.Context, sbc_name: str, force: bool) -> None:
     if not sbc.sdwire:
         click.echo(f"Error: No SDWire assigned to '{sbc_name}'", err=True)
         sys.exit(1)
-    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    ctrl = SDWireController(
+        sbc.sdwire.serial_number, sbc.sdwire.device_type, sbc=sbc, db=manager.db
+    )
     needs_switch = _sdwire_read_needs_switch(sbc_name, sbc, ctrl, force)
     host_switched = False
     cleanup_error: RuntimeError | None = None
@@ -2932,7 +2946,11 @@ def serial_capture_cmd(
       labctl serial capture pi-5-1 --until "slmos>" --timeout 30
       labctl serial capture pi-5-1 --until "slmos>" --tail 20
     """
-    from labctl.serial.capture import capture_serial_output, resolve_port
+    from labctl.serial.capture import (
+        capture_serial_output,
+        port_target,
+        resolve_port,
+    )
 
     manager = _get_manager(ctx)
 
@@ -2953,6 +2971,7 @@ def serial_capture_cmd(
             timeout=timeout,
             until_pattern=until_pattern,
             tail=tail,
+            target=port_target(manager, port),
         )
 
         if result.output:
@@ -3085,7 +3104,7 @@ def serial_send_cmd(
       labctl serial send pi-5-1 "help" --interbyte-delay-ms 2
       labctl serial send pi-5-1 "help" --chunk-size 16 --chunk-delay-ms 50
     """
-    from labctl.serial.capture import resolve_port, send_serial_data
+    from labctl.serial.capture import port_target, resolve_port, send_serial_data
 
     pacing = _resolve_send_pacing(interbyte_delay_ms, chunk_size, chunk_delay_ms)
 
@@ -3110,6 +3129,7 @@ def serial_send_cmd(
             capture_timeout=capture_timeout,
             capture_until=capture_until,
             pacing=pacing,
+            target=port_target(manager, port),
         )
 
         if result.capture and result.capture.output:
@@ -3785,33 +3805,6 @@ def _get_power_controller(manager: ResourceManager, sbc_name: str) -> tuple:
         sys.exit(1)
 
 
-def _emit_power_event(
-    manager: ResourceManager,
-    sbc,
-    action: str,
-    ok: bool,
-    error: str | None = None,
-    extra: dict | None = None,
-) -> None:
-    """Record a power-operation activity event."""
-    from labctl.core import audit
-
-    details: dict = {}
-    if error:
-        details["error"] = error
-    if extra:
-        details.update(extra)
-    audit.emit(
-        manager.db,
-        action=action,
-        entity_type="sbc",
-        entity_id=sbc.id,
-        entity_name=sbc.name,
-        result="ok" if ok else "error",
-        details=details or None,
-    )
-
-
 @power_group.command("on")
 @claim_checked()
 @click.argument("sbc_name")
@@ -3833,7 +3826,6 @@ def power_on_cmd(ctx: click.Context, sbc_name: str) -> None:
     click.echo(f"Powering on {sbc_name}...")
     try:
         ok = power_on_with_bindings(manager, sbc, controller)
-        _emit_power_event(manager, sbc, "power_on", ok)
         if ok:
             click.echo(f"Power ON: {sbc_name}")
         else:
@@ -3844,7 +3836,6 @@ def power_on_cmd(ctx: click.Context, sbc_name: str) -> None:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
     except RuntimeError as e:
-        _emit_power_event(manager, sbc, "power_on", False, error=str(e))
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
@@ -3856,20 +3847,20 @@ def power_on_cmd(ctx: click.Context, sbc_name: str) -> None:
 @click.pass_context
 def power_off_cmd(ctx: click.Context, sbc_name: str) -> None:
     """Turn power off for an SBC."""
+    from labctl.actuators.runtime import power_off_board
+
     manager = _get_manager(ctx)
     controller, sbc = _get_power_controller(manager, sbc_name)
 
     click.echo(f"Powering off {sbc_name}...")
     try:
-        ok = controller.power_off()
-        _emit_power_event(manager, sbc, "power_off", ok)
+        ok = power_off_board(manager, sbc, controller)
         if ok:
             click.echo(f"Power OFF: {sbc_name}")
         else:
             click.echo(f"Error: Failed to power off {sbc_name}", err=True)
             sys.exit(1)
     except RuntimeError as e:
-        _emit_power_event(manager, sbc, "power_off", False, error=str(e))
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
@@ -3993,28 +3984,13 @@ def power_cycle_cmd(
     try:
         ok = power_cycle_with_bindings(manager, sbc, controller, effective_delay)
     except PrePowerCheckError as e:
-        # Refused before power-off: nothing switched, so no power event.
+        # Refused before power-off: nothing switched (recorded as an error).
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
     except (RuntimeError, ActuationError) as e:
-        _emit_power_event(
-            manager,
-            sbc,
-            "power_cycle",
-            False,
-            error=str(e),
-            extra={"delay_seconds": effective_delay.seconds},
-        )
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
-    _emit_power_event(
-        manager,
-        sbc,
-        "power_cycle",
-        ok,
-        extra={"delay_seconds": effective_delay.seconds},
-    )
     if ok:
         click.echo(f"Power cycled: {sbc_name}")
     else:
@@ -4064,7 +4040,7 @@ def power_all_cmd(
     each board's pre_power relays first. Asks for confirmation on a
     terminal; without one it needs --yes.
     """
-    from labctl.actuators.runtime import power_on_with_bindings
+    from labctl.actuators.runtime import power_off_board, power_on_with_bindings
 
     manager = _get_manager(ctx)
 
@@ -4143,7 +4119,7 @@ def power_all_cmd(
             if action == "on":
                 result = power_on_with_bindings(manager, sbc, controller)
             else:
-                result = controller.power_off()
+                result = power_off_board(manager, sbc, controller)
 
             if result:
                 click.echo(f"  {sbc.name}: {action.upper()} OK")
@@ -4724,35 +4700,11 @@ def _run_composite(ctx, sbc_name: str, fn_name: str, fn) -> None:
     try:
         fn(manager, sbc, controller, delay_s=delay)
     except ActuationError as e:
-        _emit_power_event(
-            manager,
-            sbc,
-            fn_name,
-            False,
-            error=str(e),
-            extra={"delay_seconds": delay.seconds},
-        )
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
     except RuntimeError as e:
-        _emit_power_event(
-            manager,
-            sbc,
-            fn_name,
-            False,
-            error=str(e),
-            extra={"delay_seconds": delay.seconds},
-        )
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
-
-    _emit_power_event(
-        manager,
-        sbc,
-        fn_name,
-        True,
-        extra={"delay_seconds": delay.seconds},
-    )
 
 
 @main.command("enter-recovery")
@@ -5658,23 +5610,25 @@ def claims_expire_cmd(ctx: click.Context) -> None:
     """Run one sweep: release expired claims and dead-session claims.
 
     Also prunes released claims older than
-    claims.auto_prune_released_after_days.
+    claims.auto_prune_released_after_days, and activity events older than
+    30 days, as the MCP server's sweep does.
 
     Suitable for cron / systemd timer (e.g. every 60 seconds).
     """
     config: Config = ctx.obj["config"]
     manager = _get_manager(ctx)
-    grace = config.claims.grace_period_seconds
-    expired = manager.expire_stale_claims(grace_seconds=grace)
-    dead = manager.release_dead_sessions(grace_seconds=grace)
-    pruned = manager.prune_released_claims(
-        older_than_days=config.claims.auto_prune_released_after_days
+    counts = manager.sweep_claims(
+        config.claims.grace_period_seconds,
+        config.claims.auto_prune_released_after_days,
     )
+    expired, dead, pruned = counts["expired"], counts["dead"], counts["pruned"]
     parts = []
     if expired or dead:
         parts.append(f"{expired} expired + {dead} dead-session released")
     if pruned:
         parts.append(f"{pruned} old claim(s) pruned")
+    if counts["activity_pruned"]:
+        parts.append(f"{counts['activity_pruned']} old activity event(s) pruned")
     if parts:
         click.echo("; ".join(parts))
     else:
@@ -6602,6 +6556,7 @@ def boot_test_cmd(
       labctl boot-test pi-5-1 -i slmos.bin -d kernel_2712.img -e "slmos>" -o /tmp/results/
     """  # noqa: E501
 
+    from labctl.core.audit import Target
     from labctl.serial.boot_test import run_boot_test
 
     manager = _get_manager(ctx)
@@ -6658,7 +6613,9 @@ def boot_test_cmd(
             if not sbc.sdwire:
                 raise RuntimeError(f"No SDWire assigned to '{sbc_name}'")
 
-            ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+            ctrl = SDWireController(
+                sbc.sdwire.serial_number, sbc.sdwire.device_type, sbc=sbc, db=manager.db
+            )
 
             # The card must not leave a running board (bus contention):
             # the board is switched off first, and nothing is deployed if
@@ -6734,6 +6691,7 @@ def boot_test_cmd(
                 output_dir=output_dir,
                 progress_fn=progress,
                 before_run_fn=keepalive.checkpoint,
+                target=Target(manager.db, sbc),
             )
 
         click.echo("")

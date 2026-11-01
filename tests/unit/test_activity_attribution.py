@@ -192,13 +192,10 @@ class TestDaemonActor:
         seen = {}
 
         class Manager:
-            def __getattr__(self, name):
-                def call(*a, **k):
-                    seen.setdefault("actor", audit.current_actor())
-                    seen.setdefault("source", audit.current_source())
-                    return 0
-
-                return call
+            def sweep_claims(self, *a, **k):
+                seen["actor"] = audit.current_actor()
+                seen["source"] = audit.current_source()
+                return {"expired": 0, "dead": 0, "pruned": 0, "activity_pruned": 0}
 
         with (
             patch.object(mcp_server, "_get_manager", return_value=Manager()),

@@ -234,9 +234,16 @@ or `system` for a claim that ran out (`claim_expired`).
 MCP events also carry the agent name the agent gave (`claim_sbc
 agent_name=...`), shown as `name (session)`. Board status changes found by
 health checks are not activity events; they are in each board's status
-history (web `/sbc/<name>/history`, `GET /api/sbcs/<name>/history`). Power,
-SDWire, serial and boot-test actions from MCP, REST and the web UI are not
-recorded yet (#57).
+history (web `/sbc/<name>/history`, `GET /api/sbcs/<name>/history`).
+
+Hardware actions are recorded however they were started (CLI, MCP, REST,
+web): `power_on`, `power_off`, `power_cycle`, `enter_recovery` /
+`exit_recovery`, relay actions, `sdwire_to_host` / `sdwire_to_dut`,
+`flash_image` (image name and bytes written), `sdwire_update` (the files
+changed), `serial_send` (size only, never the data, which can be a
+password), `serial_capture` and `boot_test` (runs and passes). A failure is
+recorded with `result` `error` and the message. Claim refusals are not
+recorded.
 
 ### Claims (Exclusive Access Coordination)
 

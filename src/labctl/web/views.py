@@ -14,7 +14,11 @@ from flask import (
     url_for,
 )
 
-from labctl.actuators.runtime import power_cycle_with_bindings, power_on_with_bindings
+from labctl.actuators.runtime import (
+    power_cycle_with_bindings,
+    power_off_board,
+    power_on_with_bindings,
+)
 from labctl.core.models import AddressType, PlugType, PortType, Status
 from labctl.power import PowerController, PowerState
 from labctl.web import claims
@@ -129,7 +133,7 @@ def sbc_power_action(name: str, action: str):
             success = power_on_with_bindings(g.manager, sbc, controller)
             msg = "Power ON" if success else "Failed to power on"
         elif action == "off":
-            success = controller.power_off()
+            success = power_off_board(g.manager, sbc, controller)
             msg = "Power OFF" if success else "Failed to power off"
         else:
             success = power_cycle_with_bindings(g.manager, sbc, controller)

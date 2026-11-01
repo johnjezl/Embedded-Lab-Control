@@ -848,7 +848,19 @@ class ResourceManager:
             "DELETE FROM network_addresses WHERE sbc_id = ? AND address_type = ?",
             (sbc_id, address_type.value),
         )
+        if count:
+            self._audit_removal(
+                "network_address", sbc_id, f"{address_type.value} address"
+            )
         return count > 0
+
+    def _audit_removal(self, entity_type: str, sbc_id: int, what: str) -> None:
+        """Record that ``what`` was removed from an SBC (#57)."""
+        sbc = self.get_sbc(sbc_id)
+        name = sbc.name if sbc else str(sbc_id)
+        self._audit_log(
+            "remove", entity_type, None, name, f"Removed {what} from {name}"
+        )
 
     # --- Power Plug Operations ---
 
@@ -897,6 +909,8 @@ class ResourceManager:
         count = self.db.execute_modify(
             "DELETE FROM power_plugs WHERE sbc_id = ?", (sbc_id,)
         )
+        if count:
+            self._audit_removal("power_plug", sbc_id, "power plug")
         return count > 0
 
     # --- SDWire Device Operations ---
@@ -1215,6 +1229,8 @@ class ResourceManager:
         count = self.db.execute_modify(
             "DELETE FROM sdwire_assignments WHERE sbc_id = ?", (sbc_id,)
         )
+        if count:
+            self._audit_removal("sdwire", sbc_id, "SDWire assignment")
         return count > 0
 
     # --- Status Log ---
@@ -1611,6 +1627,24 @@ class ResourceManager:
         if sbc is None:
             raise UnknownSBCError(f"SBC '{sbc_name}' does not exist")
         return sbc.id
+
+    def sweep_claims(
+        self,
+        grace_seconds: int,
+        prune_after_days: int,
+        activity_retention_days: int = 30,
+    ) -> dict:
+        """One claim sweep, shared by ``labctl claims expire`` and the MCP
+        server's sweep thread: release expired and dead-session claims,
+        prune released claims and old activity. Returns the counts."""
+        return {
+            "expired": self.expire_stale_claims(grace_seconds=grace_seconds),
+            "dead": self.release_dead_sessions(grace_seconds=grace_seconds),
+            "pruned": self.prune_released_claims(older_than_days=prune_after_days),
+            "activity_pruned": self.prune_activity_events(
+                older_than_days=activity_retention_days
+            ),
+        }
 
     def expire_stale_claims(self, grace_seconds: int = 60) -> int:
         """Mark claims past their deadline (+ grace) as released.
@@ -2177,6 +2211,13 @@ class ResourceManager:
         )
         if not updated:  # released or expired meanwhile
             raise ClaimNotFoundError(f"No active claim on SBC '{sbc_name}'")
+        self._audit_log(
+            "claim_renew",
+            "sbc",
+            claim.sbc_id,
+            sbc_name,
+            f"Claim by {claim.agent_name} renewed for {new_duration}s",
+        )
         return self._get_claim_by_id(claim.id)
 
     def heartbeat_held_claim(
@@ -2399,6 +2440,13 @@ class ResourceManager:
             VALUES (?, ?, ?)
             """,
             (claim.id, requested_by, reason),
+        )
+        self._audit_log(
+            "release_request",
+            "sbc",
+            claim.sbc_id,
+            sbc_name,
+            f"{requested_by} asked {claim.agent_name} to release: {reason}",
         )
         row = self.db.execute_one(
             "SELECT * FROM claim_requests WHERE id = ?", (request_id,)

@@ -20,9 +20,9 @@ def db(tmp_path):
 
 @pytest.fixture(autouse=True)
 def reset_audit_context():
-    audit.set_context("internal", "internal", claim_id=None)
+    audit.set_context("internal", "internal")
     yield
-    audit.set_context("internal", "internal", claim_id=None)
+    audit.set_context("internal", "internal")
 
 
 @pytest.fixture
@@ -139,10 +139,12 @@ class TestContext:
         assert events[1]["actor"] == "internal"
         assert events[1]["source"] == "internal"
 
-    def test_claim_id_propagates_from_context(self, db, manager):
-        """With a real claim row, claim_id flows through emit."""
-        manager.create_sbc(name="claim-target", project="t")
-        claim = manager.claim_sbc(
+    def test_claim_id_never_written(self, db, manager):
+        """audit_log.claim_id references claims with no ON DELETE: a value
+        there would block deleting the claim and its SBC, so emit never
+        writes one (#57)."""
+        sbc = manager.create_sbc(name="claim-target", project="t")
+        manager.claim_sbc(
             sbc_name="claim-target",
             agent_name="test-agent",
             session_id="test-sess",
@@ -150,11 +152,11 @@ class TestContext:
             reason="testing",
             duration_seconds=60,
         )
-        with audit.activity_context("cli:alice", "cli", claim_id=claim.id):
-            audit.emit(db, action="a", entity_type="sbc", entity_name="claim-target")
-        # First activity_context emit is the one we care about; grab by action.
-        evt = db.execute_one("SELECT * FROM audit_log WHERE action = 'a'")
-        assert evt["claim_id"] == claim.id
+        manager.release_claim("claim-target", "test-sess")
+        rows = db.execute("SELECT claim_id FROM audit_log")
+        assert rows and all(r["claim_id"] is None for r in rows)
+        assert manager.prune_released_claims(older_than_days=-1) >= 0
+        assert manager.delete_sbc(sbc.id)
 
     def test_nested_contexts(self, db):
         with audit.activity_context("outer", "mcp"):

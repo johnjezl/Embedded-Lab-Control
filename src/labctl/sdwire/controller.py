@@ -35,9 +35,25 @@ class SDWireSymlinkError(RuntimeError):
 class SDWireController:
     """Controls an SDWire SD card multiplexer."""
 
-    def __init__(self, serial_number: str, device_type: str = "sdwirec"):
+    def __init__(
+        self, serial_number: str, device_type: str = "sdwirec", *, sbc=None, db=None
+    ):
+        """With ``sbc`` and ``db``, what it does to the card (switch,
+        flash, file updates) is recorded in the activity stream against
+        ``sbc`` (#57); every front end builds it so."""
         self.serial_number = serial_number
         self.device_type = device_type
+        self._target = None
+        if sbc is not None and db is not None:
+            from labctl.core.audit import Target
+
+            self._target = Target(db, sbc)
+
+    def _run(self, action: str, fn, **kwargs):
+        """``fn()``, recorded as ``action`` when bound to a board."""
+        if self._target is None:
+            return fn()
+        return self._target.run(action, fn, **kwargs)
 
     def _get_device(self):
         """Find and return the sdwire device object by serial number."""
@@ -76,17 +92,23 @@ class SDWireController:
 
     def switch_to_dut(self) -> None:
         """Switch SD card to the DUT (target SBC boots from it)."""
-        logger.debug("Switching SDWire %s to DUT", self.serial_number)
-        device = self._get_device()
-        device.switch_dut()
-        logger.debug("SDWire %s switched to DUT", self.serial_number)
+
+        def run():
+            logger.debug("Switching SDWire %s to DUT", self.serial_number)
+            self._get_device().switch_dut()
+            logger.debug("SDWire %s switched to DUT", self.serial_number)
+
+        self._run("sdwire_to_dut", run)
 
     def switch_to_host(self) -> None:
         """Switch SD card to the host (dev machine can read/write it)."""
-        logger.debug("Switching SDWire %s to host", self.serial_number)
-        device = self._get_device()
-        device.switch_ts()
-        logger.debug("SDWire %s switched to host", self.serial_number)
+
+        def run():
+            logger.debug("Switching SDWire %s to host", self.serial_number)
+            self._get_device().switch_ts()
+            logger.debug("SDWire %s switched to host", self.serial_number)
+
+        self._run("sdwire_to_host", run)
 
     def get_block_device(self, settle_time: float = 0) -> Optional[str]:
         """Get the block device path when SD card is connected to host.
@@ -206,6 +228,25 @@ class SDWireController:
             time.sleep(interval)
 
     def flash_image(
+        self,
+        image_path: str,
+        block_size: str = "4M",
+        timeout: int = 1800,
+        format_name: Optional[str] = None,
+        image_fd: Optional[int] = None,
+    ) -> dict:
+        """Write an image to the SD card (see :meth:`_flash_image`),
+        recorded as ``flash_image``."""
+        return self._run(
+            "flash_image",
+            lambda: self._flash_image(
+                image_path, block_size, timeout, format_name, image_fd
+            ),
+            summary=lambda r: {"bytes_written": r.get("bytes_written")},
+            image=os.path.basename(format_name or image_path),
+        )
+
+    def _flash_image(
         self,
         image_path: str,
         block_size: str = "4M",
@@ -358,6 +399,25 @@ class SDWireController:
             raise RuntimeError(f"Flash failed: {e}") from e
 
     def update_files(
+        self,
+        partition: int,
+        file_pairs: list[tuple[str | int, str]],
+        renames: list[tuple[str, str]] | None = None,
+        deletes: list[str] | None = None,
+        source_names: list[str] | None = None,
+    ) -> dict[str, list[str]]:
+        """Copy, rename and/or delete files on a partition (see
+        :meth:`_update_files`), recorded as ``sdwire_update``."""
+        return self._run(
+            "sdwire_update",
+            lambda: self._update_files(
+                partition, file_pairs, renames, deletes, source_names
+            ),
+            summary=lambda r: dict(r),
+            partition=partition,
+        )
+
+    def _update_files(
         self,
         partition: int,
         file_pairs: list[tuple[str | int, str]],

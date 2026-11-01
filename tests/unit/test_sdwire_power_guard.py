@@ -30,7 +30,7 @@ def test_no_plug_ok_is_left_alone():
     to switch); without it, see TestNoPlugFailsClosed."""
     with patch("labctl.power.base.PowerController.from_plug") as from_plug:
         power_off_before_host_switch(
-            SimpleNamespace(name="b", power_plug=None), no_plug_ok=True
+            MagicMock(), SimpleNamespace(name="b", power_plug=None), no_plug_ok=True
         )
     from_plug.assert_not_called()
 
@@ -242,11 +242,13 @@ class TestNoPlugFailsClosed:
         from labctl.sdwire.power_guard import NoPlugError
 
         with pytest.raises(NoPlugError, match="'b' has no power plug"):
-            power_off_before_host_switch(SimpleNamespace(name="b", power_plug=None))
+            power_off_before_host_switch(
+                MagicMock(), SimpleNamespace(name="b", power_plug=None)
+            )
 
     def test_no_plug_ok(self):
         power_off_before_host_switch(
-            SimpleNamespace(name="b", power_plug=None), no_plug_ok=True
+            MagicMock(), SimpleNamespace(name="b", power_plug=None), no_plug_ok=True
         )
 
     def test_no_plug_ok_doesnt_skip_or_excuse_a_plug(self, board):
@@ -256,7 +258,7 @@ class TestNoPlugFailsClosed:
             patch("labctl.power.PowerController.from_plug", return_value=power),
             pytest.raises(RuntimeError, match="could not power off 'board'"),
         ):
-            power_off_before_host_switch(board, no_plug_ok=True)
+            power_off_before_host_switch(MagicMock(), board, no_plug_ok=True)
         power.power_off.assert_called_once()
 
     def test_deploy_to_card_refuses_no_plug(self):
