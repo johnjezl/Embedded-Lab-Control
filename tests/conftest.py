@@ -9,7 +9,7 @@ import site
 import socket
 import sys
 import types
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -171,10 +171,11 @@ def no_sleep(monkeypatch):
 
 
 class _FakeClock:
-    """The claim code's ``datetime.now()``, stopped until ``advance``."""
+    """labctl's clock (``timeutil.now()``, aware UTC), stopped until
+    ``advance``."""
 
     def __init__(self):
-        self.now = datetime.now()
+        self.now = datetime.now(timezone.utc)
 
     def advance(self, seconds):
         self.now += timedelta(seconds=seconds)
@@ -182,17 +183,10 @@ class _FakeClock:
 
 @pytest.fixture
 def clock(monkeypatch):
-    """Freeze ``datetime.now()`` in the manager and models; tests move it
-    with ``clock.advance(s)`` instead of sleeping (#49)."""
+    """Freeze labctl's clock (``timeutil.now``); tests move it with
+    ``clock.advance(s)`` instead of sleeping (#49, #63)."""
     fake = _FakeClock()
-
-    class _ClockDatetime(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return fake.now if tz is None else fake.now.astimezone(tz)
-
-    monkeypatch.setattr("labctl.core.manager.datetime", _ClockDatetime)
-    monkeypatch.setattr("labctl.core.models.datetime", _ClockDatetime)
+    monkeypatch.setattr("labctl.core.timeutil.now", lambda: fake.now)
     return fake
 
 

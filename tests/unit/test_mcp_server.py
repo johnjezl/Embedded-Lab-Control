@@ -2,7 +2,7 @@
 
 import json
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -4665,7 +4665,7 @@ class TestMcpSharedHardwareHonoursClaims:
         )
         env.db.execute_modify(
             "UPDATE claims SET expires_at = ? WHERE session_id = 's-bob'",
-            (env._fmt_ts(datetime.now() - timedelta(seconds=5)),),
+            (env._fmt_ts(datetime.now(timezone.utc) - timedelta(seconds=5)),),
         )
         result = json.loads(claim_sbc("spare", reason="y"))
         assert result["error"] == "sbc_claimed"
@@ -4821,7 +4821,7 @@ class TestMcpClaimOwners:
         _hold(claims_env, session_id="mcp-http:42-1:alice")
         claims_env.db.execute_modify(
             "UPDATE claims SET expires_at = ?",
-            (claims_env._fmt_ts(datetime.now() - timedelta(seconds=5)),),
+            (claims_env._fmt_ts(datetime.now(timezone.utc) - timedelta(seconds=5)),),
         )
         with patch("labctl.mcp_server._authenticated_user", return_value="alice"):
             result = json.loads(claim_sbc("test-sbc-1", reason="again"))
@@ -4834,7 +4834,7 @@ class TestMcpClaimOwners:
         _hold(claims_env, session_id="mcp-http:42-1:alice")
         claims_env.db.execute_modify(
             "UPDATE claims SET expires_at = ?",
-            (claims_env._fmt_ts(datetime.now() - timedelta(seconds=5)),),
+            (claims_env._fmt_ts(datetime.now(timezone.utc) - timedelta(seconds=5)),),
         )
         with patch("labctl.mcp_server._authenticated_user", return_value="bob"):
             result = json.loads(claim_sbc("test-sbc-1", reason="mine"))

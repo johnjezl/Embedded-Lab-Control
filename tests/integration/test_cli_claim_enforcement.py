@@ -2,6 +2,7 @@
 another user's claim unless --override-claim, which is logged."""
 
 import json
+from datetime import timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -608,7 +609,7 @@ def _expire_claims(manager, seconds_ago):
 
     manager.db.execute_modify(
         "UPDATE claims SET expires_at = ? WHERE released_at IS NULL",
-        (manager._fmt_ts(datetime.now() - timedelta(seconds=seconds_ago)),),
+        (manager._fmt_ts(datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)),),
     )
 
 

@@ -320,17 +320,10 @@ phase commitment yet — pick up as bandwidth allows.
     above that, producing mixed ordering. Fix: build the DOM in a
     single pass that preserves newest-at-top invariant.
 
-- **Timezone-aware timestamps.**
-  - Timestamps are stored in the server's local time without a
-    timezone marker. Browsers displaying the page may be in a
-    different timezone. Detect the browser TZ with
-    `Intl.DateTimeFormat().resolvedOptions().timeZone` and format
-    timestamps client-side in local time. Fall back to the server
-    TZ (pass it with the initial render) when the browser value is
-    unavailable.
-  - CLI keeps server TZ formatting as-is.
-  - Longer-term, consider storing UTC ISO-8601 with explicit `Z`
-    so any consumer can render without guessing.
+- **Timezone-aware timestamps.** Done (#63, schema v14): `logged_at` is
+  stored in UTC; events (REST, MCP, SSE, NDJSON) carry it as ISO-8601
+  with `Z`; the web page shows it in the browser's local time and the
+  CLI in the host's, with the zone abbreviation.
 
 ## Open questions (resolved)
 

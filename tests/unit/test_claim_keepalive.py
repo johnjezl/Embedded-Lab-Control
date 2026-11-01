@@ -2,7 +2,7 @@
 
 import sqlite3
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -38,7 +38,7 @@ def _claim(manager, actor=ALICE, duration=600, sbc="pi-1"):
 def _age(manager, seconds):
     """Move the claim's deadline ``seconds`` into the past (relative to
     now), as if no call had touched it for that long."""
-    when = manager._fmt_ts(datetime.now() - timedelta(seconds=seconds))
+    when = manager._fmt_ts(datetime.now(timezone.utc) - timedelta(seconds=seconds))
     manager.db.execute_modify(
         "UPDATE claims SET expires_at = ? WHERE released_at IS NULL", (when,)
     )

@@ -20,6 +20,7 @@ import time
 from dataclasses import dataclass
 from typing import Iterator, Optional
 
+from labctl.core import timeutil
 from labctl.core.database import Database
 
 logger = logging.getLogger(__name__)
@@ -72,7 +73,7 @@ class ActivityEvent:
 def _row_to_event(row) -> ActivityEvent:
     return ActivityEvent(
         id=row["id"],
-        logged_at=row["logged_at"] or "",
+        logged_at=timeutil.db_iso(row["logged_at"]) or "",
         actor=row["actor"] or "internal",
         source=row["source"] or "internal",
         action=row["action"] or "",

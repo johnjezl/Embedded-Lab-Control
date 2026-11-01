@@ -57,7 +57,7 @@ class TestAgent:
 
 class TestSchemaV13:
     def test_version(self):
-        assert SCHEMA_VERSION == 13
+        assert SCHEMA_VERSION == 14
 
     def test_v12_upgraded_keeps_rows(self, tmp_path):
         path = tmp_path / "labctl.db"
@@ -338,7 +338,11 @@ class TestRound2:
         old_id = db.execute_one("SELECT id FROM claims")["id"]
         db.execute_modify(
             "UPDATE claims SET expires_at = ?",
-            (manager._fmt_ts(__import__("datetime").datetime.now()),),
+            (
+                manager._fmt_ts(
+                    __import__("labctl.core.timeutil", fromlist=["now"]).now()
+                ),
+            ),
         )
         with audit.activity_context("mcp-stdio:1-1", "mcp", agent="x"):
             manager.claim_sbc(

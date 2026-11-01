@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Optional
 
+from labctl.core import timeutil
+
 
 class Status(Enum):
     """SBC status values."""
@@ -70,7 +72,7 @@ class ClaimConflict(ClaimError):
         holder = claim.agent_name or "unknown agent"
         super().__init__(
             f"SBC is claimed by '{holder}' until "
-            f"{claim.expires_at.isoformat() if claim.expires_at else 'unknown'}"
+            f"{timeutil.iso(claim.expires_at) or 'unknown'}"
         )
 
 
@@ -404,20 +406,8 @@ class SBC:
 
 
 def _parse_timestamp(value) -> Optional[datetime]:
-    """Parse a SQLite TIMESTAMP value into a datetime."""
-    if value is None:
-        return None
-    if isinstance(value, datetime):
-        return value
-    # SQLite returns timestamps as strings in ISO-like format
-    # ("YYYY-MM-DD HH:MM:SS" or "YYYY-MM-DDTHH:MM:SS[.ffffff]").
-    s = str(value).replace("T", " ")
-    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
-        try:
-            return datetime.strptime(s, fmt)
-        except ValueError:
-            continue
-    return None
+    """Parse a stored timestamp into an aware UTC datetime (#63)."""
+    return timeutil.from_db(value)
 
 
 @dataclass
@@ -447,9 +437,7 @@ class ClaimRequest:
             "id": self.id,
             "requested_by": self.requested_by,
             "reason": self.reason,
-            "requested_at": (
-                self.requested_at.isoformat() if self.requested_at else None
-            ),
+            "requested_at": (timeutil.iso(self.requested_at)),
             "acknowledged": self.acknowledged,
         }
 
@@ -525,7 +513,7 @@ class Claim:
         """True if the claim is unreleased and within its deadline."""
         if self.released_at is not None:
             return False
-        if self.expires_at is not None and datetime.now() > self.expires_at:
+        if self.expires_at is not None and timeutil.now() > self.expires_at:
             return False
         return True
 
@@ -533,18 +521,16 @@ class Claim:
     def time_remaining(self) -> Optional[timedelta]:
         if not self.is_active or self.expires_at is None:
             return None
-        return self.expires_at - datetime.now()
+        return self.expires_at - timeutil.now()
 
     def to_dict(self, include_ids: bool = False) -> dict:
         data = {
             "agent_name": self.agent_name,
             "session_kind": self.session_kind,
             "reason": self.reason,
-            "acquired_at": (self.acquired_at.isoformat() if self.acquired_at else None),
-            "expires_at": (self.expires_at.isoformat() if self.expires_at else None),
-            "last_activity": (
-                self.last_activity.isoformat() if self.last_activity else None
-            ),
+            "acquired_at": (timeutil.iso(self.acquired_at)),
+            "expires_at": (timeutil.iso(self.expires_at)),
+            "last_activity": (timeutil.iso(self.last_activity)),
             "duration_seconds": self.duration_seconds,
             "renewal_count": self.renewal_count,
             "is_active": self.is_active,
@@ -559,7 +545,7 @@ class Claim:
         if self.sbc_name:
             data["sbc_name"] = self.sbc_name
         if self.released_at is not None:
-            data["released_at"] = self.released_at.isoformat()
+            data["released_at"] = timeutil.iso(self.released_at)
             data["release_reason"] = (
                 self.release_reason.value if self.release_reason else None
             )
@@ -694,9 +680,7 @@ class Actuator:
             "vid": self.vid,
             "pid": self.pid,
             "serial_no": self.serial_no,
-            "last_probe_at": (
-                self.last_probe_at.isoformat() if self.last_probe_at else None
-            ),
+            "last_probe_at": (timeutil.iso(self.last_probe_at)),
             "last_probe_result": self.last_probe_result,
         }
         if include_ids:
@@ -743,9 +727,7 @@ class ActuatorChannel:
             "label": self.label,
             "default_state": self.default_state.value,
             "last_state": self.last_state.value if self.last_state else None,
-            "last_changed_at": (
-                self.last_changed_at.isoformat() if self.last_changed_at else None
-            ),
+            "last_changed_at": (timeutil.iso(self.last_changed_at)),
             "cycle_count": self.cycle_count,
         }
         if include_ids:
