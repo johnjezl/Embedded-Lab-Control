@@ -104,12 +104,11 @@ class TestPower:
         c.power_off.side_effect = OSError("plug unreachable")
         with pytest.raises(OSError):
             power_cycle_with_bindings(manager, board, c, 5, sleep_fn=lambda s: None)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError):  # refused input: nothing switched
             power_cycle_with_bindings(manager, board, c, -5, sleep_fn=lambda s: None)
         events = _events(manager, "power_off", "power_cycle")
         assert [(e["action"], e["result"]) for e in events] == [
             ("power_off", "error"),
-            ("power_cycle", "error"),
             ("power_cycle", "error"),
         ]
         assert "plug unreachable" in _details(events[1])["error"]
@@ -166,10 +165,36 @@ class TestRobustness:
         )
         c = MagicMock()
         c.power_off.return_value = True
-        for sbc in (board, manager.get_sbc_by_name("pi-b")):
-            power_off_board(manager, sbc, c, record_sharers=False)
+        power_off_board(manager, board, c, skip_sharers={"pi-b"})
+        power_off_board(manager, manager.get_sbc_by_name("pi-b"), c)
         names = [e["entity_name"] for e in _events(manager, "power_off")]
-        assert names == ["pi", "pi-b"]
+        assert names == ["pi", "pi-b", "pi"]  # pi-b's switch reaches pi too
+
+    def test_power_all_project_filter_records_the_board_left_out(self, tmp_path):
+        """power-all --project pa switches b too (shared outlet): b gets an
+        event though it isn't one of the targets."""
+        from click.testing import CliRunner
+
+        from labctl.cli import main
+
+        config = tmp_path / "config.yaml"
+        config.write_text(f"database_path: {tmp_path / 'labctl.db'}\n")
+        m = ResourceManager(get_database(tmp_path / "labctl.db"))
+        for name, project in (("a", "pa"), ("b", "pb")):
+            sbc = m.create_sbc(name=name, project=project)
+            m.assign_power_plug(sbc.id, plug_type=PlugType.TASMOTA, address="10.0.0.1")
+        plug = MagicMock()
+        plug.power_on.return_value = True
+        with patch("labctl.power.base.PowerController.from_plug", return_value=plug):
+            result = CliRunner().invoke(
+                main,
+                ["-c", str(config), "power-all", "on", "--project", "pa", "--yes"],
+            )
+        assert result.exit_code == 0, result.output
+        events = [
+            (e["entity_name"], _details(e).get("via")) for e in _events(m, "power_on")
+        ]
+        assert events == [("a", None), ("b", "a")]
 
     def test_boards_sharing_the_outlet_get_the_event(self, manager, board):
         from labctl.actuators.runtime import power_cycle_with_bindings
@@ -473,7 +498,7 @@ RECORDED_AS = {
     "sdwire_assign": {"assign"},
     "sdwire_unassign": {"remove"},
     "sdwire_to_dut": {"sdwire_to_dut"},
-    "sdwire_to_host": {"power_off", "sdwire_to_host"},
+    "sdwire_to_host": {"sdwire_to_host"},
     "sdwire_update": {"power_off", "sdwire_to_host", "sdwire_update"},
     "flash_image": {"power_off", "sdwire_to_host", "flash_image"},
     "serial_send": {"serial_send"},

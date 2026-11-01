@@ -4087,7 +4087,7 @@ def power_all_cmd(
     success_count = 0
     skipped = len(sbcs_with_plugs) - len(targets)
     overridden: set[int] = set()
-    for sbc in targets:
+    for i, sbc in enumerate(targets):
         # Re-check (claims may have appeared since the listing). Boards
         # sharing a plug reach the same claims: record each override once.
         conflicts = _all_conflicts(ctx, sbc.name)
@@ -4111,13 +4111,15 @@ def power_all_cmd(
                 _cli_claim_conflict(ctx, claim.sbc_name, override=True, direct=False)
         try:
             controller = PowerController.from_plug(sbc.power_plug)
+            # Boards still to come are switched (and recorded) in their own
+            # turn; others on the outlet are recorded here.
+            later = {t.name for t in targets[i + 1 :]}
             if action == "on":
-                # Every board is switched in turn: one event each.
                 result = power_on_with_bindings(
-                    manager, sbc, controller, record_sharers=False
+                    manager, sbc, controller, skip_sharers=later
                 )
             else:
-                result = power_off_board(manager, sbc, controller, record_sharers=False)
+                result = power_off_board(manager, sbc, controller, skip_sharers=later)
 
             if result:
                 click.echo(f"  {sbc.name}: {action.upper()} OK")
