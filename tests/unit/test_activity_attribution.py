@@ -316,3 +316,83 @@ class TestClaimExpiryRecorded:
         ] == [("pi", "system", None, expired_id)]
         claim = [e for e in _events(db) if e["action"] == "claim"][-1]
         assert (claim["actor"], claim["agent"]) == ("mcp-stdio:9-9", "bot-b")
+
+
+class TestRound2:
+    def test_holder_replacing_own_expired_claim_is_the_systems(self, db):
+        """Inside the grace period the holder re-claims at once; the old
+        claim's expiry is still the system's and names that claim."""
+        manager = ResourceManager(db)
+        manager.create_sbc(name="pi")
+        manager.claim_sbc(
+            sbc_name="pi",
+            agent_name="x",
+            session_id="mcp-stdio:1-1",
+            session_kind="mcp-stdio",
+            duration_seconds=60,
+            reason="r",
+        )
+        old_id = db.execute_one("SELECT id FROM claims")["id"]
+        db.execute_modify(
+            "UPDATE claims SET expires_at = ?",
+            (manager._fmt_ts(__import__("datetime").datetime.now()),),
+        )
+        with audit.activity_context("mcp-stdio:1-1", "mcp", agent="x"):
+            manager.claim_sbc(
+                sbc_name="pi",
+                agent_name="x",
+                session_id="mcp-stdio:1-1",
+                session_kind="mcp-stdio",
+                duration_seconds=60,
+                reason="again",
+                grace_seconds=3600,
+            )
+        expired = [e for e in _events(db) if e["action"] == "claim_expired"]
+        assert [(e["actor"], e["agent"], e["claim_id"]) for e in expired] == [
+            ("system", None, old_id)
+        ]
+        assert "replaced by its holder" in expired[0]["details"]
+
+    def test_release_expired_needs_the_write_lock(self, db):
+        with db.connect() as conn:
+            with pytest.raises(RuntimeError):
+                ResourceManager._release_expired(conn, "2000-01-01")
+            conn.execute("SELECT 1")
+            ResourceManager._begin_write(conn)
+            with pytest.raises(RuntimeError):
+                ResourceManager._begin_write(conn)
+
+    def test_tail_reads_a_log_without_the_agent_column(self, tmp_path):
+        from labctl.cli import main
+
+        config = tmp_path / "config.yaml"
+        dbp = tmp_path / "labctl.db"
+        config.write_text(f"database_path: {dbp}\n")
+        d = Database(dbp)
+        d.initialize()
+        audit.emit(d, action="power_on", entity_type="sbc", entity_name="pi")
+        conn = sqlite3.connect(dbp)
+        conn.executescript(
+            "DROP INDEX idx_audit_log_agent; ALTER TABLE audit_log DROP COLUMN agent;"
+        )
+        conn.commit()
+        conn.close()
+        result = CliRunner().invoke(main, ["-c", str(config), "activity", "tail"])
+        assert result.exit_code == 0, result.output
+        assert "power_on" in result.output
+
+    def test_long_agent_name_cut_in_status_view(self):
+        from labctl.cli import _format_activity_row
+
+        row = {
+            "logged_at": "t",
+            "actor": "mcp-stdio:1-2",
+            "agent": "claude-code-session-for-ticket-1234",
+            "action": "power_on",
+            "entity_name": "pi",
+            "result": "ok",
+            "details": None,
+        }
+        line = _format_activity_row(row, compact=True)
+        assert "claude-code-" in line
+        assert "ticket" not in line
