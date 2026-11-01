@@ -2897,8 +2897,8 @@ class ResourceManager:
 
         Thin wrapper over `labctl.core.audit.emit()` that preserves the
         legacy positional-string-details calling convention used across
-        the manager. `actor`, `source`, and `claim_id` are pulled from
-        the audit contextvars.
+        the manager. `actor`, `source` and `agent` are pulled from the
+        audit contextvars.
         """
         audit.emit(
             self.db,
