@@ -64,35 +64,31 @@ def _no_real_config(_isolated_home, monkeypatch):
 
 
 _LOCAL_NAMES = {"localhost", "ip6-localhost", "ip6-loopback", "localhost.localdomain"}
+_INET_FAMILIES = (socket.AF_INET, socket.AF_INET6)
+
+
+def _parse_host(host):
+    """(ip address or None, normalized name) for a host given to socket."""
+    if isinstance(host, bytes):
+        host = host.decode("ascii", "replace")
+    name = "" if host is None else str(host).lower().rstrip(".")
+    try:
+        return ipaddress.ip_address(name.split("%", 1)[0]), name
+    except ValueError:
+        return None, name
 
 
 def _is_local_host(host) -> bool:
-    if isinstance(host, bytes):
-        host = host.decode("ascii", "replace")
-    if host is None or host in ("", "0.0.0.0", "::"):  # Linux: this host
+    ip, name = _parse_host(host)
+    if ip is None:  # a name to resolve: could be anywhere
+        return name in _LOCAL_NAMES or name == ""
+    if ip.is_unspecified:  # 0.0.0.0 / :: on Linux: this host
         return True
-    if host in _LOCAL_NAMES:
-        return True
-    try:
-        ip = ipaddress.ip_address(host.split("%", 1)[0])
-    except ValueError:  # a name to resolve: could be anywhere
-        return False
     mapped = getattr(ip, "ipv4_mapped", None)
     return ip.is_loopback or (mapped is not None and mapped.is_loopback)
 
 
-def _is_ip_literal(host) -> bool:
-    if isinstance(host, bytes):
-        host = host.decode("ascii", "replace")
-    try:
-        ipaddress.ip_address(str(host).split("%", 1)[0])
-    except ValueError:
-        return False
-    return True
-
-
 def _is_loopback(address) -> bool:
-    # AF_UNIX paths and abstract names, AF_NETLINK (pid, groups), etc.
     if not isinstance(address, tuple) or not isinstance(address[0], (str, bytes)):
         return True
     return _is_local_host(address[0])
@@ -107,6 +103,9 @@ def _no_network(monkeypatch):
     real devices on a lab network and otherwise cost a 5 s timeout each
     where nothing answers. Refusing at once with ENETUNREACH takes the
     same unreachable-device path in labctl without touching the network.
+    Only IPv4/IPv6 sockets are checked (AF_UNIX, netlink, packet and CAN
+    sockets pass), and IP literals may be resolved (they're parsed, not
+    looked up; connect still checks them).
     """
 
     def refuse(address):
@@ -114,40 +113,53 @@ def _no_network(monkeypatch):
             errno.ENETUNREACH, f"tests may not reach {address!r} (tests/conftest.py)"
         )
 
-    real_getaddrinfo = socket.getaddrinfo
-
-    def getaddrinfo(host, *args, **kwargs):
-        # An IP literal is parsed, not looked up; connect() still checks it.
-        if not _is_local_host(host) and not _is_ip_literal(host):
+    def refuse_name(host):
+        if not _is_local_host(host) and _parse_host(host)[0] is None:
             raise socket.gaierror(
                 socket.EAI_NONAME, f"tests may not resolve {host!r} (tests/conftest.py)"
             )
-        return real_getaddrinfo(host, *args, **kwargs)
+
+    def blocked(sock, address):
+        return sock.family in _INET_FAMILIES and not _is_loopback(address)
+
+    def guard_lookup(real):
+        def lookup(host, *args, **kwargs):
+            refuse_name(host)
+            return real(host, *args, **kwargs)
+
+        return lookup
 
     real_connect = socket.socket.connect
     real_connect_ex = socket.socket.connect_ex
     real_sendto = socket.socket.sendto
+    real_sendmsg = socket.socket.sendmsg
 
     def connect(self, address):
-        if not _is_loopback(address):
+        if blocked(self, address):
             refuse(address)
         return real_connect(self, address)
 
     def connect_ex(self, address):
-        if not _is_loopback(address):
+        if blocked(self, address):
             return errno.ENETUNREACH
         return real_connect_ex(self, address)
 
     def sendto(self, data, *args):
-        address = args[-1]
-        if not _is_loopback(address):
-            refuse(address)
+        if blocked(self, args[-1]):
+            refuse(args[-1])
         return real_sendto(self, data, *args)
+
+    def sendmsg(self, buffers, *args):
+        if len(args) >= 3 and args[2] is not None and blocked(self, args[2]):
+            refuse(args[2])
+        return real_sendmsg(self, buffers, *args)
 
     monkeypatch.setattr(socket.socket, "connect", connect)
     monkeypatch.setattr(socket.socket, "connect_ex", connect_ex)
     monkeypatch.setattr(socket.socket, "sendto", sendto)
-    monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+    monkeypatch.setattr(socket.socket, "sendmsg", sendmsg)
+    for name in ("getaddrinfo", "gethostbyname", "gethostbyname_ex", "gethostbyaddr"):
+        monkeypatch.setattr(socket, name, guard_lookup(getattr(socket, name)))
 
 
 @pytest.fixture

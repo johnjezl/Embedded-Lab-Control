@@ -113,7 +113,8 @@ def _parse_systemd_timestamp(value: str) -> Optional[datetime]:
     text = value.strip()
     zone = None
     head, _, last = text.rpartition(" ")
-    if head and last.isalpha():
+    # "PDT", or a numeric abbreviation such as "+04" (tzdata uses those)
+    if head and (last.isalpha() or (last[:1] in "+-" and last[1:].isdigit())):
         text, zone = head, last
     for fmt in ("%a %Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
         try:

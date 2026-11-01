@@ -29,6 +29,26 @@ def test_name_lookup_refused():
         socket.getaddrinfo("plug-1", 80)
 
 
+def test_other_lookups_refused():
+    with pytest.raises(socket.gaierror):
+        socket.gethostbyname("plug-1")
+    with pytest.raises(socket.gaierror):
+        socket.gethostbyaddr("plug-1")
+
+
+def test_sendmsg_to_lan_address_refused():
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        with pytest.raises(OSError):
+            s.sendmsg([b"x"], [], 0, ("192.168.1.255", 9999))
+
+
+@pytest.mark.parametrize("name", ["LOCALHOST", "localhost.", "Ip6-Localhost"])
+def test_local_name_spellings_resolve(name):
+    from tests.conftest import _is_local_host
+
+    assert _is_local_host(name)
+
+
 def test_ip_literal_lookup_allowed():
     """A literal is parsed, not looked up (binding code resolves them)."""
     assert socket.getaddrinfo("192.0.2.1", 80, type=socket.SOCK_STREAM)
@@ -63,3 +83,13 @@ def test_non_inet_address_passes_through():
     assert _is_loopback((0, 0))  # AF_NETLINK (pid, groups)
     assert _is_loopback((b"127.0.0.1", 80))
     assert not _is_loopback((b"192.168.1.1", 80))
+
+
+def test_unix_socket_not_checked(tmp_path):
+    """Only AF_INET/AF_INET6 sockets are guarded."""
+    path = str(tmp_path / "s")
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+        server.bind(path)
+        server.listen(1)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.connect(path)
