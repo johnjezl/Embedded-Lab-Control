@@ -917,6 +917,18 @@ class TestRefusalsRecorded:
         client.post("/api/sbcs/c/power", json={"action": "on"}, headers=BOT)
         assert _refusals(manager) == []
 
+    def test_web_ui_agent_force_release_recorded(self, lab):
+        client, manager = lab
+        _claim(manager, "a")
+        _login(client, "bot")
+        client.post(
+            "/sbc/a/claim/force-release",
+            data={"_csrf_token": _csrf(client, "/sbc/a"), "reason": "x"},
+        )
+        (event,) = _refusals(manager)
+        assert event["details"]["reason"] == "not_operator"
+        assert event["details"]["attempted"] == "POST /sbc/a/claim/force-release"
+
     def test_web_ui_refusal_recorded(self, lab, view_power):
         client, manager = lab
         _claim(manager, "a")
