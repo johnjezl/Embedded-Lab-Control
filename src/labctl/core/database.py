@@ -376,6 +376,15 @@ class Database:
                     current_version = cursor.fetchone()[0] or 0
                     if current_version < SCHEMA_VERSION:
                         self._apply_migrations(conn, current_version)
+                    elif current_version > SCHEMA_VERSION:
+                        # A newer labctl migrated it (e.g. v14 rewrote times
+                        # as UTC): this older code would misread and
+                        # mis-write it, so it must not use it.
+                        raise RuntimeError(
+                            f"database {self.db_path} is schema "
+                            f"v{current_version}, newer than this labctl "
+                            f"(v{SCHEMA_VERSION}); upgrade labctl"
+                        )
 
             self._initialized = True
 
@@ -931,9 +940,15 @@ def _local_to_utc(
         rows = conn.execute(
             f"SELECT id, {column} FROM {table} WHERE {column} IS NOT NULL"
         ).fetchall()
+        updates = []
         for row_id, value in rows:
+            text = str(value)
+            # Python wrote these with a fraction; a value without one came
+            # from DEFAULT CURRENT_TIMESTAMP, which is UTC already.
+            if "." not in text:
+                continue
             try:
-                local = datetime.fromisoformat(str(value).replace("T", " "))
+                local = datetime.fromisoformat(text.replace("T", " "))
             except ValueError:
                 continue
             if local.tzinfo is not None:
@@ -941,11 +956,9 @@ def _local_to_utc(
             # Naive astimezone() reads the value as local time (fold=0: the
             # first occurrence of a repeated hour).
             utc = local.astimezone(timezone.utc).replace(tzinfo=None)
-            text = utc.strftime("%Y-%m-%d %H:%M:%S.%f")
-            conn.execute(
-                f"UPDATE {table} SET {column} = ? WHERE id = ?",
-                (text[:-3] if millis else text, row_id),
-            )
+            out = utc.strftime("%Y-%m-%d %H:%M:%S.%f")
+            updates.append((out[:-3] if millis else out, row_id))
+        conn.executemany(f"UPDATE {table} SET {column} = ? WHERE id = ?", updates)
 
 
 def _executescript_atomic(conn: sqlite3.Connection, sql: str) -> None:

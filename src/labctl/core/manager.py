@@ -1602,11 +1602,9 @@ class ResourceManager:
 
     # --- Claim Operations ---
 
-    # Microsecond precision so short-duration expiry comparisons don't
-    # collapse to a single second. SQLite stores these as TEXT and the
-    # ISO-8601-ish layout compares lexically in the same order as datetimes.
-    _TS_FMT = "%Y-%m-%d %H:%M:%S.%f"
-
+    # Microsecond-precision UTC text (timeutil.to_db): short expiry
+    # comparisons don't collapse to a second, and the layout compares
+    # lexically in the same order as the datetimes.
     @classmethod
     def _fmt_ts(cls, dt: datetime) -> str:
         """``dt`` as stored: UTC (#63)."""

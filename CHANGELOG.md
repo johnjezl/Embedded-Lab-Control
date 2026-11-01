@@ -17,6 +17,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   machines with the offset (REST, MCP, NDJSON: `…Z`), and shown to people
   in local time with the zone (`2026-11-01 01:30:00 PST`). Released claims
   are also pruned on time: `released_at` was UTC but the cutoff was local.
+  Upgrading: the services restart with the update, but restart or
+  reconnect (`/mcp`) every stdio MCP agent right away: until then it runs
+  the old code, which still writes local times. From this release an
+  older labctl refuses a database a newer one has migrated. Board records,
+  status history and image times were always UTC and are still given
+  without an offset.
 
 ### Added
 

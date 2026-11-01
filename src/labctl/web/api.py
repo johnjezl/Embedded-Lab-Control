@@ -995,15 +995,18 @@ def list_activity():
     else:
         after_id_int = None
 
-    events = audit.query_events(
-        g.manager.db,
-        limit=limit,
-        sbc=request.args.get("sbc"),
-        actor=request.args.get("actor"),
-        source=request.args.get("source"),
-        result=request.args.get("result"),
-        since=since,
-        after_id=after_id_int,
-        agent=request.args.get("agent"),
-    )
+    try:
+        events = audit.query_events(
+            g.manager.db,
+            limit=limit,
+            sbc=request.args.get("sbc"),
+            actor=request.args.get("actor"),
+            source=request.args.get("source"),
+            result=request.args.get("result"),
+            since=since,
+            after_id=after_id_int,
+            agent=request.args.get("agent"),
+        )
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     return jsonify({"events": events, "count": len(events)})
