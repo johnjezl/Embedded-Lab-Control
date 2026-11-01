@@ -27,7 +27,7 @@ All milestones (M1-M7) complete; the PyPI release (P2 publish) is done, with the
 - Python 3.10+
 - Click (CLI)
 - Flask (web/API)
-- SQLite (database, schema v12)
+- SQLite (database, schema v13)
 - ser2net (serial over TCP)
 - MCP SDK (AI integration via Model Context Protocol)
 - python-kasa (TP-Link Kasa smart plug/strip control)

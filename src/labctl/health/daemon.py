@@ -176,8 +176,7 @@ class MonitorDaemon:
                     details_parts.append(summary.power_result.message)
                 details = "; ".join(details_parts) if details_parts else None
 
-                self.manager.update_sbc(sbc.id, status=new_status)
-                self.manager.log_status(sbc.id, new_status, details)
+                self.manager.record_status(sbc.id, new_status, details)
 
         # Cache the power observation so `labctl status --fast` can read
         # it without making live network calls. Stamp every cycle (even

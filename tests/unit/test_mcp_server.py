@@ -5718,3 +5718,49 @@ class TestMcpPowerCycleNamesOutletSource:
         ):
             result = power_cycle(sbc_name="test-sbc-1")
         assert result.splitlines()[0] == "Power cycled: test-sbc-1 (delay: 3.0s)"
+
+
+class TestMcpActivityAgent:
+    """MCP events name the agent, not only its session ID (#57)."""
+
+    @staticmethod
+    def _events(manager):
+        return [
+            dict(r) for r in manager.db.execute("SELECT * FROM audit_log ORDER BY id")
+        ]
+
+    def test_claim_and_later_calls_carry_the_name(self, claims_env):
+        from labctl import mcp_server
+
+        with patch("labctl.mcp_server._AGENT_NAME", None):
+            mcp_server.claim_sbc(sbc_name="test-sbc-1", agent_name="fw-bot")
+            mcp_server.add_sbc(name="new-board")
+        events = self._events(claims_env)
+        claim = [e for e in events if e["action"] == "claim"][-1]
+        create = [e for e in events if e["action"] == "create"][-1]
+        assert claim["agent"] == "fw-bot"
+        assert claim["actor"] == "test-session-1"
+        assert create["agent"] == "fw-bot"
+
+    def test_unnamed_session_has_no_agent(self, claims_env):
+        from labctl import mcp_server
+
+        with patch("labctl.mcp_server._AGENT_NAME", None):
+            mcp_server.add_sbc(name="new-board")
+        create = [e for e in self._events(claims_env) if e["action"] == "create"]
+        assert create[-1]["agent"] is None
+        assert create[-1]["source"] == "mcp"
+
+    def test_unauthenticated_http_name_only_on_its_call(self, claims_env):
+        from labctl import mcp_server
+
+        with (
+            patch("labctl.mcp_server._AGENT_NAME", None),
+            patch("labctl.mcp_server._SESSION_KIND", "mcp-http"),
+            patch("labctl.mcp_server._authenticated_user", return_value=None),
+        ):
+            mcp_server.claim_sbc(sbc_name="test-sbc-1", agent_name="client-a")
+            mcp_server.add_sbc(name="new-board")
+        events = self._events(claims_env)
+        assert [e for e in events if e["action"] == "claim"][-1]["agent"] == "client-a"
+        assert [e for e in events if e["action"] == "create"][-1]["agent"] is None

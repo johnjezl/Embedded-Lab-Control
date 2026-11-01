@@ -92,8 +92,9 @@
 
 - **All Milestones Complete!** (M1–M7 plus the features below)
 - 2038 tests collected (2026-10-29); CI runs Python 3.10–3.13
-- Database schema v12 (v8: actuators/bindings, v9: claim owners,
-  v10/v11: uploaded images, v12: status history index)
+- Database schema v13 (v8: actuators/bindings, v9: claim owners,
+  v10/v11: uploaded images, v12: status history index, v13: activity
+  agent name)
 - Schema migration is automatic and preserves existing data
 - Two config files may need to be kept in sync (user + labctl system user)
   - Recommendation: use /etc/labctl/config.yaml as single source of truth

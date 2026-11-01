@@ -153,6 +153,26 @@ class TestActivityEndpoints:
         assert "alice-activity-sbc" in names
         assert "bob-activity-sbc" not in names
 
+    def test_activity_api_filters_by_agent(self, client, manager):
+        with audit.activity_context("mcp-stdio:1-2", "mcp", agent="fw-bot"):
+            manager.create_sbc(name="bot-activity-sbc", project="proj")
+        with audit.activity_context("cli:bob", "cli"):
+            manager.create_sbc(name="bob-activity-sbc", project="proj")
+
+        data = client.get("/api/activity?agent=fw-bot").get_json()
+        assert [(e["entity_name"], e["agent"]) for e in data["events"]] == [
+            ("bot-activity-sbc", "fw-bot")
+        ]
+
+    def test_activity_page_escapes_event_text(self, client, manager):
+        """Agent names, claim reasons and SBC names are caller-chosen; the
+        page escapes every field it puts into markup (#57)."""
+        page = client.get("/activity").get_data(as_text=True)
+        assert "function esc(" in page
+        render = page[page.index("function renderRow") :]
+        render = render[: render.index("return row;")]
+        assert "${event." not in render  # every field goes through esc()
+
     def test_activity_page_renders_initial_events(self, client, manager):
         with audit.activity_context("cli:alice", "cli"):
             manager.create_sbc(name="activity-page-sbc", project="proj")

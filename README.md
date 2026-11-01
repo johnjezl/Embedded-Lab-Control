@@ -221,10 +221,21 @@ Every command has `--help`. This section lists the commands; see
 | `labctl activity tail` | Show recent activity events |
 | `labctl activity tail --follow` | Stream new activity events by polling the database |
 | `labctl activity tail --actor <actor>` | Filter events by actor |
+| `labctl activity tail --agent <name>` | Filter events by MCP agent name |
 | `labctl activity tail --source <source>` | Filter events by source (`cli`, `mcp`, `api`, `web`, `daemon`, `internal`) |
 | `labctl activity tail --result <result>` | Filter events by result (`ok`, `error`, `forbidden`) |
 | `labctl activity tail --sbc <name>` | Filter events for one SBC |
 | `labctl activity export --format ndjson` | Export activity events as NDJSON |
+
+Each event records who acted: `cli:<user>`, `web:<user>` / `api:<user>`, an
+MCP session ID (`mcp-stdio:<pid>-<epoch>`, or `mcp-http:...:<user>`), or a
+daemon (`daemon:monitor`, or `daemon:mcp` for the MCP server's claim sweep).
+MCP events also carry the agent name the agent gave (`claim_sbc
+agent_name=...`), shown as `name (session)`. Board status changes found by
+health checks are not activity events; they are in each board's status
+history (web `/sbc/<name>/history`, `GET /api/sbcs/<name>/history`). Power,
+SDWire, serial and boot-test actions from MCP, REST and the web UI are not
+recorded yet (#57).
 
 ### Claims (Exclusive Access Coordination)
 

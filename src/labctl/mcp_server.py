@@ -466,7 +466,10 @@ def _has_agent_name(call_name: str | None = None) -> bool:
 def _set_agent_name(name: str) -> None:
     """Remember ``name`` for this caller's later calls (not over
     unauthenticated HTTP, whose clients can't be told apart)."""
+    from labctl.core import audit
+
     global _AGENT_NAME
+    audit.set_agent(name)  # this call's own events (the claim) carry it
     user = _authenticated_user()
     if user:
         _USER_AGENT_NAMES[user] = name
@@ -958,8 +961,14 @@ def _with_mcp_activity(func):
 
     @wraps(func)
     def locked(*args, **kwargs):
-        # The session ID names the user over authenticated HTTP.
-        with _HARDWARE_LOCK, audit.activity_context(_get_session_id(), "mcp"):
+        # The session ID names the user over authenticated HTTP; the agent
+        # is the name the caller gave (claim_sbc agent_name), if any.
+        with (
+            _HARDWARE_LOCK,
+            audit.activity_context(
+                _get_session_id(), "mcp", agent=_remembered_agent_name()
+            ),
+        ):
             return func(*args, **kwargs)
 
     return _with_confirmation(locked)
@@ -4653,6 +4662,33 @@ def _release_session_claims():
         pass
 
 
+def _sweep_claims_once() -> None:
+    """One pass of the claim sweep: expire stale claims, release dead
+    sessions, prune old claims and activity. Claims it releases are
+    released by the server, so its events are ``daemon:mcp`` (#57)."""
+    from labctl.core import audit
+
+    with audit.activity_context("daemon:mcp", "daemon"):
+        config = _get_config()
+        manager = _get_manager()
+        grace = config.claims.grace_period_seconds
+        expired = manager.expire_stale_claims(grace_seconds=grace)
+        dead = manager.release_dead_sessions(grace_seconds=grace)
+        pruned = manager.prune_released_claims(
+            older_than_days=config.claims.auto_prune_released_after_days
+        )
+        activity_pruned = manager.prune_activity_events(older_than_days=30)
+        if expired or dead or pruned or activity_pruned:
+            logger.info(
+                "Claim sweep: %d expired, %d dead-session, "
+                "%d claims pruned, %d activity events pruned",
+                expired,
+                dead,
+                pruned,
+                activity_pruned,
+            )
+
+
 def _start_expiry_thread(interval: int = 30):
     """Start a daemon thread that periodically sweeps expired/dead claims."""
     import threading
@@ -4663,24 +4699,7 @@ def _start_expiry_thread(interval: int = 30):
 
             _t.sleep(interval)
             try:
-                config = _get_config()
-                manager = _get_manager()
-                grace = config.claims.grace_period_seconds
-                expired = manager.expire_stale_claims(grace_seconds=grace)
-                dead = manager.release_dead_sessions(grace_seconds=grace)
-                pruned = manager.prune_released_claims(
-                    older_than_days=config.claims.auto_prune_released_after_days
-                )
-                activity_pruned = manager.prune_activity_events(older_than_days=30)
-                if expired or dead or pruned or activity_pruned:
-                    logger.info(
-                        "Claim sweep: %d expired, %d dead-session, "
-                        "%d claims pruned, %d activity events pruned",
-                        expired,
-                        dead,
-                        pruned,
-                        activity_pruned,
-                    )
+                _sweep_claims_once()
             except Exception:
                 logger.debug("Claim sweep error", exc_info=True)
 
