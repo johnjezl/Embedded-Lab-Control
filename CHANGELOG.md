@@ -26,11 +26,12 @@ and the test suite is faster and can no longer reach the network.
 
 ### Tests
 
-- The suite can no longer reach the network: connections and datagrams to
-  anything but loopback are refused at once (`tests/conftest.py`). Fixture
+- The suite can no longer reach the network: connections, datagrams and
+  name lookups for anything but loopback are refused at once
+  (`tests/conftest.py`). Fixture
   devices use LAN addresses, which could be real hardware on a lab network,
   and about 20 tests each waited out a 5 s timeout on them (#49).
-- Claim expiry and heartbeat tests use a fake clock instead of real sleeps
+- Claim expiry and heartbeat tests (manager and CLI) use a fake clock instead of real sleeps
   (one failed under load), and power-cycle, card-switch and boot settle
   delays are skipped in tests that don't check them. A full local run
   drops from about 15 to 11 minutes (#49).
