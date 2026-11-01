@@ -2341,7 +2341,11 @@ class ResourceManager:
             details.update(holder=claim.agent_name, claim=claim.id)
             if claim.sbc_name and claim.sbc_name != sbc_name:
                 details["held_board"] = claim.sbc_name
-        sbc = self.get_sbc_by_name(sbc_name)
+        try:  # like emit, never let recording break the refusal itself
+            sbc = self.get_sbc_by_name(sbc_name)
+        except Exception:  # noqa: BLE001
+            logger.warning("claim refusal on %s: board lookup failed", sbc_name)
+            sbc = None
         audit.emit(
             self.db,
             action="claim_refused",

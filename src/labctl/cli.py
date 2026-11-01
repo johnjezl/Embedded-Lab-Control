@@ -3583,6 +3583,7 @@ def ser2net_generate_cmd(
                     if holder_board == sbc_name
                     else f" (it shares hardware with '{sbc_name}')"
                 )
+                _record_cli_refusal(sbc_name, claim)
                 click.echo(
                     f"  {label(db_port)}: '{holder_board}' is claimed by "
                     f"'{_holder(claim)}'{via}",

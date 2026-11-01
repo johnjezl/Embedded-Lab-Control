@@ -919,7 +919,7 @@ def _with_confirmation(func):
                 return f"Error: {e}"
             return _issue_confirmation(name, arguments, extra)
         problem = _redeem_confirmation(
-            name, arguments, confirm_token, _current_plan(name, arguments)
+            name, arguments, confirm_token, _plan_quietly(name, arguments)
         )
         if problem:
             return json.dumps(
@@ -997,11 +997,28 @@ def _with_mcp_activity(func):
 _CURRENT_TOOL: ContextVar[Optional[str]] = ContextVar("labctl_mcp_tool", default=None)
 
 
+# False while the confirming call recomputes its plan to compare it: that
+# recheck answers "confirmation_failed", not a claim refusal (the call
+# itself, or a retry, refuses and records it).
+_RECORD_REFUSALS: ContextVar[bool] = ContextVar("labctl_mcp_record", default=True)
+
+
 def _record_refusal(manager, sbc_name: str, reason: str, claim=None) -> None:
     """Record a claim refusal of this tool call (#60)."""
+    if not _RECORD_REFUSALS.get():
+        return
     manager.record_claim_refusal(
         sbc_name, reason, claim=claim, attempted=_CURRENT_TOOL.get()
     )
+
+
+def _plan_quietly(name: str, arguments: dict):
+    """_current_plan without recording a claim refusal (see above)."""
+    token = _RECORD_REFUSALS.set(False)
+    try:
+        return _current_plan(name, arguments)
+    finally:
+        _RECORD_REFUSALS.reset(token)
 
 
 def _sdwire_read_error(error: str, message: str, **extra) -> str:

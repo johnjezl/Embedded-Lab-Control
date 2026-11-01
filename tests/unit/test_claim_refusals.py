@@ -64,6 +64,13 @@ def test_record_claim_refusal(manager):
     assert event["claim_id"] is None  # never the foreign key (#58)
 
 
+def test_a_failed_lookup_never_breaks_the_refusal(manager):
+    with patch.object(manager, "get_sbc_by_name", side_effect=OSError("locked")):
+        manager.record_claim_refusal("a", "claimed")  # no exception
+    (event,) = _refusals(manager)
+    assert (event["entity_name"], event["entity_id"]) == ("a", None)
+
+
 def test_keepalive_recheck_records_nothing(manager):
     from labctl.core.claim_keepalive import ClaimKeepalive
 
@@ -111,6 +118,27 @@ class TestMcp:
         (event,) = _refusals(manager)
         assert event["actor"] == "mcp-stdio:7-7"
         assert event["details"]["attempted"] == "power_cycle"
+
+    def test_bad_token_records_nothing(self, mcp, manager):
+        mcp_server, _config = mcp
+        _hold(manager, "a")
+        with patch("labctl.mcp_server._confirmation_required", return_value=True):
+            result = json.loads(mcp_server.power_cycle("a", confirm_token="bogus"))
+        assert result["status"] == "confirmation_failed"
+        assert _refusals(manager) == []
+
+    def test_claimed_between_plan_and_confirm_records_once(self, mcp, manager):
+        """The confirming call answers confirmation_failed (no refusal
+        recorded); the retry is refused and recorded."""
+        mcp_server, _config = mcp
+        with patch("labctl.mcp_server._confirmation_required", return_value=True):
+            token = json.loads(mcp_server.power_cycle("a"))["confirm_token"]
+            _hold(manager, "a")
+            failed = json.loads(mcp_server.power_cycle("a", confirm_token=token))
+            assert failed["status"] == "confirmation_failed"
+            assert _refusals(manager) == []
+            mcp_server.power_cycle("a")
+        assert len(_refusals(manager)) == 1
 
     def test_claim_required_and_not_operator(self, mcp, manager):
         mcp_server, config = mcp
