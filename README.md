@@ -726,7 +726,7 @@ next session):
 | `labctl skill install --with-config` | Also write an example `.claude/deploy-config.json` (only if there is none) |
 | `labctl skill install --force` | Replace an installed copy that differs (an older version, or edited by hand) |
 | `labctl skill list [-p DIR]` | Show each bundled skill: current, differs, or not installed, in the project and for the user |
-| `labctl skill uninstall [-p DIR \| --user] [--force]` | Remove it (`--force` for an edited copy) |
+| `labctl skill uninstall [-p DIR \| --user] [--force]` | Remove it (`--force` for an edited copy; only labctl's own skills) |
 
 The skill expects a connected labctl MCP server in the project, and reads
 per-board settings from `.claude/deploy-config.json` (`install` says where
