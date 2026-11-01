@@ -1254,12 +1254,12 @@ class ResourceManager:
         (#57), and status_log keeps every transition. Setting a status by
         hand goes through update_sbc, which records both.
         """
-        self.db.execute_modify(
+        if self.db.execute_modify(
             "UPDATE sbcs SET status = ?, updated_at = CURRENT_TIMESTAMP"
             " WHERE id = ?",
             (status.value, sbc_id),
-        )
-        self.log_status(sbc_id, status, details)
+        ):  # not for a board deleted since it was checked
+            self.log_status(sbc_id, status, details)
 
     def log_status(
         self,
@@ -1676,15 +1676,24 @@ class ResourceManager:
 
     def _record_expired(self, expired: list, message: Optional[str] = None) -> None:
         """One claim_expired event per released claim. The claim ran out:
-        whoever's call swept it didn't release it, so it is the system's."""
+        whoever's call swept it didn't release it, so it is the system's.
+
+        The claim's ID goes in the details, not audit_log.claim_id: that
+        column references claims(id) with no ON DELETE, so filling it
+        would stop the claim (and its SBC) from ever being deleted.
+        """
         for row in expired:
-            with audit.activity_context("system", "internal", claim_id=row["id"]):
-                self._audit_log(
-                    "claim_expired",
-                    "sbc",
-                    row["sbc_id"],
-                    row["sbc_name"],
-                    message or f"Claim by {row['agent_name']} expired",
+            with audit.activity_context("system", "internal"):
+                audit.emit(
+                    self.db,
+                    action="claim_expired",
+                    entity_type="sbc",
+                    entity_id=row["sbc_id"],
+                    entity_name=row["sbc_name"],
+                    details={
+                        "message": message or f"Claim by {row['agent_name']} expired",
+                        "claim": row["id"],
+                    },
                 )
 
     @staticmethod

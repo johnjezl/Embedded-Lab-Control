@@ -291,7 +291,7 @@ class TestClaimExpiryRecorded:
         assert manager.expire_stale_claims(grace_seconds=0) == 0
         expired = [e for e in _events(db) if e["action"] == "claim_expired"]
         assert [(e["entity_name"], json.loads(e["details"])) for e in expired] == [
-            ("pi", {"message": "Claim by agent-pi expired"})
+            ("pi", {"message": "Claim by agent-pi expired", "claim": 1})
         ]
 
     def test_claiming_sweeps_and_records_other_expired_claims(self, db):
@@ -312,7 +312,13 @@ class TestClaimExpiryRecorded:
             )
         expired = [e for e in _events(db) if e["action"] == "claim_expired"]
         assert [
-            (e["entity_name"], e["actor"], e["agent"], e["claim_id"]) for e in expired
+            (
+                e["entity_name"],
+                e["actor"],
+                e["agent"],
+                json.loads(e["details"])["claim"],
+            )
+            for e in expired
         ] == [("pi", "system", None, expired_id)]
         claim = [e for e in _events(db) if e["action"] == "claim"][-1]
         assert (claim["actor"], claim["agent"]) == ("mcp-stdio:9-9", "bot-b")
@@ -348,9 +354,9 @@ class TestRound2:
                 grace_seconds=3600,
             )
         expired = [e for e in _events(db) if e["action"] == "claim_expired"]
-        assert [(e["actor"], e["agent"], e["claim_id"]) for e in expired] == [
-            ("system", None, old_id)
-        ]
+        assert [
+            (e["actor"], e["agent"], json.loads(e["details"])["claim"]) for e in expired
+        ] == [("system", None, old_id)]
         assert "replaced by its holder" in expired[0]["details"]
 
     def test_release_expired_needs_the_write_lock(self, db):
@@ -396,3 +402,34 @@ class TestRound2:
         line = _format_activity_row(row, compact=True)
         assert "claude-code-" in line
         assert "ticket" not in line
+
+
+class TestRound3:
+    def test_expired_claims_and_their_board_can_still_be_deleted(self, db):
+        """claim_expired must not hold a foreign key to the claim."""
+        manager = ResourceManager(db)
+        sbc = manager.create_sbc(name="pi")
+        manager.claim_sbc(
+            sbc_name="pi",
+            agent_name="a",
+            session_id="cli-a",
+            session_kind="cli",
+            duration_seconds=60,
+            reason="r",
+        )
+        db.execute_modify(
+            "UPDATE claims SET expires_at = '2000-01-01 00:00:00.000000',"
+            " acquired_at = '2000-01-01 00:00:00.000000'"
+        )
+        assert manager.expire_stale_claims(grace_seconds=0) == 1
+        db.execute_modify("UPDATE claims SET released_at = '2000-01-02 00:00:00'")
+        assert manager.prune_released_claims(older_than_days=1) == 1
+        assert manager.delete_sbc(sbc.id)
+        assert [e["action"] for e in _events(db)][-1] in ("delete", "remove")
+
+    def test_record_status_skips_a_deleted_board(self, db):
+        manager = ResourceManager(db)
+        sbc = manager.create_sbc(name="pi")
+        manager.delete_sbc(sbc.id)
+        manager.record_status(sbc.id, Status.ONLINE, "late check")
+        assert manager.get_status_history(sbc.id) == []
