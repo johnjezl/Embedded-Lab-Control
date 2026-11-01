@@ -94,7 +94,7 @@ class TestPower:
             ("power_off", "ok", "bot"),
             ("power_cycle", "ok", "bot"),
         ]
-        assert _details(events[2]) == {"delay_s": 5.0}
+        assert _details(events[2]) == {"delay_seconds": 5.0}
 
     def test_failures_recorded(self, manager, board):
         from labctl.actuators.runtime import power_cycle_with_bindings, power_off_board
@@ -144,6 +144,32 @@ class TestRobustness:
         assert t.run("a", lambda: None, summary=lambda r: r["x"]) is None
         assert t.run("b", lambda: {"action": 1, "result": 2}, summary=dict)
         assert [e["result"] for e in _events(manager, "a", "b")] == ["ok", "ok"]
+
+    def test_refusal_before_switching_leaves_sharers_alone(self, manager, board):
+        from labctl.actuators.runtime import ActuationError, enter_recovery
+
+        other = manager.create_sbc(name="pi-b")
+        manager.assign_power_plug(
+            other.id, plug_type=PlugType.TASMOTA, address="10.9.9.9"
+        )
+        with pytest.raises(ActuationError):  # no recovery_mode binding
+            enter_recovery(manager, board, MagicMock(), sleep_fn=lambda s: None)
+        assert [e["entity_name"] for e in _events(manager, "enter_recovery")] == ["pi"]
+        assert _events(manager, "power_cycle") == []
+
+    def test_power_all_records_each_board_once(self, manager, board):
+        from labctl.actuators.runtime import power_off_board
+
+        other = manager.create_sbc(name="pi-b")
+        manager.assign_power_plug(
+            other.id, plug_type=PlugType.TASMOTA, address="10.9.9.9"
+        )
+        c = MagicMock()
+        c.power_off.return_value = True
+        for sbc in (board, manager.get_sbc_by_name("pi-b")):
+            power_off_board(manager, sbc, c, record_sharers=False)
+        names = [e["entity_name"] for e in _events(manager, "power_off")]
+        assert names == ["pi", "pi-b"]
 
     def test_boards_sharing_the_outlet_get_the_event(self, manager, board):
         from labctl.actuators.runtime import power_cycle_with_bindings
@@ -244,7 +270,11 @@ class TestSerialAndBootTest:
         from labctl.serial.capture import port_target
 
         port = SimpleNamespace(sbc_id=board.id, id=7, alias="c", device_path="/d")
-        assert port_target(manager, port).sbc_name == "pi"
+        t = port_target(manager, port)
+        assert (t.sbc_name, t.defaults) == ("pi", {"port": "c"})
+        t.record("serial_send", bytes_sent=3)
+        (event,) = _events(manager, "serial_send")
+        assert _details(event) == {"port": "c", "bytes_sent": 3}
         orphan = SimpleNamespace(sbc_id=0, id=7, alias="c", device_path="/d")
         t = port_target(manager, orphan)
         assert (t.entity_type, t.sbc_name) == ("serial_port", "c")

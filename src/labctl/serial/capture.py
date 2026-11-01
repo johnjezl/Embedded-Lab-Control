@@ -148,9 +148,9 @@ def port_target(manager, port):
     from labctl.core.audit import Target
 
     sbc = manager.get_sbc(port.sbc_id) if port.sbc_id else None
-    if sbc is not None:
-        return Target(manager.db, sbc)
     name = port.alias or port.device_path
+    if sbc is not None:
+        return Target(manager.db, sbc, port=name)
     return Target(manager.db, SimpleNamespace(id=port.id, name=name), "serial_port")
 
 

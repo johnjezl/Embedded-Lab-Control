@@ -253,7 +253,7 @@ def emit(
         entity_type: Kind of entity acted on (e.g. "sbc", "serial_port").
         entity_id: Numeric ID of the entity (optional).
         entity_name: Human-readable target (e.g. SBC name). Used as `target`.
-        result: "ok" | "error" | "forbidden".
+        result: "ok" | "error" | "forbidden" | "interrupted".
         details: Structured details. Redacted and JSON-encoded.
         actor: Override the contextvar actor (rare; usually leave None).
         source: Override the contextvar source.
@@ -299,11 +299,18 @@ class Target:
     Built from a database and an SBC (anything with ``id`` and ``name``).
     """
 
-    def __init__(self, db: Optional["Database"], sbc: Any, entity_type: str = "sbc"):
+    def __init__(
+        self,
+        db: Optional["Database"],
+        sbc: Any,
+        entity_type: str = "sbc",
+        **defaults: Any,
+    ):
         self.db = db
         self.sbc_id = getattr(sbc, "id", None)
         self.sbc_name = getattr(sbc, "name", None)
         self.entity_type = entity_type
+        self.defaults = defaults  # details every event carries (e.g. port)
 
     def record(self, action: str, result: str = "ok", **details: Any) -> None:
         """Record ``action`` on the board (``details`` with None values
@@ -320,7 +327,10 @@ class Target:
             entity_id=self.sbc_id,
             entity_name=self.sbc_name,
             result=result,
-            details={k: v for k, v in details.items() if v is not None} or None,
+            details={
+                k: v for k, v in {**self.defaults, **details}.items() if v is not None
+            }
+            or None,
         )
 
     def run(self, action: str, fn, *, summary=None, failed=None, **details: Any):
