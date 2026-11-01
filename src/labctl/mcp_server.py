@@ -23,6 +23,7 @@ import sys
 import threading
 import time as _time_mod
 from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
 from functools import wraps
 from typing import Optional
 
@@ -517,7 +518,9 @@ def _caller_actor():
 
 def _claimed_error(sbc_name: str, claim) -> str:
     """``sbc_claimed`` for ``sbc_name``; ``claim`` may be on another board
-    that shares its hardware (plug, SDWire, console, relay)."""
+    that shares its hardware (plug, SDWire, console, relay). Every caller
+    refuses the call with it, so the refusal is recorded here (#60)."""
+    _record_refusal(_get_manager(), sbc_name, "claimed", claim)
     holder_board = claim.sbc_name or sbc_name
     if claim.is_active:
         hints = [
@@ -613,6 +616,7 @@ def _check_claim(
     except ClaimConflict as exc:
         return _claimed_error(for_sbc or sbc_name, exc.claim)
     except ClaimRequiredError as exc:
+        _record_refusal(manager, sbc_name, "claim_required")
         return json.dumps(
             {
                 "error": "claim_required",
@@ -958,25 +962,46 @@ def _with_mcp_activity(func):
     """Serialize one tool call and scope audit attribution to the MCP session.
 
     Destructive tools also get the two-step confirmation (_with_confirmation)
-    as the *outer* layer: a plan is issued, and a confirm_token checked and
-    consumed, when the call arrives, before waiting for the hardware lock.
-    Otherwise a confirming call queued behind a long boot_test/flash could
-    be refused as expired although it arrived in time. Issuing a plan
-    touches no hardware, so it needs no lock.
+    inside the attribution but *outside* the lock: a plan is issued, and a
+    confirm_token checked and consumed, when the call arrives, before
+    waiting for the hardware lock. Otherwise a confirming call queued
+    behind a long boot_test/flash could be refused as expired although it
+    arrived in time. Issuing a plan touches no hardware, so it needs no
+    lock, but a claim refusal while planning is still the caller's.
     """
-    from labctl.core import audit
 
     @wraps(func)
     def locked(*args, **kwargs):
-        # The session ID names the user over authenticated HTTP; the agent
-        # is the name the caller gave (claim_sbc agent_name), if any.
-        with (
-            _HARDWARE_LOCK,
-            audit.activity_context(_get_session_id(), "mcp", agent=_given_agent_name()),
-        ):
+        with _HARDWARE_LOCK:
             return func(*args, **kwargs)
 
-    return _with_confirmation(locked)
+    confirmed = _with_confirmation(locked)
+
+    @wraps(confirmed)
+    def attributed(*args, **kwargs):
+        # The session ID names the user over authenticated HTTP; the agent
+        # is the name the caller gave (claim_sbc agent_name), if any.
+        token = _CURRENT_TOOL.set(func.__name__)
+        try:
+            with audit.activity_context(
+                _get_session_id(), "mcp", agent=_given_agent_name()
+            ):
+                return confirmed(*args, **kwargs)
+        finally:
+            _CURRENT_TOOL.reset(token)
+
+    return attributed
+
+
+# The tool being called, for claim_refused events (#60).
+_CURRENT_TOOL: ContextVar[Optional[str]] = ContextVar("labctl_mcp_tool", default=None)
+
+
+def _record_refusal(manager, sbc_name: str, reason: str, claim=None) -> None:
+    """Record a claim refusal of this tool call (#60)."""
+    manager.record_claim_refusal(
+        sbc_name, reason, claim=claim, attempted=_CURRENT_TOOL.get()
+    )
 
 
 def _sdwire_read_error(error: str, message: str, **extra) -> str:
@@ -3967,6 +3992,7 @@ def force_release_sbc(sbc_name: str, reason: str) -> str:
     from labctl.core.models import ClaimNotFoundError, UnknownSBCError
 
     if not _caller_is_operator():
+        _record_refusal(_get_manager(), sbc_name, "not_operator")
         return json.dumps(
             {
                 "error": "not_operator",

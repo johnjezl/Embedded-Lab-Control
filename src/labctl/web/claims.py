@@ -86,7 +86,9 @@ def override_requested() -> bool:
 
 def claimed_error(sbc_name: str, claim, *, override_hint: bool = True) -> dict:
     """``sbc_claimed`` for a change to ``sbc_name``; ``claim`` may be on
-    another board that shares its hardware."""
+    another board that shares its hardware. Every caller refuses the
+    request with it, so the refusal is recorded here (#60)."""
+    record_refusal(sbc_name, "claimed", claim)
     holder_board = claim.sbc_name or sbc_name
     holder = claim.agent_name or "unknown"
     shared = (
@@ -123,10 +125,18 @@ def claimed_error(sbc_name: str, claim, *, override_hint: bool = True) -> dict:
     }
 
 
+def record_refusal(sbc_name: str, reason: str, claim=None) -> None:
+    """Record that this request was refused over a claim (#60)."""
+    g.manager.record_claim_refusal(
+        sbc_name, reason, claim=claim, attempted=f"{request.method} {request.path}"
+    )
+
+
 def _refusal(exc: Exception, sbc_name: str, for_sbc: Optional[str]) -> Refusal:
     if isinstance(exc, ClaimConflict):
         return claimed_error(for_sbc or sbc_name, exc.claim), 409
     if isinstance(exc, NotOperatorError):
+        record_refusal(sbc_name, "not_operator")
         return (
             {
                 "error": "not_operator",
@@ -137,6 +147,7 @@ def _refusal(exc: Exception, sbc_name: str, for_sbc: Optional[str]) -> Refusal:
             403,
         )
     assert isinstance(exc, ClaimRequiredError)
+    record_refusal(sbc_name, "claim_required")
     return (
         {
             "error": "claim_required",

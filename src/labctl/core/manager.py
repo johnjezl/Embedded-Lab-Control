@@ -2322,6 +2322,36 @@ class ResourceManager:
             self.touch_claim(claim)
         return claim
 
+    def record_claim_refusal(
+        self,
+        sbc_name: str,
+        reason: str,
+        *,
+        claim: Optional[Claim] = None,
+        attempted: Optional[str] = None,
+    ) -> None:
+        """Record that a call on ``sbc_name`` was refused over a claim
+        (#60): ``claim_refused``, result ``forbidden``. ``reason`` is
+        ``claimed`` (someone else's ``claim``, possibly on a board sharing
+        its hardware), ``claim_required`` or ``not_operator``;
+        ``attempted`` names the tool, command or route. The front ends call
+        this where they refuse, never for checks that only look."""
+        details: dict = {"reason": reason, "attempted": attempted}
+        if claim is not None:
+            details.update(holder=claim.agent_name, claim=claim.id)
+            if claim.sbc_name and claim.sbc_name != sbc_name:
+                details["held_board"] = claim.sbc_name
+        sbc = self.get_sbc_by_name(sbc_name)
+        audit.emit(
+            self.db,
+            action="claim_refused",
+            entity_type="sbc",
+            entity_id=sbc.id if sbc else None,
+            entity_name=sbc_name,
+            result="forbidden",
+            details={k: v for k, v in details.items() if v is not None},
+        )
+
     def check_claims_of(
         self, sbc_names: Iterable[str], actor: ClaimActor, *, override: bool = False
     ) -> None:

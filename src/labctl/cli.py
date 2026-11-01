@@ -209,9 +209,25 @@ def _holder(claim) -> str:
     return claim.agent_name or "unknown"
 
 
+def _record_cli_refusal(sbc_name: str, claim) -> None:
+    """Record that this command was refused (or skipped ``sbc_name``)
+    over someone else's ``claim`` (#60)."""
+    ctx = click.get_current_context(silent=True)
+    if ctx is None or ctx.obj is None or "config" not in ctx.obj:
+        return
+    # "labctl power off" whatever the program was invoked as.
+    command = " ".join(["labctl", *ctx.command_path.split(" ")[1:]])
+    _get_manager(ctx).record_claim_refusal(
+        sbc_name, "claimed", claim=claim, attempted=command
+    )
+
+
 def _refuse_claimed(sbc_name: str, claim, *, override_hint: bool = True) -> None:
     """Exit with an error naming the claim that stops a change to
-    ``sbc_name``; the claim may be on a board sharing its hardware."""
+    ``sbc_name``; the claim may be on a board sharing its hardware. Every
+    CLI claim refusal ends here (the pre-prompt check too), so it is
+    recorded here (#60); checks that only look return the claim instead."""
+    _record_cli_refusal(sbc_name, claim)
     holder_board = claim.sbc_name or sbc_name
     shared = (
         f" (it shares hardware with '{sbc_name}')" if holder_board != sbc_name else ""
@@ -4074,6 +4090,8 @@ def power_all_cmd(
 
     targets = [s for s in sbcs_with_plugs if override_claim or s.name not in claimed]
     if not targets:
+        for name, found in claimed.items():
+            _record_cli_refusal(name, found[0])
         click.echo("\nNothing to do: every board is claimed by another user.")
         sys.exit(1)
 
@@ -4082,6 +4100,9 @@ def power_all_cmd(
         f"\nPower {action.upper()} {len(targets)} SBC(s)?",
         f"powers {action} {len(targets)} SBC(s)",
     )
+    if not override_claim:  # each skipped board is a refusal (#60)
+        for name, found in claimed.items():
+            _record_cli_refusal(name, found[0])
 
     # Execute power commands
     success_count = 0
@@ -4097,6 +4118,7 @@ def power_all_cmd(
             if late is not None:
                 conflicts = _all_conflicts(ctx, sbc.name) or [late]
         if conflicts and not override_claim:
+            _record_cli_refusal(sbc.name, conflicts[0])
             click.echo(
                 f"  {sbc.name}: SKIPPED - claimed by '{_holder(conflicts[0])}'",
                 err=True,
