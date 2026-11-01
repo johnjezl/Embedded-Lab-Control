@@ -12,8 +12,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   Claude Code skill now ships in the package (so PyPI installs have it)
   and is installed into a project's `.claude/skills/` (or `--user` for
   `~/.claude/skills/`). An installed copy that differs is replaced or
-  removed only with `--force`; nothing is written through a symlink;
-  `--with-config` writes an example `.claude/deploy-config.json`. The
+  removed only with `--force`, and only labctl's own skills are ever
+  removed. A symlinked `.claude` or `.claude/skills` (dotfiles) is
+  followed; below it nothing is written through a symlink. `--with-config`
+  writes an example `.claude/deploy-config.json`. The
   skill moved from `skills/deploy-and-test.md` to
   `src/labctl/skills/deploy-and-test/SKILL.md`.
 

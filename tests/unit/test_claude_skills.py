@@ -76,14 +76,68 @@ class TestInstall:
             == (home / ".claude" / "skills" / "deploy-and-test" / "SKILL.md").resolve()
         )
 
-    def test_symlinked_skills_dir_refused(self, proj, tmp_path):
+    def test_symlinked_claude_dir_is_followed(self, home, tmp_path):
+        """~/.claude kept in a dotfiles repository and symlinked in."""
+        dotfiles = tmp_path / "dotfiles" / "claude"
+        dotfiles.mkdir(parents=True)
+        os.symlink(dotfiles, home / ".claude")
+        claude_skills.install("deploy-and-test", user=True)
+        assert (dotfiles / "skills" / "deploy-and-test" / "SKILL.md").exists()
+        assert claude_skills.status("deploy-and-test", user=True) == "current"
+
+    def test_symlinked_skill_dir_refused(self, proj, tmp_path):
         elsewhere = tmp_path / "elsewhere"
         elsewhere.mkdir()
-        (proj / ".claude").mkdir()
-        os.symlink(elsewhere, proj / ".claude" / "skills")
+        (proj / ".claude" / "skills").mkdir(parents=True)
+        os.symlink(elsewhere, proj / ".claude" / "skills" / "deploy-and-test")
         with pytest.raises(claude_skills.SkillError, match="symlink"):
             claude_skills.install("deploy-and-test", project=proj)
         assert list(elsewhere.iterdir()) == []
+
+    def test_missing_project_dir_refused(self, tmp_path):
+        missing = tmp_path / "typo" / "proj"
+        with pytest.raises(claude_skills.SkillError, match="does not exist"):
+            claude_skills.install("deploy-and-test", project=missing)
+        assert not (tmp_path / "typo").exists()
+
+    def test_first_install_never_overwrites(self, proj, monkeypatch):
+        """A SKILL.md that appears between the check and the write is not
+        overwritten without --force."""
+        real = claude_skills._read_existing
+
+        def appears(dir_fd):
+            value = real(dir_fd)
+            fd = os.open("SKILL.md", os.O_WRONLY | os.O_CREAT, 0o644, dir_fd=dir_fd)
+            os.write(fd, b"someone else's")
+            os.close(fd)
+            return value
+
+        monkeypatch.setattr(claude_skills, "_read_existing", appears)
+        with pytest.raises(claude_skills.SkillError, match="appeared"):
+            claude_skills.install("deploy-and-test", project=proj)
+        path = proj / ".claude/skills/deploy-and-test/SKILL.md"
+        assert path.read_bytes() == b"someone else's"
+        assert [p.name for p in path.parent.iterdir()] == ["SKILL.md"]
+
+    def test_unreadable_status_and_full_path_errors(self, proj):
+        out = claude_skills.install("deploy-and-test", project=proj)
+        out.path.chmod(0)
+        try:
+            if os.access(out.path, os.R_OK):
+                pytest.skip("running as root")
+            assert claude_skills.status("deploy-and-test", project=proj).startswith(
+                "unreadable"
+            )
+        finally:
+            out.path.chmod(0o644)
+        ro = proj / "ro"
+        ro.mkdir()
+        ro.chmod(0o555)
+        try:
+            with pytest.raises(claude_skills.SkillError, match=str(ro)):
+                claude_skills.install("deploy-and-test", project=ro)
+        finally:
+            ro.chmod(0o755)
 
     def test_symlinked_skill_file_not_written_through(self, proj, tmp_path):
         victim = tmp_path / "victim"
@@ -105,6 +159,14 @@ class TestInstall:
 
 
 class TestUninstall:
+    def test_only_labctls_own_skills(self, proj):
+        mine = proj / ".claude" / "skills" / "mine"
+        mine.mkdir(parents=True)
+        (mine / "SKILL.md").write_text("my own skill")
+        with pytest.raises(claude_skills.SkillError, match="no bundled skill"):
+            claude_skills.uninstall("mine", project=proj, force=True)
+        assert (mine / "SKILL.md").read_text() == "my own skill"
+
     def test_remove_then_absent(self, proj):
         claude_skills.install("deploy-and-test", project=proj)
         out = claude_skills.uninstall("deploy-and-test", project=proj)
@@ -163,3 +225,8 @@ class TestCli:
     def test_project_and_user_together_refused(self, proj, home):
         result = _run("install", "-p", str(proj), "--user")
         assert result.exit_code == 2
+
+    def test_user_with_config_refused(self, home):
+        result = _run("install", "--user", "--with-config")
+        assert result.exit_code == 2
+        assert not (home / ".claude" / "skills").exists()

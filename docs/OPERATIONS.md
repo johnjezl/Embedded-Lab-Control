@@ -271,9 +271,9 @@ exactly like the commands they stand for.
 | `serial udev` | system-write |  | Writes udev rules only with `--install`; `--reload` reloads udev, and only together with `--install` |
 | `services status` | read |  |  |
 | `sessions` | read |  |  |
-| `skill install` | system-write |  | Writes the caller's Claude Code files, not labctl's: `<project>/.claude/skills/<name>/SKILL.md` (or `~/.claude/...` with `--user`), and `.claude/deploy-config.json` with `--with-config` (only if absent). Never through a symlink; replaces a copy that differs only with `--force`; no sudo |
+| `skill install` | system-write |  | Writes the caller's Claude Code files, not labctl's: `<project>/.claude/skills/<name>/SKILL.md` (or `~/.claude/...` with `--user`), and `.claude/deploy-config.json` with `--with-config` (only if absent). The project directory must exist; a symlinked `.claude`/`.claude/skills` is followed, nothing below it is; replaces a copy that differs only with `--force`; no sudo |
 | `skill list` | read |  |  |
-| `skill uninstall` | system-write |  | Removes an installed `SKILL.md` (an edited copy only with `--force`) |
+| `skill uninstall` | system-write |  | Removes an installed labctl skill's `SKILL.md` (an edited copy only with `--force`; never another skill) |
 | `ssh` | shared-resource |  | Interactive shell on the board |
 | `status` | read |  | Queries plugs live; `--fast` reads cached state |
 | `unbind` | destructive | yes | Deletes a binding |

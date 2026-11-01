@@ -7389,6 +7389,11 @@ def skill_install_cmd(
     from labctl import claude_skills
 
     where = _skill_location(project, user)
+    if user and with_config:
+        raise click.UsageError(
+            "--with-config writes a project's .claude/deploy-config.json; "
+            "run it in the project (without --user)"
+        )
     try:
         outcome = claude_skills.install(name, force=force, **where)
     except (claude_skills.SkillError, OSError) as e:
