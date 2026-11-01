@@ -3589,8 +3589,8 @@ def ser2net_generate_cmd(
                     if holder_board == sbc_name
                     else f" (it shares hardware with '{sbc_name}')"
                 )
-                if (sbc_name, claim.id) not in recorded:  # once per board
-                    recorded.add((sbc_name, claim.id))
+                if sbc_name not in recorded:  # once per board
+                    recorded.add(sbc_name)
                     _record_cli_refusal(sbc_name, claim)
                 click.echo(
                     f"  {label(db_port)}: '{holder_board}' is claimed by "

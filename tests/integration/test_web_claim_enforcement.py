@@ -893,6 +893,23 @@ class TestRefusalsRecorded:
         (event,) = _refusals(manager)
         assert (event["entity_name"], event["details"]["held_board"]) == ("a", "b")
 
+    def test_agent_override_names_the_claim(self, lab, power):
+        """An agent's override_claim on a board sharing a claimed one: the
+        not_operator refusal names the holder and the claimed board."""
+        client, manager = lab
+        _claim(manager, "a")
+        client.post(
+            "/api/sbcs/b/power",
+            json={"action": "on", "override_claim": True},
+            headers=BOT,
+        )
+        (event,) = _refusals(manager)
+        assert event["details"]["reason"] == "not_operator"
+        assert (event["details"]["holder"], event["details"]["held_board"]) == (
+            "holder",
+            "a",
+        )
+
     def test_claim_required_recorded(self, tmp_path, power):
         app, client, manager = _make(tmp_path, require_claim=True)
         manager.create_sbc(name="a")

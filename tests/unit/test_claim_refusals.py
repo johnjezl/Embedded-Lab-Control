@@ -167,6 +167,22 @@ class TestMcp:
         (event,) = _refusals(manager)
         assert event["details"]["attempted"] == "claim_sbc"
 
+    def test_agent_force_release_refused_on_the_first_call(self, mcp, manager):
+        """With confirmation on, an agent is refused at once (no token)."""
+        mcp_server, _config = mcp
+        _hold(manager, "a")
+        with (
+            patch("labctl.mcp_server._confirmation_required", return_value=True),
+            patch("labctl.mcp_server._caller_is_operator", return_value=False),
+        ):
+            result = json.loads(mcp_server.force_release_sbc("a", reason="x"))
+        assert result["error"] == "not_operator"
+        (event,) = _refusals(manager)
+        assert (event["details"]["reason"], event["details"]["holder"]) == (
+            "not_operator",
+            "holder",
+        )
+
     def test_release_and_renew_of_someone_elses_claim(self, mcp, manager):
         mcp_server, _config = mcp
         _hold(manager, "a")
