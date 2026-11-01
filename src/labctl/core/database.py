@@ -35,6 +35,11 @@ logger = logging.getLogger(__name__)
 # Current schema version
 SCHEMA_VERSION = 14
 
+
+class SchemaTooNewError(RuntimeError):
+    """The database was migrated by a newer labctl than this one."""
+
+
 # Default SQLite busy-timeout when the Database is constructed without an
 # explicit value (e.g. tests, direct callers). Matches Config.database
 # default; raise only if a migration on a contended DB is timing out.
@@ -380,7 +385,7 @@ class Database:
                         # A newer labctl migrated it (e.g. v14 rewrote times
                         # as UTC): this older code would misread and
                         # mis-write it, so it must not use it.
-                        raise RuntimeError(
+                        raise SchemaTooNewError(
                             f"database {self.db_path} is schema "
                             f"v{current_version}, newer than this labctl "
                             f"(v{SCHEMA_VERSION}); upgrade labctl"
@@ -747,7 +752,7 @@ class Database:
             # v14 (#63): timestamps labctl wrote from Python were naive local
             # time (claims' acquired_at/last_activity/expires_at, activity
             # logged_at); everything is UTC now, as CURRENT_TIMESTAMP columns
-            # already were. Converted in this host's local zone; in the
+            # already were. Converted in the host's zone (/etc/localtime); in the
             # repeated hour of a DST fall-back, the first (daylight)
             # occurrence is assumed.
             # Not idempotent (a second pass would shift again), so take the
@@ -921,13 +926,30 @@ def get_database(
     return db
 
 
+def _system_zone():
+    """The host's own zone (``/etc/localtime``), which the labctl services
+    ran in when they wrote local times, whatever ``TZ`` the process doing
+    the migration has; None if it can't be read (then the process's local
+    zone is used)."""
+    try:
+        from zoneinfo import ZoneInfo
+
+        with open("/etc/localtime", "rb") as f:
+            return ZoneInfo.from_file(f)
+    except Exception:  # noqa: BLE001 - no tzdata / not Linux
+        return None
+
+
 def _local_to_utc(
     conn: sqlite3.Connection, table: str, columns: tuple, *, millis: bool = False
 ) -> None:
     """Rewrite naive local-time ``columns`` of ``table`` as UTC (schema v14).
     A missing table, or a value that isn't a timestamp, is left alone."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
+    from labctl.core import timeutil
+
+    zone = _system_zone()
     has_table = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
     ).fetchone()
@@ -938,26 +960,22 @@ def _local_to_utc(
         if column not in present:
             continue
         rows = conn.execute(
-            f"SELECT id, {column} FROM {table} WHERE {column} IS NOT NULL"
+            f"SELECT id, {column} FROM {table} WHERE {column} LIKE '%.%'"
         ).fetchall()
         updates = []
         for row_id, value in rows:
-            text = str(value)
             # Python wrote these with a fraction; a value without one came
             # from DEFAULT CURRENT_TIMESTAMP, which is UTC already.
-            if "." not in text:
-                continue
             try:
-                local = datetime.fromisoformat(text.replace("T", " "))
+                local = datetime.fromisoformat(str(value).replace("T", " "))
             except ValueError:
                 continue
             if local.tzinfo is not None:
                 continue  # already carries its offset
-            # Naive astimezone() reads the value as local time (fold=0: the
-            # first occurrence of a repeated hour).
-            utc = local.astimezone(timezone.utc).replace(tzinfo=None)
-            out = utc.strftime("%Y-%m-%d %H:%M:%S.%f")
-            updates.append((out[:-3] if millis else out, row_id))
+            # fold=0: the first (daylight) occurrence of a repeated hour.
+            aware = local.replace(tzinfo=zone) if zone else local.astimezone()
+            stored = timeutil.to_db_ms(aware) if millis else timeutil.to_db(aware)
+            updates.append((stored, row_id))
         conn.executemany(f"UPDATE {table} SET {column} = ? WHERE id = ?", updates)
 
 

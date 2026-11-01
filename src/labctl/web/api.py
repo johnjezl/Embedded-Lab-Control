@@ -977,7 +977,9 @@ def list_activity():
       source=X      cli | mcp | api | web | daemon | internal.
       agent=X       Filter by MCP agent name (exact match).
       result=X      ok | error | forbidden | interrupted.
-      since=TS      ISO timestamp lower bound.
+      since=TS      ISO timestamp lower bound; without an offset it is
+                    UTC (as stored), e.g. 2026-11-01T09:00:00Z or
+                    2026-11-01T01:00:00-08:00.
       after_id=N    Only events with id > N (for long polling).
     """
     try:
