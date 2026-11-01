@@ -111,6 +111,38 @@ class TestClaimsAcrossTheFallBack:
 
 
 class TestMigration:
+    @pytest.fixture(autouse=True)
+    def host_zone(self, monkeypatch):
+        """The host's zone is Pacific, whatever the test process's TZ."""
+        from zoneinfo import ZoneInfo
+
+        monkeypatch.setattr(
+            "labctl.core.database._system_zone",
+            lambda: ZoneInfo("America/Los_Angeles"),
+        )
+
+    def test_converted_in_the_hosts_zone_not_the_processes(self, tmp_path):
+        """A process with TZ=UTC opening the database first still converts
+        from the host's zone."""
+        old = os.environ.get("TZ")
+        os.environ["TZ"] = "UTC"
+        time.tzset()
+        try:
+            path = tmp_path / "labctl.db"
+            self._v13_db(
+                path, [("2026-10-31 17:00:00.000000", "2026-10-31 18:00:00.000000")]
+            )
+            db = Database(path)
+            db.initialize()
+        finally:
+            if old is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old
+            time.tzset()
+        claim = db.execute_one("SELECT acquired_at FROM claims")
+        assert claim["acquired_at"] == "2026-11-01 00:00:00.000000"
+
     def _v13_db(self, path, rows):
         Database(path).initialize()
         conn = sqlite3.connect(path)
@@ -177,11 +209,19 @@ class TestMigration:
         assert row["logged_at"] == "2026-04-01 22:14:05"
 
     def test_older_labctl_refuses_a_newer_database(self, tmp_path, monkeypatch):
+        from labctl.cli import main
+
         path = tmp_path / "labctl.db"
         Database(path).initialize()
         monkeypatch.setattr("labctl.core.database.SCHEMA_VERSION", 13)
         with pytest.raises(RuntimeError, match="newer than this labctl"):
             Database(path).initialize()
+        config = tmp_path / "config.yaml"
+        config.write_text(f"database_path: {path}\n")
+        result = CliRunner().invoke(main, ["-c", str(config), "list"])
+        assert result.exit_code == 1
+        assert "Error: database" in result.output
+        assert "Traceback" not in result.output
 
     def test_a_second_initialize_doesnt_shift_again(self, tmp_path, pacific):
         path = tmp_path / "labctl.db"

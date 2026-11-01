@@ -119,7 +119,8 @@
 
   // logged_at is UTC (ISO, "Z"); show it in the browser's local time.
   function localTime(iso) {
-    const d = iso ? new Date(iso) : null;
+    // Date parsing is only defined for 3 fraction digits: trim to ms.
+    const d = iso ? new Date(iso.replace(/(\.\d{3})\d+/, '$1')) : null;
     if (!d || isNaN(d)) return iso || '';
     return d.toLocaleString(undefined, {
       year: 'numeric', month: '2-digit', day: '2-digit',
