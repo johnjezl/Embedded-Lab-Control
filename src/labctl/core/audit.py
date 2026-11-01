@@ -308,6 +308,9 @@ class Target:
     def record(self, action: str, result: str = "ok", **details: Any) -> None:
         """Record ``action`` on the board (``details`` with None values
         dropped). Without a database (some tests) nothing is recorded."""
+        self._emit(action, result, details)
+
+    def _emit(self, action: str, result: str, details: dict) -> None:
         if self.db is None:
             return
         emit(
@@ -320,18 +323,35 @@ class Target:
             details={k: v for k, v in details.items() if v is not None} or None,
         )
 
-    def run(self, action: str, fn, *, summary=None, **details: Any):
-        """Call ``fn()`` and record ``action``: ``error`` (with the
-        message) if it raises, which is re-raised, or returns False;
-        ``ok`` otherwise, with ``summary(value)`` (a dict) added to the
-        details if given. Returns what ``fn`` returned."""
+    def run(self, action: str, fn, *, summary=None, failed=None, **details: Any):
+        """Call ``fn()`` and record ``action``, then return what it
+        returned. The result is ``error`` (with the message) if it raises,
+        which is re-raised, returns False, or ``failed(value)`` is true;
+        ``interrupted`` if it is interrupted (Ctrl+C, SystemExit) part way,
+        when the hardware may already have changed; ``ok`` otherwise, with
+        ``summary(value)`` (a dict) added to the details. A summary that
+        fails is left out: the action itself succeeded."""
         try:
             value = fn()
         except Exception as e:
-            self.record(action, "error", error=str(e) or type(e).__name__, **details)
+            self._emit(
+                action, "error", {**details, "error": str(e) or type(e).__name__}
+            )
             raise
-        if value is False:
-            self.record(action, "error", **details)
-        else:
-            self.record(action, **details, **(summary(value) if summary else {}))
+        except BaseException as e:
+            self._emit(action, "interrupted", {**details, "error": type(e).__name__})
+            raise
+        extra: dict = {}
+        if summary is not None and value is not False:
+            try:
+                extra = dict(summary(value) or {})
+            except Exception:  # noqa: BLE001 - never fail a done action
+                logger.debug("audit summary for %s failed", action, exc_info=True)
+        bad = value is False
+        if not bad and failed is not None:
+            try:
+                bad = bool(failed(value))
+            except Exception:  # noqa: BLE001
+                logger.debug("audit outcome for %s failed", action, exc_info=True)
+        self._emit(action, "error" if bad else "ok", {**extra, **details})
         return value

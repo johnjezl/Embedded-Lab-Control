@@ -213,35 +213,37 @@ def run_boot_test(
 ) -> BootTestResult:
     """:func:`_run_boot_test`, recorded as ``boot_test`` against
     ``target`` (an audit.Target for the SBC) when given: one event for
-    the test, with its counts. Its power cycles, deploy and card switches
-    are recorded by the code that does them."""
-    args = (
-        sbc_name,
-        expect_pattern,
-        tcp_host,
-        tcp_port,
-        power_cycle_fn,
-        runs,
-        timeout,
-        deploy_fn,
-        image,
-        dest,
-        partition,
-        output_dir,
-        output_dir_fd,
-        progress_fn,
-        before_run_fn,
+    the test, with its counts, and ``error`` if it stopped before all its
+    runs (failed boots are an outcome, in the counts). Its power cycles,
+    deploy and card switches are recorded by the code that does them."""
+    kwargs = dict(
+        sbc_name=sbc_name,
+        expect_pattern=expect_pattern,
+        tcp_host=tcp_host,
+        tcp_port=tcp_port,
+        power_cycle_fn=power_cycle_fn,
+        runs=runs,
+        timeout=timeout,
+        deploy_fn=deploy_fn,
+        image=image,
+        dest=dest,
+        partition=partition,
+        output_dir=output_dir,
+        output_dir_fd=output_dir_fd,
+        progress_fn=progress_fn,
+        before_run_fn=before_run_fn,
     )
     if target is None:
-        return _run_boot_test(*args)
+        return _run_boot_test(**kwargs)
     return target.run(
         "boot_test",
-        lambda: _run_boot_test(*args),
+        lambda: _run_boot_test(**kwargs),
         summary=lambda r: {
             "completed_runs": len(r.runs),
             "passed": r.passed_count,
             "stopped": r.stopped_reason,
         },
+        failed=lambda r: r.stopped_reason is not None,
         runs=runs,
         image=os.path.basename(image) if image else None,
     )

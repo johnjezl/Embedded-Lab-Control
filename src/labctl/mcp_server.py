@@ -2315,9 +2315,8 @@ def sdwire_ls(
         return _sdwire_read_error("sbc_not_found", f"SBC '{sbc_name}' not found")
     if not sbc.sdwire:
         return _sdwire_read_error("no_sdwire", f"No SDWire assigned to '{sbc_name}'")
-    ctrl = SDWireController(
-        sbc.sdwire.serial_number, sbc.sdwire.device_type, sbc=sbc, db=manager.db
-    )
+    # A read: not recorded (its host round trip restores the card).
+    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
     needs_switch, refusal = _sdwire_read_access(sbc_name, sbc, ctrl)
     if refusal:
         return refusal
@@ -2413,9 +2412,8 @@ def sdwire_cat(
         return _sdwire_read_error("sbc_not_found", f"SBC '{sbc_name}' not found")
     if not sbc.sdwire:
         return _sdwire_read_error("no_sdwire", f"No SDWire assigned to '{sbc_name}'")
-    ctrl = SDWireController(
-        sbc.sdwire.serial_number, sbc.sdwire.device_type, sbc=sbc, db=manager.db
-    )
+    # A read: not recorded (its host round trip restores the card).
+    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
     needs_switch, refusal = _sdwire_read_access(sbc_name, sbc, ctrl)
     if refusal:
         return refusal
@@ -2515,9 +2513,8 @@ def sdwire_info(sbc_name: str) -> str:
         return _sdwire_read_error("sbc_not_found", f"SBC '{sbc_name}' not found")
     if not sbc.sdwire:
         return _sdwire_read_error("no_sdwire", f"No SDWire assigned to '{sbc_name}'")
-    ctrl = SDWireController(
-        sbc.sdwire.serial_number, sbc.sdwire.device_type, sbc=sbc, db=manager.db
-    )
+    # A read: not recorded (its host round trip restores the card).
+    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
     needs_switch, refusal = _sdwire_read_access(sbc_name, sbc, ctrl)
     if refusal:
         return refusal
@@ -2768,7 +2765,6 @@ def serial_capture(
     """
     from labctl.serial.capture import (
         capture_serial_output,
-        port_target,
         resolve_port,
     )
 
@@ -2800,7 +2796,6 @@ def serial_capture(
                 timeout=timeout,
                 until_pattern=until_pattern,
                 tail=tail,
-                target=port_target(manager, port),
             )
         return result.to_mcp_string(pattern=until_pattern)
     except RuntimeError as e:

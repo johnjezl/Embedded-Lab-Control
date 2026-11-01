@@ -931,7 +931,7 @@ def power_on_with_bindings(manager, sbc, controller) -> bool:
         _apply_pre_power(manager, boards)
         return controller.power_on()
 
-    return _target(manager, sbc).run("power_on", run)
+    return _run_on_outlet(manager, sbc, "power_on", run)
 
 
 def power_off_board(manager, sbc, controller) -> bool:
@@ -939,7 +939,7 @@ def power_off_board(manager, sbc, controller) -> bool:
     (other than inside a cycle or recovery, recorded as such) goes
     through here, so the activity stream has it whatever the front end.
     Returns the controller's result."""
-    return _target(manager, sbc).run("power_off", controller.power_off)
+    return _run_on_outlet(manager, sbc, "power_off", controller.power_off)
 
 
 def _target(manager, sbc):
@@ -947,6 +947,49 @@ def _target(manager, sbc):
     from labctl.core.audit import Target
 
     return Target(getattr(manager, "db", None), sbc)
+
+
+def _run_on_outlet(manager, sbc, action, fn, *, sharer_action=None, **details):
+    """Run ``fn`` (switching ``sbc``'s plug outlet), recorded as
+    ``action`` on ``sbc`` and, with the same result, as ``sharer_action``
+    (default ``action``) with ``via=<sbc>`` on every board sharing the
+    outlet: switching the outlet switched them too (#57)."""
+    target = _target(manager, sbc)
+    try:
+        sharers = [b for b in boards_on_plug(manager, sbc) if b.name != sbc.name]
+    except Exception:  # noqa: BLE001 - recording must not block power
+        logger.debug("outlet sharers of %s unknown", sbc.name, exc_info=True)
+        sharers = []
+    extra = {"via": sbc.name, **details}
+    if sharer_action is not None:
+        extra["for"] = action
+
+    def record_sharers(result, **more):
+        for board in sharers:
+            _target(manager, board).record(
+                sharer_action or action, result, **extra, **more
+            )
+
+    try:
+        value = target.run(action, fn, **details)
+    except Exception as e:
+        record_sharers("error", error=str(e) or type(e).__name__)
+        raise
+    except BaseException as e:
+        record_sharers("interrupted", error=type(e).__name__)
+        raise
+    record_sharers("error" if value is False else "ok")
+    return value
+
+
+def _checked_delay(manager, sbc, delay_s, action):
+    """:func:`_resolved_delay`, with a refused delay recorded as a failed
+    ``action`` (nothing was switched)."""
+    try:
+        return _resolved_delay(manager, sbc, delay_s)
+    except ValueError as e:
+        _target(manager, sbc).record(action, "error", error=str(e))
+        raise
 
 
 def power_cycle_with_bindings(
@@ -974,12 +1017,7 @@ def power_cycle_with_bindings(
     strap). A plug failure raises RuntimeError. Returns the result of
     power_on.
     """
-    target = _target(manager, sbc)
-    try:
-        delay_s = _resolved_delay(manager, sbc, delay_s)
-    except ValueError as e:
-        target.record("power_cycle", "error", error=str(e))
-        raise
+    delay_s = _checked_delay(manager, sbc, delay_s, "power_cycle")
 
     def run():
         boards = check_power_on(manager, sbc)
@@ -989,7 +1027,54 @@ def power_cycle_with_bindings(
         _apply_after_power_off(manager, sbc, boards)
         return controller.power_on()
 
-    return target.run("power_cycle", run, delay_s=float(delay_s))
+    return _run_on_outlet(manager, sbc, "power_cycle", run, delay_s=float(delay_s))
+
+
+def _recovery(manager, sbc, controller, delay_s, sleep_fn, action, set_strap):
+    """The recovery composites: probe, off, wait, ``set_strap`` the
+    recovery_mode binding, on. Recorded once as ``action`` on ``sbc``,
+    and as a ``power_cycle`` on boards sharing its outlet."""
+    # The board's stored delay is the minimum; an out-of-range one raises
+    # ValueError before anything is touched.
+    delay_s = _checked_delay(manager, sbc, delay_s, action)
+
+    def run():
+        binding = manager.get_binding_by_target(sbc.id, "recovery_mode")
+        if binding is None:
+            raise ActuationError(f"no 'recovery_mode' binding on {sbc.name!r}")
+        actuator, _channel = _resolve(manager, binding)
+
+        # 0. Pre-flight probe. Abort before any power transition.
+        outcome = probe_actuator(actuator)
+        if outcome.result is not ProbeResult.OK:
+            raise ActuationError(
+                f"pre-flight probe failed on {actuator.name!r}: "
+                f"{outcome.result.value} ({outcome.detail or 'no detail'})"
+            )
+        # The power-on step also drives the SBC's other pre_power bindings,
+        # and those of boards sharing its outlet.
+        boards = check_power_on(manager, sbc)
+
+        # 1. Power off.
+        if not controller.power_off():
+            raise ActuationError(f"power_off failed on {sbc.name!r}")
+        # 2. Settling delay.
+        (sleep_fn or time.sleep)(delay_s)
+        # 3. Engage or release the recovery strap.
+        set_strap(manager, binding)
+        # 4. Power on (re-applies the strap via apply_pre_power_bindings).
+        _apply_after_power_off(manager, sbc, boards)
+        if not controller.power_on():
+            raise ActuationError(f"power_on failed on {sbc.name!r}")
+
+    _run_on_outlet(
+        manager,
+        sbc,
+        action,
+        run,
+        sharer_action="power_cycle",
+        delay_s=float(delay_s),
+    )
 
 
 def enter_recovery(
@@ -1015,46 +1100,9 @@ def enter_recovery(
       4. power_on (consults pre_power bindings; idempotent for the
          strap we just engaged)
     """
-
-    # The board's stored delay is the minimum; an out-of-range one raises
-    # ValueError before anything is touched.
-    target = _target(manager, sbc)
-    try:
-        delay_s = _resolved_delay(manager, sbc, delay_s)
-    except ValueError as e:
-        target.record("enter_recovery", "error", error=str(e))
-        raise
-
-    def run():
-        binding = manager.get_binding_by_target(sbc.id, "recovery_mode")
-        if binding is None:
-            raise ActuationError(f"no 'recovery_mode' binding on {sbc.name!r}")
-        actuator, _channel = _resolve(manager, binding)
-
-        # 0. Pre-flight probe. Abort before any power transition.
-        outcome = probe_actuator(actuator)
-        if outcome.result is not ProbeResult.OK:
-            raise ActuationError(
-                f"pre-flight probe failed on {actuator.name!r}: "
-                f"{outcome.result.value} ({outcome.detail or 'no detail'})"
-            )
-        # The power-on step also drives the SBC's other pre_power bindings,
-        # and those of boards sharing its outlet.
-        boards = check_power_on(manager, sbc)
-
-        # 1. Power off.
-        if not controller.power_off():
-            raise ActuationError(f"power_off failed on {sbc.name!r}")
-        # 2. Settling delay.
-        (sleep_fn or time.sleep)(delay_s)
-        # 3. Engage recovery strap.
-        actuate_binding(manager, binding)
-        # 4. Power on (re-applies the strap via apply_pre_power_bindings).
-        _apply_after_power_off(manager, sbc, boards)
-        if not controller.power_on():
-            raise ActuationError(f"power_on failed on {sbc.name!r}")
-
-    target.run("enter_recovery", run, delay_s=float(delay_s))
+    _recovery(
+        manager, sbc, controller, delay_s, sleep_fn, "enter_recovery", actuate_binding
+    )
 
 
 def exit_recovery(
@@ -1069,41 +1117,9 @@ def exit_recovery(
 
     Same shape as :func:`enter_recovery` but releases the strap.
     """
-
-    # The board's stored delay is the minimum; an out-of-range one raises
-    # ValueError before anything is touched.
-    target = _target(manager, sbc)
-    try:
-        delay_s = _resolved_delay(manager, sbc, delay_s)
-    except ValueError as e:
-        target.record("exit_recovery", "error", error=str(e))
-        raise
-
-    def run():
-        binding = manager.get_binding_by_target(sbc.id, "recovery_mode")
-        if binding is None:
-            raise ActuationError(f"no 'recovery_mode' binding on {sbc.name!r}")
-        actuator, _channel = _resolve(manager, binding)
-
-        outcome = probe_actuator(actuator)
-        if outcome.result is not ProbeResult.OK:
-            raise ActuationError(
-                f"pre-flight probe failed on {actuator.name!r}: "
-                f"{outcome.result.value} ({outcome.detail or 'no detail'})"
-            )
-        # The power-on step also drives the SBC's other pre_power bindings,
-        # and those of boards sharing its outlet.
-        boards = check_power_on(manager, sbc)
-
-        if not controller.power_off():
-            raise ActuationError(f"power_off failed on {sbc.name!r}")
-        (sleep_fn or time.sleep)(delay_s)
-        release_binding(manager, binding)
-        _apply_after_power_off(manager, sbc, boards)
-        if not controller.power_on():
-            raise ActuationError(f"power_on failed on {sbc.name!r}")
-
-    target.run("exit_recovery", run, delay_s=float(delay_s))
+    _recovery(
+        manager, sbc, controller, delay_s, sleep_fn, "exit_recovery", release_binding
+    )
 
 
 # ---------------------------------------------------------------------------

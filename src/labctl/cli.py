@@ -1957,6 +1957,7 @@ def sdwire_flash_cmd(
         sbc.sdwire.serial_number, sbc.sdwire.device_type, sbc=sbc, db=manager.db
     )
     flash_ok = False
+    on_dut = False
 
     try:
         # The relays the reboot will need are checked before the board is
@@ -2025,6 +2026,7 @@ def sdwire_flash_cmd(
         # Switch back to DUT
         click.echo("Switching SD card to DUT...")
         ctrl.switch_to_dut()
+        on_dut = True
 
         # Optional power cycle
         if not no_reboot and sbc.power_plug:
@@ -2055,10 +2057,11 @@ def sdwire_flash_cmd(
             click.echo("SD card left on host for inspection.", err=True)
         else:
             click.echo(f"Error: {e}", err=True)
-            try:
-                ctrl.switch_to_dut()
-            except Exception:
-                pass
+            if not on_dut:
+                try:
+                    ctrl.switch_to_dut()
+                except Exception:
+                    pass
         sys.exit(1)
 
 
@@ -2356,9 +2359,8 @@ def sdwire_ls_cmd(
     if not sbc.sdwire:
         click.echo(f"Error: No SDWire assigned to '{sbc_name}'", err=True)
         sys.exit(1)
-    ctrl = SDWireController(
-        sbc.sdwire.serial_number, sbc.sdwire.device_type, sbc=sbc, db=manager.db
-    )
+    # A read: not recorded (its host round trip restores the card).
+    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
     needs_switch = _sdwire_read_needs_switch(sbc_name, sbc, ctrl, force)
     host_switched = False
     cleanup_error: RuntimeError | None = None
@@ -2470,9 +2472,8 @@ def sdwire_cat_cmd(
     if not sbc.sdwire:
         click.echo(f"Error: No SDWire assigned to '{sbc_name}'", err=True)
         sys.exit(1)
-    ctrl = SDWireController(
-        sbc.sdwire.serial_number, sbc.sdwire.device_type, sbc=sbc, db=manager.db
-    )
+    # A read: not recorded (its host round trip restores the card).
+    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
     needs_switch = _sdwire_read_needs_switch(sbc_name, sbc, ctrl, force)
     host_switched = False
     cleanup_error: RuntimeError | None = None
@@ -2570,9 +2571,8 @@ def sdwire_info_cmd(ctx: click.Context, sbc_name: str, force: bool) -> None:
     if not sbc.sdwire:
         click.echo(f"Error: No SDWire assigned to '{sbc_name}'", err=True)
         sys.exit(1)
-    ctrl = SDWireController(
-        sbc.sdwire.serial_number, sbc.sdwire.device_type, sbc=sbc, db=manager.db
-    )
+    # A read: not recorded (its host round trip restores the card).
+    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
     needs_switch = _sdwire_read_needs_switch(sbc_name, sbc, ctrl, force)
     host_switched = False
     cleanup_error: RuntimeError | None = None
@@ -2946,11 +2946,7 @@ def serial_capture_cmd(
       labctl serial capture pi-5-1 --until "slmos>" --timeout 30
       labctl serial capture pi-5-1 --until "slmos>" --tail 20
     """
-    from labctl.serial.capture import (
-        capture_serial_output,
-        port_target,
-        resolve_port,
-    )
+    from labctl.serial.capture import capture_serial_output, resolve_port
 
     manager = _get_manager(ctx)
 
@@ -2971,7 +2967,6 @@ def serial_capture_cmd(
             timeout=timeout,
             until_pattern=until_pattern,
             tail=tail,
-            target=port_target(manager, port),
         )
 
         if result.output:
@@ -7067,9 +7062,12 @@ def _format_activity_row(row, *, compact: bool = False) -> str:
     action = row["action"] or ""
     target = row["entity_name"] or "-"
     result = row["result"] or "ok"
-    result_color = {"ok": "green", "error": "red", "forbidden": "yellow"}.get(
-        result, "white"
-    )
+    result_color = {
+        "ok": "green",
+        "error": "red",
+        "forbidden": "yellow",
+        "interrupted": "magenta",
+    }.get(result, "white")
 
     if compact:
         actor_display = agent[:12] if agent else _compact_actor(actor)
@@ -7138,7 +7136,7 @@ def _activity_query_clauses(
 @click.option(
     "--result",
     "result_filter",
-    type=click.Choice(["ok", "error", "forbidden"]),
+    type=click.Choice(["ok", "error", "forbidden", "interrupted"]),
     help="Filter to one result",
 )
 @click.option(
@@ -7239,7 +7237,7 @@ def activity_tail_cmd(
 @click.option(
     "--result",
     "result_filter",
-    type=click.Choice(["ok", "error", "forbidden"]),
+    type=click.Choice(["ok", "error", "forbidden", "interrupted"]),
     help="Filter to one result",
 )
 @click.option(

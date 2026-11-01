@@ -352,10 +352,14 @@ per front end, `daemon:<name>` for daemons, and an `agent` column
 the shared code every front end calls, through `audit.Target`: the
 runtime's `power_on_with_bindings`, `power_off_board`,
 `power_cycle_with_bindings` and recovery composites; `SDWireController`
-built with `sbc=`/`db=` (switch, flash, file updates); serial send and
-capture (size only for sends); `run_boot_test` (one event, with counts).
+built with `sbc=`/`db=` (switch, flash, file updates; not the read
+tools' round trips); serial send (size only); `run_boot_test` (one
+event, with counts, `error` if it stopped early). Power events are also
+recorded on boards sharing the outlet (`via`). Results: `ok`, `error`,
+`forbidden` (unused yet, #60), `interrupted` (cut short, e.g. Ctrl+C).
 `tests/unit/test_hardware_events.py` checks that every mutating MCP tool
 is mapped to what it records and that the front ends use these paths.
 `audit_log.claim_id` is never written (a foreign key to claims with no
 ON DELETE); claim IDs go in `details`. Not recorded: claim refusals
-(checks are also used speculatively, e.g. before a prompt), and reads.
+(#60; checks are also used speculatively, e.g. before a prompt), and
+reads (serial capture, SD card ls/cat/info).

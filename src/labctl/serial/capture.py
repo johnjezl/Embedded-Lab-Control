@@ -160,30 +160,6 @@ def capture_serial_output(
     timeout: float = 15.0,
     until_pattern: Optional[str] = None,
     tail: Optional[int] = None,
-    *,
-    target=None,
-) -> CaptureResult:
-    """:func:`_capture_serial_output`, recorded as ``serial_capture``
-    against ``target`` (:func:`port_target`) when given."""
-    if target is None:
-        return _capture_serial_output(tcp_host, tcp_port, timeout, until_pattern, tail)
-    return target.run(
-        "serial_capture",
-        lambda: _capture_serial_output(
-            tcp_host, tcp_port, timeout, until_pattern, tail
-        ),
-        summary=lambda r: {"lines": r.lines, "pattern_matched": r.pattern_matched},
-        timeout=timeout,
-        until=until_pattern,
-    )
-
-
-def _capture_serial_output(
-    tcp_host: str,
-    tcp_port: int,
-    timeout: float = 15.0,
-    until_pattern: Optional[str] = None,
-    tail: Optional[int] = None,
 ) -> CaptureResult:
     """Capture serial output from a ser2net TCP port.
 

@@ -973,7 +973,7 @@ def list_activity():
       actor=X       Filter by actor (exact match).
       source=X      cli | mcp | api | web | daemon | internal.
       agent=X       Filter by MCP agent name (exact match).
-      result=X      ok | error | forbidden.
+      result=X      ok | error | forbidden | interrupted.
       since=TS      ISO timestamp lower bound.
       after_id=N    Only events with id > N (for long polling).
     """
