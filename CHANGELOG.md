@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- Stored timestamps are parsed in one place, `labctl.core.timeutil` (#65):
+  `labctl status --fast` (cached power age) and board uptime no longer use
+  their own parsers, which on Python 3.10 failed on fractions that aren't
+  3 or 6 digits or on `Z` / `+0000` offsets. Status history from REST
+  (`/api/sbcs/<name>/history`) and MCP now gives `logged_at` as ISO-8601
+  with `Z`, like claims and activity.
+
 - Claim and activity times were naive local time, so the repeated hour at
   a DST fall-back broke them: a claim made just before the change lasted
   an hour longer, a renewal during the repeated hour could set an earlier

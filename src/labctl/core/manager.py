@@ -1350,7 +1350,7 @@ class ResourceManager:
                 "sbc_name": row["sbc_name"],
                 "status": row["status"],
                 "details": row["details"],
-                "logged_at": row["logged_at"],
+                "logged_at": timeutil.db_iso(row["logged_at"]),
             }
             for row in rows
         ]
@@ -1460,12 +1460,11 @@ class ResourceManager:
         Returns:
             Dictionary with uptime statistics, or None if no history
         """
-        from datetime import datetime, timedelta
+        from datetime import timedelta
 
-        # status_log.logged_at is SQLite's CURRENT_TIMESTAMP: UTC, as
-        # "YYYY-MM-DD HH:MM:SS". Compute in the same clock and format.
-        def parse(ts: str) -> datetime:
-            return datetime.fromisoformat(ts)
+        # status_log.logged_at is SQLite's CURRENT_TIMESTAMP (UTC); parsed
+        # and compared as aware UTC (#65).
+        parse = timeutil.from_db
 
         # Get last online transition
         last_online_row = self.db.execute_one(
@@ -1503,7 +1502,7 @@ class ResourceManager:
             "uptime_24h_percent": 0.0,
         }
 
-        now = parse(self.db.execute_one("SELECT datetime('now') AS t")["t"])
+        now = timeutil.now()
 
         # Calculate current uptime if online
         if sbc.status == Status.ONLINE and last_online_row:
@@ -1537,7 +1536,8 @@ class ResourceManager:
         # effect 24 hours ago (the newest row before then), so a board that
         # has been stable for longer counts as up or down the whole time.
         day_ago = now - timedelta(hours=24)
-        day_ago_text = day_ago.strftime("%Y-%m-%d %H:%M:%S")
+        # Second precision, as CURRENT_TIMESTAMP writes status_log rows.
+        day_ago_text = timeutil.to_db(day_ago)[:19]
         before = self.db.execute_one(
             """
             SELECT status FROM status_log
