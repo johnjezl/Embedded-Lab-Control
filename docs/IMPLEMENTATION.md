@@ -861,7 +861,7 @@ Decisions: D012.
 
 ### Phase 2: Release
 
-First public version: 0.2.0. Release process: `docs/RELEASING.md`.
+First public version: 0.2.0 (then 0.2.1, 0.3.0). Release process: `docs/RELEASING.md`.
 
 - PR E: release prep
   - ✅ Lab-specific files removed (`config/udev/99-lab-serial.rules`,

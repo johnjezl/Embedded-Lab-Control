@@ -3,26 +3,31 @@
 ## Current State
 
 - **Milestone**: Public PyPI release (`embedded-lab-control`)
-- **Sub-task**: P2 (PyPI release) done: 0.2.0 published to PyPI and
-  GitHub Releases 2026-10-31 (PRs #45, #46); 0.2.1 prepared (README
-  Features list #53; services uptime #51; faster tests that can't reach
-  the network #49). Phase 0 and Phase 1 (safety) are done
-- **Status**: `main` has everything merged through #54 plus the #49/#51
-  PR; deployed to
-  tarrasque through #44 (#45 onward not yet: friendly extra errors,
-  packaging, docs). Next: tag `v0.2.1` and approve the `pypi`
-  deployment (user); then the open follow-ups. Phase 1 (WS1–WS5, PRs
-  #13–#18), claim enforcement on every surface (D013, PRs #22/#24/#25), image uploads + MCP TLS (D014, PR #26)
-  and the fixes since (PRs #28–#44) are in. See `docs/IMPLEMENTATION.md`.
+- **Sub-task**: 0.3.0 release prep (version, CHANGELOG section). 0.2.0
+  and 0.2.1 are on PyPI (2026-10-31). Phase 0, Phase 1 (safety) and P2
+  are done
+- **Status**: `main` has everything merged through #69 (#47), CI green.
+  0.3.0 covers #47, #50, #52, #56, #57, #60, #63, #65 (schema v14).
+  Next: merge the release-prep PR, tag `v0.3.0`, and approve the `pypi`
+  deployment (user). See `docs/IMPLEMENTATION.md`.
 - **Open follow-ups**: #19 (remaining by-path root operations in the
   install/update scripts), #38 (BoardPower refactor: one board-level
   power operation with a structured result, and a lab-wide per-outlet
-  lock); #47 (SDWire `sudo` commands: kept a manual rule, decided
-  2026-10-31; the scripts should detect and print it); #48 coverage;
-  #50 guard tests against real `sudo`; #52 document allowlist/SD-mux assumptions;
-  #9 serial flow control.
+  lock); #48 coverage; #9 serial flow control.
 
 ## Last Session
+
+- **Date**: 2026-11-02
+- **Branch**: `release/0.3.0`
+- **Completed**:
+  - 0.3.0 prep: `__version__` 0.3.0; CHANGELOG `[Unreleased]` became
+    `[0.3.0] - 2026-11-02` with a summary and upgrade notes (schema v14,
+    reconnect stdio MCP agents, `Z` timestamps in REST), duplicate
+    Added/Fixed headings merged, link definitions updated
+- **Next**: merge, tag `v0.3.0` on main, check TestPyPI, approve the
+  `pypi` deployment (user)
+
+## Previous Session (0.2.x)
 
 - **Date**: 2026-10-31
 - **Branch**: `main` (PR work in worktrees)

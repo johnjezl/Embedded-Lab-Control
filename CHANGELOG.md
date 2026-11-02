@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-02
+
+Activity stream and timekeeping release: hardware actions, claim
+refusals and claim expiry are recorded on every surface with the MCP
+agent's name; claim and activity times are stored in UTC, so a DST
+change no longer stretches or shortens claims; the `/deploy-and-test`
+Claude Code skill ships in the package (`labctl skill install`); and the
+install and update scripts report a missing SDWire sudo rule.
+
+**Upgrading from 0.2.x**
+
+- The database migrates itself to schema v14 on first use (v13 adds the
+  activity `agent` column; v14 converts claim and activity times to UTC).
+  After that, an older labctl refuses the database, so upgrade every
+  labctl that shares it (CLI, web, monitor, MCP) together.
+- Restart or reconnect (`/mcp`) every stdio MCP agent right after
+  upgrading: until then it runs the old code, which writes local times.
+  `scripts/update.sh` restarts the services.
+- REST: `/api/sbcs/<name>/history` gives `logged_at` as ISO-8601 with
+  `Z`; claim and activity times from REST, MCP and NDJSON carry `Z` too.
+  Scripts that parsed `YYYY-MM-DD HH:MM:SS` need updating.
+- Board status changes found by health checks are no longer activity
+  events (status history keeps them), and the monitor's actions appear as
+  `daemon:monitor` instead of `cli:labctl`.
+
 ### Added
 
 - `scripts/check-sdwire-sudo.sh` (#47): `install-services.sh` and
@@ -20,57 +45,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   is effectively root, so it stays the admin's decision. A rule that
   allows only certain arguments shows as missing, and sudo logs each
   refused probe.
-
-### Documentation
-
-- The two assumptions behind safety checks are now stated (#52): the host
-  file allowlist relies on `fs.protected_hardlinks=1` (MCP_SERVER known
-  limits and deployment checklist), and the SD card mux position is
-  inferred from a media probe, not read back, so a concurrent switch by
-  another process can be misjudged; claims guard against that between
-  labctl users with different identities (MCP_SERVER and README SDWire
-  sections).
-
-### Tests
-
-- The suite can't start a real `sudo` (#50). A guard installed when pytest
-  starts refuses any subprocess (`subprocess.Popen` and everything built
-  on it) or `os.system` whose executable or any command word, including
-  words of shell lines and `sh -c` scripts, is `sudo`. A refusal fails the
-  test, so the code under test can't catch it and carry on, and one in a
-  background thread fails the test at teardown. A test that really needs
-  sudo is marked `@pytest.mark.allow_sudo`. CI runners have passwordless
-  sudo; the guard found four tests that really ran `sudo sync` through an
-  unmocked `update_files`, and they mock it now.
-
-### Fixed
-
-- Stored timestamps are parsed in one place, `labctl.core.timeutil` (#65):
-  `labctl status --fast` (cached power age) and board uptime no longer use
-  their own parsers, which on Python 3.10 failed on fractions that aren't
-  3 or 6 digits or on `Z` / `+0000` offsets. A malformed status history
-  row no longer makes every uptime call fail (500). Status history from
-  REST (`/api/sbcs/<name>/history`) now gives `logged_at` as ISO-8601 with
-  `Z` (`2026-11-01T12:00:00.000000Z`), like claims and activity; a script
-  that parsed the old `YYYY-MM-DD HH:MM:SS` needs updating.
-
-- Claim and activity times were naive local time, so the repeated hour at
-  a DST fall-back broke them: a claim made just before the change lasted
-  an hour longer, a renewal during the repeated hour could set an earlier
-  deadline than before, and activity times were ambiguous (#63). They are
-  stored in UTC now (schema v14 converts existing rows, reading the
-  repeated hour as daylight time), compared with a UTC clock, given to
-  machines with the offset (REST, MCP, NDJSON: `…Z`), and shown to people
-  in local time with the zone (`2026-11-01 01:30:00 PST`). Released claims
-  are also pruned on time: `released_at` was UTC but the cutoff was local.
-  Upgrading: the services restart with the update, but restart or
-  reconnect (`/mcp`) every stdio MCP agent right away: until then it runs
-  the old code, which still writes local times. From this release an
-  older labctl refuses a database a newer one has migrated. Board records,
-  status history and image times were always UTC and are still given
-  without an offset.
-
-### Added
 
 - `labctl skill install / list / uninstall` (#56): the `/deploy-and-test`
   Claude Code skill now ships in the package (so PyPI installs have it)
@@ -130,6 +104,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Fixed
 
+- Stored timestamps are parsed in one place, `labctl.core.timeutil` (#65):
+  `labctl status --fast` (cached power age) and board uptime no longer use
+  their own parsers, which on Python 3.10 failed on fractions that aren't
+  3 or 6 digits or on `Z` / `+0000` offsets. A malformed status history
+  row no longer makes every uptime call fail (500). Status history from
+  REST (`/api/sbcs/<name>/history`) now gives `logged_at` as ISO-8601 with
+  `Z` (`2026-11-01T12:00:00.000000Z`), like claims and activity; a script
+  that parsed the old `YYYY-MM-DD HH:MM:SS` needs updating.
+
+- Claim and activity times were naive local time, so the repeated hour at
+  a DST fall-back broke them: a claim made just before the change lasted
+  an hour longer, a renewal during the repeated hour could set an earlier
+  deadline than before, and activity times were ambiguous (#63). They are
+  stored in UTC now (schema v14 converts existing rows, reading the
+  repeated hour as daylight time), compared with a UTC clock, given to
+  machines with the offset (REST, MCP, NDJSON: `…Z`), and shown to people
+  in local time with the zone (`2026-11-01 01:30:00 PST`). Released claims
+  are also pruned on time: `released_at` was UTC but the cutoff was local.
+  Upgrading: the services restart with the update, but restart or
+  reconnect (`/mcp`) every stdio MCP agent right away: until then it runs
+  the old code, which still writes local times. From this release an
+  older labctl refuses a database a newer one has migrated. Board records,
+  status history and image times were always UTC and are still given
+  without an offset.
+
 - A claim that ran out was released with no activity event; expiry is now
   recorded as `claim_expired` by `system`, with the claim's ID, including
   claims released by another caller's `claim_sbc`. The release is one
@@ -139,6 +138,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - The web `/activity` page put event text into the page unescaped, so an
   agent name, claim reason or SBC name containing markup ran as script in
   the viewer's browser. Every field is now escaped.
+
+### Documentation
+
+- The two assumptions behind safety checks are now stated (#52): the host
+  file allowlist relies on `fs.protected_hardlinks=1` (MCP_SERVER known
+  limits and deployment checklist), and the SD card mux position is
+  inferred from a media probe, not read back, so a concurrent switch by
+  another process can be misjudged; claims guard against that between
+  labctl users with different identities (MCP_SERVER and README SDWire
+  sections).
+
+### Tests
+
+- The suite can't start a real `sudo` (#50). A guard installed when pytest
+  starts refuses any subprocess (`subprocess.Popen` and everything built
+  on it) or `os.system` whose executable or any command word, including
+  words of shell lines and `sh -c` scripts, is `sudo`. A refusal fails the
+  test, so the code under test can't catch it and carry on, and one in a
+  background thread fails the test at teardown. A test that really needs
+  sudo is marked `@pytest.mark.allow_sudo`. CI runners have passwordless
+  sudo; the guard found four tests that really ran `sudo sync` through an
+  unmocked `update_files`, and they mock it now.
 
 ## [0.2.1] - 2026-10-31
 
@@ -1674,6 +1695,7 @@ claim composition, CLI surface, and MCP tools.
 - Moved documentation files to docs/ folder (AGENT_RULES.md, IMPLEMENTATION.md, DECISIONS.md)
 - Fixed README.md and CLAUDE.md paths to reference docs/ folder
 
-[Unreleased]: https://github.com/johnjezl/Embedded-Lab-Control/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/johnjezl/Embedded-Lab-Control/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/johnjezl/Embedded-Lab-Control/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/johnjezl/Embedded-Lab-Control/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/johnjezl/Embedded-Lab-Control/releases/tag/v0.2.0
