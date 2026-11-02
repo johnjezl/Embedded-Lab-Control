@@ -417,7 +417,14 @@ A card on the DUT is switched to the host and back only when the SBC is
 known to be off; otherwise they refuse with `"error": "powered_on"` or
 `"power_unknown"` (no power plug, or its state can't be read) and switch
 nothing. Once you've made sure such a board is off, `sdwire_to_host(force=true)`
-moves the card to the host, and the read tools then read it in place. They return JSON; errors carry `error` and `message`
+moves the card to the host, and the read tools then read it in place.
+Which side the card is on can't be read back from the SDWire: it is
+inferred from whether the reader sees media (probed again 1 s later when
+it finds none; if the probe can't tell, the kernel's cached size, which
+can lag), so a switch made at that moment by another process can be
+misjudged. Hold the
+board's claim while you work (see [Known limits](#security-considerations)).
+They return JSON; errors carry `error` and `message`
 (e.g. `path_not_found`, `size_limit_exceeded`, `binary_content`: retry with
 `encoding="base64"`).
 
@@ -679,6 +686,38 @@ system-write / hardware / destructive) in
   `/var/lib/labctl/.config/labctl/config.yaml`); `install-services.sh` and
   `update.sh` make both mode `640`, readable only by root/`labctl` and the
   `labctl` group. Anyone in that group can read every key.
+- The host file allowlist assumes `fs.protected_hardlinks=1` (the default
+  on Ubuntu and Debian). `images/` is group-writable (and not sticky), and
+  a hard link can't be told from the file it points to by resolving its
+  path. The process that opens an image reads it with its own rights: the
+  HTTP service as the `labctl` user, a stdio MCP server as whoever started
+  it. With the protection off, a `labctl` group member could hard-link
+  into `images/` (or swap an existing image for) a file that process's
+  user can read and they can't, on the same filesystem, and have it
+  flashed or copied onto an SD card they can read. Check it with
+  `sysctl fs.protected_hardlinks` (deployment checklist item 4). The same
+  setting also limits what the install script's `chown -R` of
+  `/var/lib/labctl` can be tricked into (#19).
+- The SD card mux position can't be read back from the SDWire; labctl
+  infers it from whether the card reader sees media (a forced probe, via
+  `sudo -n dd`). The read tools `sdwire_ls`/`cat`/`info` and their CLI
+  counterparts use it to decide whether to read the card in place or
+  borrow it; when the first probe finds no card they probe again 1 s
+  later, since a card switched moments ago may still be initialising.
+  After switching a card to the host, the MCP tools and `sdwire host` wait
+  for it to become readable, probing every 0.5 s for up to 10 s; the CLI
+  `ls`/`cat`/`info` wait a fixed 2 s. When a probe can't tell (no sudo
+  rule for `dd`, a timeout), labctl falls back to the kernel's cached
+  size, which is only refreshed when the kernel next checks the reader:
+  every couple of seconds if removable-disk polling is on, otherwise not
+  until the device is next opened. So a switch made at the same moment by
+  another process can be misjudged. Claims guard against that between
+  different identities: each stdio MCP server, each CLI session and,
+  with HTTP auth on, each user is one (all clients of one unauthenticated
+  HTTP server share one). An agent working on a board should hold its
+  claim, which stops other identities (CLI users unless they override)
+  from switching its card. Claims don't stop tools outside labctl such as
+  `sd-mux-ctrl`.
 
 ### Deployment checklist
 
@@ -696,7 +735,9 @@ system-write / hardware / destructive) in
    output); nothing is allowed until you do. The install script creates
    `/var/lib/labctl/images` and `/var/lib/labctl/output` for this, and
    fresh installs' example config lists them; existing installs must add
-   them (`update.sh` prints the lines).
+   them (`update.sh` prints the lines). Check that
+   `sysctl fs.protected_hardlinks` prints `1`: the allowlist relies on it
+   (see Known limits).
 5. Keep `mcp.confirm_destructive` on; exempt only tools you have to
    (e.g. `serial_send` for heavy console work).
 6. When several agents share boards, keep claims on (`claims.enabled`, the
