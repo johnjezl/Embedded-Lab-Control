@@ -419,7 +419,8 @@ known to be off; otherwise they refuse with `"error": "powered_on"` or
 nothing. Once you've made sure such a board is off, `sdwire_to_host(force=true)`
 moves the card to the host, and the read tools then read it in place.
 Which side the card is on can't be read back from the SDWire: it is
-inferred from whether the reader sees media, probed twice, 1 s apart, so a
+inferred from whether the reader sees media (probed twice, 1 s apart; if
+the probe can't tell, the kernel's cached size, which can lag), so a
 switch made at that moment by another process can be misjudged. Hold the
 board's claim while you work (see [Known limits](#security-considerations)).
 They return JSON; errors carry `error` and `message`
@@ -686,24 +687,32 @@ system-write / hardware / destructive) in
   `labctl` group. Anyone in that group can read every key.
 - The host file allowlist assumes `fs.protected_hardlinks=1` (the default
   on Ubuntu and Debian). `images/` is group-writable, and a hard link
-  can't be told from the file it points to by resolving its path. With
-  the protection off, a `labctl` group member could hard-link a file they
-  can't read into `images/` (one on the same filesystem, e.g. under
-  `/var/lib` or `/etc` when they share a partition) and have the service,
-  which runs as `labctl`, flash or copy it onto an SD card where they can
-  read it. Check it with `sysctl fs.protected_hardlinks` (deployment
-  checklist item 4). The same setting also limits what the install
-  script's `chown -R` of `/var/lib/labctl` can be tricked into (#19).
-- The SD card mux position can't be read back from the SDWire. Where it
-  matters (the read tools `sdwire_ls`/`cat`/`info` and their CLI
-  counterparts, deciding whether to read in place or borrow the card, and
-  the wait for a card switched to the host to become readable), labctl
-  infers it from whether the reader sees media, probing again after 1 s,
-  since a card switched moments ago may still be initialising. A switch made at the same moment by another process (the
-  CLI, another agent, `sd-mux-ctrl`) can still be misjudged. Claims are
-  the guard: an agent working on a board should hold its claim, which
-  stops other agents and CLI users (unless they override) from switching
-  its card meanwhile.
+  can't be told from the file it points to by resolving its path. The HTTP
+  service opens images itself, as the `labctl` user. With the protection
+  off, a `labctl` group member could hard-link into `images/` a file that
+  the `labctl` user can read and they can't (on the same filesystem), and
+  have the service flash or copy it onto an SD card they can read. (A
+  stdio MCP server runs as whoever started it, so it can only read what
+  that user can.) Check it with `sysctl fs.protected_hardlinks`
+  (deployment checklist item 4). The same setting also limits what the
+  install script's `chown -R` of `/var/lib/labctl` can be tricked into
+  (#19).
+- The SD card mux position can't be read back from the SDWire; labctl
+  infers it from whether the card reader sees media (a forced probe, via
+  `sudo -n dd`). The read tools `sdwire_ls`/`cat`/`info` and their CLI
+  counterparts use it to decide whether to read the card in place or
+  borrow it, probing again after 1 s, since a card switched moments ago
+  may still be initialising. After a switch to the host, the tools wait
+  for the card to become readable by probing every 0.5 s for up to 10 s.
+  When a probe can't tell (no sudo rule for `dd`, a timeout), labctl falls
+  back to the kernel's cached size, which can lag a switch by seconds.
+  So a switch made at the same moment by another process can be
+  misjudged. Claims guard against that between labctl users with
+  different identities (with HTTP auth on, each user is one): an agent
+  working on a board should hold its claim, which stops other agents and
+  CLI users (unless they override) from switching its card. Claims don't
+  stop clients sharing one identity (no auth), or tools outside labctl
+  such as `sd-mux-ctrl`.
 
 ### Deployment checklist
 

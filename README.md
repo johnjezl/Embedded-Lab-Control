@@ -301,8 +301,10 @@ Partition numbers are 1-based (e.g., `-p 1` for the first partition, which maps 
 `ls`, `cat` and `info` borrow the card: they switch it to the host and back,
 and refuse while the SBC is powered on. The SDWire can't report which side
 the card is on, so labctl infers it from whether the reader sees media
-(probed twice, 1 s apart). A switch by another process at that same moment
-can be misjudged; claim the board while you work on it.
+(probed twice, 1 s apart; if the probe can't tell, for instance without a
+sudo rule for `dd`, the kernel's cached size, which can lag). A switch by
+another process at that same moment can be misjudged; claim the board
+while you work on it.
 
 SDWire operations shell out (via `sudo`) to `mount`, `umount`, `dd`, `sync`,
 `partprobe`, `parted` and `blkid`. They do not use `sd-mux-ctrl`, and they do
