@@ -172,6 +172,7 @@ class TestControllerReadsDescriptors:
             with (
                 patch.object(ctrl, "get_block_device", return_value="/dev/sdx"),
                 patch.object(ctrl, "host_mount", fake_mount),
+                patch("labctl.sdwire.controller.subprocess.run"),  # sudo sync
             ):
                 ctrl.update_files(1, [(fd, "boot")], source_names=["Image"])
         finally:

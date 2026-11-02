@@ -16,6 +16,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   labctl users with different identities (MCP_SERVER and README SDWire
   sections).
 
+### Tests
+
+- The suite can't start a real `sudo` (#50). A guard installed when pytest
+  starts refuses any subprocess (`subprocess.Popen` and everything built
+  on it) or `os.system` whose executable or any command word, including
+  words of shell lines and `sh -c` scripts, is `sudo`. A refusal fails the
+  test, so the code under test can't catch it and carry on, and one in a
+  background thread fails the test at teardown. A test that really needs
+  sudo is marked `@pytest.mark.allow_sudo`. CI runners have passwordless
+  sudo; the guard found four tests that really ran `sudo sync` through an
+  unmocked `update_files`, and they mock it now.
+
 ### Fixed
 
 - Stored timestamps are parsed in one place, `labctl.core.timeutil` (#65):

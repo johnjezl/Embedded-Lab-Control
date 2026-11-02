@@ -503,15 +503,21 @@ class TestNamesFollowTheCallersPath:
     """
 
     @staticmethod
+    @contextmanager
     def _card(ctrl, card_dir):
-        """Make update_files operate on a real directory as the 'card'."""
+        """Make update_files operate on a real directory as the 'card'
+        (and never run its `sudo sync`, #50)."""
         from labctl.sdwire.controller import _MountedPartition
 
         @contextmanager
         def fake_mount(partition, mode="ro", owner_mount=False):
             yield _MountedPartition(str(card_dir), owner_mount=owner_mount)
 
-        return patch.object(ctrl, "host_mount", fake_mount)
+        with (
+            patch.object(ctrl, "host_mount", fake_mount),
+            patch("labctl.sdwire.controller.subprocess.run"),
+        ):
+            yield
 
     def test_copy_into_directory_uses_source_name(self, tmp_path):
         card = tmp_path / "card"

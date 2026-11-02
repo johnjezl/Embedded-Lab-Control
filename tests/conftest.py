@@ -5,8 +5,10 @@ Shared pytest fixtures for labctl tests.
 import errno
 import ipaddress
 import os
+import re
 import site
 import socket
+import subprocess
 import sys
 import types
 from datetime import datetime, timedelta, timezone
@@ -160,6 +162,114 @@ def _no_network(monkeypatch):
     monkeypatch.setattr(socket.socket, "sendmsg", sendmsg)
     for name in ("getaddrinfo", "gethostbyname", "gethostbyname_ex", "gethostbyaddr"):
         monkeypatch.setattr(socket, name, guard_lookup(getattr(socket, name)))
+
+
+def _words(text: str) -> list:
+    """Words of a command line, with shell quoting and operators removed."""
+    return [w for w in re.split(r"[\s;&|()`'\"\\]+", text) if w]
+
+
+def _runs_sudo(args, *, shell: bool = False, executable=None) -> bool:
+    """Whether a Popen call might start sudo (#50): the executable, or any
+    word of the command (argv words, and every word of a shell line or
+    ``sh -c`` script, with quotes and backslashes stripped), is ``sudo``.
+    Deliberately broad: ``echo sudo`` counts too, which no test needs."""
+    if executable is not None and _is_sudo(os.fsdecode(executable)):
+        return True
+    if isinstance(args, (str, bytes, os.PathLike)):
+        argv = [os.fsdecode(args)]
+    else:
+        argv = [os.fsdecode(a) for a in args]
+    return any(_is_sudo(w) for arg in argv for w in _words(arg))
+
+
+def _is_sudo(word: str) -> bool:
+    return os.path.basename(word) == "sudo"
+
+
+# The guard is installed when pytest starts (pytest_configure below), so it
+# covers collection and fixtures of every scope. _SUDO_ALLOWED is switched
+# per test by _sudo_policy; refusals in other threads are kept in
+# _THREAD_HITS and fail the test at teardown.
+_SUDO_ALLOWED = False
+_THREAD_HITS: list = []
+_REAL = {}
+
+
+def _refuse(what) -> None:
+    import threading
+
+    message = (
+        f"test started a real sudo: {what!r}. Mock the subprocess call, or "
+        "mark the test @pytest.mark.allow_sudo (tests/conftest.py, #50)"
+    )
+    if threading.current_thread() is not threading.main_thread():
+        _THREAD_HITS.append(message)
+    pytest.fail(message)
+
+
+def _install_sudo_guard() -> None:
+    """Refuse any subprocess or ``os.system`` that would start a real
+    ``sudo`` (#50). CI runners have passwordless sudo and a developer's
+    machine may prompt, so a test that forgets to mock a ``sudo
+    dd``/``mount``/``udevadm`` must not run it. Python subprocesses go
+    through ``subprocess.Popen`` (``run``, ``check_output``, asyncio's
+    ``create_subprocess_exec``); ``os.exec*``/``os.spawn*`` and pty helpers
+    are not covered (labctl uses none). The refusal is a test failure
+    (``pytest.fail``), which the code under test's ``except Exception``
+    can't swallow."""
+    import inspect
+
+    real_init = _REAL["init"] = subprocess.Popen.__init__
+    real_system = _REAL["system"] = os.system
+    signature = inspect.signature(real_init)
+
+    def guarded_init(self, *a, **kw):
+        bound = signature.bind(self, *a, **kw)
+        args = bound.arguments["args"]
+        if not isinstance(args, (str, bytes, os.PathLike, list, tuple)):
+            args = bound.arguments["args"] = list(args)  # don't use it up
+        if not _SUDO_ALLOWED and _runs_sudo(
+            args,
+            shell=bool(bound.arguments.get("shell")),
+            executable=bound.arguments.get("executable"),
+        ):
+            _refuse(args)
+        return real_init(*bound.args, **bound.kwargs)
+
+    def guarded_system(command):
+        if not _SUDO_ALLOWED and _runs_sudo(command, shell=True):
+            _refuse(command)
+        return real_system(command)
+
+    subprocess.Popen.__init__ = guarded_init
+    os.system = guarded_system
+
+
+def pytest_configure(config):
+    _install_sudo_guard()
+
+
+def pytest_unconfigure(config):
+    if _REAL:
+        subprocess.Popen.__init__ = _REAL["init"]
+        os.system = _REAL["system"]
+
+
+@pytest.fixture(autouse=True)
+def _sudo_policy(request):
+    """Let a test marked ``allow_sudo`` through the guard (only the test
+    and its function-scoped fixtures: wider fixtures are set up before
+    it), and fail a test whose background thread was refused."""
+    global _SUDO_ALLOWED
+    _SUDO_ALLOWED = request.node.get_closest_marker("allow_sudo") is not None
+    _THREAD_HITS.clear()
+    yield
+    _SUDO_ALLOWED = False
+    if _THREAD_HITS:
+        hits = list(_THREAD_HITS)
+        _THREAD_HITS.clear()
+        pytest.fail("a background thread " + hits[0][len("test ") :])
 
 
 @pytest.fixture
