@@ -316,7 +316,7 @@ scoped sudoers rule. Use its own file: `scripts/install-services.sh` rewrites
 `/etc/sudoers.d/labctl`.
 ```bash
 # Keeps any rules already in the file, and checks the result before installing it.
-sudo sh -c 't=$(mktemp) && { [ ! -e /etc/sudoers.d/labctl-sdwire ] || cat /etc/sudoers.d/labctl-sdwire; } > "$t" && echo "<user> ALL=(root) NOPASSWD: /usr/bin/mount, /bin/mount, /usr/bin/umount, /bin/umount, /usr/bin/dd, /bin/dd, /usr/bin/sync, /bin/sync, /usr/sbin/partprobe, /sbin/partprobe, /usr/sbin/parted, /sbin/parted, /usr/sbin/blkid, /sbin/blkid" >> "$t" && visudo -cf "$t" && install -m 440 -o root -g root "$t" /etc/sudoers.d/labctl-sdwire; rm -f "$t"'
+sudo sh -c 't=$(mktemp) && { [ ! -e /etc/sudoers.d/labctl-sdwire ] || cat /etc/sudoers.d/labctl-sdwire; } > "$t" && echo "<user> ALL=(root) NOPASSWD: /usr/bin/mount, /bin/mount, /usr/bin/umount, /bin/umount, /usr/bin/dd, /bin/dd, /usr/bin/sync, /bin/sync, /usr/sbin/partprobe, /sbin/partprobe, /usr/sbin/parted, /sbin/parted, /usr/sbin/blkid, /sbin/blkid" >> "$t" && visudo -cf "$t" && install -m 440 -o root -g root "$t" /etc/sudoers.d/labctl-sdwire; s=$?; rm -f "$t"; exit $s'
 ```
 
 Keep this scoped to the exact commands above. `NOPASSWD` sudo is still privileged;
@@ -324,9 +324,11 @@ the point here is to allow SDWire workflows without granting broader root access
 `install-services.sh` and `update.sh` don't add it (granting root `dd` and
 `mount` is your call), but they check whether the `labctl` service user and
 you (the user who ran them with sudo; agents' stdio MCP servers run as you)
-can run these commands without a password (sudo runs each with `--version`
-as that user), and print the missing commands and the rule. Run the check on
-its own with `sudo ./scripts/check-sdwire-sudo.sh labctl $USER`.
+can run these commands without a password (as that user, sudo runs each
+with `--version`, ignoring a cached login), and print the missing commands and
+the rule. A rule that allows only certain arguments doesn't allow `--version`,
+so the check reports it as missing; sudo logs each refused probe. Run the
+check on its own with `sudo ./scripts/check-sdwire-sudo.sh labctl $USER`.
 
 ### Serial Device Management
 

@@ -3,6 +3,7 @@
 import ast
 import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -12,19 +13,28 @@ ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "check-sdwire-sudo.sh"
 COMMANDS = ["mount", "umount", "dd", "sync", "partprobe", "parted", "blkid"]
 
-# `sudo -n -u USER -- sudo -n CMD --version`: succeeds when CMD is listed
-# (or ALL is) in $FAKE_SUDO_DIR/USER, as sudo would for a NOPASSWD rule.
+# `runuser -u USER -- CMD...`: run CMD as USER (here: tell the fake sudo).
+FAKE_RUNUSER = """#!/bin/bash
+[ "$1" = -u ] && [ "$3" = -- ] || exit 2
+export FAKE_USER="$2"
+shift 3
+exec "$@"
+"""
+
+# `sudo -n -k CMD --version`: succeeds when CMD is listed (or ALL is) in
+# $FAKE_SUDO_DIR/$FAKE_USER, as sudo would for a NOPASSWD rule. Without -k
+# it fails: a cached login could make a real sudo succeed with no rule.
 FAKE_SUDO = """#!/bin/bash
-user=""; cmd=""
+k=""; cmd=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    -u) user="$2"; shift 2 ;;
-    --|-n) shift ;;
-    sudo) shift ;;
+    -n) shift ;;
+    -k) k=1; shift ;;
     *) cmd="$1"; break ;;
   esac
 done
-f="$FAKE_SUDO_DIR/$user"
+[ -n "$k" ] || { echo "probe without -k" >&2; exit 3; }
+f="$FAKE_SUDO_DIR/$FAKE_USER"
 [ -f "$f" ] && grep -qxE "ALL|$cmd" "$f" && exit 0
 echo "sudo: a password is required" >&2
 exit 1
@@ -33,9 +43,15 @@ exit 1
 
 @pytest.fixture
 def run(tmp_path):
+    """Run the script with fake runuser/sudo/id, stand-ins for the SDWire
+    commands (all installed unless named in `not_installed`), and nothing
+    else on PATH but bash and grep."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
+    for tool in ("bash", "grep"):
+        (bindir / tool).symlink_to(shutil.which(tool))
     for name, body in {
+        "runuser": FAKE_RUNUSER,
         "sudo": FAKE_SUDO,
         # "running as root"; any user except "ghost" exists.
         "id": (
@@ -48,14 +64,21 @@ def run(tmp_path):
     allowed = tmp_path / "allowed"
     allowed.mkdir()
 
-    def run(*users, **allowed_by_user):
+    def run(*users, not_installed=(), **allowed_by_user):
+        for cmd in COMMANDS:
+            stub = bindir / cmd
+            if cmd in not_installed:
+                stub.unlink(missing_ok=True)
+            else:
+                stub.write_text("#!/bin/sh\nexit 0\n")
+                stub.chmod(0o755)
         for user, cmds in allowed_by_user.items():
             (allowed / user).write_text("\n".join(cmds) + "\n")
         return subprocess.run(
-            ["bash", str(SCRIPT), *users],
+            [shutil.which("bash"), str(SCRIPT), *users],
             capture_output=True,
             text=True,
-            env={"PATH": f"{bindir}:/usr/bin:/bin", "FAKE_SUDO_DIR": str(allowed)},
+            env={"PATH": str(bindir), "FAKE_SUDO_DIR": str(allowed)},
             timeout=30,
         )
 
@@ -90,10 +113,32 @@ def test_nothing_allowed_and_unknown_user(run):
     assert "[!] no user ghost; skipped" in result.stdout
 
 
-def test_root_and_empty_users_skipped(run):
-    result = run("root", "")
+def test_root_skipped(run):
+    result = run("root")
     assert result.returncode == 0
     assert result.stdout == ""
+
+
+def test_empty_user_says_how_to_check_yours(run):
+    """update.sh run as root directly passes an empty ${SUDO_USER:-}."""
+    result = run("svc", "", svc=["ALL"])
+    assert result.returncode == 0
+    assert "[ok] svc" in result.stdout
+    assert "not run through sudo" in result.stdout
+    assert "YOUR_USER" in result.stdout
+
+
+def test_not_installed_is_not_a_missing_rule(run):
+    result = run("svc", not_installed=["parted"], svc=["mount", "umount", "dd"])
+    assert "not installed: parted" in result.stdout
+    assert _gaps(result.stdout) == ["sync", "partprobe", "blkid"]
+
+
+def test_no_runuser_is_skipped(run, tmp_path):
+    (tmp_path / "bin" / "runuser").unlink()
+    result = run("svc")
+    assert result.returncode == 0
+    assert "needs runuser" in result.stdout
 
 
 def test_not_root_is_skipped():
@@ -110,46 +155,67 @@ def test_not_root_is_skipped():
     assert "must run as root" in result.stdout
 
 
-def test_printed_install_command_keeps_existing_rules(run, tmp_path):
+def _printed_install(stdout):
+    line = next(x for x in stdout.splitlines() if "sudo sh -c" in x)
+    return line.strip()
+
+
+def _run_install(run, tmp_path, visudo_ok):
     """Run the printed `sudo sh -c '...'` (without sudo, against a scratch
     rules file, with stand-ins for visudo and install)."""
-    result = run("svc", svc=[])
-    line = next(x for x in result.stdout.splitlines() if "sudo sh -c" in x)
-    script = line.strip()[len("sudo sh -c '") : -1]
+    script = _printed_install(run("svc", svc=[]).stdout)[len("sudo sh -c '") : -1]
     rules = tmp_path / "labctl-sdwire"
     rules.write_text("other ALL=(root) NOPASSWD: /usr/bin/dd\n")
     script = script.replace("/etc/sudoers.d/labctl-sdwire", str(rules))
     tools = tmp_path / "tools"
     tools.mkdir()
-    (tools / "visudo").write_text("#!/bin/sh\nexit 0\n")
+    (tools / "visudo").write_text(f"#!/bin/sh\nexit {0 if visudo_ok else 1}\n")
     # install ... SRC DEST: copy the last two arguments.
     (tools / "install").write_text('#!/bin/bash\ncp "${@: -2:1}" "${@: -1}"\n')
     for t in ("visudo", "install"):
         (tools / t).chmod(0o755)
-    subprocess.run(
+    result = subprocess.run(
         ["sh", "-c", script],
-        check=True,
         env={"PATH": f"{tools}:/usr/bin:/bin"},
         timeout=30,
     )
-    text = rules.read_text()
+    return result.returncode, rules.read_text()
+
+
+def test_printed_install_command_keeps_existing_rules(run, tmp_path):
+    status, text = _run_install(run, tmp_path, visudo_ok=True)
+    assert status == 0
     assert text.startswith("other ALL=(root) NOPASSWD: /usr/bin/dd\n")
     assert "svc ALL=(root) NOPASSWD: /usr/bin/mount" in text
 
 
+def test_printed_install_command_fails_when_visudo_does(run, tmp_path):
+    status, text = _run_install(run, tmp_path, visudo_ok=False)
+    assert status != 0
+    assert text == "other ALL=(root) NOPASSWD: /usr/bin/dd\n"
+
+
+def test_readme_shows_the_printed_install_command(run):
+    printed = _printed_install(run("<user>", **{"<user>": []}).stdout)
+    readme = (ROOT / "README.md").read_text()
+    assert printed in readme.splitlines()
+
+
 def test_command_list_matches_the_code():
     """Every `sudo <cmd>` labctl runs is in the script's list, and the
-    other way round. Lists starting with "sudo" or with a `*prefix`
-    (["sudo"] or []) both count."""
+    other way round. Lists or tuples starting with "sudo" or with
+    `*prefix` (["sudo"] or []) both count."""
     used = set()
     for path in (ROOT / "src" / "labctl").rglob("*.py"):
         for node in ast.walk(ast.parse(path.read_text())):
-            if not isinstance(node, ast.List) or len(node.elts) < 2:
+            if not isinstance(node, (ast.List, ast.Tuple)) or len(node.elts) < 2:
                 continue
             head = node.elts[0]
-            via_sudo = isinstance(head, ast.Starred) or (
-                isinstance(head, ast.Constant) and head.value == "sudo"
-            )
+            via_sudo = (
+                isinstance(head, ast.Starred)
+                and isinstance(head.value, ast.Name)
+                and head.value.id == "prefix"
+            ) or (isinstance(head, ast.Constant) and head.value == "sudo")
             if not via_sudo:
                 continue
             words = [
