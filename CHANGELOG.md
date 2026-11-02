@@ -11,9 +11,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Stored timestamps are parsed in one place, `labctl.core.timeutil` (#65):
   `labctl status --fast` (cached power age) and board uptime no longer use
   their own parsers, which on Python 3.10 failed on fractions that aren't
-  3 or 6 digits or on `Z` / `+0000` offsets. Status history from REST
-  (`/api/sbcs/<name>/history`) and MCP now gives `logged_at` as ISO-8601
-  with `Z`, like claims and activity.
+  3 or 6 digits or on `Z` / `+0000` offsets. A malformed status history
+  row no longer makes every uptime call fail (500). Status history from
+  REST (`/api/sbcs/<name>/history`) now gives `logged_at` as ISO-8601 with
+  `Z` (`2026-11-01T12:00:00.000000Z`), like claims and activity; a script
+  that parsed the old `YYYY-MM-DD HH:MM:SS` needs updating.
 
 - Claim and activity times were naive local time, so the repeated hour at
   a DST fall-back broke them: a claim made just before the change lasted

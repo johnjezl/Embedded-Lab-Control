@@ -44,6 +44,12 @@ def to_db_ms(dt: datetime) -> str:
     return to_db(dt)[:-3]
 
 
+def to_db_s(dt: datetime) -> str:
+    """:func:`to_db` to the second (``CURRENT_TIMESTAMP``'s precision, as
+    status history rows are)."""
+    return to_db(dt)[:19]
+
+
 def to_db(dt: datetime) -> str:
     """``dt`` as stored: UTC, microseconds, no offset. A naive ``dt`` is
     taken to be UTC already."""

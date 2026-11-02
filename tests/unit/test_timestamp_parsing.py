@@ -49,8 +49,12 @@ def test_status_fast_power_age(shape, monkeypatch):
     assert "ON" in out["pi"]  # parsed (not "-"), and fresh
 
 
-@pytest.mark.parametrize("shape", SHAPES)
-def test_uptime_with_any_stored_shape(manager, shape, monkeypatch):
+# What status_log rows hold: CURRENT_TIMESTAMP, or a fraction (any length).
+STORED = ["{d} 12:00:00", "{d} 12:00:00.5", "{d} 12:00:00.500", "{d} 12:00:00.500000"]
+
+
+@pytest.mark.parametrize("shape", STORED)
+def test_uptime_with_stored_shapes(manager, shape, monkeypatch):
     sbc = manager.create_sbc(name="pi")
     manager.update_sbc(sbc.id, status=Status.ONLINE)
     manager.db.execute_modify("DELETE FROM status_log")
@@ -62,6 +66,27 @@ def test_uptime_with_any_stored_shape(manager, shape, monkeypatch):
     monkeypatch.setattr("labctl.core.timeutil.now", lambda: now)
     uptime = manager.get_uptime(sbc.id)
     assert 3599 <= uptime["current_uptime_seconds"] <= 3600
+    assert uptime["uptime_24h_percent"] == pytest.approx(100 * 3600 / 86400, abs=0.1)
+
+
+def test_a_malformed_row_is_skipped(manager, monkeypatch):
+    """It would sort after every real timestamp and win ORDER BY DESC."""
+    sbc = manager.create_sbc(name="pi")
+    manager.update_sbc(sbc.id, status=Status.ONLINE)
+    manager.db.execute_modify("DELETE FROM status_log")
+    for value in ("2026-11-01 12:00:00", "garbage"):
+        manager.db.execute_insert(
+            "INSERT INTO status_log (sbc_id, status, logged_at)"
+            " VALUES (?, 'online', ?)",
+            (sbc.id, value),
+        )
+    monkeypatch.setattr(
+        "labctl.core.timeutil.now",
+        lambda: datetime(2026, 11, 1, 13, 0, 0, 700000, tzinfo=UTC),
+    )
+    uptime = manager.get_uptime(sbc.id)
+    assert uptime["current_uptime_seconds"] == 3600
+    assert uptime["uptime_24h_percent"] <= 100
 
 
 def test_status_history_carries_utc_offset(manager):
@@ -73,19 +98,32 @@ def test_status_history_carries_utc_offset(manager):
 
 
 def test_no_other_stored_timestamp_parser():
-    """strptime/fromisoformat on stored timestamps only in timeutil and the
-    v14 migration (which reads old local times on purpose); services.py
-    parses systemd's output, not ours."""
-    allowed = {"core/timeutil.py", "core/database.py", "services.py"}
+    """strptime/fromisoformat only in timeutil, plus two functions that
+    parse something else on purpose: the v14 migration (old local times)
+    and the systemd timestamp parser (#51)."""
+    allowed = {
+        ("core/database.py", "_local_to_utc"),
+        ("services.py", "_parse_systemd_timestamp"),
+    }
     found = []
     for path in SRC.rglob("*.py"):
         rel = str(path.relative_to(SRC))
-        if rel in allowed:
+        if rel == "core/timeutil.py":
             continue
-        for node in ast.walk(ast.parse(path.read_text())):
+        tree = ast.parse(path.read_text())
+        functions = [n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)]
+        for node in ast.walk(tree):
             if isinstance(node, ast.Attribute) and node.attr in (
                 "strptime",
                 "fromisoformat",
             ):
-                found.append(f"{rel}:{node.lineno}")
+                owner = _innermost(functions, node)
+                if (rel, owner) not in allowed:
+                    found.append(f"{rel}:{node.lineno} in {owner}")
     assert found == []
+
+
+def _innermost(functions, target):
+    """Name of the innermost function containing ``target`` (or None)."""
+    inside = [f for f in functions if any(n is target for n in ast.walk(f))]
+    return max(inside, key=lambda f: f.lineno).name if inside else None
