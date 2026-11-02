@@ -5,6 +5,7 @@ Shared pytest fixtures for labctl tests.
 import errno
 import ipaddress
 import os
+import re
 import site
 import socket
 import subprocess
@@ -163,52 +164,107 @@ def _no_network(monkeypatch):
         monkeypatch.setattr(socket, name, guard_lookup(getattr(socket, name)))
 
 
-# Commands that run their argument as a command: "env sudo ...", etc.
-_WRAPPERS = {"env", "nice", "nohup", "timeout", "stdbuf", "ionice", "setsid"}
+# Commands that run their arguments as a command: "env sudo ...", etc.
+_WRAPPERS = {
+    "env",
+    "nice",
+    "nohup",
+    "timeout",
+    "stdbuf",
+    "ionice",
+    "setsid",
+    "exec",
+    "command",
+    "xargs",
+}
+_SHELLS = {"sh", "bash", "dash", "zsh"}
 
 
-def _runs_sudo(args) -> bool:
-    """Whether a Popen argv (list, or a shell string) starts sudo, directly
-    or through a wrapper like ``env`` or ``timeout``."""
-    if isinstance(args, (str, bytes)):
-        argv = os.fsdecode(args).split()
+def _is_sudo(word: str) -> bool:
+    return os.path.basename(word) == "sudo"
+
+
+def _runs_sudo(args, *, shell: bool = False, executable=None) -> bool:
+    """Whether a Popen call would start sudo (#50): as the executable, as
+    argv[0], after a wrapper (``env -u X``, ``timeout 5s``, ...), or
+    anywhere in a shell command line (``cd / && sudo x``, ``sh -c '...'``).
+    Erring on the side of refusing: ``timeout 5 echo sudo`` counts too."""
+    if executable is not None and _is_sudo(os.fsdecode(executable)):
+        return True
+    if isinstance(args, (str, bytes, os.PathLike)):
+        argv = [os.fsdecode(args)]
     else:
         argv = [os.fsdecode(a) for a in args]
-    for arg in argv:
-        name = os.path.basename(arg)
-        if name == "sudo":
-            return True
-        if name in _WRAPPERS or arg.startswith("-") or "=" in arg or arg.isdigit():
-            continue  # a wrapper, its option, an env assignment or a duration
+    if not argv:
         return False
+    if shell:
+        # The whole command line goes to /bin/sh: any word may start sudo.
+        line = " ".join(argv)
+        return any(_is_sudo(w) for w in re.split(r"[\s;&|()`]+", line) if w)
+    if _is_sudo(argv[0]):
+        return True
+    first = os.path.basename(argv[0])
+    if first in _WRAPPERS:
+        return any(_is_sudo(a) for a in argv[1:])
+    if first in _SHELLS and "-c" in argv[1:]:
+        command = argv[argv.index("-c") + 1 :][:1]
+        return bool(command) and _runs_sudo(command, shell=True)
     return False
 
 
-@pytest.fixture(autouse=True)
-def _no_real_sudo(request, monkeypatch):
+# Set per test by _sudo_policy; read by the session-wide guard.
+_SUDO_ALLOWED = False
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _no_real_sudo():
     """Fail any test that would start a real ``sudo`` (#50).
 
     CI runners have passwordless sudo and a developer's machine may prompt,
     so a test that forgets to mock a ``sudo dd``/``mount``/``udevadm``
-    must not run it. Every subprocess goes through ``subprocess.Popen``
-    (``run``, ``check_output``, asyncio's ``create_subprocess_exec``), so
-    that is where it is caught. A test that really needs sudo is marked
-    ``@pytest.mark.allow_sudo``.
+    must not run it. Python subprocesses go through ``subprocess.Popen``
+    (``run``, ``check_output``, asyncio's ``create_subprocess_exec``),
+    and ``os.system`` is wrapped too; ``os.exec*``/``os.spawn*`` and pty
+    helpers are not (labctl uses none of them). Session-wide, so fixtures
+    of any scope are covered. The refusal is a test failure, not an
+    exception the code under test could catch and carry on. A test that
+    really needs sudo is marked ``@pytest.mark.allow_sudo``.
     """
-    if request.node.get_closest_marker("allow_sudo"):
-        return
     real_init = subprocess.Popen.__init__
+    real_system = os.system
 
-    def guarded(self, args, *a, **kw):
-        if _runs_sudo(args):
-            raise RuntimeError(
-                f"test started a real sudo: {args!r}. Mock the subprocess "
-                "call, or mark the test @pytest.mark.allow_sudo "
-                "(tests/conftest.py, #50)"
-            )
+    def refuse(what):
+        pytest.fail(
+            f"test started a real sudo: {what!r}. Mock the subprocess call, "
+            "or mark the test @pytest.mark.allow_sudo (tests/conftest.py, #50)",
+            pytrace=False,
+        )
+
+    def guarded_init(self, args, *a, **kw):
+        if not _SUDO_ALLOWED and _runs_sudo(
+            args, shell=bool(kw.get("shell")), executable=kw.get("executable")
+        ):
+            refuse(args)
         return real_init(self, args, *a, **kw)
 
-    monkeypatch.setattr(subprocess.Popen, "__init__", guarded)
+    def guarded_system(command):
+        if not _SUDO_ALLOWED and _runs_sudo(command, shell=True):
+            refuse(command)
+        return real_system(command)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(subprocess.Popen, "__init__", guarded_init)
+        mp.setattr(os, "system", guarded_system)
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _sudo_policy(request):
+    """Let a test marked ``allow_sudo`` through the guard above."""
+    global _SUDO_ALLOWED
+    _SUDO_ALLOWED = request.node.get_closest_marker("allow_sudo") is not None
+    yield
+    _SUDO_ALLOWED = False
 
 
 @pytest.fixture
