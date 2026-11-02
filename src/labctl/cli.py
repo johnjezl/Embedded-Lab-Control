@@ -635,27 +635,6 @@ def _status_fast_stale_threshold(config) -> int:
         return STATUS_FAST_STALE_SECONDS
 
 
-def _parse_db_timestamp(value):
-    """Parse a SQLite TIMESTAMP string into a naive datetime.
-
-    SQLite stores CURRENT_TIMESTAMP as 'YYYY-MM-DD HH:MM:SS' in UTC.
-    Accept ISO-8601 with milliseconds too. Returns None on failure.
-    """
-    if not value:
-        return None
-    if hasattr(value, "year"):  # already a datetime
-        return value
-    text = str(value).replace("T", " ")
-    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
-        try:
-            from datetime import datetime as _dt
-
-            return _dt.strptime(text, fmt)
-        except ValueError:
-            continue
-    return None
-
-
 def _cached_status_power_states(
     sbcs, reset: str, stale_threshold: int = STATUS_FAST_STALE_SECONDS
 ) -> dict[str, str]:
@@ -668,8 +647,6 @@ def _cached_status_power_states(
       - "?"           fresh "unknown" observation
       - dimmed copy   reading older than the staleness threshold
     """
-    from datetime import datetime as _dt
-    from datetime import timezone as _tz
 
     GREEN = "\033[32m"
     RED = "\033[31m"
@@ -689,14 +666,14 @@ def _cached_status_power_states(
         return base
 
     out: dict[str, str] = {}
-    # SQLite CURRENT_TIMESTAMP is naive UTC; compare against naive UTC.
-    now = _dt.now(_tz.utc).replace(tzinfo=None)
+    # last_power_at is stored UTC; parsed and compared as aware UTC (#65).
+    now = timeutil.now()
     for sbc in sbcs:
         if not sbc.power_plug:
             out[sbc.name] = "-"
             continue
         state = sbc.last_power_state
-        ts = _parse_db_timestamp(sbc.last_power_at)
+        ts = timeutil.from_db(sbc.last_power_at)
         if state is None or ts is None:
             out[sbc.name] = "-"
             continue
