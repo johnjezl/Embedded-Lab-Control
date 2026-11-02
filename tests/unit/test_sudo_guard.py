@@ -25,6 +25,11 @@ from tests.conftest import _runs_sudo
         ("exec sudo x", {"shell": True}),
         (["sudo dd if=/dev/zero"], {"shell": True}),
         (["x", "dd"], {"executable": "/usr/bin/sudo"}),
+        ("sh -c 'sudo dd of=/dev/sdx'", {"shell": True}),
+        (["bash", "-c", 'bash -c "sudo sync"'], {}),
+        ("\\sudo x", {"shell": True}),
+        (["env", "sh", "-c", "sudo umount /mnt"], {}),
+        (["bash", "-lc", "sudo x"], {}),
     ],
 )
 def test_sudo_detected(args, kw):
@@ -36,13 +41,37 @@ def test_sudo_detected(args, kw):
     [
         (["true"], {}),
         (["env", "LC_ALL=C", "true"], {}),
-        (["echo", "sudo"], {}),
         (Path("/bin/true"), {}),
         ("echo ok", {"shell": True}),
     ],
 )
 def test_other_commands_not_detected(args, kw):
     assert not _runs_sudo(args, **kw)
+
+
+def test_positional_executable_and_shell_are_seen():
+    with pytest.raises(pytest.fail.Exception):
+        subprocess.Popen(["x", "dd"], -1, "/usr/bin/sudo")
+    with pytest.raises(pytest.fail.Exception):
+        subprocess.Popen("cd / && sudo x", -1, None, None, None, None, None, True, True)
+
+
+def test_a_generator_of_args_is_not_used_up():
+    assert subprocess.run(a for a in ["true"]).returncode == 0
+
+
+@pytest.mark.filterwarnings("ignore::pytest.PytestUnhandledThreadExceptionWarning")
+def test_a_background_thread_refusal_fails_at_teardown():
+    """Checked through the hit list (the teardown check is in conftest)."""
+    import threading
+
+    from tests import conftest
+
+    t = threading.Thread(target=lambda: subprocess.run(["sudo", "sync"]))
+    t.start()
+    t.join()
+    assert conftest._THREAD_HITS and "real sudo" in conftest._THREAD_HITS[0]
+    conftest._THREAD_HITS.clear()  # this test expected it
 
 
 def test_a_real_run_is_a_test_failure_not_an_exception():

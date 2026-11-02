@@ -8,11 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Tests
 
-- The suite can't start a real `sudo` (#50): an autouse fixture refuses
-  any subprocess that runs `sudo` (directly or through `env`, `timeout`
-  and the like) unless a test is marked `@pytest.mark.allow_sudo`. CI
-  runners have passwordless sudo, and it found four tests that really ran
-  `sudo sync` through an unmocked `update_files`; they mock it now.
+- The suite can't start a real `sudo` (#50). A guard installed when pytest
+  starts refuses any subprocess (`subprocess.Popen` and everything built
+  on it) or `os.system` whose executable or any command word, including
+  words of shell lines and `sh -c` scripts, is `sudo`. A refusal fails the
+  test, so the code under test can't catch it and carry on, and one in a
+  background thread fails the test at teardown. A test that really needs
+  sudo is marked `@pytest.mark.allow_sudo`. CI runners have passwordless
+  sudo; the guard found four tests that really ran `sudo sync` through an
+  unmocked `update_files`, and they mock it now.
 
 ### Fixed
 
