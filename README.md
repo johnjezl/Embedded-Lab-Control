@@ -321,6 +321,12 @@ sudo chmod 440 /etc/sudoers.d/labctl-sdwire
 
 Keep this scoped to the exact commands above. `NOPASSWD` sudo is still privileged;
 the point here is to allow SDWire workflows without granting broader root access.
+`install-services.sh` and `update.sh` don't add it (granting root `dd` and
+`mount` is your call), but they check whether the `labctl` service user and
+you (the user who ran them with sudo; agents' stdio MCP servers run as you)
+can run these commands without a password, and print the missing commands
+and the rule. Run the check on its own with
+`sudo ./scripts/check-sdwire-sudo.sh labctl $USER`.
 
 ### Serial Device Management
 

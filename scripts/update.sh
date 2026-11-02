@@ -261,6 +261,12 @@ if [ -f /etc/ser2net.yaml ] && [ ! -L /etc/ser2net.yaml ]; then
     echo "[ok] /etc/ser2net.yaml (group-writable by labctl)"
 fi
 
+# 3e. SDWire sudo rule (#47): not managed here (granting root dd/mount is
+# the admin's call), but say who can't run the SDWire commands, and the
+# rule that would allow it: the service user, and the admin running this
+# (agents' stdio MCP servers run as that user).
+"$SCRIPT_DIR/check-sdwire-sudo.sh" labctl "${SUDO_USER:-}" || true
+
 # 4. Verify install
 VERSION=$("$LABCTL_VENV/bin/labctl" --version 2>&1 || true)
 echo "[ok] $VERSION"
