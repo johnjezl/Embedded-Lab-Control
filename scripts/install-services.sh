@@ -193,6 +193,11 @@ SUDOERS
 chmod 440 "$SUDOERS_FILE"
 echo "[ok] Added passwordless sudo for udevadm and ser2net restart (labctl group)"
 
+# The SDWire commands (dd, mount, ...) are not granted here: passwordless
+# root dd/mount is effectively root, so that's the admin's call (#47).
+# Report who can't run them, with the rule that would allow it.
+"$SCRIPT_DIR/check-sdwire-sudo.sh" labctl "${SUDO_USER:-}" || true
+
 # 5. Install systemd service files
 echo "[+] Installing systemd service files..."
 cp "$CONFIG_DIR/labctl-monitor.service" /etc/systemd/system/
