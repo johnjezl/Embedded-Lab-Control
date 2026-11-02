@@ -316,10 +316,7 @@ scoped sudoers rule. Use its own file: `scripts/install-services.sh` rewrites
 `/etc/sudoers.d/labctl`.
 ```bash
 # Keeps any rules already in the file, and checks the result before installing it.
-( sudo cat /etc/sudoers.d/labctl-sdwire 2>/dev/null
-  echo '<user> ALL=(root) NOPASSWD: /usr/bin/mount, /bin/mount, /usr/bin/umount, /bin/umount, /usr/bin/dd, /bin/dd, /usr/bin/sync, /bin/sync, /usr/sbin/partprobe, /sbin/partprobe, /usr/sbin/parted, /sbin/parted, /usr/sbin/blkid, /sbin/blkid'
-) > /tmp/labctl-sdwire.new
-sudo visudo -cf /tmp/labctl-sdwire.new && sudo install -m 440 -o root -g root /tmp/labctl-sdwire.new /etc/sudoers.d/labctl-sdwire
+sudo sh -c 't=$(mktemp) && { [ ! -e /etc/sudoers.d/labctl-sdwire ] || cat /etc/sudoers.d/labctl-sdwire; } > "$t" && echo "<user> ALL=(root) NOPASSWD: /usr/bin/mount, /bin/mount, /usr/bin/umount, /bin/umount, /usr/bin/dd, /bin/dd, /usr/bin/sync, /bin/sync, /usr/sbin/partprobe, /sbin/partprobe, /usr/sbin/parted, /sbin/parted, /usr/sbin/blkid, /sbin/blkid" >> "$t" && visudo -cf "$t" && install -m 440 -o root -g root "$t" /etc/sudoers.d/labctl-sdwire; rm -f "$t"'
 ```
 
 Keep this scoped to the exact commands above. `NOPASSWD` sudo is still privileged;
@@ -327,9 +324,9 @@ the point here is to allow SDWire workflows without granting broader root access
 `install-services.sh` and `update.sh` don't add it (granting root `dd` and
 `mount` is your call), but they check whether the `labctl` service user and
 you (the user who ran them with sudo; agents' stdio MCP servers run as you)
-can run these commands without a password, and print the missing commands
-and the rule. Run the check on its own with
-`sudo ./scripts/check-sdwire-sudo.sh labctl $USER`.
+can run these commands without a password (sudo runs each with `--version`
+as that user), and print the missing commands and the rule. Run the check on
+its own with `sudo ./scripts/check-sdwire-sudo.sh labctl $USER`.
 
 ### Serial Device Management
 
