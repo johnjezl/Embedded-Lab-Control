@@ -7,6 +7,7 @@ import ipaddress
 import os
 import site
 import socket
+import subprocess
 import sys
 import types
 from datetime import datetime, timedelta, timezone
@@ -160,6 +161,54 @@ def _no_network(monkeypatch):
     monkeypatch.setattr(socket.socket, "sendmsg", sendmsg)
     for name in ("getaddrinfo", "gethostbyname", "gethostbyname_ex", "gethostbyaddr"):
         monkeypatch.setattr(socket, name, guard_lookup(getattr(socket, name)))
+
+
+# Commands that run their argument as a command: "env sudo ...", etc.
+_WRAPPERS = {"env", "nice", "nohup", "timeout", "stdbuf", "ionice", "setsid"}
+
+
+def _runs_sudo(args) -> bool:
+    """Whether a Popen argv (list, or a shell string) starts sudo, directly
+    or through a wrapper like ``env`` or ``timeout``."""
+    if isinstance(args, (str, bytes)):
+        argv = os.fsdecode(args).split()
+    else:
+        argv = [os.fsdecode(a) for a in args]
+    for arg in argv:
+        name = os.path.basename(arg)
+        if name == "sudo":
+            return True
+        if name in _WRAPPERS or arg.startswith("-") or "=" in arg or arg.isdigit():
+            continue  # a wrapper, its option, an env assignment or a duration
+        return False
+    return False
+
+
+@pytest.fixture(autouse=True)
+def _no_real_sudo(request, monkeypatch):
+    """Fail any test that would start a real ``sudo`` (#50).
+
+    CI runners have passwordless sudo and a developer's machine may prompt,
+    so a test that forgets to mock a ``sudo dd``/``mount``/``udevadm``
+    must not run it. Every subprocess goes through ``subprocess.Popen``
+    (``run``, ``check_output``, asyncio's ``create_subprocess_exec``), so
+    that is where it is caught. A test that really needs sudo is marked
+    ``@pytest.mark.allow_sudo``.
+    """
+    if request.node.get_closest_marker("allow_sudo"):
+        return
+    real_init = subprocess.Popen.__init__
+
+    def guarded(self, args, *a, **kw):
+        if _runs_sudo(args):
+            raise RuntimeError(
+                f"test started a real sudo: {args!r}. Mock the subprocess "
+                "call, or mark the test @pytest.mark.allow_sudo "
+                "(tests/conftest.py, #50)"
+            )
+        return real_init(self, args, *a, **kw)
+
+    monkeypatch.setattr(subprocess.Popen, "__init__", guarded)
 
 
 @pytest.fixture

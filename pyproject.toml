@@ -103,4 +103,5 @@ python_functions = ["test_*"]
 addopts = "-v"
 markers = [
     "confirmation: run with MCP destructive-tool confirmation enabled (D012)",
+    "allow_sudo: let this test start a real sudo process (#50; mock it instead)",
 ]

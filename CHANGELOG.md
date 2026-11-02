@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Tests
+
+- The suite can't start a real `sudo` (#50): an autouse fixture refuses
+  any subprocess that runs `sudo` (directly or through `env`, `timeout`
+  and the like) unless a test is marked `@pytest.mark.allow_sudo`. CI
+  runners have passwordless sudo, and it found four tests that really ran
+  `sudo sync` through an unmocked `update_files`; they mock it now.
+
 ### Fixed
 
 - Stored timestamps are parsed in one place, `labctl.core.timeutil` (#65):
