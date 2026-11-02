@@ -1463,14 +1463,15 @@ class ResourceManager:
         from datetime import timedelta
 
         # status_log.logged_at is SQLite's CURRENT_TIMESTAMP (UTC); parsed
-        # and compared as aware UTC (#65).
-        parse = timeutil.from_db
+        # and compared as aware UTC (#65). A malformed value (it would sort
+        # after every real one) is left out of every query.
+        valid = "logged_at GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]*'"
 
         # Get last online transition
         last_online_row = self.db.execute_one(
-            """
+            f"""
             SELECT id, logged_at FROM status_log
-            WHERE sbc_id = ? AND status = 'online'
+            WHERE sbc_id = ? AND status = 'online' AND {valid}
             ORDER BY logged_at DESC, id DESC
             LIMIT 1
             """,
@@ -1479,9 +1480,9 @@ class ResourceManager:
 
         # Get last offline transition
         last_offline_row = self.db.execute_one(
-            """
+            f"""
             SELECT id, logged_at FROM status_log
-            WHERE sbc_id = ? AND status IN ('offline', 'error')
+            WHERE sbc_id = ? AND status IN ('offline', 'error') AND {valid}
             ORDER BY logged_at DESC, id DESC
             LIMIT 1
             """,
@@ -1502,14 +1503,16 @@ class ResourceManager:
             "uptime_24h_percent": 0.0,
         }
 
-        now = timeutil.now()
+        # Whole seconds, as status_log rows are, so the 24h window starts
+        # exactly at a row boundary.
+        now = timeutil.now().replace(microsecond=0)
 
         # Calculate current uptime if online
         if sbc.status == Status.ONLINE and last_online_row:
-            last_online = parse(last_online_row["logged_at"])
+            last_online = timeutil.from_db(last_online_row["logged_at"])
             # Check if we went offline after going online
             if last_offline_row:
-                last_offline = parse(last_offline_row["logged_at"])
+                last_offline = timeutil.from_db(last_offline_row["logged_at"])
                 # Same second (CURRENT_TIMESTAMP's resolution): the row
                 # logged later, i.e. with the higher id, is the newer one.
                 offline_is_newer = (last_offline, last_offline_row["id"]) > (
@@ -1536,21 +1539,20 @@ class ResourceManager:
         # effect 24 hours ago (the newest row before then), so a board that
         # has been stable for longer counts as up or down the whole time.
         day_ago = now - timedelta(hours=24)
-        # Second precision, as CURRENT_TIMESTAMP writes status_log rows.
-        day_ago_text = timeutil.to_db(day_ago)[:19]
+        day_ago_text = timeutil.to_db_s(day_ago)
         before = self.db.execute_one(
-            """
+            f"""
             SELECT status FROM status_log
-            WHERE sbc_id = ? AND logged_at < ?
+            WHERE sbc_id = ? AND logged_at < ? AND {valid}
             ORDER BY logged_at DESC, id DESC
             LIMIT 1
             """,
             (sbc_id, day_ago_text),
         )
         rows = self.db.execute(
-            """
+            f"""
             SELECT status, logged_at FROM status_log
-            WHERE sbc_id = ? AND logged_at >= ?
+            WHERE sbc_id = ? AND logged_at >= ? AND {valid}
             ORDER BY logged_at ASC, id ASC
             """,
             (sbc_id, day_ago_text),
@@ -1564,7 +1566,7 @@ class ResourceManager:
             for row in rows:
                 status = row["status"]
                 time_str = row["logged_at"]
-                log_time = parse(time_str)
+                log_time = timeutil.from_db(time_str)
 
                 if prev_status == "online":
                     online_seconds += (log_time - prev_time).total_seconds()
