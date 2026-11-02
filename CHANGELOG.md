@@ -12,11 +12,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   `update.sh` now check whether the `labctl` service user and the admin who
   ran them can run the SDWire commands (`dd`, `mount`, `umount`, `sync`,
   `partprobe`, `parted`, `blkid`) through sudo without a password, by
-  having sudo run each with `--version` as that user (so sudo's own rule
-  matching decides), and print what's missing and the rule to add, with
-  install steps that keep existing rules and run `visudo -c` first. They
-  still don't add it: passwordless root `dd`/`mount` is effectively root,
-  so it stays the admin's decision.
+  having sudo run each with `--version` as that user, ignoring a cached
+  login (so sudo's own rule matching decides), and print what's missing
+  (commands that aren't installed are named as such) and the rule to add,
+  with install steps that keep existing rules, run `visudo -c` first, and
+  fail if it does. They still don't add it: passwordless root `dd`/`mount`
+  is effectively root, so it stays the admin's decision. A rule that
+  allows only certain arguments shows as missing, and sudo logs each
+  refused probe.
 
 ### Documentation
 

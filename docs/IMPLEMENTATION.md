@@ -891,11 +891,12 @@ First public version: 0.2.0. Release process: `docs/RELEASING.md`.
     notes, packager note); Phase 0 scratch list folded in and removed
 - ✅ Publish to TestPyPI, then PyPI (user): 0.2.0 published 2026-10-31
   with its GitHub Release; 0.2.1 (README Features list #53, #51, #49) prepared
-- ⏸️ sudoers gap (deferred to #47, not blocking the release): the SDWire `sudo` commands (`dd`, `mount`, `umount`,
+- ✅ sudoers gap (#47, after the release): the SDWire `sudo` commands (`dd`, `mount`, `umount`,
   `sync`, `partprobe`, `parted`, `blkid`) are not in the rule
   `install-services.sh` writes (the README documents a manual per-user
   rule). Decided 2026-10-31: keep it manual; the scripts should detect a
-  missing rule and print it (#47)
+  missing rule and print it (#47). Done: `scripts/check-sdwire-sudo.sh`,
+  called by `install-services.sh` and `update.sh`
 
 ## Feature: Actuators (USB relays + per-target bindings)
 
