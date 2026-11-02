@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Documentation
+
+- The two assumptions behind safety checks are now stated (#52): the host
+  file allowlist relies on `fs.protected_hardlinks=1` (MCP_SERVER known
+  limits and deployment checklist), and the SD card mux position is
+  inferred from a media probe, not read back, so a concurrent switch by
+  another process can be misjudged and claims are the guard (MCP_SERVER
+  and README SDWire sections).
+
 ### Fixed
 
 - Stored timestamps are parsed in one place, `labctl.core.timeutil` (#65):

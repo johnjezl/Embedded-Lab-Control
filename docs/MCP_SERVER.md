@@ -417,7 +417,12 @@ A card on the DUT is switched to the host and back only when the SBC is
 known to be off; otherwise they refuse with `"error": "powered_on"` or
 `"power_unknown"` (no power plug, or its state can't be read) and switch
 nothing. Once you've made sure such a board is off, `sdwire_to_host(force=true)`
-moves the card to the host, and the read tools then read it in place. They return JSON; errors carry `error` and `message`
+moves the card to the host, and the read tools then read it in place.
+Which side the card is on can't be read back from the SDWire: it is
+inferred from whether the reader sees media, probed twice, 1 s apart, so a
+switch made at that moment by another process can be misjudged. Hold the
+board's claim while you work (see [Known limits](#security-considerations)).
+They return JSON; errors carry `error` and `message`
 (e.g. `path_not_found`, `size_limit_exceeded`, `binary_content`: retry with
 `encoding="base64"`).
 
@@ -679,6 +684,26 @@ system-write / hardware / destructive) in
   `/var/lib/labctl/.config/labctl/config.yaml`); `install-services.sh` and
   `update.sh` make both mode `640`, readable only by root/`labctl` and the
   `labctl` group. Anyone in that group can read every key.
+- The host file allowlist assumes `fs.protected_hardlinks=1` (the default
+  on Ubuntu and Debian). `images/` is group-writable, and a hard link
+  can't be told from the file it points to by resolving its path. With
+  the protection off, a `labctl` group member could hard-link a file they
+  can't read into `images/` (one on the same filesystem, e.g. under
+  `/var/lib` or `/etc` when they share a partition) and have the service,
+  which runs as `labctl`, flash or copy it onto an SD card where they can
+  read it. Check it with `sysctl fs.protected_hardlinks` (deployment
+  checklist item 4). The same setting also limits what the install
+  script's `chown -R` of `/var/lib/labctl` can be tricked into (#19).
+- The SD card mux position can't be read back from the SDWire. Where it
+  matters (the read tools `sdwire_ls`/`cat`/`info` and their CLI
+  counterparts, deciding whether to read in place or borrow the card, and
+  the wait for a card switched to the host to become readable), labctl
+  infers it from whether the reader sees media, probing again after 1 s,
+  since a card switched moments ago may still be initialising. A switch made at the same moment by another process (the
+  CLI, another agent, `sd-mux-ctrl`) can still be misjudged. Claims are
+  the guard: an agent working on a board should hold its claim, which
+  stops other agents and CLI users (unless they override) from switching
+  its card meanwhile.
 
 ### Deployment checklist
 
@@ -696,7 +721,9 @@ system-write / hardware / destructive) in
    output); nothing is allowed until you do. The install script creates
    `/var/lib/labctl/images` and `/var/lib/labctl/output` for this, and
    fresh installs' example config lists them; existing installs must add
-   them (`update.sh` prints the lines).
+   them (`update.sh` prints the lines). Check that
+   `sysctl fs.protected_hardlinks` prints `1`: the allowlist relies on it
+   (see Known limits).
 5. Keep `mcp.confirm_destructive` on; exempt only tools you have to
    (e.g. `serial_send` for heavy console work).
 6. When several agents share boards, keep claims on (`claims.enabled`, the
