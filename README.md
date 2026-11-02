@@ -315,8 +315,11 @@ To reduce friction for interactive use and MCP/service flows, add a narrowly
 scoped sudoers rule. Use its own file: `scripts/install-services.sh` rewrites
 `/etc/sudoers.d/labctl`.
 ```bash
-echo '<user> ALL=(root) NOPASSWD: /usr/bin/mount, /usr/bin/umount, /usr/bin/dd, /bin/dd, /usr/bin/sync, /bin/sync, /usr/sbin/partprobe, /sbin/partprobe, /usr/sbin/parted, /sbin/parted, /usr/sbin/blkid, /sbin/blkid' | sudo tee /etc/sudoers.d/labctl-sdwire
-sudo chmod 440 /etc/sudoers.d/labctl-sdwire
+# Keeps any rules already in the file, and checks the result before installing it.
+( sudo cat /etc/sudoers.d/labctl-sdwire 2>/dev/null
+  echo '<user> ALL=(root) NOPASSWD: /usr/bin/mount, /bin/mount, /usr/bin/umount, /bin/umount, /usr/bin/dd, /bin/dd, /usr/bin/sync, /bin/sync, /usr/sbin/partprobe, /sbin/partprobe, /usr/sbin/parted, /sbin/parted, /usr/sbin/blkid, /sbin/blkid'
+) > /tmp/labctl-sdwire.new
+sudo visudo -cf /tmp/labctl-sdwire.new && sudo install -m 440 -o root -g root /tmp/labctl-sdwire.new /etc/sudoers.d/labctl-sdwire
 ```
 
 Keep this scoped to the exact commands above. `NOPASSWD` sudo is still privileged;
