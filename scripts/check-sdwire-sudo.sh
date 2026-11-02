@@ -20,6 +20,7 @@
 # Limits: a rule that only allows certain arguments (e.g. `dd of=/dev/sd*`)
 # doesn't allow `--version`, so it shows as missing; and sudo logs each
 # refused probe (and may mail root about it), as it would any refusal.
+# It checks sudoers only: a systemd unit's sandboxing is not applied.
 
 set -u
 
@@ -28,31 +29,36 @@ set -u
 COMMANDS="mount umount dd sync partprobe parted blkid"
 RULE_FILE="/etc/sudoers.d/labctl-sdwire"
 
-# A rule line for USER covering every command at both of its usual paths.
+# A rule line for USER covering every command at the path found (the one
+# sudo runs) and, for /usr/bin and /usr/sbin, the same path without /usr.
 rule_for() {
-    local user="$1" paths="" cmd dir
-    for cmd in $COMMANDS; do
-        case "$cmd" in
-            partprobe|parted|blkid) dir=sbin ;;
-            *) dir=bin ;;
+    local user="$1" paths="" path
+    for path in $INSTALLED_PATHS; do
+        paths="$paths${paths:+, }$path"
+        case "$path" in
+            /usr/bin/* | /usr/sbin/*) paths="$paths, ${path#/usr}" ;;
         esac
-        paths="$paths${paths:+, }/usr/$dir/$cmd, /$dir/$cmd"
     done
     echo "$user ALL=(root) NOPASSWD: $paths"
 }
 
 # The installed commands USER can't run as root through sudo without a
-# password.
+# password. A probe that takes over 10 s (e.g. sudo rules from an
+# unreachable directory) is reported apart, as "timed out: CMD".
 missing_for() {
-    local user="$1" cmd absent=()
+    local user="$1" cmd status absent=""
     for cmd in $INSTALLED; do
         # As USER, with no terminal: sudo -n fails instead of asking.
-        if ! runuser -u "$user" -- sudo -n -k "$cmd" --version \
-            </dev/null >/dev/null 2>&1; then
-            absent+=("$cmd")
+        timeout 10 runuser -u "$user" -- sudo -n -k "$cmd" --version \
+            </dev/null >/dev/null 2>&1
+        status=$?
+        if [ "$status" -eq 124 ]; then
+            absent="$absent${absent:+, }timed out: $cmd"
+        elif [ "$status" -ne 0 ]; then
+            absent="$absent${absent:+, }$cmd"
         fi
     done
-    echo "${absent[*]:-}"
+    echo "$absent"
 }
 
 if [ "$#" -eq 0 ]; then
@@ -64,17 +70,24 @@ if [ "$(id -u)" -ne 0 ]; then
     exit 0
 fi
 
-if ! command -v runuser >/dev/null 2>&1; then
-    echo "[!] check-sdwire-sudo.sh needs runuser (util-linux); skipped"
+for tool in runuser timeout; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        echo "[!] check-sdwire-sudo.sh needs $tool; skipped"
+        exit 0
+    fi
+done
+if ! command -v sudo >/dev/null 2>&1; then
+    echo "[!] sudo is not installed: labctl's SD card operations (flashing, updates, reads) need it"
     exit 0
 fi
 
 # A command that isn't installed is reported as such, not as a missing
 # rule (a rule wouldn't help).
-INSTALLED="" NOT_INSTALLED=""
+INSTALLED="" INSTALLED_PATHS="" NOT_INSTALLED=""
 for cmd in $COMMANDS; do
-    if command -v "$cmd" >/dev/null 2>&1; then
+    if path=$(command -v "$cmd"); then
         INSTALLED="$INSTALLED${INSTALLED:+ }$cmd"
+        INSTALLED_PATHS="$INSTALLED_PATHS${INSTALLED_PATHS:+ }$path"
     else
         NOT_INSTALLED="$NOT_INSTALLED${NOT_INSTALLED:+ }$cmd"
     fi
@@ -84,17 +97,20 @@ if [ -n "$NOT_INSTALLED" ]; then
 fi
 
 problems=0
+seen=" "
 for user in "$@"; do
-    if [ -z "$user" ]; then
-        # The install/update scripts pass ${SUDO_USER:-}: empty when run
-        # as root directly, so the admin's own account isn't known.
-        echo "[i] not run through sudo, so only the users named were checked; to check yours:"
+    if [ -z "$user" ] || [ "$user" = "root" ]; then
+        # The install/update scripts pass ${SUDO_USER:-}: empty (or root)
+        # when run from a root shell, so the admin's own account isn't
+        # known. root itself needs no rule.
+        echo "[i] run from a root shell, so only the other users named were checked; to check yours:"
         echo "    sudo $0 YOUR_USER"
         continue
     fi
-    if [ "$user" = "root" ]; then
-        continue
-    fi
+    case "$seen" in
+        *" $user "*) continue ;;
+    esac
+    seen="$seen$user "
     if ! id "$user" >/dev/null 2>&1; then
         echo "[!] no user $user; skipped"
         continue

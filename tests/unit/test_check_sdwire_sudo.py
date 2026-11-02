@@ -22,23 +22,55 @@ exec "$@"
 """
 
 # `sudo -n -k CMD --version`: succeeds when CMD is listed (or ALL is) in
-# $FAKE_SUDO_DIR/$FAKE_USER, as sudo would for a NOPASSWD rule. Without -k
-# it fails: a cached login could make a real sudo succeed with no rule.
+# $FAKE_SUDO_DIR/$FAKE_USER, as sudo would for a NOPASSWD rule. Anything
+# else fails: without -k a cached login could make a real sudo succeed with
+# no rule, without -n it could ask for a password, and without --version
+# the command would really run (dd copying stdin, parted interactive).
 FAKE_SUDO = """#!/bin/bash
-k=""; cmd=""
+n=""; k=""; cmd=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    -n) shift ;;
+    -n) n=1; shift ;;
     -k) k=1; shift ;;
     *) cmd="$1"; break ;;
   esac
 done
-[ -n "$k" ] || { echo "probe without -k" >&2; exit 3; }
+[ -n "$n" ] && [ -n "$k" ] && [ "$#" -eq 2 ] && [ "$2" = --version ] \
+  || { echo "unexpected probe: $*" >&2; exit 3; }
 f="$FAKE_SUDO_DIR/$FAKE_USER"
 [ -f "$f" ] && grep -qxE "ALL|$cmd" "$f" && exit 0
 echo "sudo: a password is required" >&2
 exit 1
 """
+
+# `timeout 10 CMD...`: runs CMD, or "times out" (124) when CMD's words
+# include $FAKE_SLOW.
+FAKE_TIMEOUT = """#!/bin/bash
+[ "$1" = 10 ] || exit 2
+shift
+for w in "$@"; do [ -n "${FAKE_SLOW:-}" ] && [ "$w" = "$FAKE_SLOW" ] && exit 124; done
+exec "$@"
+"""
+
+USUAL_PATHS = (
+    "/usr/bin/mount /usr/bin/umount /usr/bin/dd /usr/bin/sync "
+    "/usr/sbin/partprobe /usr/sbin/parted /usr/sbin/blkid"
+)
+
+
+def _rule_for(user, installed_paths):
+    """The script's rule_for, run on its own."""
+    text = SCRIPT.read_text()
+    func = text[text.index("rule_for() {") :]
+    func = func[: func.index("\n}\n") + 3]
+    return subprocess.run(
+        [shutil.which("bash"), "-c", f'{func}\nrule_for "$1"', "-", user],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={"INSTALLED_PATHS": installed_paths},
+        timeout=30,
+    ).stdout.strip()
 
 
 @pytest.fixture
@@ -53,6 +85,7 @@ def run(tmp_path):
     for name, body in {
         "runuser": FAKE_RUNUSER,
         "sudo": FAKE_SUDO,
+        "timeout": FAKE_TIMEOUT,
         # "running as root"; any user except "ghost" exists.
         "id": (
             '#!/bin/bash\n[ "$1" = ghost ] && exit 1\n'
@@ -64,7 +97,7 @@ def run(tmp_path):
     allowed = tmp_path / "allowed"
     allowed.mkdir()
 
-    def run(*users, not_installed=(), **allowed_by_user):
+    def run(*users, not_installed=(), slow="", **allowed_by_user):
         for cmd in COMMANDS:
             stub = bindir / cmd
             if cmd in not_installed:
@@ -78,7 +111,11 @@ def run(tmp_path):
             [shutil.which("bash"), str(SCRIPT), *users],
             capture_output=True,
             text=True,
-            env={"PATH": str(bindir), "FAKE_SUDO_DIR": str(allowed)},
+            env={
+                "PATH": str(bindir),
+                "FAKE_SUDO_DIR": str(allowed),
+                "FAKE_SLOW": slow,
+            },
             timeout=30,
         )
 
@@ -86,7 +123,7 @@ def run(tmp_path):
 
 
 def _gaps(stdout):
-    return stdout.split("without a password: ")[1].splitlines()[0].split()
+    return stdout.split("without a password: ")[1].splitlines()[0].split(", ")
 
 
 def test_all_allowed(run):
@@ -100,10 +137,9 @@ def test_reports_the_missing_ones_and_the_rule(run):
     assert result.returncode == 0
     assert _gaps(result.stdout) == ["partprobe", "parted", "blkid"]
     rule = re.search(r'echo "([^"]*NOPASSWD[^"]*)"', result.stdout).group(1)
-    listed = {p.strip() for p in rule.split("NOPASSWD:", 1)[1].split(",")}
-    for cmd in COMMANDS:
-        d = "sbin" if cmd in ("partprobe", "parted", "blkid") else "bin"
-        assert {f"/usr/{d}/{cmd}", f"/{d}/{cmd}"} <= listed
+    listed = [p.strip() for p in rule.split("NOPASSWD:", 1)[1].split(",")]
+    # The paths found (the stand-ins here).
+    assert [Path(p).name for p in listed] == COMMANDS
     assert "mktemp" in result.stdout and "visudo -cf" in result.stdout
 
 
@@ -113,19 +149,48 @@ def test_nothing_allowed_and_unknown_user(run):
     assert "[!] no user ghost; skipped" in result.stdout
 
 
-def test_root_skipped(run):
-    result = run("root")
-    assert result.returncode == 0
-    assert result.stdout == ""
-
-
-def test_empty_user_says_how_to_check_yours(run):
-    """update.sh run as root directly passes an empty ${SUDO_USER:-}."""
-    result = run("svc", "", svc=["ALL"])
+@pytest.mark.parametrize("admin", ["", "root"])
+def test_root_shell_says_how_to_check_yours(run, admin):
+    """update.sh run from a root shell passes an empty ${SUDO_USER:-}, or
+    root (`sudo` from a root shell)."""
+    result = run("svc", admin, svc=["ALL"])
     assert result.returncode == 0
     assert "[ok] svc" in result.stdout
-    assert "not run through sudo" in result.stdout
+    assert "run from a root shell" in result.stdout
     assert "YOUR_USER" in result.stdout
+
+
+def test_each_user_checked_once(run):
+    """The admin can be the service user (labctl labctl)."""
+    result = run("svc", "svc", svc=[])
+    assert result.stdout.count("[!] svc can't run") == 1
+
+
+def test_timed_out_probe_is_named(run):
+    result = run("svc", slow="dd", svc=["mount", "umount"])
+    assert _gaps(result.stdout) == [
+        "timed out: dd",
+        "sync",
+        "partprobe",
+        "parted",
+        "blkid",
+    ]
+
+
+def test_no_sudo_is_reported(run, tmp_path):
+    (tmp_path / "bin" / "sudo").unlink()
+    result = run("svc")
+    assert result.returncode == 0
+    assert "sudo is not installed" in result.stdout
+    assert "can't run" not in result.stdout
+
+
+def test_rule_covers_the_path_found():
+    rule = _rule_for("u", "/usr/bin/dd /usr/local/sbin/parted /usr/sbin/blkid")
+    assert rule == (
+        "u ALL=(root) NOPASSWD: /usr/bin/dd, /bin/dd, "
+        "/usr/local/sbin/parted, /usr/sbin/blkid, /sbin/blkid"
+    )
 
 
 def test_not_installed_is_not_a_missing_rule(run):
@@ -186,7 +251,8 @@ def test_printed_install_command_keeps_existing_rules(run, tmp_path):
     status, text = _run_install(run, tmp_path, visudo_ok=True)
     assert status == 0
     assert text.startswith("other ALL=(root) NOPASSWD: /usr/bin/dd\n")
-    assert "svc ALL=(root) NOPASSWD: /usr/bin/mount" in text
+    assert text.splitlines()[1].startswith("svc ALL=(root) NOPASSWD: ")
+    assert text.splitlines()[1].endswith("/bin/blkid")
 
 
 def test_printed_install_command_fails_when_visudo_does(run, tmp_path):
@@ -196,7 +262,11 @@ def test_printed_install_command_fails_when_visudo_does(run, tmp_path):
 
 
 def test_readme_shows_the_printed_install_command(run):
+    """README's one-liner is what the script prints where the commands are
+    at their usual paths."""
     printed = _printed_install(run("<user>", **{"<user>": []}).stdout)
+    here = re.search(r'echo "([^"]*NOPASSWD[^"]*)"', printed).group(1)
+    printed = printed.replace(here, _rule_for("<user>", USUAL_PATHS))
     readme = (ROOT / "README.md").read_text()
     assert printed in readme.splitlines()
 
