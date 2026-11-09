@@ -20,7 +20,12 @@
         <span class="label">Reason:</span>
         <span class="value">{{ active_claim.reason }}</span>
     </div>
-    {% if active_claim.time_remaining %}
+    {% if active_claim.session_held %}
+    <div class="info-row">
+        <span class="label">Hold:</span>
+        <span class="value">For its MCP session (kept alive while the session lasts)</span>
+    </div>
+    {% elif active_claim.time_remaining %}
         {% set rem = active_claim.time_remaining.total_seconds()|int %}
         <div class="info-row">
             <span class="label">Time remaining:</span>

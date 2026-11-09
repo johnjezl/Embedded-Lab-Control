@@ -75,18 +75,15 @@ Report: `Build: <command> ... OK (Xs)` or `Build: FAILED`
 
 Claim the board after the build succeeds (and the binary is uploaded), right before the first hardware step: a failed build then never holds a board, and other agents can use it while you compile.
 
-Call `claim_sbc(sbc_name=<sbc>, duration_minutes=<duration>, reason="deploy-and-test: <what you are testing>")`. When the lab sets `claims.require_claim`, the hardware tools refuse an unclaimed board; in every case the claim stops other agents from power-cycling it mid-test. If another agent holds it (`"error": "sbc_claimed"`), report who and stop; don't override. Optionally ask them with `request_sbc_release(sbc_name=<sbc>, reason=...)`.
+Call `claim_sbc(sbc_name=<sbc>, hold="session", reason="deploy-and-test: <what you are testing>")`. When the lab sets `claims.require_claim`, the hardware tools refuse an unclaimed board; in every case the claim stops other agents from power-cycling it mid-test. If another agent holds it (`"error": "sbc_claimed"`), report who and stop; don't override. Optionally ask them with `request_sbc_release(sbc_name=<sbc>, reason=...)`.
 
-**How long to claim.** Cover the whole run, including the gaps between your calls, within `claims.min_duration_minutes`..`max_duration_minutes`:
+**How long it lasts.** A session claim lasts as long as your MCP session, however long you spend between calls (building, reading output), so there is nothing to size or renew. Over HTTP each tool call you make keeps it, and it expires after `claims.session_timeout_minutes` (30 unless configured) without one. If `claim_sbc` answers `session_hold_unavailable` (an HTTP server without API keys), claim for a fixed time instead: `duration_minutes` covering the whole run, including the gaps between your calls (about 10 minutes for a single deploy and boot, plus image copy time; for `boot_test`, `runs × (boot_timeout + cycle delay + ~5 s)` plus the deploy and a few minutes' margin), and `renew_sbc_claim` before a long pause.
 
-- single deploy and boot (Steps 2-4): about 10 minutes is plenty for most boards; add the time a large image takes to copy;
-- `boot_test`: at least `runs × (boot_timeout + cycle delay + ~5 s)` plus the deploy, plus a few minutes' margin. With the default 3 s cycle delay, 10 runs of 30 s need about 7 minutes, so claim 15.
-
-Long tool calls (`boot_test`, `serial_capture`, `sdwire_update`, `flash_image`) keep a claim you hold alive while they run, and every call on the board renews it. But a claim still expires during a long gap between calls (e.g. while you analyze output): call `renew_sbc_claim(sbc_name=<sbc>, duration_minutes=...)` before a step you expect to take long, or after a pause. Don't claim for much longer than you need: if your session ends without releasing the claim (an interrupted client, a crashed or killed server), the claim blocks other agents until it expires, plus the lab's grace period.
+Tool results carry `claim_status` and, when a claim of yours is about to expire or has lapsed, `claim_warnings` (in text results, `[claim warning]` lines). A lapse warning means your claim ended (it expired, was force-released, or your session was lost) and nobody has claimed the board since: the board was unprotected from then on. Report it, and claim it again before going on.
 
 If a long call stops because of a claim (`boot_test` starts with `Stopped: <reason>` and reports `Result: INCOMPLETE` or `STOPPED before the first run`; `sdwire_update`/`flash_image` say `Not power cycled: ...`/`Not powered on: ...` when your claim was lost, or `<board> is left off ... because '<board>' is now claimed by '<agent>'`), your claim was released or someone else claimed the board or one sharing its hardware: report it, and that the board may be left off, and stop. Don't claim it again to carry on.
 
-**Release on every path.** Call `release_sbc(sbc_name=<sbc>)` as soon as you are done with the board: after the report (pass or fail), and also when you stop early (deploy failure, boot timeout, a confirmation you decided not to give, or the user cancelling). If you are interrupted before you can release it, the claim ends by itself, but not always at once: a stdio MCP server that exits cleanly releases its session's claims; otherwise (an HTTP session, or a stdio server that crashed or was killed) the claim lasts until it expires and its grace period (`claims.grace_period_seconds`) has passed.
+**Release on every path.** Call `release_sbc(sbc_name=<sbc>)` as soon as you are done with the board: after the report (pass or fail), and also when you stop early (deploy failure, boot timeout, a confirmation you decided not to give, or the user cancelling). If you are interrupted before you can release it, the claim ends by itself, but not always at once. A stdio MCP server releases its session's claims when the session ends; if the server was killed, the next claim sweep releases them. An HTTP session claim lasts until `claims.session_timeout_minutes` after your last call (a fixed claim, until it expires), plus the grace period (`claims.grace_period_seconds`).
 
 ## Step 2: Deploy
 
@@ -158,7 +155,7 @@ boot_test(sbc_name=<sbc>, expect_pattern=<pattern>, runs=<N>, timeout=<boot_time
 
 The `boot_test` tool handles deploy, repeated power cycling, and serial capture internally. Report its output directly. Claim the board for the whole test first (Step 1b sizes it); `boot_test` keeps that claim alive while it runs, and stops early (its result starts with `Stopped: <reason>`) if the claim is lost or someone else claims the board. Report a stopped test as incomplete, not as a pass rate.
 
-If `boot_test` is not available, loop Steps 2-4 manually N times and report aggregate results, calling `renew_sbc_claim` between iterations if the loop may outlast the claim.
+If `boot_test` is not available, loop Steps 2-4 manually N times and report aggregate results (with a fixed claim, call `renew_sbc_claim` between iterations if the loop may outlast it).
 
 Release the claim when the test is done (Step 1b).
 

@@ -11,7 +11,7 @@ import pytest
 from click.testing import CliRunner
 
 from labctl.core import audit, timeutil
-from labctl.core.database import Database, get_database
+from labctl.core.database import SCHEMA_VERSION, Database, get_database
 from labctl.core.manager import ResourceManager
 
 UTC = timezone.utc
@@ -177,7 +177,7 @@ class TestMigration:
         event = db.execute_one("SELECT logged_at FROM audit_log")
         assert event["logged_at"] == "2026-11-01 00:00:00.250"
         version = db.execute_one("SELECT MAX(version) AS v FROM schema_version")
-        assert version["v"] == 14
+        assert version["v"] == SCHEMA_VERSION
 
     def test_repeated_hour_read_as_daylight_time(self, tmp_path, pacific):
         path = tmp_path / "labctl.db"

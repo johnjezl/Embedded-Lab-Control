@@ -52,7 +52,12 @@ mcp = MCPServer(
         "Files for the SD card (images, kernels) can't go in tool arguments: "
         "over HTTP, upload them (list_images says how) and pass the bare "
         "name; over stdio, pass a host path inside mcp.allowed_read_paths "
-        "(list_images lists the options)."
+        "(list_images lists the options). "
+        "Claims: to keep a board for a whole task, including time spent off "
+        'the board\'s tools, claim it with claim_sbc(..., hold="session"), '
+        "and release_sbc when done. Results of calls on a board you claimed "
+        "carry claim_status (claim_expires_in) and claim_warnings when a "
+        "claim of yours is about to expire or has lapsed."
     ),
 )
 
@@ -431,6 +436,9 @@ _SESSION_KIND = "mcp-stdio"
 # other client's claims and releases too).
 _AGENT_NAME: str | None = None  # stdio only
 _USER_AGENT_NAMES: dict[str, str] = {}  # authenticated HTTP, per user
+# The stdio client's process (our parent), set by run_server: once we are
+# re-parented the client is gone, so its session claims aren't kept (#73).
+_PARENT_PID: int | None = None
 
 
 def _set_transport(transport: str) -> None:
@@ -603,6 +611,7 @@ def _check_claim(
             claim = manager.get_active_claim(sbc_name)
             if claim is not None and actor.holds(claim):
                 manager.touch_claim(claim)
+            _note_claim_board(sbc_name)
             return None
         manager.check_claim(
             sbc_name,
@@ -611,20 +620,28 @@ def _check_claim(
             include_shared=direct and shared,
             heartbeat=direct,
         )
+        if direct:
+            _note_claim_board(sbc_name)
     except UnknownSBCError:
         return None
     except ClaimConflict as exc:
         return _claimed_error(for_sbc or sbc_name, exc.claim)
     except ClaimRequiredError as exc:
         _record_refusal(manager, sbc_name, "claim_required")
-        return json.dumps(
-            {
-                "error": "claim_required",
-                "sbc_name": sbc_name,
-                "message": str(exc),
-                "hints": [f"Claim it first with claim_sbc('{sbc_name}', ...)"],
-            }
-        )
+        payload = {
+            "error": "claim_required",
+            "sbc_name": sbc_name,
+            "message": str(exc),
+            "hints": [f"Claim it first with claim_sbc('{sbc_name}', ...)"],
+        }
+        if exc.lapsed is not None:
+            # Your claim ran out mid-task (#73): say which one.
+            payload["lapsed_claim"] = exc.lapsed.to_dict()
+            payload["hints"].append(
+                f"To keep it for the whole task: claim_sbc('{sbc_name}', "
+                'hold="session")'
+            )
+        return json.dumps(payload)
     return None
 
 
@@ -700,6 +717,206 @@ def _claim_advisory(manager, sbc_name: str) -> str:
     for req in claim.pending_requests:
         lines.append(f"  - {req.requested_by}: {req.reason}")
     return "\n".join(lines)
+
+
+# --- Claim status and warnings in tool results (#73) ---
+#
+# A claim lapses silently when its holder makes no call on the board for
+# its whole duration (work over SSH, analysis on the host), and calls after
+# that still succeed on an unclaimed board. So every tool result says how
+# the caller's claim on the boards the call was about stands
+# (``claim_status``: ``claim_expires_in``, or that it lapsed), and warns
+# (``claim_warnings``) about the caller's other claims that are about to
+# expire or have lapsed: a lapse elsewhere is reported once per server
+# process, a lapse on the call's own board on every call until the board
+# is claimed again.
+
+# The boards the current tool call is about (filled by _check_claim and
+# _note_claim_board), for its claim status. None outside a tool call.
+_CLAIM_BOARDS: ContextVar[Optional[list]] = ContextVar(
+    "labctl_mcp_claim_boards", default=None
+)
+# Lapsed claims (by ID) already reported in some call's warnings.
+_REPORTED_LAPSES: set[int] = set()
+# Warn when a fixed claim has less than this left (or half its duration,
+# if shorter, so a short claim doesn't warn on every call).
+EXPIRY_WARNING_SECONDS = 600
+
+
+def _note_claim_board(sbc_name: str | None) -> None:
+    """Report the caller's claim status on ``sbc_name`` in this call's
+    result."""
+    boards = _CLAIM_BOARDS.get()
+    if boards is not None and sbc_name and sbc_name not in boards:
+        boards.append(sbc_name)
+
+
+def _duration_text(seconds: int) -> str:
+    seconds = max(0, int(seconds))
+    if seconds < 60:
+        return f"{seconds} s"
+    if seconds < 3600:
+        return f"{seconds // 60} min"
+    return f"{seconds // 3600} h {(seconds % 3600) // 60} min"
+
+
+def _claim_status_entry(claim) -> dict:
+    """``claim_status`` for one board: the caller's latest claim on it,
+    held or lapsed."""
+    if claim.lapsed:
+        return {
+            "held": False,
+            "lapsed": True,
+            "claim": claim.to_dict(),
+            "warning": _lapse_warning(claim),
+        }
+    remaining = int(claim.time_remaining.total_seconds())
+    entry = {
+        "held": True,
+        "hold": claim.hold,
+        "claim_expires_in": remaining,
+        "expires_at": timeutil.iso(claim.expires_at),
+    }
+    warning = _expiry_warning(claim, remaining)
+    if warning:
+        entry["warning"] = warning
+    return entry
+
+
+def _expiry_warning(claim, remaining: int) -> str | None:
+    """A warning when the caller's fixed claim is about to expire."""
+    if claim.session_held:
+        return None  # its session keeps it alive
+    if remaining >= min(EXPIRY_WARNING_SECONDS, claim.duration_seconds / 2):
+        return None
+    return (
+        f"Your claim on '{claim.sbc_name}' expires in "
+        f"{_duration_text(remaining)} (at {timeutil.iso(claim.expires_at)}) "
+        "unless you renew it (renew_sbc_claim) or make a call on the board; "
+        f'claim_sbc(..., hold="session") keeps it for this session.'
+    )
+
+
+def _lapse_warning(claim) -> str:
+    text = claim.lapse_text()
+    return (
+        f"{text[0].upper()}{text[1:]}: '{claim.sbc_name}' is no longer "
+        "protected from other agents. Claim it again with claim_sbc if you "
+        "are still using it."
+    )
+
+
+def _claim_notices(boards: list) -> tuple[dict, list]:
+    """(claim_status, claim_warnings) for this call's result."""
+    if not _get_config().claims.enabled:
+        return {}, []
+    manager = _get_manager()
+    claims = manager.latest_claims_of(_caller_actor())
+    status: dict = {}
+    warnings: list = []
+    by_board = {c.sbc_name: c for c in claims}
+    for board in boards:
+        claim = by_board.get(board)
+        if claim is None or (claim.released_at is not None and not claim.lapsed):
+            continue  # never yours, or you released it
+        entry = _claim_status_entry(claim)
+        status[board] = entry
+        if entry.get("warning"):
+            warnings.append(entry["warning"])
+        if claim.lapsed:
+            _REPORTED_LAPSES.add(claim.id)
+    for claim in claims:
+        if claim.sbc_name in status:
+            continue
+        if claim.lapsed:
+            if claim.id not in _REPORTED_LAPSES:
+                _REPORTED_LAPSES.add(claim.id)
+                warnings.append(_lapse_warning(claim))
+        elif claim.is_active:
+            warning = _expiry_warning(claim, int(claim.time_remaining.total_seconds()))
+            if warning:
+                warnings.append(warning)
+    return status, warnings
+
+
+def _status_line(board: str, entry: dict) -> str:
+    if entry.get("lapsed"):
+        return f"[claim] {board}: not held (lapsed)"
+    if entry["hold"] == "session":
+        return f"[claim] {board}: yours, held for this MCP session"
+    return (
+        f"[claim] {board}: yours until {entry['expires_at']} (expires in "
+        f"{_duration_text(entry['claim_expires_in'])}; each call on the "
+        "board extends it)"
+    )
+
+
+def _add_claim_notices(result, boards: list):
+    """``result`` with this call's claim status and warnings: as keys of a
+    JSON object result, else as ``[claim]`` lines appended to text. Never
+    fails the call over them."""
+    try:
+        status, warnings = _claim_notices(boards)
+    except Exception:
+        logger.debug("Claim notices failed", exc_info=True)
+        return result
+    if not (status or warnings) or not isinstance(result, str):
+        return result
+    if result.lstrip().startswith("{"):
+        try:
+            data = json.loads(result)
+        except ValueError:
+            data = None
+        if isinstance(data, dict):
+            if status:
+                data["claim_status"] = status
+            if warnings:
+                data["claim_warnings"] = warnings
+            return json.dumps(data, indent=2 if "\n" in result else None)
+    lines = [
+        _status_line(board, entry)
+        for board, entry in status.items()
+        if not entry.get("warning")
+    ]
+    lines += [f"[claim warning] {w}" for w in warnings]
+    return result.rstrip("\n") + "\n\n" + "\n".join(lines)
+
+
+def _heartbeat_caller_session_claims() -> None:
+    """A tool call is a sign of life: heartbeat the caller's session
+    claims (#73). Over HTTP this is what keeps them; over stdio the server
+    process does it too (_heartbeat_process_session)."""
+    try:
+        if _get_config().claims.enabled:
+            _get_manager().heartbeat_session_claims(_caller_actor())
+    except Exception:
+        logger.debug("Session-claim heartbeat failed", exc_info=True)
+
+
+_PARENT_GONE_WARNED = False
+
+
+def _heartbeat_process_session() -> None:
+    """Over stdio the session lasts as long as this process serves its
+    client: heartbeat its session claims, from the sweep thread. Not once
+    the client is gone (we were re-parented): the claims then expire
+    after claims.session_timeout_minutes, unless the client's own calls
+    still reach us and keep them."""
+    global _PARENT_GONE_WARNED
+    if _SESSION_KIND != "mcp-stdio" or not _get_config().claims.enabled:
+        return
+    if _PARENT_PID is not None and os.getppid() != _PARENT_PID:
+        if not _PARENT_GONE_WARNED:
+            _PARENT_GONE_WARNED = True
+            logger.warning(
+                "MCP client (pid %d) is gone; no longer keeping this "
+                "session's claims alive",
+                _PARENT_PID,
+            )
+        return
+    from labctl.core.models import ClaimActor
+
+    _get_manager().heartbeat_session_claims(ClaimActor(session_id=_SESSION_ID))
 
 
 # mcp 2.x runs sync handlers (tools *and* resources) on worker threads; 1.x
@@ -982,12 +1199,17 @@ def _with_mcp_activity(func):
         # The session ID names the user over authenticated HTTP; the agent
         # is the name the caller gave (claim_sbc agent_name), if any.
         token = _CURRENT_TOOL.set(func.__name__)
+        boards: list = []
+        boards_token = _CLAIM_BOARDS.set(boards)
         try:
             with audit.activity_context(
                 _get_session_id(), "mcp", agent=_given_agent_name()
             ):
-                return confirmed(*args, **kwargs)
+                _heartbeat_caller_session_claims()
+                result = confirmed(*args, **kwargs)
+                return _add_claim_notices(result, boards)
         finally:
+            _CLAIM_BOARDS.reset(boards_token)
             _CURRENT_TOOL.reset(token)
 
     return attributed
@@ -3659,16 +3881,30 @@ def claim_sbc(
     reason: str = "",
     agent_name: str | None = None,
     context: dict | None = None,
+    hold: str = "fixed",
 ) -> str:
-    """Claim exclusive access to an SBC for a declared duration.
+    """Claim exclusive access to an SBC, for a duration or for this session.
 
-    While claimed, mutating operations by other agents are blocked.
+    While claimed, mutating operations by other agents are blocked. A
+    fixed claim lasts duration_minutes from your last call on the board
+    (each one extends it) or renewal, and lapses if there is none for that
+    long, e.g. while you work over SSH or on the host. For a task of
+    unknown length, use hold="session".
 
     Args:
         sbc_name: Name of the SBC to claim
-        duration_minutes: How long to hold (default: the lab's
-            claims.default_duration_minutes, 30 unless configured; must be
-            within claims.min_duration_minutes..max_duration_minutes)
+        duration_minutes: How long to hold a fixed claim (default: the
+            lab's claims.default_duration_minutes, 30 unless configured;
+            must be within claims.min_duration_minutes..max_duration_minutes).
+            Not used with hold="session".
+        hold: "fixed" (default) or "session": keep the claim for as long as
+            this MCP session lasts, however far apart your calls are. Over
+            stdio the server keeps it alive and it ends with the session;
+            over HTTP (API keys required) each tool call you make keeps it
+            alive. Either way it expires after
+            claims.session_timeout_minutes (30 unless configured) without a
+            sign of life. Release it with release_sbc when done. Claiming a
+            board you already hold switches its hold.
         reason: Human-readable reason, recorded in the audit log
             (optional; "no reason given" when omitted)
         agent_name: Self-declared agent identifier. Kept for later calls
@@ -3692,6 +3928,29 @@ def claim_sbc(
         _set_agent_name(call_name)
 
     config = _get_config()
+    hold = hold or "fixed"
+    if isinstance(hold, str):
+        hold = hold.strip().lower()
+    if hold not in ("fixed", "session"):
+        return json.dumps(
+            {
+                "error": "invalid_hold",
+                "message": f'hold must be "fixed" or "session", not {hold!r}',
+            }
+        )
+    if hold == "session" and _SESSION_KIND == "mcp-http" and not _authenticated_user():
+        return json.dumps(
+            {
+                "error": "session_hold_unavailable",
+                "message": (
+                    'hold="session" needs a session that identifies you: this '
+                    "HTTP server has no authentication, so its clients can't "
+                    "be told apart. Use a fixed claim (duration_minutes, "
+                    "renewed as needed), or connect over stdio or with an API "
+                    "key."
+                ),
+            }
+        )
     if config.claims.require_agent_name and not _has_agent_name(call_name):
         return json.dumps(
             {
@@ -3703,12 +3962,20 @@ def claim_sbc(
                 ),
             }
         )
-    if duration_minutes is None:
+    notes = {}
+    if hold == "session":
+        if duration_minutes is not None:
+            notes["note"] = (
+                'duration_minutes is not used with hold="session": the claim '
+                "lasts while this session does"
+            )
+        duration_minutes = config.claims.session_timeout_minutes
+    elif duration_minutes is None:
         duration_minutes = config.claims.default_duration_minutes
     duration_s = duration_minutes * 60
     min_s = config.claims.min_duration_minutes * 60
     max_s = config.claims.max_duration_minutes * 60
-    if duration_s < min_s or duration_s > max_s:
+    if hold == "fixed" and (duration_s < min_s or duration_s > max_s):
         return json.dumps(
             {
                 "error": "duration_out_of_bounds",
@@ -3731,7 +3998,18 @@ def claim_sbc(
         context=context,
         grace_seconds=config.claims.grace_period_seconds,
         owner=_authenticated_user(),
+        hold=hold,
     )
+
+    def claimed(status: str, claim, **extra) -> str:
+        """The success result: the claim, and for a session claim how it
+        is kept."""
+        payload = {"status": status, "sbc_name": sbc_name, "claim": claim.to_dict()}
+        payload.update(extra)
+        if claim.session_held:
+            payload["session_hold"] = _session_hold_text()
+        payload.update(notes)
+        return json.dumps(payload)
 
     def shared_hardware_refusal():
         """Refuse a new claim the board's own holder or another user's
@@ -3779,6 +4057,7 @@ def claim_sbc(
                 _get_session_id(),
                 duration_seconds=duration_s,
                 owner=_authenticated_user(),
+                hold=hold,
             )
         except ClaimNotFoundError:
             # It lapsed between the two calls: the board is free now.
@@ -3790,9 +4069,7 @@ def claim_sbc(
                 return json.dumps({"error": "claim_failed", "message": str(claim_exc)})
             if shared_err:
                 return shared_err
-            return json.dumps(
-                {"status": "claimed", "sbc_name": sbc_name, "claim": claim.to_dict()}
-            )
+            return claimed("claimed", claim)
         except NotClaimantError:
             # It lapsed and someone else claimed the board meanwhile.
             current = manager.get_active_claim(sbc_name)
@@ -3803,20 +4080,35 @@ def claim_sbc(
             )
         except ClaimError as renew_exc:
             return json.dumps({"error": "renew_failed", "message": str(renew_exc)})
-        return json.dumps(
-            {
-                "status": "already_claimed",
-                "sbc_name": sbc_name,
-                "claim": renewed.to_dict(),
-                "message": (
-                    "You already held this claim; it now runs for the "
-                    "requested duration (its original reason is kept)."
-                ),
-            }
+        return claimed(
+            "already_claimed",
+            renewed,
+            message=(
+                "You already held this claim; it is now held for this "
+                "session (its original reason is kept)."
+                if renewed.session_held
+                else "You already held this claim; it now runs for the "
+                "requested duration (its original reason is kept)."
+            ),
         )
 
-    return json.dumps(
-        {"status": "claimed", "sbc_name": sbc_name, "claim": claim.to_dict()}
+    return claimed("claimed", claim)
+
+
+def _session_hold_text() -> str:
+    """How this transport keeps a session claim, for claim_sbc's result."""
+    window = _get_config().claims.session_timeout_minutes
+    if _SESSION_KIND == "mcp-http":
+        return (
+            "Held while you keep using this server: each tool call you make "
+            f"keeps it, and it expires after {window} min without one. "
+            "Release it with release_sbc when done."
+        )
+    return (
+        "Held while this MCP session lasts: the server keeps it alive and "
+        "releases it when the session ends (if the server stops without "
+        f"releasing it, it expires {window} min later). Release it with "
+        "release_sbc when done."
     )
 
 
@@ -3908,6 +4200,16 @@ def renew_sbc_claim(sbc_name: str, duration_minutes: int | None = None) -> str:
             duration_seconds=duration_s,
             owner=_authenticated_user(),
         )
+        if claim.session_held and duration_s is not None:
+            renew_note = {
+                "note": (
+                    "This claim is held for your session, so duration_minutes "
+                    'was not applied; claim_sbc(..., hold="fixed", '
+                    "duration_minutes=...) switches it to a fixed claim."
+                )
+            }
+        else:
+            renew_note = {}
     except UnknownSBCError:
         return json.dumps(
             {"error": "unknown_sbc", "message": f"SBC '{sbc_name}' not found"}
@@ -3930,7 +4232,12 @@ def renew_sbc_claim(sbc_name: str, duration_minutes: int | None = None) -> str:
         )
 
     return json.dumps(
-        {"status": "renewed", "sbc_name": sbc_name, "claim": claim.to_dict()}
+        {
+            "status": "renewed",
+            "sbc_name": sbc_name,
+            "claim": claim.to_dict(),
+            **renew_note,
+        }
     )
 
 
@@ -3948,11 +4255,16 @@ def list_claims() -> str:
 def get_claim(sbc_name: str) -> str:
     """Get the current active claim on an SBC, including pending requests.
 
+    When a claim of yours on it has lapsed (expired, force-released, or
+    its session ended) and nobody has claimed it since, claim_status says
+    so.
+
     Args:
         sbc_name: Name of the SBC to check
     """
     from labctl.core.models import UnknownSBCError
 
+    _note_claim_board(sbc_name)
     manager = _get_manager()
     try:
         claim = manager.get_active_claim(sbc_name)
@@ -4787,6 +5099,10 @@ def _start_expiry_thread(interval: int = 30):
 
             _t.sleep(interval)
             try:
+                _heartbeat_process_session()
+            except Exception:
+                logger.debug("Session-claim heartbeat error", exc_info=True)
+            try:
                 _sweep_claims_once()
             except Exception:
                 logger.debug("Claim sweep error", exc_info=True)
@@ -5199,7 +5515,7 @@ def run_server(
         raise ValueError(f"Unknown transport: {transport}")
     _set_transport(transport)
 
-    global _http_security, _http_tls
+    global _http_security, _http_tls, _PARENT_PID
 
     security = tls = None
     config = _get_config()
@@ -5225,6 +5541,7 @@ def run_server(
         _http_tls = bool(tls)
     else:
         check_stdio_startup(config)
+        _PARENT_PID = os.getppid()
     # From here on, every load_config() in this process (tools, database,
     # allowlists, confirmation, actuator gate, Kasa, health, the claim
     # sweep) gets this config: edits take effect on restart (update.sh

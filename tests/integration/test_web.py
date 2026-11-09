@@ -897,6 +897,24 @@ class TestDashboardClaims:
         assert b"dashboard-agent" in response.data
         assert b"claim-badge" in response.data
 
+    def test_session_claim_shown_as_session(self, client, manager, sample_sbc):
+        """A session claim's deadline is only its heartbeat window (#73)."""
+        manager.claim_sbc(
+            sbc_name=sample_sbc.name,
+            agent_name="session-agent",
+            session_id="mcp-stdio:1-1",
+            session_kind="mcp-stdio",
+            duration_seconds=1800,
+            reason="long run",
+            hold="session",
+        )
+        assert b'title="Held for its MCP session">session<' in client.get("/").data
+        detail = client.get(f"/sbc/{sample_sbc.name}").data
+        assert b"For its MCP session" in detail
+        assert b"Time remaining" not in detail
+        api = client.get(f"/api/claims/{sample_sbc.name}").get_json()
+        assert api["claim"]["hold"] == "session"
+
     def test_dashboard_no_badge_when_free(self, client, manager, sample_sbc):
         response = client.get("/")
         assert response.status_code == 200

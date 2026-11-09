@@ -5208,9 +5208,8 @@ def status_cmd(
                     else None
                 )
                 marker = " ⚠" if claim.pending_requests else ""
-                claim_str = (
-                    f"{claim.agent_name} ({_format_remaining(remaining)}){marker}"
-                )
+                held = "session" if claim.session_held else _format_remaining(remaining)
+                claim_str = f"{claim.agent_name} ({held}){marker}"
 
             click.echo(
                 f"{sbc.name:<15} {project_name:<12} {status_str} {ip:<15} "
@@ -5316,10 +5315,20 @@ def _print_claim_row(claim) -> None:
         else None
     )
     expires_display = timeutil.local(claim.expires_at, "%H:%M:%S %Z")
+    if claim.session_held:
+        # Its session heartbeats it: the deadline is only how long it
+        # outlives a silent session (#73).
+        held = (
+            f"held for its session; expires {expires_display} "
+            "unless the session heartbeats it"
+        )
+    else:
+        held = (
+            f"expires {expires_display}, " f"remaining {_format_remaining(remaining_s)}"
+        )
     click.echo(
         f"  {claim.sbc_name:<15} held by {claim.agent_name} "
-        f"({claim.session_kind}, expires {expires_display}, "
-        f"remaining {_format_remaining(remaining_s)})"
+        f"({claim.session_kind}, {held})"
     )
     if claim.reason:
         click.echo(f"      reason: {claim.reason}")

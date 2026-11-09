@@ -33,7 +33,7 @@ from typing import Generator, Optional
 logger = logging.getLogger(__name__)
 
 # Current schema version
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 
 class SchemaTooNewError(RuntimeError):
@@ -178,6 +178,9 @@ CREATE TABLE IF NOT EXISTS claims (
     session_id TEXT NOT NULL,
     session_kind TEXT NOT NULL,  -- mcp-stdio, mcp-http, cli, web
     owner TEXT,  -- authenticated labctl username (MCP HTTP, REST, web), else NULL
+    -- fixed: lasts its duration unless renewed or used; session: kept alive
+    -- while its MCP session lasts (duration = claims.session_timeout_minutes)
+    hold TEXT NOT NULL DEFAULT 'fixed',
     reason TEXT NOT NULL,
     context_json TEXT,
     acquired_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -765,6 +768,24 @@ class Database:
                     conn, "claims", ("acquired_at", "last_activity", "expires_at")
                 )
                 _local_to_utc(conn, "audit_log", ("logged_at",), millis=True)
+
+        if from_version < 15:
+            # v15 (#73): claims.hold — 'session' claims are kept alive by
+            # their MCP session (heartbeats) instead of lasting a fixed
+            # duration. Existing claims are fixed.
+            has_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table'"
+                " AND name = 'claims'"
+            ).fetchone()
+            if has_table:
+                try:
+                    conn.execute(
+                        "ALTER TABLE claims ADD COLUMN hold TEXT NOT NULL"
+                        " DEFAULT 'fixed'"
+                    )
+                except sqlite3.OperationalError as e:
+                    if "duplicate column" not in str(e):
+                        raise
 
         # OR IGNORE: tolerate a concurrent process that has already
         # bumped schema_version to the current value during a race.
