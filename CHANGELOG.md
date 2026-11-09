@@ -13,12 +13,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   legacy name such as `PST8PDT`; on hosts whose system time zone database
   no longer has those names (Ubuntu 24.04+ moved them to `tzdata-legacy`,
   as GitHub's runners did), every Kasa call failed with
-  `ZoneInfoNotFoundError`. Existing 3.10 installs get it by reinstalling
-  with the extra (`scripts/update.sh` does; otherwise
-  `pip install "embedded-lab-control[kasa]"`, or
-  `pipx inject embedded-lab-control tzdata`). Until then, Kasa calls now
-  fail at once with a message naming `tzdata`, instead of after three
-  attempts with a bare `ZoneInfoNotFoundError`.
+  `ZoneInfoNotFoundError`. `scripts/update.sh` reinstalls with the extra,
+  which brings it; other existing 3.10 installs need `pip install tzdata`
+  in labctl's environment (`pipx inject embedded-lab-control tzdata`).
+  Until then, Kasa calls now fail at once with a message saying so,
+  instead of after three attempts with a bare `ZoneInfoNotFoundError`.
 
 ## [0.3.0] - 2026-11-02
 

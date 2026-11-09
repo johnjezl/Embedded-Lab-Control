@@ -141,11 +141,16 @@ def _missing_zone_message(action: str, address: str, error: Exception) -> str:
     """python-kasa 0.7.7 (Python 3.10) loads the device's time zone by a
     legacy name such as PST8PDT. Hosts without those names (Ubuntu 24.04+
     moved them to tzdata-legacy) need the tzdata package, which the [kasa]
-    extra installs on 3.10; an install made before it did may lack it."""
+    extra installs on 3.10; an install made before it did may lack it. A
+    host with no time zone database at all needs it on any Python.
+
+    The hint installs tzdata alone: reinstalling labctl with the extra
+    would replace a checkout install (as the service scripts make) with
+    the PyPI release, and on 3.11+ the extra doesn't include tzdata."""
     return (
         f"Kasa {action} failed for {address}: this system has no time zone "
-        f"data for the device's zone ({error}). Install the tzdata package: "
-        f'pip install "{DIST_NAME}[kasa]" installs it '
+        f"data for the device's zone ({error}). Install the tzdata package "
+        f"into labctl's environment: pip install tzdata "
         f"(pipx: pipx inject {DIST_NAME} tzdata)"
     )
 
