@@ -606,7 +606,7 @@ requests>=2.28
 # extras (pyproject.toml)
 web:        flask>=3.0, flask-socketio>=5.0
 mcp:        mcp>=2.2,<3
-kasa:       python-kasa>=0.12 (Python 3.11+; 0.7.7 on 3.10)
+kasa:       python-kasa>=0.12 (Python 3.11+; 0.7.7 and tzdata on 3.10)
 sdwire:     sdwire>=0.3 (Python 3.12+ only)
 actuators:  pyserial>=3.5
 dev:        pytest, pytest-cov, black==26.5.1, isort==9.0.1, flake8==7.4.1
