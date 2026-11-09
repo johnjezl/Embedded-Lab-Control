@@ -567,17 +567,24 @@ class _FakeKasaIotProtocol:
 def no_system_zones():
     """As if the host had no time zone database (Ubuntu 24.04+ lacks the
     legacy names python-kasa 0.7.7 asks for, e.g. PST8PDT): zoneinfo can
-    only use the tzdata package. Caches are cleared on both sides so
-    nothing loaded earlier hides a missing zone."""
+    only use the tzdata package. Caches are cleared so nothing loaded
+    earlier hides a missing zone: zoneinfo's, python-kasa's, and labctl's
+    per-host outlet states (a cached state means no device read at all)."""
     import zoneinfo
 
+    from labctl.power import kasa as kasa_module
+
     def clear():
+        kasa_module._clear_kasa_caches()
         zoneinfo.ZoneInfo.clear_cache()
         try:
             from kasa.cachedzoneinfo import CachedZoneInfo
         except ImportError:  # python-kasa without the cache
             return
-        CachedZoneInfo._cache.clear()
+        # Private to python-kasa (0.7.x): clear it only where it exists.
+        cache = getattr(CachedZoneInfo, "_cache", None)
+        if isinstance(cache, dict):
+            cache.clear()
 
     clear()
     zoneinfo.reset_tzpath([])
@@ -612,8 +619,10 @@ class TestKasaMissingTimeZone:
         sleep.assert_not_called()
         message = str(exc.value)
         assert "PST8PDT" in message
+        assert "pip install tzdata " in message
         assert "pipx inject embedded-lab-control tzdata" in message
-        assert 'pip install "embedded-lab-control[kasa]"' in message
+        # Never a reinstall of labctl itself (it would replace a checkout).
+        assert "embedded-lab-control[" not in message
 
 
 class TestKasaStripDiscoveredAsPlug:
@@ -696,8 +705,9 @@ class TestKasaStripDiscoveredAsPlug:
         """The recorded HS300 is in time zone index 6, which python-kasa
         0.7.7 (Python 3.10) loads as PST8PDT: the [kasa] extra's tzdata
         must provide it (#75). python-kasa 0.12 needs no zone here."""
-        controller, _ = self._controller(plug_index=1)
+        controller, protocol = self._controller(plug_index=1)
         assert controller.get_state() == PowerState.OFF  # as recorded
+        assert protocol.requests, "answered from a cache, not the device"
 
     def test_reads_every_outlet_state(self):
         controller, protocol = self._controller(plug_index=1)
