@@ -609,12 +609,21 @@ class TestKasaMissingTimeZone:
         from inside an event loop (the MCP server), where the call runs on
         a worker thread and its error comes back through future.result()."""
         import asyncio
+        import concurrent.futures
         import zoneinfo
 
         from labctl.power.kasa import KasaController
 
         controller = KasaController("192.168.1.100", plug_index=1)
         calls = []
+        pools = []
+
+        class Pool(concurrent.futures.ThreadPoolExecutor):
+            """Records that _run_async used its in-loop branch."""
+
+            def __init__(self, *args, **kwargs):
+                pools.append(1)
+                super().__init__(*args, **kwargs)
 
         async def lookup():
             calls.append(1)
@@ -624,11 +633,11 @@ class TestKasaMissingTimeZone:
             controller._run_async(lookup, "power_on")
 
         async def call_in_loop():
-            asyncio.get_running_loop()  # the in-loop branch is taken
             call()
 
         with (
             patch("labctl.power.kasa.time.sleep") as sleep,
+            patch("concurrent.futures.ThreadPoolExecutor", Pool),
             pytest.raises(RuntimeError) as exc,
         ):
             if in_loop:
@@ -636,9 +645,11 @@ class TestKasaMissingTimeZone:
             else:
                 call()
         assert len(calls) == 1
+        assert bool(pools) is in_loop  # the branch this case is for
         sleep.assert_not_called()
         message = str(exc.value)
         assert "(No time zone found with key PST8PDT)" in message
+        assert "as its owner (e.g. with sudo)" in message
         # The interpreter running labctl, not whichever pip is on PATH.
         assert f"{sys.executable} -m pip install tzdata " in message
         assert "pipx inject embedded-lab-control tzdata" in message
