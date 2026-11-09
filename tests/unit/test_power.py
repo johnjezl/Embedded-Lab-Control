@@ -581,10 +581,16 @@ def no_system_zones():
             from kasa.cachedzoneinfo import CachedZoneInfo
         except ImportError:  # python-kasa without the cache
             return
-        # Private to python-kasa (0.7.x): clear it only where it exists.
+        # Private to python-kasa (0.7.7 and 0.12): a zone it cached in an
+        # earlier test would hide a missing one, so if it can't be cleared
+        # this fixture must be updated rather than quietly not test that.
         cache = getattr(CachedZoneInfo, "_cache", None)
-        if isinstance(cache, dict):
-            cache.clear()
+        if not callable(getattr(cache, "clear", None)):
+            pytest.fail(
+                "python-kasa's CachedZoneInfo has no clearable _cache: update "
+                "no_system_zones to clear its zone cache"
+            )
+        cache.clear()
 
     clear()
     zoneinfo.reset_tzpath([])
@@ -596,9 +602,13 @@ def no_system_zones():
 
 
 class TestKasaMissingTimeZone:
-    def test_reported_at_once_naming_tzdata(self):
+    @pytest.mark.parametrize("in_loop", [False, True], ids=["cli", "event-loop"])
+    def test_reported_at_once_naming_tzdata(self, in_loop):
         """A host without the zone (an install from before the [kasa] extra
-        brought tzdata): retrying can't help, so say what to install."""
+        brought tzdata): retrying can't help, so say what to install. Also
+        from inside an event loop (the MCP server), where the call runs on
+        a worker thread and its error comes back through future.result()."""
+        import asyncio
         import zoneinfo
 
         from labctl.power.kasa import KasaController
@@ -610,16 +620,27 @@ class TestKasaMissingTimeZone:
             calls.append(1)
             raise zoneinfo.ZoneInfoNotFoundError("No time zone found with key PST8PDT")
 
+        def call():
+            controller._run_async(lookup, "power_on")
+
+        async def call_in_loop():
+            asyncio.get_running_loop()  # the in-loop branch is taken
+            call()
+
         with (
             patch("labctl.power.kasa.time.sleep") as sleep,
             pytest.raises(RuntimeError) as exc,
         ):
-            controller._run_async(lookup, "power_on")
+            if in_loop:
+                asyncio.run(call_in_loop())
+            else:
+                call()
         assert len(calls) == 1
         sleep.assert_not_called()
         message = str(exc.value)
-        assert "PST8PDT" in message
-        assert "pip install tzdata " in message
+        assert "(No time zone found with key PST8PDT)" in message
+        # The interpreter running labctl, not whichever pip is on PATH.
+        assert f"{sys.executable} -m pip install tzdata " in message
         assert "pipx inject embedded-lab-control tzdata" in message
         # Never a reinstall of labctl itself (it would replace a checkout).
         assert "embedded-lab-control[" not in message
