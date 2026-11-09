@@ -124,16 +124,36 @@ def test_agent_gone_releases_the_board(lab, server):
     assert released.release_reason.value == "released"
 
 
-def test_killed_server_is_released_by_the_next_sweep(lab, server):
-    """No clean exit at all: any process's dead-session sweep (another MCP
-    server, `labctl claims expire`) releases a stdio session claim at
-    once instead of waiting out its heartbeat window."""
+def test_killed_server_is_released_after_its_window(lab, server):
+    """No clean exit at all: the claim outlives the process by its
+    heartbeat window (claims.session_timeout_minutes), then a sweep
+    releases it as session-lost. Not at once: a process that looks gone
+    may only be in another PID namespace (a container sharing the DB)."""
     manager, _ = lab
-    _claim_session(server, manager)
+    claim = _claim_session(server, manager)
     server.proc.send_signal(signal.SIGKILL)
     server.proc.wait(timeout=10)
-    assert manager.get_active_claim("pi-1") is not None  # not swept yet
+    assert manager.release_dead_sessions(grace_seconds=60) == 0
+    assert manager.get_active_claim("pi-1") is not None
+    # Its window and the grace period pass with no heartbeat.
+    manager.db.execute_modify(
+        "UPDATE claims SET expires_at = '2000-01-01 00:00:00' WHERE id = ?",
+        (claim.id,),
+    )
     assert manager.release_dead_sessions(grace_seconds=60) == 1
     assert manager.get_open_claim("pi-1") is None
     [released] = manager.list_claim_history("pi-1")
     assert released.release_reason.value == "session-lost"
+
+
+def test_claim_notices_reach_the_client(lab, server):
+    """Over the wire: the tool's own text first, claim notices second."""
+    manager, _ = lab
+    server.call("claim_sbc", sbc_name="pi-1", duration_minutes=10, agent_name="t")
+    reply = server.request(
+        "tools/call", {"name": "get_claim", "arguments": {"sbc_name": "pi-1"}}
+    )
+    first, second = reply["result"]["content"]
+    assert json.loads(first["text"])["claimed"] is True
+    assert reply["result"]["structuredContent"] == {"result": first["text"]}
+    assert json.loads(second["text"])["claim_status"]["pi-1"]["held"] is True

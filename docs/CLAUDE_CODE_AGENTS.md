@@ -375,7 +375,8 @@ agent's `CLAUDE.md`:
 - `release_sbc` as soon as you are done. Over HTTP a session claim lasts
   while you make tool calls; it expires after
   `claims.session_timeout_minutes` (30) without one. Act on
-  `claim_warnings` in tool results: a lapsed claim must be claimed again.
+  `claim_warnings` (in a tool result's second content block): a lapsed
+  claim must be claimed again.
 - Never call `force_release_sbc` unless I ask.
 - Destructive tools return `confirmation_required` first: check the plan,
   then call again with the same arguments plus `confirm_token`. Never

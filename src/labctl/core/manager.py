@@ -44,7 +44,6 @@ from labctl.core.models import (
     SDWireDevice,
     SerialDevice,
     SerialPort,
-    SessionKind,
     ShapeMode,
     Status,
     UnknownSBCError,
@@ -1801,10 +1800,11 @@ class ResourceManager:
         grace has passed, the claim is released as ``session-lost``. Claims
         with other ``session_kind`` values (cli, web) are skipped.
 
-        A stdio claim held for its session (``hold`` = session, #73) is
-        released as soon as its process is gone: the session was the
-        hold. (An HTTP one isn't: its holder's next session, on a
-        restarted server, still holds it until its heartbeat window ends.)
+        Session claims (#73) are no exception: a process that looks gone
+        may only be out of sight (another PID namespace, e.g. a container
+        sharing the database), so a claim still inside its deadline is
+        kept. A session claim's deadline is its heartbeat window, so a
+        really dead session's claim goes within that window.
         """
         rows = self.db.execute("""
             SELECT c.*, s.name AS sbc_name
@@ -1833,14 +1833,7 @@ class ResourceManager:
                 continue
 
             # PID is dead — but only release if past grace
-            stdio_session_hold = (
-                claim.session_held and claim.session_kind == SessionKind.MCP_STDIO
-            )
-            if (
-                not stdio_session_hold
-                and claim.expires_at
-                and claim.expires_at > cutoff
-            ):
+            if claim.expires_at and claim.expires_at > cutoff:
                 continue
 
             if not self.db.execute_modify(
@@ -2320,43 +2313,67 @@ class ResourceManager:
         """Heartbeat every session-held claim ``actor`` holds (#73): its
         deadline moves to now + its heartbeat window. Like
         :meth:`heartbeat_held_claim`, a claim already released or past its
-        deadline is never revived. Returns how many were heartbeated."""
+        deadline is never revived. Returns how many were heartbeated.
+
+        Every MCP tool call comes here, so it reads first: an UPDATE takes
+        the database's write lock even when no row matches, and most
+        callers hold no session claim."""
         now = self._fmt_ts(timeutil.now())
+        holder = (
+            "hold = ? AND released_at IS NULL AND expires_at >= ?"
+            " AND (session_id = ? OR (COALESCE(?, '') != '' AND owner = ?))"
+        )
+        params = (
+            ClaimHold.SESSION.value,
+            now,
+            actor.session_id,
+            actor.owner,
+            actor.owner,
+        )
+        if self.db.execute_one(f"SELECT 1 FROM claims WHERE {holder}", params) is None:
+            return 0
         return self.db.execute_modify(
-            """
+            f"""
             UPDATE claims
             SET last_activity = ?,
                 expires_at = strftime(
                     '%Y-%m-%d %H:%M:%f', ?, '+' || duration_seconds || ' seconds'
                 ) || '000'
-            WHERE hold = ? AND released_at IS NULL AND expires_at >= ?
-              AND (session_id = ? OR (COALESCE(?, '') != '' AND owner = ?))
+            WHERE {holder}
             """,
-            (
-                now,
-                now,
-                ClaimHold.SESSION.value,
-                now,
-                actor.session_id,
-                actor.owner,
-                actor.owner,
-            ),
+            (now, now, *params),
         )
 
-    def latest_claims_of(self, actor: ClaimActor) -> list[Claim]:
+    def latest_claims_of(
+        self, actor: ClaimActor, since: Optional[datetime] = None
+    ) -> list[Claim]:
         """``actor``'s claims that are the latest claim on their board,
         active or not: what the actor holds, and the claims it held that
         nobody has claimed the board since (#73: a lapse is news to its
-        holder until the board is claimed again)."""
+        holder until the board is claimed again). With ``since``, claims
+        released before then are left out.
+
+        Every MCP tool call asks this, so it starts from the actor's own
+        claims (indexed by session and owner, schema v15), not from every
+        board's latest claim."""
+        params: list = [actor.session_id, actor.owner, actor.owner]
+        released = ""
+        if since is not None:
+            released = " AND (c.released_at IS NULL OR c.released_at >= ?)"
+            params.append(self._fmt_ts(since))
         rows = self.db.execute(
-            """
+            f"""
             SELECT c.*, s.name AS sbc_name
             FROM claims c JOIN sbcs s ON s.id = c.sbc_id
-            WHERE c.id IN (SELECT MAX(id) FROM claims GROUP BY sbc_id)
-              AND (c.session_id = ? OR (COALESCE(?, '') != '' AND c.owner = ?))
+            WHERE (c.session_id = ? OR (COALESCE(?, '') != '' AND c.owner = ?))
+              {released}
+              AND NOT EXISTS (
+                  SELECT 1 FROM claims later
+                  WHERE later.sbc_id = c.sbc_id AND later.id > c.id
+              )
             ORDER BY s.name
             """,
-            (actor.session_id, actor.owner, actor.owner),
+            params,
         )
         return [Claim.from_row(r) for r in rows]
 

@@ -191,6 +191,8 @@ class TestOwnerColumn:
         m.create_sbc(name="pi-1")
         _claim(m, owner=None, kind="cli")
         conn = sqlite3.connect(path)
+        # A real pre-v9 database has neither the column nor its v15 index.
+        conn.execute("DROP INDEX IF EXISTS idx_claims_holder_owner")
         conn.execute("ALTER TABLE claims DROP COLUMN owner")
         conn.execute("DELETE FROM schema_version WHERE version > 8")
         conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (8)")
@@ -224,6 +226,8 @@ class TestMigrationBackfillsOwner:
                 reason="x",
             )
         conn = sqlite3.connect(path)
+        # A real pre-v9 database has neither the column nor its v15 index.
+        conn.execute("DROP INDEX IF EXISTS idx_claims_holder_owner")
         conn.execute("ALTER TABLE claims DROP COLUMN owner")
         conn.execute("DELETE FROM schema_version WHERE version > 8")
         conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (8)")

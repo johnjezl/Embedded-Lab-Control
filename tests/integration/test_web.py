@@ -841,6 +841,32 @@ class TestClaimApi:
         assert response.status_code == 200
         assert manager.get_active_claim(sample_sbc.name) is None
 
+    def test_renew_session_claim_says_duration_not_applied(
+        self, client, manager, sample_sbc
+    ):
+        """A session claim (#73) only takes heartbeats: REST says so rather
+        than answer 'renewed' as if the new duration applied."""
+        manager.claim_sbc(
+            sbc_name=sample_sbc.name,
+            agent_name="agent",
+            session_id="web:anonymous",  # the caller (no auth), as its owner
+            session_kind="mcp-http",
+            duration_seconds=1800,
+            reason="long run",
+            hold="session",
+        )
+        response = client.post(
+            f"/api/claims/{sample_sbc.name}/renew", json={"duration_minutes": 120}
+        )
+        assert response.status_code == 200
+        body = response.get_json()
+        assert "not applied" in body["note"]
+        assert body["claim"]["duration_seconds"] == 1800
+        assert body["claim"]["hold"] == "session"
+        # Without a duration there is nothing to explain.
+        response = client.post(f"/api/claims/{sample_sbc.name}/renew", json={})
+        assert "note" not in response.get_json()
+
     def test_release_and_renew_require_claimant(self, client, manager, sample_sbc):
         manager.claim_sbc(
             sbc_name=sample_sbc.name,

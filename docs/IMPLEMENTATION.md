@@ -951,10 +951,9 @@ First public version: 0.2.0 (then 0.2.1, 0.3.0). Release process: `docs/RELEASIN
 - ✅ #73 Claims kept for an MCP session (schema v15 `claims.hold`):
   `claim_sbc(hold="session")`, heartbeated by the stdio server process
   (stopped once the client is gone) or by each HTTP tool call, expiring
-  after `claims.session_timeout_minutes`; stdio session claims of a dead
-  process released by the next sweep; `claim_status` /
-  `claim_warnings` in every MCP tool result (expiry within 10 min,
-  lapses); `require_claim` refusals name the caller's lapsed claim; CLI,
+  after `claims.session_timeout_minutes`; `claim_status` /
+  `claim_warnings` as a second content block in MCP tool results (expiry
+  within 10 min, lapses within 24 h); `require_claim` refusals name the caller's lapsed claim; CLI,
   web and skill updated. Renew on use was already in place
   (`check_claim` heartbeats the holder's claim)
 - ☐ #2 Long calls keep the caller's claim alive (not merged yet):

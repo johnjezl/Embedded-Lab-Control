@@ -492,7 +492,7 @@ it has none. The result names the board it came from.
 | `release_sbc` | `sbc_name` | Release your claim (this session, or your user over authenticated HTTP) |
 | `renew_sbc_claim` | `sbc_name`, `duration_minutes` | Extend an active claim's deadline. A session claim is only heartbeated: `duration_minutes` is not applied (the result's `note` says so) |
 | `list_claims` | — | List all active claims across the lab |
-| `get_claim` | `sbc_name` | Get the current claim on an SBC. When your own claim on it lapsed, `claim_status` says how ([below](#claim-status-and-warnings-in-results)) |
+| `get_claim` | `sbc_name` | Get the current claim on an SBC. When your own claim on it lapsed, the result's claim notices say how ([below](#claim-status-and-warnings-in-results)) |
 | `request_sbc_release` | `sbc_name`, `reason` | Politely ask the claimant to release |
 | `force_release_sbc` | `sbc_name`, `reason` | Operator override — forcibly release (operators only, D013) |
 
@@ -585,11 +585,13 @@ long as the MCP session lasts, however far apart its calls are:
 - **stdio**: the server heartbeats the session's claims every 30 s while
   it serves its client. When the client goes away (the agent exits or is
   killed, closing the server's stdin), the server exits and releases
-  them. If the server itself dies without releasing them, any process's
-  dead-session sweep (another MCP server's, every 30 s, or
-  `labctl claims expire`) releases them at once. Otherwise they expire
-  after `claims.session_timeout_minutes`. The server also stops
-  heartbeating once its parent process (the client) is gone.
+  them. If the server itself dies without releasing them (killed, or
+  crashed), they expire `claims.session_timeout_minutes` after its last
+  heartbeat, like any claim whose session is gone: a process that looks
+  gone may only be in another PID namespace (a container sharing the
+  database), so the dead-session sweep doesn't release it sooner. The
+  server also stops heartbeating once its parent process (the client)
+  is gone.
 - **HTTP** (API keys required; an unauthenticated server refuses with
   `session_hold_unavailable`, since its clients can't be told apart):
   every tool call by the claim's user, of any kind (`get_claim`,
@@ -605,26 +607,28 @@ it as held for its session rather than counting down. Release it with
 
 #### Claim status and warnings in results
 
-Every tool result reports the caller's claims, so a claim that runs out
-mid-task doesn't go unnoticed. For a JSON object result, the report is
-two keys. For a text result, it is `[claim]` lines at the end:
+Tool results report the caller's claims, so a claim that runs out
+mid-task doesn't go unnoticed. When there is something to report, the
+result has a **second content block**: a JSON object with these keys.
+The first block (and the structured `result`) is the tool's own output,
+unchanged, so JSON stays parseable and a console capture or a file read
+off the card is never mixed with it.
 
 - `claim_status`, for each board the call was about where the caller
   holds the claim or held the latest one: `held`, `hold`,
   `claim_expires_in` (seconds) and `expires_at`, or `lapsed: true` with
-  the claim and a `warning`. Text results get `[claim] <board>: yours
-  until <time> (expires in N min; each call on the board extends it)`,
-  or `yours, held for this MCP session`.
-- `claim_warnings`, as `[claim warning] ...` in text: a fixed claim of
-  the caller's, on any board, with less than 10 minutes left (or less
-  than half its duration, if that is shorter); and a claim of the
-  caller's that lapsed (expired, force-released, or its session ended)
-  with nobody having claimed the board since. A lapse is reported on
-  every call about that board until it is claimed again, and once in
-  the results of calls about other boards.
+  the claim and a `warning`.
+- `claim_warnings`: a fixed claim of the caller's, on any board, with
+  less than 10 minutes left (or less than half its duration, if that is
+  shorter); and a claim of the caller's that lapsed (expired,
+  force-released, or its session ended) in the last 24 hours with nobody
+  having claimed the board since. A lapse is reported on every call about
+  that board until it is claimed again, and once (per server process) in
+  calls about other boards.
 
 Nothing is added for a caller who never claimed, for a claim the caller
-released, or while `claims.enabled` is off. A call on the board renews
+released, or while `claims.enabled` is off. (Calling a tool function
+directly from Python returns its own result only.) A call on the board renews
 the caller's fixed claim (as above), so its own result never warns about
 that claim's expiry.
 
@@ -645,8 +649,8 @@ refusal instead of a call on an unprotected board.
 
 All tools return strings. Success messages are plain text, structured data is
 returned as formatted JSON. Errors are prefixed with "Error:" or returned as
-structured JSON with an `"error"` field (claim conflicts). Either may end
-with the caller's claim status and warnings
+structured JSON with an `"error"` field (claim conflicts). A second
+content block may carry the caller's claim status and warnings
 ([above](#claim-status-and-warnings-in-results)).
 
 ## Prompts (Guided Workflows)

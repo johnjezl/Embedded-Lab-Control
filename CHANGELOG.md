@@ -16,22 +16,23 @@ labctl that shares it together, and reconnect stdio MCP agents.
   claim for as long as the MCP session lasts, however far apart its calls
   are. Over stdio the server heartbeats it every 30 s and releases it when
   the session ends (the agent exiting or being killed closes the server's
-  stdin), and a killed server's session claims are released by the next
-  dead-session sweep. Over HTTP (API keys required) every tool call by its
+  stdin); a killed server's session claims expire after the heartbeat
+  window. Over HTTP (API keys required) every tool call by its
   user heartbeats it. Without a heartbeat it expires after the new
   `claims.session_timeout_minutes` (default 30). Claiming a board you
   hold switches its hold. `renew_sbc_claim` only heartbeats a session
   claim (it doesn't apply `duration_minutes`). `labctl claims list`,
   `labctl status`, the dashboard and the SBC page show session claims as
   such, and `hold` is in every claim's JSON.
-- Claim status and warnings in MCP tool results (#73): every result
-  reports the caller's claim on the boards the call was about
-  (`claim_status` with `claim_expires_in`, or `[claim]` lines in text). It
-  also warns (`claim_warnings` / `[claim warning]`) about a claim of the
-  caller's with under 10 minutes left, or one that lapsed (expired,
-  force-released, or its session ended) with nobody having claimed the
+- Claim status and warnings in MCP tool results (#73), as a second
+  content block (a JSON object; the tool's own output is unchanged):
+  `claim_status` with `claim_expires_in` for the boards the call was
+  about, and `claim_warnings` about a claim of the caller's with under 10
+  minutes left, or one that lapsed (expired, force-released, or its
+  session ended) in the last 24 hours with nobody having claimed the
   board since: on every call about that board, and once elsewhere.
   `get_claim` shows such a lapse. Callers who never claim see no change.
+  REST renewal of a session claim says the duration wasn't applied.
 
 ### Changed
 
