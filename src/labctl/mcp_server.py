@@ -33,6 +33,7 @@ from mcp.types import CallToolResult, TextContent, ToolAnnotations
 
 from labctl import __version__
 from labctl.core import audit, timeutil
+from labctl.core.manager import LAPSE_NOTICE_SECONDS
 
 # All logging must go to stderr (stdout is the JSON-RPC channel for stdio transport)
 logging.basicConfig(
@@ -752,14 +753,25 @@ def _claim_advisory(manager, sbc_name: str) -> str:
 _CLAIM_BOARDS: ContextVar[Optional[list]] = ContextVar(
     "labctl_mcp_claim_boards", default=None
 )
-# Lapsed claims (by ID) already reported in some call's warnings.
+# Lapsed claims (by ID) already reported in some call's warnings; tool
+# calls run on concurrent worker threads, hence the lock.
 _REPORTED_LAPSES: set[int] = set()
+_REPORTED_LAPSES_LOCK = threading.Lock()
 # Warn when a fixed claim has less than this left (or half its duration,
 # if shorter, so a short claim doesn't warn on every call).
 EXPIRY_WARNING_SECONDS = 600
-# Lapses older than this aren't reported: over HTTP a user's claims from
-# earlier sessions count as theirs, and a weeks-old lapse is not news.
-LAPSE_NOTICE_SECONDS = 24 * 3600
+# Lapses older than LAPSE_NOTICE_SECONDS (labctl.core.manager) aren't
+# reported: over HTTP a user's claims from earlier sessions count as
+# theirs, and a weeks-old lapse is not news.
+
+
+def _first_report(claim_id: int) -> bool:
+    """True the first time a lapse is reported in this server process."""
+    with _REPORTED_LAPSES_LOCK:
+        if claim_id in _REPORTED_LAPSES:
+            return False
+        _REPORTED_LAPSES.add(claim_id)
+        return True
 
 
 def _note_claim_board(sbc_name: str | None) -> None:
@@ -786,12 +798,6 @@ def _remaining_seconds(claim) -> int:
     if claim.expires_at is None:
         return 0
     return max(0, int((claim.expires_at - timeutil.now()).total_seconds()))
-
-
-def _lapsed_at(claim):
-    """When a lapsed claim ended: its release, or its deadline if the
-    sweep hasn't released it yet."""
-    return claim.released_at or claim.expires_at
 
 
 def _claim_status_entry(claim) -> dict:
@@ -849,7 +855,7 @@ def _claim_notices(boards: list) -> dict:
     claims = [
         c
         for c in _get_manager().latest_claims_of(_caller_actor(), since=since)
-        if not c.lapsed or _lapsed_at(c) >= since
+        if not c.lapsed or c.lapsed_at >= since
     ]
     status: dict = {}
     warnings: list = []
@@ -863,13 +869,12 @@ def _claim_notices(boards: list) -> dict:
         if entry.get("warning"):
             warnings.append(entry["warning"])
         if claim.lapsed:
-            _REPORTED_LAPSES.add(claim.id)
+            _first_report(claim.id)  # reported here; not again elsewhere
     for claim in claims:
         if claim.sbc_name in status:
             continue
         if claim.lapsed:
-            if claim.id not in _REPORTED_LAPSES:
-                _REPORTED_LAPSES.add(claim.id)
+            if _first_report(claim.id):
                 warnings.append(_lapse_warning(claim))
         elif claim.released_at is None:
             warning = _expiry_warning(claim, _remaining_seconds(claim))
@@ -887,7 +892,9 @@ def _with_claim_notices(fn):
     """Register ``fn`` as a tool whose result carries this call's claim
     notices (see above). With notices, the result is the tool's own text
     as the first content block (and the structured ``result``) and the
-    notices, a JSON object, as the second; without, it is unchanged.
+    notices, a JSON object, as the second, and also in the structured
+    result as ``claim_notices`` for clients that read only that (the
+    output schema doesn't forbid extra keys). Without, it is unchanged.
     Never fails the call over them."""
 
     @wraps(fn)
@@ -912,7 +919,7 @@ def _with_claim_notices(fn):
                 TextContent(type="text", text=result),
                 TextContent(type="text", text=json.dumps(notices, indent=2)),
             ],
-            structured_content={"result": result},
+            structured_content={"result": result, "claim_notices": notices},
         )
 
     return noted

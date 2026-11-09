@@ -155,5 +155,10 @@ def test_claim_notices_reach_the_client(lab, server):
     )
     first, second = reply["result"]["content"]
     assert json.loads(first["text"])["claimed"] is True
-    assert reply["result"]["structuredContent"] == {"result": first["text"]}
-    assert json.loads(second["text"])["claim_status"]["pi-1"]["held"] is True
+    notices = json.loads(second["text"])
+    assert notices["claim_status"]["pi-1"]["held"] is True
+    # Clients that read only the structured result get the notices too.
+    assert reply["result"]["structuredContent"] == {
+        "result": first["text"],
+        "claim_notices": notices,
+    }

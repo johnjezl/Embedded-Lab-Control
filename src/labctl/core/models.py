@@ -564,6 +564,12 @@ class Claim:
             ReleaseReason.SESSION_LOST,
         )
 
+    @property
+    def lapsed_at(self) -> Optional[datetime]:
+        """When a lapsed claim ended: its release, or its deadline if the
+        sweep hasn't released it yet."""
+        return self.released_at or self.expires_at
+
     def lapse_text(self) -> str:
         """How this (lapsed) claim ended, addressed to its holder: "your
         claim on 'x' (claimed by 'a' at T) expired at T2"."""
