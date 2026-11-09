@@ -149,14 +149,16 @@ def _missing_zone_message(action: str, address: str, error: Exception) -> str:
     would replace a checkout install (as the service scripts make) with
     the PyPI release, and on 3.11+ the extra doesn't include tzdata. It
     names the interpreter running labctl (a service venv, say): a bare
-    ``pip`` may be another Python's, or refuse (PEP 668)."""
+    ``pip`` may be another Python's, or refuse (PEP 668). A service venv
+    belongs to root, hence the note on who runs it."""
     # A KeyError's str() quotes its text; the message itself reads better.
     detail = error.args[0] if error.args else str(error)
     python = sys.executable or "python3"
     return (
         f"Kasa {action} failed for {address}: this system has no time zone "
         f"data for the device's zone ({detail}). Install the tzdata package "
-        f"into labctl's environment: {python} -m pip install tzdata "
+        f"into labctl's environment, as its owner (e.g. with sudo): "
+        f"{python} -m pip install tzdata "
         f"(pipx: pipx inject {DIST_NAME} tzdata)"
     )
 
