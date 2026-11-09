@@ -25,7 +25,8 @@ labctl that shares it together, and reconnect stdio MCP agents.
   `labctl status`, the dashboard and the SBC page show session claims as
   such, and `hold` is in every claim's JSON.
 - Claim status and warnings in MCP tool results (#73), as a second
-  content block (a JSON object; the tool's own output is unchanged):
+  content block (a JSON object; the tool's own output is unchanged; also
+  `claim_notices` in the structured result):
   `claim_status` with `claim_expires_in` for the boards the call was
   about, and `claim_warnings` about a claim of the caller's with under 10
   minutes left, or one that lapsed (expired, force-released, or its
@@ -37,8 +38,8 @@ labctl that shares it together, and reconnect stdio MCP agents.
 ### Changed
 
 - With `claims.require_claim` on (the strict mode #73 asked for), the
-  refusal of a caller whose own claim lapsed names that claim and how it
-  ended, on MCP (with `lapsed_claim`) and REST.
+  refusal of a caller whose own claim lapsed (in the last 24 hours) names
+  that claim and how it ended, on MCP (with `lapsed_claim`) and REST.
 - The `/deploy-and-test` skill claims with `hold="session"` instead of
   sizing a fixed claim (`labctl skill install --force` updates a copy).
 

@@ -51,6 +51,12 @@ from labctl.core.models import (
 
 logger = logging.getLogger(__name__)
 
+#: How long a lapsed claim is news to its holder (#73): tool-result notices
+#: and require_claim refusals name lapses no older than this. Over HTTP a
+#: user's claims from earlier sessions count as theirs, and a weeks-old
+#: lapse would read as one that just happened.
+LAPSE_NOTICE_SECONDS = 24 * 3600
+
 
 def _norm_usb_id(value: str) -> str:
     """``1A86``, ``0x1a86`` and ``0x01a86`` name the same USB VID/PID."""
@@ -2377,10 +2383,13 @@ class ResourceManager:
         )
         return [Claim.from_row(r) for r in rows]
 
-    def lapsed_claim(self, sbc_name: str, actor: ClaimActor) -> Optional[Claim]:
+    def lapsed_claim(
+        self, sbc_name: str, actor: ClaimActor, since: Optional[datetime] = None
+    ) -> Optional[Claim]:
         """``actor``'s claim on ``sbc_name`` that ended without them
         releasing it (expired, force-released, session lost), when nobody
-        has claimed the board since; else None."""
+        has claimed the board since (and, with ``since``, it ended no
+        earlier); else None."""
         sbc_id = self._require_sbc_id(sbc_name)
         row = self.db.execute_one(
             """
@@ -2393,7 +2402,11 @@ class ResourceManager:
         if row is None:
             return None
         claim = Claim.from_row(row)
-        return claim if actor.holds(claim) and claim.lapsed else None
+        if not (actor.holds(claim) and claim.lapsed):
+            return None
+        if since is not None and claim.lapsed_at < since:
+            return None
+        return claim
 
     def check_claim(
         self,
@@ -2575,7 +2588,11 @@ class ResourceManager:
                 return None
             if not override:
                 try:
-                    lapsed = self.lapsed_claim(sbc_name, actor)
+                    lapsed = self.lapsed_claim(
+                        sbc_name,
+                        actor,
+                        since=timeutil.now() - timedelta(seconds=LAPSE_NOTICE_SECONDS),
+                    )
                 except UnknownSBCError:
                     raise
                 except Exception:  # noqa: BLE001 - only enriches the refusal

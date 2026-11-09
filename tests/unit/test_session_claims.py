@@ -252,6 +252,17 @@ class TestStrictModeNamesTheLapse:
         assert "your claim on 'pi-1'" in str(exc.value)
         assert "expired at" in str(exc.value)
 
+    def test_old_lapse_not_named(self, manager, clock):
+        from labctl.core.manager import LAPSE_NOTICE_SECONDS
+
+        _claim(manager, seconds=60)
+        clock.advance(61 + LAPSE_NOTICE_SECONDS)
+        with pytest.raises(ClaimRequiredError) as exc:
+            manager.check_claim("pi-1", ALICE, require_claim=True)
+        assert exc.value.lapsed is None
+        # The lookup itself still finds it without a window.
+        assert manager.lapsed_claim("pi-1", ALICE) is not None
+
     def test_plain_refusal_without_a_lapse(self, manager):
         with pytest.raises(ClaimRequiredError) as exc:
             manager.check_claim("pi-1", ALICE, require_claim=True)
@@ -567,10 +578,14 @@ def _call(srv, tool, **arguments):
     assert not result.is_error, result
     texts = [block.text for block in result.content]
     assert len(texts) <= 2
-    # The tool's own output is the structured result too, notices or not.
-    if result.structured_content is not None:
-        assert result.structured_content == {"result": texts[0]}
-    return texts[0], json.loads(texts[1]) if len(texts) == 2 else {}
+    notices = json.loads(texts[1]) if len(texts) == 2 else {}
+    # The tool's own output is the structured result too, and the notices
+    # are there as claim_notices for clients that read only that.
+    expected = {"result": texts[0]}
+    if notices:
+        expected["claim_notices"] = notices
+    assert result.structured_content == expected
+    return texts[0], notices
 
 
 class TestMcpClaimStatus:
@@ -641,14 +656,52 @@ class TestMcpClaimStatus:
         assert json.loads(text)["error"] == "sbc_claimed"
         assert "claim_status" not in notices
 
-    def test_deadline_passing_mid_call(self, mcp, clock):
-        """A claim found active whose deadline passes before its remaining
-        time is read gets 0, not an error that drops the notices."""
-        claim = mcp.claim_sbc("pi-1", duration_minutes=10)
-        claim = mcp._get_manager().get_active_claim("pi-1")
+    @pytest.mark.parametrize("on_board", [True, False])
+    def test_deadline_passing_mid_call(self, mcp, manager, clock, on_board):
+        """A claim found active (not lapsed) whose deadline passes before
+        its remaining time is read: the notices still come, with 0 left,
+        on the call's board and elsewhere. (time_remaining is None by
+        then; reading it used to raise and drop every notice.)"""
+        import dataclasses
+
+        from labctl.core.models import Claim
+
+        class FoundActive(Claim):
+            lapsed = False  # as when it was checked, just before the deadline
+
+        mcp.claim_sbc("pi-1", duration_minutes=10)
+        claim = manager.get_active_claim("pi-1")
         clock.advance(10 * 60 + 5)
-        assert mcp._remaining_seconds(claim) == 0
-        assert claim.time_remaining is None  # what used to raise
+        racing = FoundActive(
+            **{f.name: getattr(claim, f.name) for f in dataclasses.fields(Claim)}
+        )
+        assert racing.time_remaining is None
+        boards = ["pi-1"] if on_board else []
+        with patch.object(manager, "latest_claims_of", return_value=[racing]):
+            notices = mcp._claim_notices(boards)
+        if on_board:
+            assert notices["claim_status"]["pi-1"]["claim_expires_in"] == 0
+        [warning] = notices["claim_warnings"]
+        assert "expires in 0 s" in warning
+
+    def test_lapse_reported_once_across_threads(self, mcp):
+        """Tool calls run on worker threads: a lapse is first reported by
+        exactly one of them."""
+        import threading
+
+        results = []
+        start = threading.Barrier(16)
+
+        def report():
+            start.wait()
+            results.append(mcp._first_report(4242))
+
+        threads = [threading.Thread(target=report) for _ in range(16)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert results.count(True) == 1
 
 
 class TestMcpExpiryWarning:
@@ -752,6 +805,16 @@ class TestMcpLapseWarning:
         assert result["lapsed_claim"]["agent_name"] == "agent-a"
         assert any('hold="session"' in h for h in result["hints"])
         power.assert_not_called()
+
+    def test_strict_mode_ignores_an_old_lapse(self, mcp, config, clock, power):
+        """A lapse more than a day old isn't named as if it just happened."""
+        config.claims.require_claim = True
+        mcp.claim_sbc("pi-1", duration_minutes=10)
+        clock.advance(11 * 60 + mcp.LAPSE_NOTICE_SECONDS)
+        result = json.loads(mcp.power_on("pi-1"))
+        assert result["error"] == "claim_required"
+        assert "lapsed_claim" not in result
+        assert "your claim" not in result["message"]
 
     def test_strict_mode_plain_refusal_without_lapse(self, mcp, config, power):
         config.claims.require_claim = True

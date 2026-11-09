@@ -612,7 +612,8 @@ mid-task doesn't go unnoticed. When there is something to report, the
 result has a **second content block**: a JSON object with these keys.
 The first block (and the structured `result`) is the tool's own output,
 unchanged, so JSON stays parseable and a console capture or a file read
-off the card is never mixed with it.
+off the card is never mixed with it. Clients that read only the
+structured result find the same object there as `claim_notices`.
 
 - `claim_status`, for each board the call was about where the caller
   holds the claim or held the latest one: `held`, `hold`,
@@ -639,7 +640,8 @@ agents must `claim_sbc` first. Only the board named in the call needs the
 caller's claim; boards it shares hardware with just must not be claimed
 by someone else. A value that isn't a boolean counts as `true` (with a
 warning) unless it plainly means off (`"false"`, `"no"`, `"off"`, `0`). Other read-only tools are never refused.
-When the caller's own claim on the board has lapsed, the refusal names
+When the caller's own claim on the board has lapsed (in the last 24
+hours, as for the notices above), the refusal names
 it (`your claim on '<sbc>' (claimed by '<agent>' at <time>) expired at
 <time>`, or was force-released, or its session ended) and carries it as
 `lapsed_claim`. This is the strict mode #73 asked for: a lapse ends in a
