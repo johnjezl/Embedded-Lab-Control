@@ -4,6 +4,7 @@ after a claim lapses (#73)."""
 import json
 import logging
 import sqlite3
+from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
@@ -86,6 +87,14 @@ class TestHoldColumn:
         assert m.get_active_claim("pi-1").hold == "fixed"
         row = m.db.execute_one("SELECT MAX(version) AS v FROM schema_version")
         assert row["v"] == 15
+        indexes = {
+            r["name"]
+            for r in m.db.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+                " AND tbl_name = 'claims'"
+            )
+        }
+        assert "idx_claims_holder_session" in indexes
 
 
 class TestSessionHeartbeat:
@@ -253,20 +262,33 @@ class TestStrictModeNamesTheLapse:
 
 
 class TestDeadSessions:
+    """A session claim whose process looks gone is released like any
+    other: once its deadline (its heartbeat window) and grace have
+    passed. The process may only be out of sight (another PID namespace,
+    e.g. a container sharing the database), so not at once."""
+
     def _dead(self, manager, claim):
         manager.db.execute_modify(
             "UPDATE claims SET session_id = ? WHERE id = ?",
             (f"{claim.session_kind}:999999999-1", claim.id),
         )
 
-    def test_stdio_session_hold_released_at_once(self, manager):
-        claim = _claim(
-            manager, actor=ClaimActor("mcp-stdio:1-1"), hold="session", seconds=1800
-        )
+    @pytest.mark.parametrize(
+        "actor,kind",
+        [
+            (ClaimActor("mcp-stdio:1-1"), "mcp-stdio"),
+            (ClaimActor("mcp-http:1-1:alice", owner="alice"), "mcp-http"),
+        ],
+    )
+    def test_session_claim_kept_until_its_deadline(self, manager, clock, actor, kind):
+        claim = _claim(manager, actor=actor, hold="session", seconds=1800, kind=kind)
         self._dead(manager, claim)
         with patch.object(manager, "_is_session_alive", return_value=False):
+            assert manager.release_dead_sessions(grace_seconds=60) == 0
+            clock.advance(1800 + 61)
             assert manager.release_dead_sessions(grace_seconds=60) == 1
-        assert manager.lapsed_claim("pi-1", ClaimActor("mcp-stdio:999999999-1"))
+        [released] = manager.list_claim_history("pi-1")
+        assert released.release_reason == ReleaseReason.SESSION_LOST
 
     def test_fixed_stdio_claim_waits_for_its_deadline(self, manager):
         claim = _claim(manager, actor=ClaimActor("mcp-stdio:1-1"), seconds=1800)
@@ -274,17 +296,47 @@ class TestDeadSessions:
         with patch.object(manager, "_is_session_alive", return_value=False):
             assert manager.release_dead_sessions(grace_seconds=60) == 0
 
-    def test_http_session_hold_waits_for_its_deadline(self, manager):
-        """Its holder's next session (a restarted server) still holds it."""
-        claim = _claim(
-            manager,
-            actor=ClaimActor("mcp-http:1-1:alice", owner="alice"),
-            hold="session",
-            kind="mcp-http",
-        )
-        self._dead(manager, claim)
-        with patch.object(manager, "_is_session_alive", return_value=False):
-            assert manager.release_dead_sessions(grace_seconds=60) == 0
+
+class TestLatestClaimsOf:
+    def test_since_leaves_out_older_releases(self, manager, clock):
+        _claim(manager)
+        manager.force_release_claim("pi-1", reason="x")
+        clock.advance(3600)
+        since = clock.now - timedelta(seconds=60)
+        assert manager.latest_claims_of(ALICE, since=since) == []
+        assert len(manager.latest_claims_of(ALICE)) == 1
+
+    def test_active_claims_kept_whatever_since(self, manager, clock):
+        _claim(manager, seconds=7200)
+        clock.advance(3600)
+        assert len(manager.latest_claims_of(ALICE, since=clock.now)) == 1
+
+    def test_indexes_exist(self, manager):
+        names = {
+            r["name"]
+            for r in manager.db.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'index'"
+                " AND tbl_name = 'claims'"
+            )
+        }
+        assert {
+            "idx_claims_holder_session",
+            "idx_claims_holder_owner",
+            "idx_claims_sbc_latest",
+        } <= names
+
+
+class TestHeartbeatWritesOnlyWhenNeeded:
+    def test_no_session_claim_no_write(self, manager):
+        _claim(manager)  # a fixed claim
+        with patch.object(manager.db, "execute_modify") as write:
+            assert manager.heartbeat_session_claims(ALICE) == 0
+        write.assert_not_called()
+
+    def test_session_claim_written(self, manager, clock):
+        _claim(manager, hold="session")
+        clock.advance(60)
+        assert manager.heartbeat_session_claims(ALICE) == 1
 
 
 class TestConfig:
@@ -506,88 +558,128 @@ class TestMcpSessionLifetime:
         assert manager.get_active_claim("pi-1") is None
 
 
+def _call(srv, tool, **arguments):
+    """Call ``tool`` as an MCP client does (through the SDK): its own
+    text, and the claim notices (the second content block) or {}."""
+    import anyio
+
+    result = anyio.run(srv.mcp.call_tool, tool, arguments)
+    assert not result.is_error, result
+    texts = [block.text for block in result.content]
+    assert len(texts) <= 2
+    # The tool's own output is the structured result too, notices or not.
+    if result.structured_content is not None:
+        assert result.structured_content == {"result": texts[0]}
+    return texts[0], json.loads(texts[1]) if len(texts) == 2 else {}
+
+
 class TestMcpClaimStatus:
-    def test_text_result_says_until_when(self, mcp, power):
+    def test_status_with_expiry(self, mcp, power):
         mcp.claim_sbc("pi-1", duration_minutes=60)
-        result = mcp.power_on("pi-1")
-        assert "Power ON" in result
-        assert "[claim] pi-1: yours until " in result
-        assert "each call on the board extends it" in result
-
-    def test_session_hold_in_text(self, mcp, power):
-        mcp.claim_sbc("pi-1", hold="session")
-        assert "[claim] pi-1: yours, held for this MCP session" in mcp.power_on("pi-1")
-
-    def test_json_result_gets_claim_status(self, mcp):
-        mcp.claim_sbc("pi-1", duration_minutes=60)
-        result = json.loads(mcp.get_claim("pi-1"))
-        status = result["claim_status"]["pi-1"]
+        text, notices = _call(mcp, "power_on", sbc_name="pi-1")
+        assert text == "Power ON: pi-1"  # the tool's output, untouched
+        status = notices["claim_status"]["pi-1"]
         assert status["held"] is True and status["hold"] == "fixed"
         assert 59 * 60 <= status["claim_expires_in"] <= 60 * 60
-        assert "claim_warnings" not in result
+        assert "claim_warnings" not in notices
+
+    def test_session_hold(self, mcp, power):
+        mcp.claim_sbc("pi-1", hold="session")
+        _, notices = _call(mcp, "power_on", sbc_name="pi-1")
+        assert notices["claim_status"]["pi-1"]["hold"] == "session"
+
+    def test_json_result_untouched(self, mcp):
+        mcp.claim_sbc("pi-1", duration_minutes=60)
+        text, notices = _call(mcp, "get_claim", sbc_name="pi-1")
+        assert "claim_status" not in json.loads(text)
+        assert "pi-1" in notices["claim_status"]
+
+    def test_json_array_result_stays_json(self, mcp, manager, clock):
+        """A warning reaches a tool whose result is a JSON array (it used
+        to be appended after the array, breaking it)."""
+        mcp.claim_sbc("pi-1", duration_minutes=30)
+        clock.advance(25 * 60)
+        text, notices = _call(mcp, "bindings_list")
+        assert json.loads(text) == []
+        assert notices["claim_warnings"]
+
+    def test_direct_calls_unchanged(self, mcp, power, clock):
+        """Calling a tool function directly (labctl's own code, tests)
+        returns its own result: notices are an MCP thing."""
+        mcp.claim_sbc("pi-1", duration_minutes=30)
+        clock.advance(25 * 60)
+        assert mcp.power_on("pi-1") == "Power ON: pi-1"
 
     def test_nothing_added_without_claims(self, mcp, power):
         """Single-agent labs never claim: results are unchanged."""
-        assert mcp.power_on("pi-1") == "Power ON: pi-1"
-        assert "claim_status" not in json.loads(mcp.get_claim("pi-1"))
+        assert _call(mcp, "power_on", sbc_name="pi-1") == ("Power ON: pi-1", {})
+        assert _call(mcp, "get_claim", sbc_name="pi-1")[1] == {}
 
     def test_nothing_added_for_someone_elses_claim(self, mcp, manager):
         _claim(manager, actor=BOB)
-        assert "claim_status" not in json.loads(mcp.get_claim("pi-1"))
+        assert _call(mcp, "get_claim", sbc_name="pi-1")[1] == {}
 
     def test_nothing_after_you_released_it(self, mcp, power):
         mcp.claim_sbc("pi-1", duration_minutes=10)
         mcp.release_sbc("pi-1")
-        assert "[claim" not in mcp.power_on("pi-1")
+        assert _call(mcp, "power_on", sbc_name="pi-1")[1] == {}
 
     def test_nothing_when_claims_disabled(self, mcp, config, power, clock):
         mcp.claim_sbc("pi-1", duration_minutes=10)
         clock.advance(11 * 60)
         config.claims.enabled = False
-        assert "[claim" not in mcp.power_on("pi-1")
+        assert _call(mcp, "power_on", sbc_name="pi-1")[1] == {}
 
     def test_notices_never_fail_the_call(self, mcp, manager, power):
         mcp.claim_sbc("pi-1", duration_minutes=10)
         with patch.object(manager, "latest_claims_of", side_effect=RuntimeError):
-            assert "Power ON" in mcp.power_on("pi-1")
+            assert _call(mcp, "power_on", sbc_name="pi-1") == ("Power ON: pi-1", {})
 
     def test_refused_call_has_no_status_for_its_board(self, mcp, manager, power):
         _claim(manager, actor=BOB)
-        result = json.loads(mcp.power_on("pi-1"))
-        assert result["error"] == "sbc_claimed"
-        assert "claim_status" not in result
+        text, notices = _call(mcp, "power_on", sbc_name="pi-1")
+        assert json.loads(text)["error"] == "sbc_claimed"
+        assert "claim_status" not in notices
+
+    def test_deadline_passing_mid_call(self, mcp, clock):
+        """A claim found active whose deadline passes before its remaining
+        time is read gets 0, not an error that drops the notices."""
+        claim = mcp.claim_sbc("pi-1", duration_minutes=10)
+        claim = mcp._get_manager().get_active_claim("pi-1")
+        clock.advance(10 * 60 + 5)
+        assert mcp._remaining_seconds(claim) == 0
+        assert claim.time_remaining is None  # what used to raise
 
 
 class TestMcpExpiryWarning:
     def test_warns_on_any_call_when_close_to_expiry(self, mcp, clock):
         mcp.claim_sbc("pi-1", duration_minutes=30)
         clock.advance(22 * 60)
-        result = json.loads(mcp.list_claims())
-        [warning] = result["claim_warnings"]
+        [warning] = _call(mcp, "list_claims")[1]["claim_warnings"]
         assert "Your claim on 'pi-1' expires in 8 min" in warning
         assert 'hold="session"' in warning
 
     def test_no_warning_with_time_left(self, mcp, clock):
         mcp.claim_sbc("pi-1", duration_minutes=30)
         clock.advance(15 * 60)
-        assert "claim_warnings" not in json.loads(mcp.list_claims())
+        assert _call(mcp, "list_claims")[1] == {}
 
     def test_short_claim_warns_only_in_its_second_half(self, mcp, clock):
         mcp.claim_sbc("pi-1", duration_minutes=4)
         clock.advance(60)
-        assert "claim_warnings" not in json.loads(mcp.list_claims())
+        assert _call(mcp, "list_claims")[1] == {}
         clock.advance(70)
-        assert "claim_warnings" in json.loads(mcp.list_claims())
+        assert "claim_warnings" in _call(mcp, "list_claims")[1]
 
     def test_call_on_the_board_renews_so_no_warning(self, mcp, clock, power):
         mcp.claim_sbc("pi-1", duration_minutes=30)
         clock.advance(25 * 60)
-        assert "[claim warning]" not in mcp.power_on("pi-1")
+        assert "claim_warnings" not in _call(mcp, "power_on", sbc_name="pi-1")[1]
 
     def test_session_claim_never_warns(self, mcp, clock):
         mcp.claim_sbc("pi-1", hold="session")
         clock.advance(25 * 60)
-        assert "claim_warnings" not in json.loads(mcp.list_claims())
+        assert _call(mcp, "list_claims")[1] == {}
 
 
 class TestMcpLapseWarning:
@@ -595,40 +687,57 @@ class TestMcpLapseWarning:
         """Not strict: the call goes ahead, but no longer silently."""
         mcp.claim_sbc("pi-1", duration_minutes=120)
         clock.advance(121 * 60)
-        result = mcp.power_on("pi-1")
-        assert "Power ON" in result
-        assert "[claim warning] Your claim on 'pi-1'" in result
-        assert "expired at" in result
-        assert "no longer protected" in result
+        text, notices = _call(mcp, "power_on", sbc_name="pi-1")
+        assert text == "Power ON: pi-1"
+        [warning] = notices["claim_warnings"]
+        assert warning.startswith("Your claim on 'pi-1'")
+        assert "expired at" in warning and "no longer protected" in warning
         # ...on every call on that board, until it is claimed again.
-        assert "[claim warning]" in mcp.power_on("pi-1")
+        assert "claim_warnings" in _call(mcp, "power_on", sbc_name="pi-1")[1]
         mcp.claim_sbc("pi-1", duration_minutes=10)
-        assert "[claim warning]" not in mcp.power_on("pi-1")
+        assert "claim_warnings" not in _call(mcp, "power_on", sbc_name="pi-1")[1]
 
     def test_get_claim_shows_the_lapse(self, mcp, clock):
         """How the #73 lapse was found: get_claim said claimed=false."""
         mcp.claim_sbc("pi-1", duration_minutes=120)
         clock.advance(121 * 60)
-        result = json.loads(mcp.get_claim("pi-1"))
-        assert result["claimed"] is False
-        status = result["claim_status"]["pi-1"]
+        text, notices = _call(mcp, "get_claim", sbc_name="pi-1")
+        assert json.loads(text)["claimed"] is False
+        status = notices["claim_status"]["pi-1"]
         assert status["held"] is False and status["lapsed"] is True
         assert status["claim"]["agent_name"] == "agent-a"
-        assert result["claim_warnings"] == [status["warning"]]
+        assert notices["claim_warnings"] == [status["warning"]]
 
     def test_force_release_is_reported(self, mcp, manager):
         mcp.claim_sbc("pi-1", duration_minutes=60)
         manager.force_release_claim("pi-1", reason="x", released_by="operator-bob")
-        [warning] = json.loads(mcp.list_claims())["claim_warnings"]
+        [warning] = _call(mcp, "list_claims")[1]["claim_warnings"]
         assert "force-released by 'operator-bob'" in warning
 
     def test_lapse_elsewhere_reported_once(self, mcp, clock):
         mcp.claim_sbc("pi-2", duration_minutes=10)
         clock.advance(11 * 60)
-        assert "claim_warnings" in json.loads(mcp.list_claims())
-        assert "claim_warnings" not in json.loads(mcp.list_claims())
+        assert "claim_warnings" in _call(mcp, "list_claims")[1]
+        assert _call(mcp, "list_claims")[1] == {}
         # ...but a call on that board still says so.
-        assert "claim_status" in json.loads(mcp.get_claim("pi-2"))
+        assert "claim_status" in _call(mcp, "get_claim", sbc_name="pi-2")[1]
+
+    @pytest.mark.parametrize("swept", [False, True])
+    def test_old_lapse_not_reported(self, mcp, manager, clock, swept):
+        """A lapse more than a day old is not news, on its board or
+        elsewhere (over HTTP, a user's earlier sessions' claims count)."""
+        mcp.claim_sbc("pi-1", duration_minutes=10)
+        clock.advance(11 * 60)
+        if swept:
+            manager.expire_stale_claims(grace_seconds=0)
+        clock.advance(mcp.LAPSE_NOTICE_SECONDS)
+        assert _call(mcp, "list_claims")[1] == {}
+        assert _call(mcp, "get_claim", sbc_name="pi-1")[1] == {}
+
+    def test_lapse_within_a_day_still_reported(self, mcp, clock):
+        mcp.claim_sbc("pi-1", duration_minutes=10)
+        clock.advance(11 * 60 + mcp.LAPSE_NOTICE_SECONDS - 120)
+        assert "claim_status" in _call(mcp, "get_claim", sbc_name="pi-1")[1]
 
     def test_strict_mode_refusal_names_the_expired_claim(
         self, mcp, config, clock, power

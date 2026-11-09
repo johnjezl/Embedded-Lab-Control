@@ -21,7 +21,8 @@
 - **Completed**:
   - #73: claims held for an MCP session (`claim_sbc(hold="session")`,
     schema v15 `claims.hold`, `claims.session_timeout_minutes`);
-    `claim_status` / `claim_warnings` in every MCP tool result;
+    `claim_status` / `claim_warnings` as a second content block in MCP
+    tool results;
     `require_claim` refusals name the caller's lapsed claim; CLI, web,
     docs, `/deploy-and-test` skill updated (D015)
 - **Next**: user review and commit approval; PR; deploy, then

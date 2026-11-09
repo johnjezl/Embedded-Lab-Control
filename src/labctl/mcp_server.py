@@ -24,11 +24,12 @@ import threading
 import time as _time_mod
 from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
+from datetime import timedelta
 from functools import wraps
 from typing import Optional
 
 from mcp.server.mcpserver import MCPServer
-from mcp.types import ToolAnnotations
+from mcp.types import CallToolResult, TextContent, ToolAnnotations
 
 from labctl import __version__
 from labctl.core import audit, timeutil
@@ -42,7 +43,18 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-mcp = MCPServer(
+
+class _LabctlMCPServer(MCPServer):
+    """The SDK's server, registering every tool with its claim notices
+    (#73, _with_claim_notices): over MCP a tool's result carries them as
+    a second content block; calling the tool function directly returns
+    its own result unchanged."""
+
+    def add_tool(self, fn, *args, **kwargs):
+        return super().add_tool(_with_claim_notices(fn), *args, **kwargs)
+
+
+mcp = _LabctlMCPServer(
     "labctl",
     version=__version__,
     instructions=(
@@ -55,9 +67,10 @@ mcp = MCPServer(
         "(list_images lists the options). "
         "Claims: to keep a board for a whole task, including time spent off "
         'the board\'s tools, claim it with claim_sbc(..., hold="session"), '
-        "and release_sbc when done. Results of calls on a board you claimed "
-        "carry claim_status (claim_expires_in) and claim_warnings when a "
-        "claim of yours is about to expire or has lapsed."
+        "and release_sbc when done. A tool result about a board you claimed "
+        "has a second content block, a JSON object with claim_status "
+        "(claim_expires_in), and claim_warnings when a claim of yours is "
+        "about to expire or has lapsed: act on those."
     ),
 )
 
@@ -723,16 +736,19 @@ def _claim_advisory(manager, sbc_name: str) -> str:
 #
 # A claim lapses silently when its holder makes no call on the board for
 # its whole duration (work over SSH, analysis on the host), and calls after
-# that still succeed on an unclaimed board. So every tool result says how
-# the caller's claim on the boards the call was about stands
-# (``claim_status``: ``claim_expires_in``, or that it lapsed), and warns
-# (``claim_warnings``) about the caller's other claims that are about to
-# expire or have lapsed: a lapse elsewhere is reported once per server
-# process, a lapse on the call's own board on every call until the board
-# is claimed again.
+# that still succeed on an unclaimed board. So a tool result says how the
+# caller's claim on the boards the call was about stands (claim_status:
+# claim_expires_in, or that it lapsed), and warns (claim_warnings) about
+# the caller's other claims that are about to expire or have lapsed. They
+# travel as a second content block (a JSON object), so the tool's own
+# output (JSON, a console capture, a file read off the card) is never
+# changed. A lapse is news for LAPSE_NOTICE_SECONDS: on every call about
+# its board until the board is claimed again, and once (per server
+# process) in calls about other boards.
 
 # The boards the current tool call is about (filled by _check_claim and
-# _note_claim_board), for its claim status. None outside a tool call.
+# _note_claim_board), for its claim status. None outside a tool call
+# made over MCP.
 _CLAIM_BOARDS: ContextVar[Optional[list]] = ContextVar(
     "labctl_mcp_claim_boards", default=None
 )
@@ -741,6 +757,9 @@ _REPORTED_LAPSES: set[int] = set()
 # Warn when a fixed claim has less than this left (or half its duration,
 # if shorter, so a short claim doesn't warn on every call).
 EXPIRY_WARNING_SECONDS = 600
+# Lapses older than this aren't reported: over HTTP a user's claims from
+# earlier sessions count as theirs, and a weeks-old lapse is not news.
+LAPSE_NOTICE_SECONDS = 24 * 3600
 
 
 def _note_claim_board(sbc_name: str | None) -> None:
@@ -760,6 +779,21 @@ def _duration_text(seconds: int) -> str:
     return f"{seconds // 3600} h {(seconds % 3600) // 60} min"
 
 
+def _remaining_seconds(claim) -> int:
+    """Seconds to a claim's deadline from one clock reading (0 once past
+    it): Claim.time_remaining re-reads the clock and is None past the
+    deadline, which a claim can reach between two reads."""
+    if claim.expires_at is None:
+        return 0
+    return max(0, int((claim.expires_at - timeutil.now()).total_seconds()))
+
+
+def _lapsed_at(claim):
+    """When a lapsed claim ended: its release, or its deadline if the
+    sweep hasn't released it yet."""
+    return claim.released_at or claim.expires_at
+
+
 def _claim_status_entry(claim) -> dict:
     """``claim_status`` for one board: the caller's latest claim on it,
     held or lapsed."""
@@ -770,7 +804,7 @@ def _claim_status_entry(claim) -> dict:
             "claim": claim.to_dict(),
             "warning": _lapse_warning(claim),
         }
-    remaining = int(claim.time_remaining.total_seconds())
+    remaining = _remaining_seconds(claim)
     entry = {
         "held": True,
         "hold": claim.hold,
@@ -806,12 +840,17 @@ def _lapse_warning(claim) -> str:
     )
 
 
-def _claim_notices(boards: list) -> tuple[dict, list]:
-    """(claim_status, claim_warnings) for this call's result."""
+def _claim_notices(boards: list) -> dict:
+    """This call's claim notices: ``claim_status`` for its boards and
+    ``claim_warnings``, each only when there is something to say."""
     if not _get_config().claims.enabled:
-        return {}, []
-    manager = _get_manager()
-    claims = manager.latest_claims_of(_caller_actor())
+        return {}
+    since = timeutil.now() - timedelta(seconds=LAPSE_NOTICE_SECONDS)
+    claims = [
+        c
+        for c in _get_manager().latest_claims_of(_caller_actor(), since=since)
+        if not c.lapsed or _lapsed_at(c) >= since
+    ]
     status: dict = {}
     warnings: list = []
     by_board = {c.sbc_name: c for c in claims}
@@ -832,54 +871,51 @@ def _claim_notices(boards: list) -> tuple[dict, list]:
             if claim.id not in _REPORTED_LAPSES:
                 _REPORTED_LAPSES.add(claim.id)
                 warnings.append(_lapse_warning(claim))
-        elif claim.is_active:
-            warning = _expiry_warning(claim, int(claim.time_remaining.total_seconds()))
+        elif claim.released_at is None:
+            warning = _expiry_warning(claim, _remaining_seconds(claim))
             if warning:
                 warnings.append(warning)
-    return status, warnings
+    notices: dict = {}
+    if status:
+        notices["claim_status"] = status
+    if warnings:
+        notices["claim_warnings"] = warnings
+    return notices
 
 
-def _status_line(board: str, entry: dict) -> str:
-    if entry.get("lapsed"):
-        return f"[claim] {board}: not held (lapsed)"
-    if entry["hold"] == "session":
-        return f"[claim] {board}: yours, held for this MCP session"
-    return (
-        f"[claim] {board}: yours until {entry['expires_at']} (expires in "
-        f"{_duration_text(entry['claim_expires_in'])}; each call on the "
-        "board extends it)"
-    )
+def _with_claim_notices(fn):
+    """Register ``fn`` as a tool whose result carries this call's claim
+    notices (see above). With notices, the result is the tool's own text
+    as the first content block (and the structured ``result``) and the
+    notices, a JSON object, as the second; without, it is unchanged.
+    Never fails the call over them."""
 
-
-def _add_claim_notices(result, boards: list):
-    """``result`` with this call's claim status and warnings: as keys of a
-    JSON object result, else as ``[claim]`` lines appended to text. Never
-    fails the call over them."""
-    try:
-        status, warnings = _claim_notices(boards)
-    except Exception:
-        logger.debug("Claim notices failed", exc_info=True)
-        return result
-    if not (status or warnings) or not isinstance(result, str):
-        return result
-    if result.lstrip().startswith("{"):
+    @wraps(fn)
+    def noted(*args, **kwargs):
+        boards: list = []
+        token = _CLAIM_BOARDS.set(boards)
         try:
-            data = json.loads(result)
-        except ValueError:
-            data = None
-        if isinstance(data, dict):
-            if status:
-                data["claim_status"] = status
-            if warnings:
-                data["claim_warnings"] = warnings
-            return json.dumps(data, indent=2 if "\n" in result else None)
-    lines = [
-        _status_line(board, entry)
-        for board, entry in status.items()
-        if not entry.get("warning")
-    ]
-    lines += [f"[claim warning] {w}" for w in warnings]
-    return result.rstrip("\n") + "\n\n" + "\n".join(lines)
+            result = fn(*args, **kwargs)
+        finally:
+            _CLAIM_BOARDS.reset(token)
+        if not isinstance(result, str):
+            return result
+        try:
+            notices = _claim_notices(boards)
+        except Exception:
+            logger.debug("Claim notices failed", exc_info=True)
+            return result
+        if not notices:
+            return result
+        return CallToolResult(
+            content=[
+                TextContent(type="text", text=result),
+                TextContent(type="text", text=json.dumps(notices, indent=2)),
+            ],
+            structured_content={"result": result},
+        )
+
+    return noted
 
 
 def _heartbeat_caller_session_claims() -> None:
@@ -1199,17 +1235,13 @@ def _with_mcp_activity(func):
         # The session ID names the user over authenticated HTTP; the agent
         # is the name the caller gave (claim_sbc agent_name), if any.
         token = _CURRENT_TOOL.set(func.__name__)
-        boards: list = []
-        boards_token = _CLAIM_BOARDS.set(boards)
         try:
             with audit.activity_context(
                 _get_session_id(), "mcp", agent=_given_agent_name()
             ):
                 _heartbeat_caller_session_claims()
-                result = confirmed(*args, **kwargs)
-                return _add_claim_notices(result, boards)
+                return confirmed(*args, **kwargs)
         finally:
-            _CLAIM_BOARDS.reset(boards_token)
             _CURRENT_TOOL.reset(token)
 
     return attributed

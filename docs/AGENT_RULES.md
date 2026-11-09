@@ -570,8 +570,9 @@ design.
    extends a fixed claim by its duration. Work over SSH or on the host
    does not. A fixed claim lapses after a gap that long, and later calls
    on the board then run unprotected (#73). Use `hold="session"` for those
-   tasks. Every tool result carries `claim_status` (`claim_expires_in`)
-   for the boards it was about, and `claim_warnings` when a claim of
+   tasks. Tool results carry a second content block with `claim_status`
+   (`claim_expires_in`) for the boards they were about, and
+   `claim_warnings` when a claim of
    yours is about to expire or has lapsed: act on those warnings.
 4. **Release when done:** `labctl release <sbc>` or `release_sbc(...)`.
    Claims also auto-expire and are released when the MCP session exits.

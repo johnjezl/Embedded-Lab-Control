@@ -906,7 +906,16 @@ def renew_claim(sbc_name: str):
     except NotClaimantError:
         g.manager.record_not_claimant(sbc_name, f"{request.method} {request.path}")
         return jsonify({"error": "not_claimant"}), 403
-    return jsonify({"status": "renewed", "claim": claim.to_dict()})
+    body = {"status": "renewed", "claim": claim.to_dict()}
+    if claim.session_held and duration_s is not None:
+        # An MCP session claim (#73): renewing it is a heartbeat; its
+        # duration is the session's heartbeat window.
+        body["note"] = (
+            "This claim is held for its MCP session, so duration_minutes was "
+            "not applied (it expires claims.session_timeout_minutes after the "
+            "session's last heartbeat)"
+        )
+    return jsonify(body)
 
 
 @api_bp.route("/claims/<sbc_name>/force-release", methods=["POST"])

@@ -298,6 +298,11 @@ CREATE INDEX IF NOT EXISTS idx_claims_agent
     ON claims(agent_name) WHERE released_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_claims_expiry
     ON claims(expires_at) WHERE released_at IS NULL;
+-- A holder's claims, active or not, and each board's latest (v15, #73)
+CREATE INDEX IF NOT EXISTS idx_claims_holder_session ON claims(session_id);
+CREATE INDEX IF NOT EXISTS idx_claims_holder_owner
+    ON claims(owner) WHERE owner IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_claims_sbc_latest ON claims(sbc_id, id);
 CREATE INDEX IF NOT EXISTS idx_claim_requests_claim
     ON claim_requests(claim_id);
 CREATE INDEX IF NOT EXISTS idx_actuator_channels_actuator
@@ -786,6 +791,29 @@ class Database:
                 except sqlite3.OperationalError as e:
                     if "duplicate column" not in str(e):
                         raise
+                # Every MCP tool call looks up its caller's claims (active
+                # or not) and whether a later claim is on the same board.
+                # A hand-made table may lack a column: skip its index then.
+                cols = {r[1] for r in conn.execute("PRAGMA table_info(claims)")}
+                for name, needs, sql in (
+                    (
+                        "idx_claims_holder_session",
+                        {"session_id"},
+                        "ON claims(session_id)",
+                    ),
+                    (
+                        "idx_claims_holder_owner",
+                        {"owner"},
+                        "ON claims(owner) WHERE owner IS NOT NULL",
+                    ),
+                    (
+                        "idx_claims_sbc_latest",
+                        {"sbc_id", "id"},
+                        "ON claims(sbc_id, id)",
+                    ),
+                ):
+                    if needs <= cols:
+                        conn.execute(f"CREATE INDEX IF NOT EXISTS {name} {sql}")
 
         # OR IGNORE: tolerate a concurrent process that has already
         # bumped schema_version to the current value during a race.
