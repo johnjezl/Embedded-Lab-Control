@@ -563,6 +563,24 @@ class _FakeKasaIotProtocol:
         self.closed = True
 
 
+@pytest.mark.skipif(
+    sys.version_info >= (3, 11), reason="python-kasa 0.7.7 (Python 3.10) only"
+)
+def test_legacy_zone_names_load_without_the_system_database():
+    """python-kasa 0.7.7 loads a device's time zone by a legacy name
+    (index 6 is PST8PDT, as on the recorded HS300). Ubuntu 24.04+ (and
+    GitHub's runners) no longer ship those names, so the kasa extra
+    installs tzdata, which zoneinfo falls back to: every Kasa call failed
+    without it."""
+    import zoneinfo
+
+    zoneinfo.reset_tzpath([])  # as if the system had no time zone data
+    try:
+        assert str(zoneinfo.ZoneInfo.no_cache("PST8PDT")) == "PST8PDT"
+    finally:
+        zoneinfo.reset_tzpath()
+
+
 class TestKasaStripDiscoveredAsPlug:
     """KLAP discovery types an HS300 as IotPlug; its outlets must survive.
 

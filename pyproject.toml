@@ -61,6 +61,11 @@ sdwire = [
 kasa = [
     "python-kasa>=0.12; python_version >= '3.11'",
     "python-kasa>=0.7.7,<0.8; python_version < '3.11'",
+    # 0.7.7 maps a device's time zone index to a name (e.g. "PST8PDT") and
+    # loads it with zoneinfo. Hosts whose system time zone database lacks
+    # those legacy names (Ubuntu 24.04+ moved them to tzdata-legacy) need
+    # the tzdata package, which zoneinfo falls back to.
+    "tzdata; python_version < '3.11'",
 ]
 actuators = [
     "pyserial>=3.5",

@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Kasa on Python 3.10: the `kasa` extra now installs `tzdata`. python-kasa
+  0.7.7 (the release 3.10 gets) looks up the device's time zone by a
+  legacy name such as `PST8PDT`; on hosts whose system time zone database
+  no longer has those names (Ubuntu 24.04+ moved them to `tzdata-legacy`,
+  as GitHub's runners did), every Kasa call failed with
+  `ZoneInfoNotFoundError`.
+
 ## [0.3.0] - 2026-11-02
 
 Activity stream and timekeeping release: hardware actions, claim
