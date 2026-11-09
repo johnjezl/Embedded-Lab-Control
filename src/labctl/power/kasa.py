@@ -24,10 +24,11 @@ import asyncio
 import logging
 import threading
 import time
+import zoneinfo
 from functools import lru_cache
 
 from labctl.core.config import load_config
-from labctl.extras import BrokenExtraError, MissingExtraError, is_missing
+from labctl.extras import DIST_NAME, BrokenExtraError, MissingExtraError, is_missing
 from labctl.power.base import PowerController, PowerState
 
 logger = logging.getLogger(__name__)
@@ -134,6 +135,19 @@ def _get_cached_kasa_credentials():
             raise
         logger.warning("Failed to load Kasa credentials: %s", e)
     return None
+
+
+def _missing_zone_message(action: str, address: str, error: Exception) -> str:
+    """python-kasa 0.7.7 (Python 3.10) loads the device's time zone by a
+    legacy name such as PST8PDT. Hosts without those names (Ubuntu 24.04+
+    moved them to tzdata-legacy) need the tzdata package, which the [kasa]
+    extra installs on 3.10; an install made before it did may lack it."""
+    return (
+        f"Kasa {action} failed for {address}: this system has no time zone "
+        f"data for the device's zone ({error}). Install the tzdata package: "
+        f'pip install "{DIST_NAME}[kasa]" installs it '
+        f"(pipx: pipx inject {DIST_NAME} tzdata)"
+    )
 
 
 class KasaController(PowerController):
@@ -312,6 +326,12 @@ class KasaController(PowerController):
                 if not is_missing(e, "kasa"):
                     raise BrokenExtraError("kasa", e) from e
                 raise MissingExtraError("kasa") from e
+            except zoneinfo.ZoneInfoNotFoundError as e:
+                # No retry helps: the host lacks the zone python-kasa asked
+                # for (see _missing_zone_message).
+                msg = _missing_zone_message(action, self.address, e)
+                logger.error(msg)
+                raise RuntimeError(msg) from e
             except RuntimeError:
                 raise
             except Exception as e:

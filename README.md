@@ -53,7 +53,7 @@ ser2net, Tasmota and Shelly plugs, claims) needs none:
 |-------|---------|----------|
 | `web` | `labctl web`: dashboard and REST API; `labctl user hash-password`, `add` and `verify` (password hashing for web logins and API-key users) | Flask, Flask-SocketIO |
 | `mcp` | `labctl mcp`: MCP server for AI tools | `mcp` SDK 2.x |
-| `kasa` | TP-Link Kasa plugs and strips | `python-kasa` (0.12+ on Python 3.11+, 0.7.7 on 3.10: no KLAP v2) |
+| `kasa` | TP-Link Kasa plugs and strips | `python-kasa` (0.12+ on Python 3.11+, 0.7.7 on 3.10: no KLAP v2), plus `tzdata` on 3.10 |
 | `sdwire` | SDWire SD card muxes (`labctl sdwire ...`) | `sdwire`, Python 3.12+ only |
 | `actuators` | USB relay boards (LCUS-1) | `pyserial` |
 

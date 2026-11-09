@@ -563,22 +563,57 @@ class _FakeKasaIotProtocol:
         self.closed = True
 
 
-@pytest.mark.skipif(
-    sys.version_info >= (3, 11), reason="python-kasa 0.7.7 (Python 3.10) only"
-)
-def test_legacy_zone_names_load_without_the_system_database():
-    """python-kasa 0.7.7 loads a device's time zone by a legacy name
-    (index 6 is PST8PDT, as on the recorded HS300). Ubuntu 24.04+ (and
-    GitHub's runners) no longer ship those names, so the kasa extra
-    installs tzdata, which zoneinfo falls back to: every Kasa call failed
-    without it."""
+@pytest.fixture
+def no_system_zones():
+    """As if the host had no time zone database (Ubuntu 24.04+ lacks the
+    legacy names python-kasa 0.7.7 asks for, e.g. PST8PDT): zoneinfo can
+    only use the tzdata package. Caches are cleared on both sides so
+    nothing loaded earlier hides a missing zone."""
     import zoneinfo
 
-    zoneinfo.reset_tzpath([])  # as if the system had no time zone data
+    def clear():
+        zoneinfo.ZoneInfo.clear_cache()
+        try:
+            from kasa.cachedzoneinfo import CachedZoneInfo
+        except ImportError:  # python-kasa without the cache
+            return
+        CachedZoneInfo._cache.clear()
+
+    clear()
+    zoneinfo.reset_tzpath([])
     try:
-        assert str(zoneinfo.ZoneInfo.no_cache("PST8PDT")) == "PST8PDT"
+        yield
     finally:
         zoneinfo.reset_tzpath()
+        clear()
+
+
+class TestKasaMissingTimeZone:
+    def test_reported_at_once_naming_tzdata(self):
+        """A host without the zone (an install from before the [kasa] extra
+        brought tzdata): retrying can't help, so say what to install."""
+        import zoneinfo
+
+        from labctl.power.kasa import KasaController
+
+        controller = KasaController("192.168.1.100", plug_index=1)
+        calls = []
+
+        async def lookup():
+            calls.append(1)
+            raise zoneinfo.ZoneInfoNotFoundError("No time zone found with key PST8PDT")
+
+        with (
+            patch("labctl.power.kasa.time.sleep") as sleep,
+            pytest.raises(RuntimeError) as exc,
+        ):
+            controller._run_async(lookup, "power_on")
+        assert len(calls) == 1
+        sleep.assert_not_called()
+        message = str(exc.value)
+        assert "PST8PDT" in message
+        assert "pipx inject embedded-lab-control tzdata" in message
+        assert 'pip install "embedded-lab-control[kasa]"' in message
 
 
 class TestKasaStripDiscoveredAsPlug:
@@ -655,6 +690,14 @@ class TestKasaStripDiscoveredAsPlug:
         assert outlet_2.endswith("01")
         assert writes[0]["context"]["child_ids"] == [outlet_2]
         assert writes[0]["system"]["set_relay_state"] == {"state": 1}
+
+    @pytest.mark.usefixtures("no_system_zones")
+    def test_works_without_the_system_time_zone_database(self):
+        """The recorded HS300 is in time zone index 6, which python-kasa
+        0.7.7 (Python 3.10) loads as PST8PDT: the [kasa] extra's tzdata
+        must provide it (#75). python-kasa 0.12 needs no zone here."""
+        controller, _ = self._controller(plug_index=1)
+        assert controller.get_state() == PowerState.OFF  # as recorded
 
     def test_reads_every_outlet_state(self):
         controller, protocol = self._controller(plug_index=1)
