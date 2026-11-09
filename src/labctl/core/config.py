@@ -450,6 +450,10 @@ class ClaimsConfig:
     # MCP/REST calls that change a board refuse unless the caller holds
     # its claim (D013). Off by default: single-agent setups never claim.
     require_claim: bool = False
+    # A claim made with hold="session" (MCP, #73) expires this long after
+    # its session's last heartbeat: over stdio the server heartbeats it
+    # while the session lasts; over HTTP, each tool call by its holder.
+    session_timeout_minutes: int = 30
 
     def validate(self) -> list[str]:
         """Check invariants, returning a list of warning messages.
@@ -495,6 +499,22 @@ class ClaimsConfig:
         if self.auto_prune_released_after_days < 1:
             warnings.append("claims.auto_prune_released_after_days < 1, clamped to 1")
             self.auto_prune_released_after_days = 1
+        # A session claim's duration is this window, so it keeps to the
+        # same bounds as any other claim's.
+        if (
+            self.session_timeout_minutes < self.min_duration_minutes
+            or self.session_timeout_minutes > self.max_duration_minutes
+        ):
+            clamped = max(
+                self.min_duration_minutes,
+                min(self.session_timeout_minutes, self.max_duration_minutes),
+            )
+            warnings.append(
+                f"claims.session_timeout_minutes={self.session_timeout_minutes}"
+                f" outside [{self.min_duration_minutes},"
+                f" {self.max_duration_minutes}], clamped to {clamped}"
+            )
+            self.session_timeout_minutes = clamped
         return warnings
 
 
@@ -683,6 +703,9 @@ class Config:
             ),
             require_agent_name=_opt_in_flag(claims_data, "require_agent_name"),
             require_claim=_opt_in_flag(claims_data, "require_claim"),
+            session_timeout_minutes=_positive_int(
+                claims_data, "session_timeout_minutes", 30
+            ),
         )
 
         # Validate and clamp claim config bounds
@@ -793,6 +816,7 @@ class Config:
                 ),
                 "require_agent_name": self.claims.require_agent_name,
                 "require_claim": self.claims.require_claim,
+                "session_timeout_minutes": self.claims.session_timeout_minutes,
             },
             "mcp": {
                 "allow_admin_actuator_ops": self.mcp.allow_admin_actuator_ops,

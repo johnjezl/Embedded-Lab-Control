@@ -114,6 +114,11 @@ ser2net:
 #   default_duration_minutes: 30
 #   min_duration_minutes: 1
 #   max_duration_minutes: 1440
+#   # A claim made with MCP claim_sbc(hold="session") lasts as long as
+#   # its session: the stdio server heartbeats it, and over HTTP each tool
+#   # call by its user does. Without a heartbeat for this many minutes it
+#   # expires. Kept within min..max_duration_minutes.
+#   session_timeout_minutes: 30
 #   # After a claim expires, only its holder can claim the board again for
 #   # this long. The expired claim no longer protects the board or can be
 #   # renewed: renew before it expires.

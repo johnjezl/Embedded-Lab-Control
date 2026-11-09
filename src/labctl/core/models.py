@@ -85,13 +85,20 @@ class NotClaimantError(ClaimError):
 
 
 class ClaimRequiredError(ClaimError):
-    """``claims.require_claim`` is on and the caller holds no claim."""
+    """``claims.require_claim`` is on and the caller holds no claim.
 
-    def __init__(self, sbc_name: str):
+    ``lapsed`` is the caller's own claim on the board that ended without
+    being released by them (expired, force-released, its session lost),
+    when that is the board's latest claim: the message names it, so a
+    claim that ran out mid-task reads as such (#73)."""
+
+    def __init__(self, sbc_name: str, lapsed: Optional["Claim"] = None):
         self.sbc_name = sbc_name
-        super().__init__(
-            f"SBC '{sbc_name}' must be claimed first (claims.require_claim is on)"
-        )
+        self.lapsed = lapsed
+        message = f"SBC '{sbc_name}' must be claimed first (claims.require_claim is on)"
+        if lapsed is not None:
+            message += f"; {lapsed.lapse_text()}"
+        super().__init__(message)
 
 
 class NotOperatorError(ClaimError):
@@ -123,6 +130,21 @@ class ClaimActor:
         if claim.session_id == self.session_id:
             return True
         return bool(self.owner) and claim.owner == self.owner
+
+
+class ClaimHold(str, Enum):
+    """How a claim is kept (#73).
+
+    ``fixed``: it lasts ``duration_seconds`` from its last activity (a
+    renewal, or a call on the board by its holder). ``session``: it lasts
+    while the MCP session that made it does; the session heartbeats it,
+    and ``duration_seconds`` is the heartbeat window
+    (``claims.session_timeout_minutes``) after which a silent session's
+    claim expires.
+    """
+
+    FIXED = "fixed"
+    SESSION = "session"
 
 
 class SessionKind(str, Enum):
@@ -458,6 +480,8 @@ class Claim:
     session_kind: str = ""
     # Authenticated labctl username (MCP HTTP, REST, web login), else None.
     owner: Optional[str] = None
+    # ClaimHold value: "fixed" or "session" (kept alive by its MCP session).
+    hold: str = ClaimHold.FIXED.value
     reason: str = ""
     context: Optional[dict] = None
     acquired_at: Optional[datetime] = None
@@ -495,6 +519,7 @@ class Claim:
             session_id=row["session_id"],
             session_kind=row["session_kind"],
             owner=row["owner"] if "owner" in keys else None,
+            hold=(row["hold"] if "hold" in keys else None) or ClaimHold.FIXED.value,
             reason=row["reason"],
             context=context,
             acquired_at=_parse_timestamp(row["acquired_at"]),
@@ -523,6 +548,37 @@ class Claim:
             return None
         return self.expires_at - timeutil.now()
 
+    @property
+    def session_held(self) -> bool:
+        return self.hold == ClaimHold.SESSION.value
+
+    @property
+    def lapsed(self) -> bool:
+        """Ended without its holder releasing it: past its deadline
+        (swept or not), force-released, or its session lost."""
+        if self.released_at is None:
+            return not self.is_active
+        return self.release_reason in (
+            ReleaseReason.EXPIRED,
+            ReleaseReason.FORCE_RELEASED,
+            ReleaseReason.SESSION_LOST,
+        )
+
+    def lapse_text(self) -> str:
+        """How this (lapsed) claim ended, addressed to its holder: "your
+        claim on 'x' (claimed by 'a' at T) expired at T2"."""
+        board = f" on '{self.sbc_name}'" if self.sbc_name else ""
+        text = (
+            f"your claim{board} (claimed by '{self.agent_name}' at "
+            f"{timeutil.iso(self.acquired_at)})"
+        )
+        if self.released_at is None or self.release_reason == ReleaseReason.EXPIRED:
+            return f"{text} expired at {timeutil.iso(self.expires_at)}"
+        when = timeutil.iso(self.released_at)
+        if self.release_reason == ReleaseReason.FORCE_RELEASED:
+            return f"{text} was force-released by '{self.released_by}' at {when}"
+        return f"{text} was released at {when} because its session ended"
+
     def to_dict(self, include_ids: bool = False) -> dict:
         data = {
             "agent_name": self.agent_name,
@@ -537,6 +593,7 @@ class Claim:
         }
         if self.owner:
             data["owner"] = self.owner
+        data["hold"] = self.hold
         remaining = self.time_remaining
         if remaining is not None:
             data["time_remaining_seconds"] = max(0, int(remaining.total_seconds()))

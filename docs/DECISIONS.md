@@ -268,6 +268,18 @@ This document records significant design decisions made during development.
 - **Rules**: bare names only (no paths, no leading dot); `Content-Length` required, `mcp.max_upload_mb` (8192) and 1 GiB left free checked before writing; temp file renamed into place only when complete (and matching `?sha256=`); replacing needs `?overwrite=1` and, like deleting, is allowed to the uploader or an operator only (files placed another way: operators only), recorded in a new `images` table (schema v10); every upload, accepted or refused, and every deletion in the activity log. The SDK serves custom routes without its auth or Host checks, so the route applies both itself.
 - **Rationale**: one remote endpoint and credential per agent; the allowlist stays the only way tools reach host files (an upload directory outside it is useless, and startup warns); agents can't clobber each other's builds, the same concern claims address for boards.
 
+## D015: Claims held for an MCP session; claim status in every result
+
+- **Date**: 2026-11-08
+- **Context**: #73. On SLM-OS #475 a 120-minute claim on jetson-nano-2 lapsed while the agent worked over SSH and on the host; an hour of work then ran on the unclaimed board, and nothing said so until a sub-agent's `get_claim` showed `claimed=false`. Calls on the board already renewed the claim (`check_claim` heartbeats the holder's claim), so the gap was work that never touched a labctl tool.
+- **Decisions**:
+  1. **`claim_sbc(hold="session")`**, stored as `claims.hold` (schema v15), with `duration_seconds` as the heartbeat window (`claims.session_timeout_minutes`, default 30, kept within the claim duration bounds). The rest of the claim code (expiry, sweep, keepalive, display of `expires_at`) works unchanged on that window.
+  2. **What counts as a heartbeat depends on the transport.** stdio: the server process heartbeats its session's claims every 30 s from the sweep thread, because one stdio process is one client; the agent going away closes stdin, the server exits and releases them (verified end to end), and the thread stops heartbeating once the server is re-parented (the client is gone but the pipe stayed open). HTTP: the server is shared and per-user sessions outlive connections, so only the user's own tool calls (any tool) heartbeat it; an unauthenticated HTTP server refuses session holds, since its clients are one identity.
+  3. **A dead stdio process's session claims are released by the next sweep** without waiting for their deadline (the session was the hold); HTTP ones aren't (the user's next connection to a restarted server still holds them).
+  4. **Status and warnings in every MCP result**, added centrally in `_with_mcp_activity` from the boards the call's claim check passed (plus `get_claim`), so each tool needn't change. A lapse is reported on every call about its board until the board is claimed again, and once (per server process) elsewhere; claims of others, claims the caller released, and labs where nobody claims see no change. A fixed claim warns under min(10 min, half its duration).
+  5. **Strict mode is the existing `claims.require_claim`**; no `require_for_mutation` alias. Its refusal now names the caller's lapsed claim.
+- **Rejected**: capping a session claim at `max_duration_minutes` (renewals were never capped, and a dead session is what must not hold a board, which the heartbeat covers); heartbeating HTTP session claims from the server process (it would keep a dead agent's claim forever); FastMCP per-connection session IDs for HTTP (still deferred from claims Phase B).
+
 ---
 
 _Template for new decisions:_

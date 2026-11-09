@@ -488,11 +488,11 @@ it has none. The result names the board it came from.
 
 | Tool | Parameters | Description |
 |------|------------|-------------|
-| `claim_sbc` | `sbc_name`, `duration_minutes` (default `claims.default_duration_minutes`), `reason` (optional), `agent_name`, `context` | Claim exclusive access to an SBC. The duration must lie within `claims.min_duration_minutes`..`max_duration_minutes`. `agent_name` is remembered for later calls over stdio, and per user with authenticated HTTP; an unauthenticated HTTP server uses it for that call only (its clients can't be told apart). Without one the claim is named after the remembered or authenticated name, else `unnamed-...`, which `claims.require_agent_name` refuses (`agent_name_required`) |
+| `claim_sbc` | `sbc_name`, `duration_minutes` (default `claims.default_duration_minutes`), `reason` (optional), `agent_name`, `context`, `hold` (`fixed` or `session`, default `fixed`) | Claim exclusive access to an SBC. The duration must lie within `claims.min_duration_minutes`..`max_duration_minutes`. With `hold="session"` the claim lasts as long as the MCP session instead ([below](#session-claims)); `duration_minutes` is then not used (the result says so in `note`). Claiming a board you already hold switches its hold. `agent_name` is remembered for later calls over stdio, and per user with authenticated HTTP; an unauthenticated HTTP server uses it for that call only (its clients can't be told apart). Without one the claim is named after the remembered or authenticated name, else `unnamed-...`, which `claims.require_agent_name` refuses (`agent_name_required`) |
 | `release_sbc` | `sbc_name` | Release your claim (this session, or your user over authenticated HTTP) |
-| `renew_sbc_claim` | `sbc_name`, `duration_minutes` | Extend an active claim's deadline |
+| `renew_sbc_claim` | `sbc_name`, `duration_minutes` | Extend an active claim's deadline. A session claim is only heartbeated: `duration_minutes` is not applied (the result's `note` says so) |
 | `list_claims` | — | List all active claims across the lab |
-| `get_claim` | `sbc_name` | Get the current claim on an SBC |
+| `get_claim` | `sbc_name` | Get the current claim on an SBC. When your own claim on it lapsed, `claim_status` says how ([below](#claim-status-and-warnings-in-results)) |
 | `request_sbc_release` | `sbc_name`, `reason` | Politely ask the claimant to release |
 | `force_release_sbc` | `sbc_name`, `reason` | Operator override — forcibly release (operators only, D013) |
 
@@ -569,8 +569,64 @@ so its call stops once the checks have failed for 60 s in a row
 be read when the call starts, the call goes on without keeping it alive
 (logged).
 
-A claim still has to cover the gaps between calls: size it for the whole
-workflow, and `renew_sbc_claim` between long steps.
+A fixed claim still has to cover the gaps between calls: size it for the
+whole workflow and `renew_sbc_claim` between long steps, or claim with
+`hold="session"`.
+
+#### Session claims
+
+A fixed claim lasts `duration_minutes` from the holder's last call on the
+board, and a lapse passes silently while the agent works off the board's
+tools (SSH, building or analysing on the host): on SLM-OS #475 a
+120-minute claim expired and an hour of work then ran on the unclaimed
+board (#73). `claim_sbc(..., hold="session")` keeps the claim for as
+long as the MCP session lasts, however far apart its calls are:
+
+- **stdio**: the server heartbeats the session's claims every 30 s while
+  it serves its client. When the client goes away (the agent exits or is
+  killed, closing the server's stdin), the server exits and releases
+  them. If the server itself dies without releasing them, any process's
+  dead-session sweep (another MCP server's, every 30 s, or
+  `labctl claims expire`) releases them at once. Otherwise they expire
+  after `claims.session_timeout_minutes`. The server also stops
+  heartbeating once its parent process (the client) is gone.
+- **HTTP** (API keys required; an unauthenticated server refuses with
+  `session_hold_unavailable`, since its clients can't be told apart):
+  every tool call by the claim's user, of any kind (`get_claim`,
+  `list_claims` included), heartbeats it. It expires
+  `claims.session_timeout_minutes` (default 30) after the user's last
+  call. Like every claim made through it, the server releases it when it
+  shuts down cleanly (a restart, e.g. by `update.sh`, ends the session).
+
+A session claim's `duration_seconds` is that heartbeat window, so
+`lab://claims`, `labctl claims list`, the dashboard and the SBC page show
+it as held for its session rather than counting down. Release it with
+`release_sbc` when done, as any claim.
+
+#### Claim status and warnings in results
+
+Every tool result reports the caller's claims, so a claim that runs out
+mid-task doesn't go unnoticed. For a JSON object result, the report is
+two keys. For a text result, it is `[claim]` lines at the end:
+
+- `claim_status`, for each board the call was about where the caller
+  holds the claim or held the latest one: `held`, `hold`,
+  `claim_expires_in` (seconds) and `expires_at`, or `lapsed: true` with
+  the claim and a `warning`. Text results get `[claim] <board>: yours
+  until <time> (expires in N min; each call on the board extends it)`,
+  or `yours, held for this MCP session`.
+- `claim_warnings`, as `[claim warning] ...` in text: a fixed claim of
+  the caller's, on any board, with less than 10 minutes left (or less
+  than half its duration, if that is shorter); and a claim of the
+  caller's that lapsed (expired, force-released, or its session ended)
+  with nobody having claimed the board since. A lapse is reported on
+  every call about that board until it is claimed again, and once in
+  the results of calls about other boards.
+
+Nothing is added for a caller who never claimed, for a claim the caller
+released, or while `claims.enabled` is off. A call on the board renews
+the caller's fixed claim (as above), so its own result never warns about
+that claim's expiry.
 
 With `claims.require_claim: true` (default `false`), the tools that name
 a board (all of the above except `actuator_set`/`actuator_remove`) also
@@ -579,12 +635,19 @@ agents must `claim_sbc` first. Only the board named in the call needs the
 caller's claim; boards it shares hardware with just must not be claimed
 by someone else. A value that isn't a boolean counts as `true` (with a
 warning) unless it plainly means off (`"false"`, `"no"`, `"off"`, `0`). Other read-only tools are never refused.
+When the caller's own claim on the board has lapsed, the refusal names
+it (`your claim on '<sbc>' (claimed by '<agent>' at <time>) expired at
+<time>`, or was force-released, or its session ended) and carries it as
+`lapsed_claim`. This is the strict mode #73 asked for: a lapse ends in a
+refusal instead of a call on an unprotected board.
 
 ### Tool Return Values
 
 All tools return strings. Success messages are plain text, structured data is
 returned as formatted JSON. Errors are prefixed with "Error:" or returned as
-structured JSON with an `"error"` field (claim conflicts).
+structured JSON with an `"error"` field (claim conflicts). Either may end
+with the caller's claim status and warnings
+([above](#claim-status-and-warnings-in-results)).
 
 ## Prompts (Guided Workflows)
 

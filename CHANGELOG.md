@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+**Upgrading**: the database migrates itself to schema v15 (`claims.hold`)
+on first use; after that an older labctl refuses it, so upgrade every
+labctl that shares it together, and reconnect stdio MCP agents.
+
+### Added
+
+- Session claims (#73): MCP `claim_sbc(..., hold="session")` keeps a
+  claim for as long as the MCP session lasts, however far apart its calls
+  are. Over stdio the server heartbeats it every 30 s and releases it when
+  the session ends (the agent exiting or being killed closes the server's
+  stdin), and a killed server's session claims are released by the next
+  dead-session sweep. Over HTTP (API keys required) every tool call by its
+  user heartbeats it. Without a heartbeat it expires after the new
+  `claims.session_timeout_minutes` (default 30). Claiming a board you
+  hold switches its hold. `renew_sbc_claim` only heartbeats a session
+  claim (it doesn't apply `duration_minutes`). `labctl claims list`,
+  `labctl status`, the dashboard and the SBC page show session claims as
+  such, and `hold` is in every claim's JSON.
+- Claim status and warnings in MCP tool results (#73): every result
+  reports the caller's claim on the boards the call was about
+  (`claim_status` with `claim_expires_in`, or `[claim]` lines in text). It
+  also warns (`claim_warnings` / `[claim warning]`) about a claim of the
+  caller's with under 10 minutes left, or one that lapsed (expired,
+  force-released, or its session ended) with nobody having claimed the
+  board since: on every call about that board, and once elsewhere.
+  `get_claim` shows such a lapse. Callers who never claim see no change.
+
+### Changed
+
+- With `claims.require_claim` on (the strict mode #73 asked for), the
+  refusal of a caller whose own claim lapsed names that claim and how it
+  ended, on MCP (with `lapsed_claim`) and REST.
+- The `/deploy-and-test` skill claims with `hold="session"` instead of
+  sizing a fixed claim (`labctl skill install --force` updates a copy).
+
 ### Fixed
 
 - Kasa on Python 3.10: the `kasa` extra now installs `tzdata`. python-kasa
@@ -18,6 +53,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   in labctl's environment (`pipx inject embedded-lab-control tzdata`).
   Until then, Kasa calls now fail at once with a message saying so,
   instead of after three attempts with a bare `ZoneInfoNotFoundError`.
+- The dead-session sweep no longer releases a claim twice when two
+  sweeps race.
 
 ## [0.3.0] - 2026-11-02
 

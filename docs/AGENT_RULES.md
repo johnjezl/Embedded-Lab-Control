@@ -556,14 +556,23 @@ design.
 1. **Claim before multi-step operations:**
    ```
    labctl claim <sbc> --duration 30m --reason "GPU bringup"
-   # or via MCP:
+   # or via MCP, for a fixed time:
    claim_sbc(sbc_name="...", duration_minutes=30, reason="...")
+   # or via MCP, for as long as the session lasts (preferred for a task
+   # of unknown length, or with long stretches off the board's tools):
+   claim_sbc(sbc_name="...", hold="session", reason="...")
    ```
 2. **Mutating operations are gated:** `power_on`, `serial_send`,
    `sdwire_update`, `flash_image`, `boot_test`, etc. return structured
    errors if another agent holds the claim.
-3. **Heartbeat is automatic:** every tool call (reads and writes) by the
-   claimant extends the deadline.
+3. **Heartbeat is automatic, but only from calls on the board:** each
+   claimant call about the board (operating it, reading its console)
+   extends a fixed claim by its duration. Work over SSH or on the host
+   does not. A fixed claim lapses after a gap that long, and later calls
+   on the board then run unprotected (#73). Use `hold="session"` for those
+   tasks. Every tool result carries `claim_status` (`claim_expires_in`)
+   for the boards it was about, and `claim_warnings` when a claim of
+   yours is about to expire or has lapsed: act on those warnings.
 4. **Release when done:** `labctl release <sbc>` or `release_sbc(...)`.
    Claims also auto-expire and are released when the MCP session exits.
 5. **Check pending release requests:** if another agent needs the board,
@@ -585,8 +594,12 @@ Declare a descriptive `agent_name` on first claim:
 | Build + deploy + boot test | 30m–1h |
 | Overnight reliability run | 8–24h |
 
-Max is configurable (default 24h). Heartbeat extends the deadline
-automatically.
+Max is configurable (default 24h). Calls on the board extend the
+deadline automatically. When the length is hard to predict, or the task
+spends long stretches off the board's tools, use `hold="session"`
+instead. Over stdio the claim then ends with the session. Over HTTP it
+expires `claims.session_timeout_minutes` (default 30) after your last
+tool call.
 
 ---
 

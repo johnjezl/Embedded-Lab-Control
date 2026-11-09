@@ -27,6 +27,7 @@ from labctl.core.models import (
     Claim,
     ClaimActor,
     ClaimConflict,
+    ClaimHold,
     ClaimNotFoundError,
     ClaimRequest,
     ClaimRequiredError,
@@ -43,6 +44,7 @@ from labctl.core.models import (
     SDWireDevice,
     SerialDevice,
     SerialPort,
+    SessionKind,
     ShapeMode,
     Status,
     UnknownSBCError,
@@ -1798,6 +1800,11 @@ class ResourceManager:
         process — see ``_is_session_alive``) **and** the claim's deadline +
         grace has passed, the claim is released as ``session-lost``. Claims
         with other ``session_kind`` values (cli, web) are skipped.
+
+        A stdio claim held for its session (``hold`` = session, #73) is
+        released as soon as its process is gone: the session was the
+        hold. (An HTTP one isn't: its holder's next session, on a
+        restarted server, still holds it until its heartbeat window ends.)
         """
         rows = self.db.execute("""
             SELECT c.*, s.name AS sbc_name
@@ -1826,19 +1833,27 @@ class ResourceManager:
                 continue
 
             # PID is dead — but only release if past grace
-            if claim.expires_at and claim.expires_at > cutoff:
+            stdio_session_hold = (
+                claim.session_held and claim.session_kind == SessionKind.MCP_STDIO
+            )
+            if (
+                not stdio_session_hold
+                and claim.expires_at
+                and claim.expires_at > cutoff
+            ):
                 continue
 
-            self.db.execute_modify(
+            if not self.db.execute_modify(
                 """
                 UPDATE claims
                 SET released_at = CURRENT_TIMESTAMP,
                     release_reason = ?,
                     released_by = 'system'
-                WHERE id = ?
+                WHERE id = ? AND released_at IS NULL
                 """,
                 (ReleaseReason.SESSION_LOST.value, claim.id),
-            )
+            ):
+                continue  # released meanwhile (another sweep, its holder)
             logger.info(
                 "Released claim on '%s' (dead session pid=%d, agent=%s)",
                 claim.sbc_name,
@@ -1940,11 +1955,13 @@ class ResourceManager:
         context: Optional[dict] = None,
         grace_seconds: int = 60,
         owner: Optional[str] = None,
+        hold: str = ClaimHold.FIXED.value,
     ) -> Claim:
         """Acquire an exclusive claim on an SBC.
 
         ``owner`` is the authenticated labctl username, if any (see
-        :class:`ClaimActor`).
+        :class:`ClaimActor`). ``hold`` is a :class:`ClaimHold` value; for
+        a session claim, ``duration_seconds`` is its heartbeat window.
 
         Runs an expire-stale sweep inside the acquisition transaction so
         the partial unique index can't block a legitimate caller behind a
@@ -1998,11 +2015,11 @@ class ResourceManager:
             cursor = conn.execute(
                 """
                 INSERT INTO claims (
-                    sbc_id, agent_name, session_id, session_kind, owner,
+                    sbc_id, agent_name, session_id, session_kind, owner, hold,
                     reason, context_json, acquired_at, duration_seconds,
                     last_activity, expires_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     sbc_id,
@@ -2010,6 +2027,7 @@ class ResourceManager:
                     session_id,
                     session_kind,
                     owner or None,
+                    ClaimHold(hold).value,
                     reason,
                     context_json,
                     self._fmt_ts(now),
@@ -2033,13 +2051,15 @@ class ResourceManager:
         self._record_expired(
             replaced, "Expired claim replaced by its holder's new claim"
         )
+        held_for = (
+            "for its session" if claim.session_held else f"for {duration_seconds}s"
+        )
         self._audit_log(
             "claim",
             "sbc",
             sbc_id,
             sbc_name,
-            f"Claimed by {agent_name} ({session_kind}) "
-            f"for {duration_seconds}s: {reason}",
+            f"Claimed by {agent_name} ({session_kind}) {held_for}: {reason}",
         )
         return claim
 
@@ -2173,6 +2193,7 @@ class ResourceManager:
         session_id: str,
         duration_seconds: Optional[int] = None,
         owner: Optional[str] = None,
+        hold: Optional[str] = None,
     ) -> Claim:
         """Extend an active claim's deadline (held by ``session_id`` or
         by the authenticated user ``owner``).
@@ -2180,6 +2201,12 @@ class ResourceManager:
         If ``duration_seconds`` is omitted the previous duration is reused.
         ``last_activity`` and ``expires_at`` are both advanced to "now" and
         "now + duration_seconds" respectively.
+
+        ``hold`` (a :class:`ClaimHold` value) switches how the claim is
+        kept; pass the new hold's duration with it (for a session claim,
+        its heartbeat window). Without ``hold``, a session claim keeps its
+        window: renewing it is a heartbeat, and ``duration_seconds`` is
+        ignored (it would turn into a fixed-length claim otherwise, #73).
         """
         claim = self.get_active_claim(sbc_name)
         if claim is None:
@@ -2188,15 +2215,18 @@ class ResourceManager:
             raise NotClaimantError(
                 f"Claim on '{sbc_name}' is held by a different session"
             )
-        new_duration = (
-            duration_seconds if duration_seconds is not None else claim.duration_seconds
-        )
+        new_hold = ClaimHold(hold).value if hold is not None else claim.hold
+        if duration_seconds is None or (hold is None and claim.session_held):
+            new_duration = claim.duration_seconds
+        else:
+            new_duration = duration_seconds
         now = timeutil.now()
         new_expiry = now + timedelta(seconds=new_duration)
         updated = self.db.execute_modify(
             """
             UPDATE claims
             SET duration_seconds = ?,
+                hold = ?,
                 last_activity = ?,
                 expires_at = ?,
                 renewal_count = renewal_count + 1
@@ -2204,6 +2234,7 @@ class ResourceManager:
             """,
             (
                 new_duration,
+                new_hold,
                 self._fmt_ts(now),
                 self._fmt_ts(new_expiry),
                 claim.id,
@@ -2219,7 +2250,11 @@ class ResourceManager:
             entity_id=claim.sbc_id,
             entity_name=sbc_name,
             details={
-                "message": f"Claim by {claim.agent_name} renewed for {new_duration}s",
+                "message": (
+                    f"Claim by {claim.agent_name} renewed for its session"
+                    if new_hold == ClaimHold.SESSION.value
+                    else f"Claim by {claim.agent_name} renewed for {new_duration}s"
+                ),
                 "claim": claim.id,
             },
         )
@@ -2280,6 +2315,68 @@ class ResourceManager:
             (self._fmt_ts(now), self._fmt_ts(new_expiry), claim.id, self._fmt_ts(now)),
         )
         return changed > 0
+
+    def heartbeat_session_claims(self, actor: ClaimActor) -> int:
+        """Heartbeat every session-held claim ``actor`` holds (#73): its
+        deadline moves to now + its heartbeat window. Like
+        :meth:`heartbeat_held_claim`, a claim already released or past its
+        deadline is never revived. Returns how many were heartbeated."""
+        now = self._fmt_ts(timeutil.now())
+        return self.db.execute_modify(
+            """
+            UPDATE claims
+            SET last_activity = ?,
+                expires_at = strftime(
+                    '%Y-%m-%d %H:%M:%f', ?, '+' || duration_seconds || ' seconds'
+                ) || '000'
+            WHERE hold = ? AND released_at IS NULL AND expires_at >= ?
+              AND (session_id = ? OR (COALESCE(?, '') != '' AND owner = ?))
+            """,
+            (
+                now,
+                now,
+                ClaimHold.SESSION.value,
+                now,
+                actor.session_id,
+                actor.owner,
+                actor.owner,
+            ),
+        )
+
+    def latest_claims_of(self, actor: ClaimActor) -> list[Claim]:
+        """``actor``'s claims that are the latest claim on their board,
+        active or not: what the actor holds, and the claims it held that
+        nobody has claimed the board since (#73: a lapse is news to its
+        holder until the board is claimed again)."""
+        rows = self.db.execute(
+            """
+            SELECT c.*, s.name AS sbc_name
+            FROM claims c JOIN sbcs s ON s.id = c.sbc_id
+            WHERE c.id IN (SELECT MAX(id) FROM claims GROUP BY sbc_id)
+              AND (c.session_id = ? OR (COALESCE(?, '') != '' AND c.owner = ?))
+            ORDER BY s.name
+            """,
+            (actor.session_id, actor.owner, actor.owner),
+        )
+        return [Claim.from_row(r) for r in rows]
+
+    def lapsed_claim(self, sbc_name: str, actor: ClaimActor) -> Optional[Claim]:
+        """``actor``'s claim on ``sbc_name`` that ended without them
+        releasing it (expired, force-released, session lost), when nobody
+        has claimed the board since; else None."""
+        sbc_id = self._require_sbc_id(sbc_name)
+        row = self.db.execute_one(
+            """
+            SELECT c.*, s.name AS sbc_name
+            FROM claims c JOIN sbcs s ON s.id = c.sbc_id
+            WHERE c.sbc_id = ? ORDER BY c.id DESC LIMIT 1
+            """,
+            (sbc_id,),
+        )
+        if row is None:
+            return None
+        claim = Claim.from_row(row)
+        return claim if actor.holds(claim) and claim.lapsed else None
 
     def check_claim(
         self,
@@ -2460,7 +2557,14 @@ class ResourceManager:
             if not require_claim:
                 return None
             if not override:
-                raise ClaimRequiredError(sbc_name)
+                try:
+                    lapsed = self.lapsed_claim(sbc_name, actor)
+                except UnknownSBCError:
+                    raise
+                except Exception:  # noqa: BLE001 - only enriches the refusal
+                    logger.warning("lapsed-claim lookup on %s failed", sbc_name)
+                    lapsed = None
+                raise ClaimRequiredError(sbc_name, lapsed=lapsed)
             if not actor.operator:
                 raise NotOperatorError(
                     f"Only operators may act on '{sbc_name}' without a claim"

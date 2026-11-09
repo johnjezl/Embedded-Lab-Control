@@ -1488,6 +1488,25 @@ class TestClaimCommands:
         assert result.exit_code == 0
         assert "No active claims" in result.output
 
+    def test_session_claim_shown_as_held_for_its_session(self, claim_runner):
+        """#73: an MCP session claim's deadline is its heartbeat window."""
+        runner, config, manager = claim_runner
+        manager.claim_sbc(
+            sbc_name="pi-5-1",
+            agent_name="mcp-agent",
+            session_id="mcp-stdio:1-1",
+            session_kind="mcp-stdio",
+            duration_seconds=1800,
+            reason="long run",
+            hold="session",
+        )
+        result = runner.invoke(main, ["-c", str(config), "claims", "list"])
+        assert result.exit_code == 0, result.output
+        assert "held for its session" in result.output
+        assert "remaining" not in result.output
+        result = runner.invoke(main, ["-c", str(config), "status"])
+        assert "mcp-agent (session)" in result.output
+
     def test_renew_show_history_and_stats(self, claim_runner):
         runner, config, manager = claim_runner
 

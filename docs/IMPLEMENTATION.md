@@ -948,6 +948,15 @@ First public version: 0.2.0 (then 0.2.1, 0.3.0). Release process: `docs/RELEASIN
   refused, `ports --all`, unused proxy/health keys removed, no-terminal
   prompts need `--yes`, group-writable `/var/lib/labctl/db`, REST power
   400 for a bad `action`
+- ✅ #73 Claims kept for an MCP session (schema v15 `claims.hold`):
+  `claim_sbc(hold="session")`, heartbeated by the stdio server process
+  (stopped once the client is gone) or by each HTTP tool call, expiring
+  after `claims.session_timeout_minutes`; stdio session claims of a dead
+  process released by the next sweep; `claim_status` /
+  `claim_warnings` in every MCP tool result (expiry within 10 min,
+  lapses); `require_claim` refusals name the caller's lapsed claim; CLI,
+  web and skill updated. Renew on use was already in place
+  (`check_claim` heartbeats the holder's claim)
 - ☐ #2 Long calls keep the caller's claim alive (not merged yet):
   `ClaimKeepalive` (`labctl/core/claim_keepalive.py`) heartbeats a claim
   the caller already holds during MCP `boot_test`, `serial_capture`,

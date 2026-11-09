@@ -44,7 +44,9 @@
             <div class="claim-badge">
                 <span class="claim-indicator"></span>
                 <span class="claim-holder">{{ claim.agent_name }}</span>
-                {% if claim.time_remaining %}
+                {% if claim.session_held %}
+                    <span class="claim-time" title="Held for its MCP session">session</span>
+                {% elif claim.time_remaining %}
                     {% set rem = claim.time_remaining.total_seconds()|int %}
                     {% if rem >= 3600 %}
                         <span class="claim-time">{{ rem // 3600 }}h {{ (rem % 3600) // 60 }}m</span>

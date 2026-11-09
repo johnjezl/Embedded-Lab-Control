@@ -3,9 +3,8 @@
 ## Current State
 
 - **Milestone**: Public PyPI release (`embedded-lab-control`)
-- **Sub-task**: 0.3.0 release prep (version, CHANGELOG section). 0.2.0
-  and 0.2.1 are on PyPI (2026-10-31). Phase 0, Phase 1 (safety) and P2
-  are done
+- **Sub-task**: #73 session claims (after 0.3.0, published 2026-11-02).
+  Phase 0, Phase 1 (safety) and P2 are done
 - **Status**: `main` has everything merged through #69 (#47), CI green.
   0.3.0 covers #47, #50, #52, #56, #57, #60, #63, #65 (schema v14).
   Next: merge the release-prep PR, tag `v0.3.0`, and approve the `pypi`
@@ -16,6 +15,19 @@
   lock); #48 coverage; #9 serial flow control.
 
 ## Last Session
+
+- **Date**: 2026-11-08
+- **Branch**: `worktree-bridge-cse_014Q9aryST1Z35mUkKKvydup` (not committed yet)
+- **Completed**:
+  - #73: claims held for an MCP session (`claim_sbc(hold="session")`,
+    schema v15 `claims.hold`, `claims.session_timeout_minutes`);
+    `claim_status` / `claim_warnings` in every MCP tool result;
+    `require_claim` refusals name the caller's lapsed claim; CLI, web,
+    docs, `/deploy-and-test` skill updated (D015)
+- **Next**: user review and commit approval; PR; deploy, then
+  reconnect stdio MCP agents (schema v15)
+
+## Previous Session (0.3.0)
 
 - **Date**: 2026-11-02
 - **Branch**: `release/0.3.0`
@@ -97,9 +109,10 @@
 
 - **All Milestones Complete!** (M1–M7 plus the features below)
 - 2038 tests collected (2026-10-29); CI runs Python 3.10–3.13
-- Database schema v14 (v8: actuators/bindings, v9: claim owners,
+- Database schema v15 (v8: actuators/bindings, v9: claim owners,
   v10/v11: uploaded images, v12: status history index, v13: activity
-  agent name, v14: claim and activity times converted to UTC)
+  agent name, v14: claim and activity times converted to UTC, v15: claim
+  hold for session claims)
 - Schema migration is automatic and preserves existing data
 - Two config files may need to be kept in sync (user + labctl system user)
   - Recommendation: use /etc/labctl/config.yaml as single source of truth

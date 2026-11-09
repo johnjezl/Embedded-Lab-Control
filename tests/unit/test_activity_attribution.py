@@ -57,7 +57,7 @@ class TestAgent:
 
 class TestSchemaV13:
     def test_version(self):
-        assert SCHEMA_VERSION == 14
+        assert SCHEMA_VERSION == 15
 
     def test_v12_upgraded_keeps_rows(self, tmp_path):
         path = tmp_path / "labctl.db"
