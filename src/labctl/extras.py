@@ -78,10 +78,11 @@ def broken_extra_message(
 def extra_packages(extra: str) -> tuple[str, ...]:
     """The extra's requirements for the running interpreter."""
     if extra == "kasa":
-        # python-kasa >= 0.8 needs Python 3.11; 3.10 stays on 0.7.x.
+        # python-kasa >= 0.8 needs Python 3.11; 3.10 stays on 0.7.x, which
+        # needs tzdata where the system lacks legacy zone names (PST8PDT).
         if sys.version_info >= (3, 11):
             return ("python-kasa>=0.12",)
-        return ("python-kasa>=0.7.7,<0.8",)
+        return ("python-kasa>=0.7.7,<0.8", "tzdata")
     return _PACKAGES[extra]
 
 
