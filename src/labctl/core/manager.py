@@ -2202,8 +2202,10 @@ class ResourceManager:
         "now + duration_seconds" respectively.
 
         ``hold`` (a :class:`ClaimHold` value) switches how the claim is
-        kept; pass the new hold's duration with it (for a session claim,
-        its heartbeat window). Without ``hold``, a session claim keeps its
+        kept, and then needs the new hold's ``duration_seconds`` (for a
+        session claim, its heartbeat window): keeping the old one could
+        turn a 24 h fixed claim into a session claim that outlives a dead
+        session by a day. Without ``hold``, a session claim keeps its
         window: renewing it is a heartbeat, and ``duration_seconds`` is
         ignored (it would turn into a fixed-length claim otherwise, #73).
         """
@@ -2215,6 +2217,11 @@ class ResourceManager:
                 f"Claim on '{sbc_name}' is held by a different session"
             )
         new_hold = ClaimHold(hold).value if hold is not None else claim.hold
+        if new_hold != claim.hold and duration_seconds is None:
+            raise ValueError(
+                f"switching a claim's hold to {new_hold!r} needs its duration "
+                "(for a session claim, the heartbeat window)"
+            )
         if duration_seconds is None or (hold is None and claim.session_held):
             new_duration = claim.duration_seconds
         else:
@@ -2357,7 +2364,9 @@ class ResourceManager:
         active or not: what the actor holds, and the claims it held that
         nobody has claimed the board since (#73: a lapse is news to its
         holder until the board is claimed again). With ``since``, claims
-        released before then are left out.
+        that ended before then (released, or past their deadline) are left
+        out: the notices and require_claim refusals report a lapse only
+        while it is news (LAPSE_NOTICE_SECONDS).
 
         Every MCP tool call asks this, so it starts from the actor's own
         claims (indexed by session and owner, schema v15), not from every
@@ -2381,7 +2390,11 @@ class ResourceManager:
             """,
             params,
         )
-        return [Claim.from_row(r) for r in rows]
+        claims = [Claim.from_row(r) for r in rows]
+        if since is None:
+            return claims
+        # Past its deadline but not swept yet: it ended at its deadline.
+        return [c for c in claims if c.is_active or c.lapsed_at >= since]
 
     def lapsed_claim(
         self, sbc_name: str, actor: ClaimActor, since: Optional[datetime] = None
@@ -2389,24 +2402,13 @@ class ResourceManager:
         """``actor``'s claim on ``sbc_name`` that ended without them
         releasing it (expired, force-released, session lost), when nobody
         has claimed the board since (and, with ``since``, it ended no
-        earlier); else None."""
-        sbc_id = self._require_sbc_id(sbc_name)
-        row = self.db.execute_one(
-            """
-            SELECT c.*, s.name AS sbc_name
-            FROM claims c JOIN sbcs s ON s.id = c.sbc_id
-            WHERE c.sbc_id = ? ORDER BY c.id DESC LIMIT 1
-            """,
-            (sbc_id,),
-        )
-        if row is None:
-            return None
-        claim = Claim.from_row(row)
-        if not (actor.holds(claim) and claim.lapsed):
-            return None
-        if since is not None and claim.lapsed_at < since:
-            return None
-        return claim
+        earlier); else None. The same lookup as the MCP notices
+        (:meth:`latest_claims_of`), so the two never disagree."""
+        self._require_sbc_id(sbc_name)  # UnknownSBCError for a typo
+        for claim in self.latest_claims_of(actor, since=since):
+            if claim.sbc_name == sbc_name and claim.lapsed:
+                return claim
+        return None
 
     def check_claim(
         self,
