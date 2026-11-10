@@ -16,8 +16,9 @@
 
 ## Last Session
 
-- **Date**: 2026-11-08
-- **Branch**: `worktree-bridge-cse_014Q9aryST1Z35mUkKKvydup` (not committed yet)
+- **Date**: 2026-11-08 to 2026-11-09
+- **Branch**: `worktree-bridge-cse_014Q9aryST1Z35mUkKKvydup`, PR #74 (open,
+  rebased onto #75, three review rounds, CI green)
 - **Completed**:
   - #73: claims held for an MCP session (`claim_sbc(hold="session")`,
     schema v15 `claims.hold`, `claims.session_timeout_minutes`);
@@ -25,8 +26,12 @@
     tool results;
     `require_claim` refusals name the caller's lapsed claim; CLI, web,
     docs, `/deploy-and-test` skill updated (D015)
-- **Next**: user review and commit approval; PR; deploy, then
-  reconnect stdio MCP agents (schema v15)
+  - #75 (merged): the `kasa` extra installs `tzdata` on Python 3.10
+    (GitHub's runners dropped the legacy `PST8PDT` zone and main's 3.10
+    CI had gone red); a missing zone fails at once naming the install
+    command. Follow-up #76 (remember a missing zone)
+- **Next**: merge #74; deploy (schema v15), then reconnect stdio MCP
+  agents and run `labctl skill install --force` in agent projects
 
 ## Previous Session (0.3.0)
 

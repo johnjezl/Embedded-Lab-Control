@@ -157,6 +157,16 @@ class TestRenew:
         assert renewed.session_held
         assert renewed.duration_seconds == 1800
 
+    @pytest.mark.parametrize("hold", ["session", "fixed"])
+    def test_switching_hold_needs_its_duration(self, manager, hold):
+        """Keeping the old duration could make a 24 h fixed claim a
+        session claim that outlives a dead session by a day."""
+        _claim(manager, hold="fixed" if hold == "session" else "session")
+        with pytest.raises(ValueError, match="needs its duration"):
+            manager.renew_claim("pi-1", "s-alice", hold=hold)
+        # Unchanged hold without a duration is a plain renewal.
+        assert manager.renew_claim("pi-1", "s-alice").hold != hold
+
     def test_fixed_renew_unchanged(self, manager):
         _claim(manager, seconds=600)
         assert manager.renew_claim("pi-1", "s-alice", 900).duration_seconds == 900
@@ -316,6 +326,14 @@ class TestLatestClaimsOf:
         since = clock.now - timedelta(seconds=60)
         assert manager.latest_claims_of(ALICE, since=since) == []
         assert len(manager.latest_claims_of(ALICE)) == 1
+
+    def test_since_leaves_out_unswept_old_expiry(self, manager, clock):
+        """Past its deadline but not swept: it ended at its deadline."""
+        _claim(manager, seconds=60)
+        clock.advance(3600)
+        assert manager.latest_claims_of(ALICE, since=clock.now) == []
+        recent = clock.now - timedelta(seconds=3600)
+        assert len(manager.latest_claims_of(ALICE, since=recent)) == 1
 
     def test_active_claims_kept_whatever_since(self, manager, clock):
         _claim(manager, seconds=7200)
@@ -497,6 +515,19 @@ class TestMcpClaimSbcHold:
         assert result["status"] == "renewed"
         assert "not applied" in result["note"]
         assert manager.get_active_claim("pi-1").duration_seconds == 30 * 60
+
+    def test_renew_session_claim_with_huge_duration_heartbeats(self, mcp, manager):
+        """The duration isn't applied to a session claim, so it isn't
+        refused as out of bounds either: the claim is heartbeated."""
+        mcp.claim_sbc("pi-1", hold="session")
+        result = json.loads(mcp.renew_sbc_claim("pi-1", duration_minutes=100000))
+        assert result["status"] == "renewed"
+        assert "not applied" in result["note"]
+
+    def test_renew_fixed_claim_over_max_refused(self, mcp):
+        mcp.claim_sbc("pi-1", duration_minutes=10)
+        result = json.loads(mcp.renew_sbc_claim("pi-1", duration_minutes=100000))
+        assert result["error"] == "duration_out_of_bounds"
 
     def test_renew_fixed_claim_has_no_note(self, mcp):
         mcp.claim_sbc("pi-1", duration_minutes=10)

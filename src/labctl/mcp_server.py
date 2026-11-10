@@ -852,11 +852,7 @@ def _claim_notices(boards: list) -> dict:
     if not _get_config().claims.enabled:
         return {}
     since = timeutil.now() - timedelta(seconds=LAPSE_NOTICE_SECONDS)
-    claims = [
-        c
-        for c in _get_manager().latest_claims_of(_caller_actor(), since=since)
-        if not c.lapsed or c.lapsed_at >= since
-    ]
+    claims = _get_manager().latest_claims_of(_caller_actor(), since=since)
     status: dict = {}
     warnings: list = []
     by_board = {c.sbc_name: c for c in claims}
@@ -4216,11 +4212,19 @@ def renew_sbc_claim(sbc_name: str, duration_minutes: int | None = None) -> str:
     )
 
     config = _get_config()
-    duration_s = None
-    if duration_minutes is not None:
-        duration_s = duration_minutes * 60
+    duration_s = duration_minutes * 60 if duration_minutes is not None else None
+    manager = _get_manager()
+    try:
+        # A session claim doesn't take the duration (it is only
+        # heartbeated, with a note), so the bound is for fixed claims.
+        current = manager.get_active_claim(sbc_name)
+        session_claim = (
+            current is not None
+            and current.session_held
+            and _caller_actor().holds(current)
+        )
         max_s = config.claims.max_duration_minutes * 60
-        if duration_s > max_s:
+        if duration_s is not None and not session_claim and duration_s > max_s:
             return json.dumps(
                 {
                     "error": "duration_out_of_bounds",
@@ -4230,9 +4234,6 @@ def renew_sbc_claim(sbc_name: str, duration_minutes: int | None = None) -> str:
                     ),
                 }
             )
-
-    manager = _get_manager()
-    try:
         claim = manager.renew_claim(
             sbc_name,
             _get_session_id(),
