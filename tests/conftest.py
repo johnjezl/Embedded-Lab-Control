@@ -313,6 +313,18 @@ def _reset_mcp_upload_security():
 
 
 @pytest.fixture(autouse=True)
+def _undo_kasa_zone_fallback():
+    """labctl wraps python-kasa's IOT Time module once per process (#76,
+    labctl.power.kasa._tolerate_missing_device_zone). Undo it after every
+    test, so no test sees python-kasa as an earlier test left it; without
+    importing python-kasa where it isn't used."""
+    yield
+    kasa = sys.modules.get("labctl.power.kasa")
+    if kasa is not None:
+        kasa._undo_zone_fallback()
+
+
+@pytest.fixture(autouse=True)
 def _fresh_config_warnings():
     """Config warnings are logged once per process (labctl.core.config
     _warn_once); start every test with a clean slate so it sees its own."""

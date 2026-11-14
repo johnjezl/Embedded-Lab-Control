@@ -658,64 +658,101 @@ class TestKasaMissingTimeZone:
 
 
 class TestKasaZoneFallback:
-    """labctl gives python-kasa 0.7.x the time zone fallback later releases
-    have (#76): only there, only once."""
+    """labctl gives python-kasa's IOT Time module the missing-zone fallback
+    when it has none (#76): only then, only once, only what it relies on."""
+
+    @staticmethod
+    def _time_module(*, catches=False, timezone_attr=True, hook=None):
+        """A stand-in for kasa.iot.modules.time: a release that catches the
+        error itself (0.11+) imports ZoneInfoNotFoundError; 0.7.7 and
+        0.10.x don't."""
+        import zoneinfo
+        from datetime import timezone
+
+        module = types.ModuleType("kasa.iot.modules.time")
+        if catches:
+            module.ZoneInfoNotFoundError = zoneinfo.ZoneInfoNotFoundError
+
+        async def missing_zone(self):
+            raise zoneinfo.ZoneInfoNotFoundError("No time zone found with key X")
+
+        attrs = {"_post_update_hook": hook or missing_zone}
+        if timezone_attr:
+            attrs["_timezone"] = timezone.utc
+        module.Time = type("Time", (), attrs)
+        return module
 
     @pytest.fixture
-    def fresh(self, monkeypatch):
-        """As if the fallback hadn't been considered in this process; the
-        Time class is restored afterwards."""
+    def kasa_module(self):
         from labctl.power import kasa as kasa_module
 
-        monkeypatch.setattr(kasa_module, "_zone_fallback_done", False)
-        try:
-            from kasa.iot.modules.time import Time
-        except ImportError:
-            yield kasa_module, None
-            return
-        monkeypatch.setattr(Time, "_post_update_hook", Time._post_update_hook)
-        yield kasa_module, Time
+        kasa_module._undo_zone_fallback()
+        return kasa_module
 
-    @pytest.mark.skipif(
-        sys.version_info < (3, 11), reason="python-kasa >= 0.12 on 3.11+"
-    )
-    def test_later_python_kasa_untouched(self, fresh):
-        kasa_module, Time = fresh
-        before = Time._post_update_hook
-        kasa_module._tolerate_missing_device_zone()
-        assert Time._post_update_hook is before
+    def _apply(self, kasa_module, module):
+        with patch.dict(sys.modules, {"kasa.iot.modules.time": module}):
+            kasa_module._tolerate_missing_device_zone()
+        return module.Time
 
-    @pytest.mark.skipif(
-        sys.version_info >= (3, 11), reason="python-kasa 0.7.7 on Python 3.10"
-    )
-    def test_applied_once(self, fresh):
-        kasa_module, Time = fresh
-        before = Time._post_update_hook
-        kasa_module._tolerate_missing_device_zone()
-        wrapped = Time._post_update_hook
-        assert wrapped is not before
-        kasa_module._tolerate_missing_device_zone()
-        assert Time._post_update_hook is wrapped
-
-    @pytest.mark.skipif(
-        sys.version_info >= (3, 11), reason="python-kasa 0.7.7 on Python 3.10"
-    )
-    def test_other_errors_not_swallowed(self, fresh):
-        """Only a missing zone is tolerated."""
+    def test_release_without_fallback_gets_it(self, kasa_module, caplog):
+        """Like python-kasa 0.7.7 and 0.10.x, whatever the version number."""
         import asyncio
+        from datetime import timezone
 
-        kasa_module, Time = fresh
+        Time = self._apply(kasa_module, self._time_module())
+        device_time = Time()
+        device_time._device = Mock(host="192.168.1.100")
+        device_time._timezone = None
+        with caplog.at_level(logging.INFO, logger="labctl.power.kasa"):
+            asyncio.run(Time._post_update_hook(device_time))  # no error
+        assert device_time._timezone is timezone.utc
+        assert "192.168.1.100" in caplog.text and "(No time zone" in caplog.text
+
+    def test_release_with_fallback_untouched(self, kasa_module):
+        module = self._time_module(catches=True)
+        before = module.Time._post_update_hook
+        assert self._apply(kasa_module, module)._post_update_hook is before
+
+    def test_unexpected_shape_untouched(self, kasa_module):
+        """No ``_timezone`` to set: don't patch blindly."""
+        module = self._time_module(timezone_attr=False)
+        before = module.Time._post_update_hook
+        assert self._apply(kasa_module, module)._post_update_hook is before
+
+    def test_applied_once(self, kasa_module):
+        module = self._time_module()
+        wrapped = self._apply(kasa_module, module)._post_update_hook
+        assert self._apply(kasa_module, module)._post_update_hook is wrapped
+
+    def test_other_errors_not_swallowed(self, kasa_module):
+        import asyncio
 
         async def broken(self):
             raise ValueError("bad data")
 
-        Time._post_update_hook = broken
-        kasa_module._tolerate_missing_device_zone()
+        Time = self._apply(kasa_module, self._time_module(hook=broken))
         with pytest.raises(ValueError, match="bad data"):
-            asyncio.run(Time._post_update_hook(Mock()))
+            asyncio.run(Time._post_update_hook(Time()))
 
-    def test_without_python_kasa(self, fresh, absent_packages):
-        kasa_module, _ = fresh
+    def test_undo_restores_the_original(self, kasa_module):
+        module = self._time_module()
+        original = module.Time._post_update_hook
+        self._apply(kasa_module, module)
+        with patch.dict(sys.modules, {"kasa.iot.modules.time": module}):
+            kasa_module._undo_zone_fallback()
+        assert module.Time._post_update_hook is original
+
+    def test_installed_python_kasa(self, kasa_module):
+        """The real one: 0.7.7 (Python 3.10) gets the fallback, 0.12
+        (3.11+) catches the error itself and is left alone."""
+        from kasa.iot.modules import time as time_module
+
+        before = time_module.Time._post_update_hook
+        kasa_module._tolerate_missing_device_zone()
+        patched = time_module.Time._post_update_hook is not before
+        assert patched is (sys.version_info < (3, 11))
+
+    def test_without_python_kasa(self, kasa_module, absent_packages):
         absent_packages("kasa")
         kasa_module._tolerate_missing_device_zone()  # no error
 
@@ -796,13 +833,17 @@ class TestKasaStripDiscoveredAsPlug:
         assert writes[0]["system"]["set_relay_state"] == {"state": 1}
 
     @pytest.mark.usefixtures("no_system_zones")
-    def test_works_without_the_system_time_zone_database(self):
+    def test_works_without_the_system_time_zone_database(self, caplog):
         """The recorded HS300 is in time zone index 6, which python-kasa
         0.7.7 (Python 3.10) loads as PST8PDT: the [kasa] extra's tzdata
-        must provide it (#75). python-kasa 0.12 needs no zone here."""
-        controller, protocol = self._controller(plug_index=1)
-        assert controller.get_state() == PowerState.OFF  # as recorded
+        must provide it (#75). python-kasa 0.12 needs no zone here. The
+        missing-zone fallback (#76) must not be what made it work: if
+        tzdata didn't supply the zone, this would only look fine."""
+        with caplog.at_level(logging.DEBUG, logger="labctl.power.kasa"):
+            controller, protocol = self._controller(plug_index=1)
+            assert controller.get_state() == PowerState.OFF  # as recorded
         assert protocol.requests, "answered from a cache, not the device"
+        assert "time zone can't be loaded" not in caplog.text
 
     @pytest.mark.skipif(
         sys.version_info >= (3, 11),
