@@ -950,9 +950,9 @@ First public version: 0.2.0 (then 0.2.1, 0.3.0). Release process: `docs/RELEASIN
   400 for a bad `action`
 - ✅ #75 `kasa` extra installs `tzdata` on Python 3.10; a missing time
   zone fails at once naming the install command
-- ✅ #76 A Kasa device whose time zone the host lacks is remembered per
-  device: later calls fail without contacting it, logged once; local
-  recheck of the zone on every call, device recheck every 10 minutes
+- ✅ #76 python-kasa 0.7.x's IOT `Time` refresh falls back to UTC when
+  the device's zone can't be loaded (as later releases do), so Kasa
+  control works without the zone's data; logged once per zone
 - ✅ #73 Claims kept for an MCP session (schema v15 `claims.hold`):
   `claim_sbc(hold="session")`, heartbeated by the stdio server process
   (stopped once the client is gone) or by each HTTP tool call, expiring

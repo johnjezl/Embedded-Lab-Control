@@ -21,13 +21,12 @@ host wait briefly and read from the cache. Writes invalidate.
 """
 
 import asyncio
-import importlib
 import logging
-import re
 import sys
 import threading
 import time
 import zoneinfo
+from datetime import timezone
 from functools import lru_cache
 
 from labctl.core.config import load_config
@@ -91,92 +90,7 @@ def _clear_kasa_caches() -> None:
     with _kasa_cache_meta_lock:
         _kasa_state_cache.clear()
         _kasa_host_locks.clear()
-        _missing_zones.clear()
-
-
-# ---------------------------------------------------------------------------
-# Missing time zones (#76)
-# ---------------------------------------------------------------------------
-#
-# A device whose time zone this host can't load (see _missing_zone_message)
-# fails every call the same way, after a discovery and a KLAP handshake:
-# the monitor checking a strip's six outlets would handshake six times and
-# log six identical errors per cycle, and strips rate-limit handshakes.
-# So the failure is remembered per device (another device may be in a zone
-# the host has): later calls fail at once, without contacting it, and the
-# error is logged once. Each call first checks locally whether the zone
-# loads now (tzdata installed since, no restart needed), and every
-# MISSING_ZONE_RECHECK_SECONDS one call contacts the device anyway, in case
-# its time zone setting was changed.
-
-MISSING_ZONE_RECHECK_SECONDS = 600.0
-
-# Host address -> [zone key or None, error text, monotonic time of the last
-# call that contacted the device]. Guarded by _kasa_cache_meta_lock.
-_missing_zones: dict[str, list] = {}
-
-_ZONE_KEY = re.compile(r"key (\S+)")
-
-
-def _zone_key(detail: str) -> str | None:
-    """The zone named in a ZoneInfoNotFoundError's text ("No time zone
-    found with key PST8PDT"), or None if it isn't in that form."""
-    match = _ZONE_KEY.search(detail)
-    return match.group(1) if match else None
-
-
-def _zone_loads(zone: str) -> bool:
-    """True if this host can load ``zone`` now (no cache: a failed load
-    isn't cached by zoneinfo, and a fresh one proves the data is there)."""
-    importlib.invalidate_caches()  # a tzdata package installed meanwhile
-    try:
-        zoneinfo.ZoneInfo.no_cache(zone)
-    except (zoneinfo.ZoneInfoNotFoundError, ValueError, OSError):
-        return False
-    return True
-
-
-def _record_missing_zone(host: str, detail: str) -> bool:
-    """Remember that ``host``'s zone is missing; True the first time
-    (for this host and zone), so the error is logged once."""
-    zone = _zone_key(detail)
-    with _kasa_cache_meta_lock:
-        known = _missing_zones.get(host)
-        _missing_zones[host] = [zone, detail, time.monotonic()]
-    return known is None or known[0] != zone
-
-
-def _known_missing_zone(host: str) -> str | None:
-    """The error text if calls to ``host`` should fail at once (its zone
-    is still missing and the recheck isn't due), else None. When the
-    recheck is due, the first caller to ask goes to the device (the time
-    is reset under the lock, so concurrent callers still fail at once)."""
-    with _kasa_cache_meta_lock:
-        known = _missing_zones.get(host)
-    if known is None:
-        return None
-    zone, detail, _ = known
-    if zone is not None and _zone_loads(zone):
-        with _kasa_cache_meta_lock:
-            _missing_zones.pop(host, None)
-        logger.info("Kasa: time zone %s loads now; contacting %s again", zone, host)
-        return None
-    with _kasa_cache_meta_lock:
-        known = _missing_zones.get(host)
-        if known is None:
-            return None
-        if time.monotonic() - known[2] >= MISSING_ZONE_RECHECK_SECONDS:
-            known[2] = time.monotonic()
-            return None
-        return known[1]
-
-
-def _forget_missing_zone(host: str) -> None:
-    """A call to ``host`` succeeded: whatever its zone was, it loads."""
-    with _kasa_cache_meta_lock:
-        known = _missing_zones.pop(host, None)
-    if known is not None:
-        logger.info("Kasa: %s works again (its time zone loads)", host)
+    _zones_reported.clear()
 
 
 # First python-kasa release that uses KLAP v2 for IOT devices whose
@@ -203,6 +117,71 @@ def _klap_v2_hint() -> str:
     )
 
 
+# python-kasa below this has no fallback when an IOT device's time zone
+# can't be loaded on this host (#76); 0.12 has one (it picks a zone with
+# the device's UTC offset). 0.7.7 is the last release for Python 3.10.
+KASA_ZONE_FALLBACK_VERSION = (0, 8)
+
+_zone_fallback_lock = threading.Lock()
+_zone_fallback_done = False
+_zones_reported: set = set()
+
+
+def _tolerate_missing_device_zone() -> None:
+    """Give python-kasa 0.7.x's IOT Time module the fallback later
+    releases have (#76).
+
+    Every refresh of an IOT device (plugs and strips such as the HS300)
+    loads the device's time zone by a legacy name (time zone index 6 is
+    PST8PDT). On a host without that zone's data (Ubuntu 24.04+ moved
+    those names to tzdata-legacy; no tzdata package) the refresh raised
+    ZoneInfoNotFoundError, so labctl could neither read nor switch the
+    outlets, and the monitor handshook with the strip once per outlet per
+    cycle only to fail. labctl never reads the device's clock, so the
+    refresh now goes on with the clock's zone as UTC, as 0.7.7 itself
+    assumes before its first refresh. python-kasa's smart and camera
+    modules already fall back; later releases do for IOT too, so this
+    changes nothing there. Done once per process."""
+    global _zone_fallback_done
+    with _zone_fallback_lock:
+        if _zone_fallback_done:
+            return
+        _zone_fallback_done = True
+        try:
+            from importlib.metadata import version
+
+            from kasa.iot.modules.time import Time
+
+            installed = tuple(int(p) for p in version("python-kasa").split(".")[:2])
+        except Exception:  # missing or unexpected python-kasa: leave it
+            logger.debug("Kasa time zone fallback not applied", exc_info=True)
+            return
+        if installed >= KASA_ZONE_FALLBACK_VERSION:
+            return
+        original = Time._post_update_hook
+
+        async def _post_update_hook(self):
+            try:
+                await original(self)
+            except zoneinfo.ZoneInfoNotFoundError as e:
+                self._timezone = timezone.utc
+                detail = str(e.args[0]) if e.args else str(e)
+                host = getattr(getattr(self, "_device", None), "host", "?")
+                with _zone_fallback_lock:
+                    first = detail not in _zones_reported
+                    _zones_reported.add(detail)
+                (logger.info if first else logger.debug)(
+                    "Kasa device %s: its time zone can't be loaded on this "
+                    "host (%s); using UTC for the device's clock, which "
+                    "labctl doesn't use (installing tzdata gives it the "
+                    "zone)",
+                    host,
+                    detail,
+                )
+
+        Time._post_update_hook = _post_update_hook
+
+
 @lru_cache(maxsize=1)
 def _get_cached_kasa_credentials():
     """Load Kasa credentials once per process.
@@ -226,7 +205,7 @@ def _get_cached_kasa_credentials():
     return None
 
 
-def _missing_zone_message(action: str, address: str, detail: str) -> str:
+def _missing_zone_message(action: str, address: str, error: Exception) -> str:
     """python-kasa 0.7.7 (Python 3.10) loads the device's time zone by a
     legacy name such as PST8PDT. Hosts without those names (Ubuntu 24.04+
     moved them to tzdata-legacy) need the tzdata package, which the [kasa]
@@ -239,6 +218,8 @@ def _missing_zone_message(action: str, address: str, detail: str) -> str:
     names the interpreter running labctl (a service venv, say): a bare
     ``pip`` may be another Python's, or refuse (PEP 668). A service venv
     belongs to root, hence the note on who runs it."""
+    # A KeyError's str() quotes its text; the message itself reads better.
+    detail = error.args[0] if error.args else str(error)
     python = sys.executable or "python3"
     return (
         f"Kasa {action} failed for {address}: this system has no time zone "
@@ -294,6 +275,7 @@ class KasaController(PowerController):
         )
         from kasa.iot import IotDevice
 
+        _tolerate_missing_device_zone()
         credentials = self._load_credentials()
         kwargs = {"host": self.address}
         if credentials:
@@ -390,13 +372,6 @@ class KasaController(PowerController):
             the full attempt history is captured even when the caller
             only surfaces the exception text.
         """
-        missing_zone = _known_missing_zone(self.address)
-        if missing_zone is not None:
-            # Logged at ERROR when first found; don't contact the device.
-            msg = _missing_zone_message(action, self.address, missing_zone)
-            logger.debug(msg)
-            raise RuntimeError(msg)
-
         last_error = None
         total_attempts = 1 + retries
         for attempt in range(total_attempts):
@@ -427,7 +402,6 @@ class KasaController(PowerController):
                         attempt + 1,
                         total_attempts,
                     )
-                _forget_missing_zone(self.address)
                 return result
             except ImportError as e:
                 if not is_missing(e, "kasa"):
@@ -435,15 +409,9 @@ class KasaController(PowerController):
                 raise MissingExtraError("kasa") from e
             except zoneinfo.ZoneInfoNotFoundError as e:
                 # No retry helps: the host lacks the zone python-kasa asked
-                # for (see _missing_zone_message). Remembered, so later
-                # calls don't contact the device (#76).
-                # A KeyError's str() quotes its text; the text reads better.
-                detail = str(e.args[0]) if e.args else str(e)
-                msg = _missing_zone_message(action, self.address, detail)
-                if _record_missing_zone(self.address, detail):
-                    logger.error(msg)
-                else:
-                    logger.debug(msg)  # the periodic recheck, still missing
+                # for (see _missing_zone_message).
+                msg = _missing_zone_message(action, self.address, e)
+                logger.error(msg)
                 raise RuntimeError(msg) from e
             except RuntimeError:
                 raise

@@ -53,16 +53,16 @@ labctl that shares it together, and reconnect stdio MCP agents.
   `ZoneInfoNotFoundError`. `scripts/update.sh` reinstalls with the extra,
   which brings it; other existing 3.10 installs need `pip install tzdata`
   in labctl's environment (`pipx inject embedded-lab-control tzdata`).
-  Until then, Kasa calls now fail at once with a message saying so,
-  instead of after three attempts with a bare `ZoneInfoNotFoundError`.
-- A Kasa device whose time zone the host lacks is remembered (#76): after
-  the first failure, calls to it fail at once without contacting it, so
-  the monitor no longer handshakes with a strip once per outlet per cycle
-  (six times for an HS300), and the error is logged once instead of on
-  every call. Each call first checks locally whether the zone loads now,
-  so installing `tzdata` takes effect without a restart, and every 10
-  minutes one call contacts the device anyway, in case its time zone
-  setting was changed. Other devices are unaffected.
+  A missing zone that still reaches labctl fails at once with a message
+  saying so, instead of after three attempts with a bare
+  `ZoneInfoNotFoundError`.
+- Kasa plugs and strips work on a Python 3.10 host without data for the
+  device's time zone (#76): python-kasa 0.7.7's refresh no longer fails
+  when it can't load the device's zone. labctl gives it the fallback
+  later python-kasa releases have and takes the device's clock as UTC
+  (labctl never reads it), logged once per zone. Before, every call
+  failed, and the monitor handshook with a strip once per outlet per
+  cycle only to fail. python-kasa 0.8 and later are left alone.
 - The dead-session sweep no longer releases a claim twice when two
   sweeps race.
 
