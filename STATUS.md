@@ -20,10 +20,11 @@
 - **Branch**: #73 and #75 merged (PRs #74, #75); #76 in a PR
   from `fix/kasa-missing-zone-76`
 - **Completed**:
-  - #76: python-kasa 0.7.x (Python 3.10) no longer fails a refresh when
-    the device's time zone can't be loaded: labctl gives its IOT `Time`
-    module the fallback later releases have (device clock as UTC; labctl
-    never reads it). A first version remembered the failure per device;
+  - #76: python-kasa before 0.11 (0.7.7 on Python 3.10) no longer fails
+    a refresh when the device's time zone can't be loaded: labctl gives
+    its IOT `Time` module the fallback 0.11+ has (device clock as UTC;
+    labctl never reads it), applied when the module doesn't catch the
+    error itself. A first version remembered the failure per device;
     review found the root cause could be fixed instead
   - #73: claims held for an MCP session (`claim_sbc(hold="session")`,
     schema v15 `claims.hold`, `claims.session_timeout_minutes`);

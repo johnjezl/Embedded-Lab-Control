@@ -56,13 +56,14 @@ labctl that shares it together, and reconnect stdio MCP agents.
   A missing zone that still reaches labctl fails at once with a message
   saying so, instead of after three attempts with a bare
   `ZoneInfoNotFoundError`.
-- Kasa plugs and strips work on a Python 3.10 host without data for the
-  device's time zone (#76): python-kasa 0.7.7's refresh no longer fails
-  when it can't load the device's zone. labctl gives it the fallback
-  later python-kasa releases have and takes the device's clock as UTC
-  (labctl never reads it), logged once per zone. Before, every call
-  failed, and the monitor handshook with a strip once per outlet per
-  cycle only to fail. python-kasa 0.8 and later are left alone.
+- Kasa plugs and strips work on a host without data for the device's
+  time zone (#76): python-kasa before 0.11 (0.7.7 is what Python 3.10
+  gets) failed every refresh of a plug or strip when it couldn't load the
+  device's zone. labctl now gives its IOT `Time` module the fallback
+  0.11 and later have, taking the device's clock as UTC (labctl never
+  reads it), logged once per zone. Before, every call failed, and the
+  monitor handshook with a strip once per outlet per cycle only to fail.
+  A python-kasa that already falls back is left alone.
 - The dead-session sweep no longer releases a claim twice when two
   sweeps race.
 

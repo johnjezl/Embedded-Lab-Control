@@ -21,13 +21,14 @@ host wait briefly and read from the cache. Writes invalidate.
 """
 
 import asyncio
+import importlib
 import logging
 import sys
 import threading
 import time
 import zoneinfo
 from datetime import timezone
-from functools import lru_cache
+from functools import lru_cache, wraps
 
 from labctl.core.config import load_config
 from labctl.extras import DIST_NAME, BrokenExtraError, MissingExtraError, is_missing
@@ -90,7 +91,8 @@ def _clear_kasa_caches() -> None:
     with _kasa_cache_meta_lock:
         _kasa_state_cache.clear()
         _kasa_host_locks.clear()
-    _zones_reported.clear()
+    with _zone_fallback_lock:  # the fallback's hook adds to it under this
+        _zones_reported.clear()
 
 
 # First python-kasa release that uses KLAP v2 for IOT devices whose
@@ -117,55 +119,73 @@ def _klap_v2_hint() -> str:
     )
 
 
-# python-kasa below this has no fallback when an IOT device's time zone
-# can't be loaded on this host (#76); 0.12 has one (it picks a zone with
-# the device's UTC offset). 0.7.7 is the last release for Python 3.10.
-KASA_ZONE_FALLBACK_VERSION = (0, 8)
+# The time zone fallback for python-kasa's IOT Time module (#76).
+#
+# Every refresh of an IOT device (plugs and strips such as the HS300)
+# loads the device's time zone by name (time zone index 6 is PST8PDT). On
+# a host without that zone's data (Ubuntu 24.04+ moved the legacy names to
+# tzdata-legacy; no tzdata package) python-kasa before 0.11 fails the whole
+# refresh with ZoneInfoNotFoundError, so labctl could neither read nor
+# switch the outlets. 0.11 and later fall back themselves (to a zone with
+# the device's UTC offset), as the smart and camera Time modules always
+# did. labctl never reads the device's clock, so for releases without the
+# fallback the refresh goes on with the clock's zone as UTC, what python-
+# kasa assumes before its first refresh.
 
 _zone_fallback_lock = threading.Lock()
 _zone_fallback_done = False
 _zones_reported: set = set()
 
 
-def _tolerate_missing_device_zone() -> None:
-    """Give python-kasa 0.7.x's IOT Time module the fallback later
-    releases have (#76).
+def _zone_detail(error: Exception) -> str:
+    """A ZoneInfoNotFoundError's text: a KeyError's str() quotes it."""
+    return str(error.args[0]) if error.args else str(error)
 
-    Every refresh of an IOT device (plugs and strips such as the HS300)
-    loads the device's time zone by a legacy name (time zone index 6 is
-    PST8PDT). On a host without that zone's data (Ubuntu 24.04+ moved
-    those names to tzdata-legacy; no tzdata package) the refresh raised
-    ZoneInfoNotFoundError, so labctl could neither read nor switch the
-    outlets, and the monitor handshook with the strip once per outlet per
-    cycle only to fail. labctl never reads the device's clock, so the
-    refresh now goes on with the clock's zone as UTC, as 0.7.7 itself
-    assumes before its first refresh. python-kasa's smart and camera
-    modules already fall back; later releases do for IOT too, so this
-    changes nothing there. Done once per process."""
+
+def _time_module_falls_back(time_module) -> bool:
+    """Whether python-kasa's IOT Time module handles a missing zone itself:
+    the releases that do (0.11+) import ZoneInfoNotFoundError to catch it;
+    0.7.7 and 0.10.x don't. Misjudging one that does only wraps a step that
+    never raises it."""
+    caught = vars(time_module).get("ZoneInfoNotFoundError")
+    return caught is zoneinfo.ZoneInfoNotFoundError
+
+
+def _tolerate_missing_device_zone() -> None:
+    """Give python-kasa's IOT Time module the missing-zone fallback when
+    it lacks one (see above). Done once per process, before the first
+    discovery; a python-kasa that is missing, already falls back, or
+    doesn't have the hook and attribute this relies on is left alone."""
     global _zone_fallback_done
+    if _zone_fallback_done:  # every Kasa call comes here: no lock once done
+        return
     with _zone_fallback_lock:
         if _zone_fallback_done:
             return
         _zone_fallback_done = True
         try:
-            from importlib.metadata import version
-
-            from kasa.iot.modules.time import Time
-
-            installed = tuple(int(p) for p in version("python-kasa").split(".")[:2])
+            time_module = importlib.import_module("kasa.iot.modules.time")
+            Time = time_module.Time
         except Exception:  # missing or unexpected python-kasa: leave it
             logger.debug("Kasa time zone fallback not applied", exc_info=True)
             return
-        if installed >= KASA_ZONE_FALLBACK_VERSION:
+        if _time_module_falls_back(time_module):
             return
-        original = Time._post_update_hook
+        original = vars(Time).get("_post_update_hook")
+        if not callable(original) or "_timezone" not in vars(Time):
+            logger.debug(
+                "Kasa time zone fallback not applied: python-kasa's Time "
+                "module doesn't look as expected"
+            )
+            return
 
+        @wraps(original)
         async def _post_update_hook(self):
             try:
                 await original(self)
             except zoneinfo.ZoneInfoNotFoundError as e:
                 self._timezone = timezone.utc
-                detail = str(e.args[0]) if e.args else str(e)
+                detail = _zone_detail(e)
                 host = getattr(getattr(self, "_device", None), "host", "?")
                 with _zone_fallback_lock:
                     first = detail not in _zones_reported
@@ -179,7 +199,24 @@ def _tolerate_missing_device_zone() -> None:
                     detail,
                 )
 
+        _post_update_hook._labctl_original = original
         Time._post_update_hook = _post_update_hook
+
+
+def _undo_zone_fallback() -> None:
+    """Restore python-kasa's Time module and forget the fallback (tests:
+    the wrapper is process-wide, and must not outlive the test that made
+    it)."""
+    global _zone_fallback_done
+    with _zone_fallback_lock:
+        _zone_fallback_done = False
+        _zones_reported.clear()
+        time_module = sys.modules.get("kasa.iot.modules.time")
+        Time = getattr(time_module, "Time", None)
+        hook = vars(Time).get("_post_update_hook") if Time is not None else None
+        original = getattr(hook, "_labctl_original", None)
+        if original is not None:
+            Time._post_update_hook = original
 
 
 @lru_cache(maxsize=1)
@@ -218,8 +255,7 @@ def _missing_zone_message(action: str, address: str, error: Exception) -> str:
     names the interpreter running labctl (a service venv, say): a bare
     ``pip`` may be another Python's, or refuse (PEP 668). A service venv
     belongs to root, hence the note on who runs it."""
-    # A KeyError's str() quotes its text; the message itself reads better.
-    detail = error.args[0] if error.args else str(error)
+    detail = _zone_detail(error)
     python = sys.executable or "python3"
     return (
         f"Kasa {action} failed for {address}: this system has no time zone "
