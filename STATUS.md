@@ -17,8 +17,8 @@
 ## Last Session
 
 - **Date**: 2026-11-08 to 2026-11-13
-- **Branch**: #73 and #75 merged (PRs #74, #75); #76 on
-  `fix/kasa-missing-zone-76` (not committed yet)
+- **Branch**: #73 and #75 merged (PRs #74, #75); #76 in a PR
+  from `fix/kasa-missing-zone-76`
 - **Completed**:
   - #76: a Kasa device whose time zone the host lacks is remembered;
     later calls fail at once without contacting it, the error is logged
@@ -34,7 +34,7 @@
     (GitHub's runners dropped the legacy `PST8PDT` zone and main's 3.10
     CI had gone red); a missing zone fails at once naming the install
     command. Follow-up #76 (remember a missing zone)
-- **Next**: commit and PR #76; deploy (schema v15), then reconnect stdio
+- **Next**: review and merge the #76 PR; deploy (schema v15), then reconnect stdio
   MCP agents and run `labctl skill install --force` in agent projects
 
 ## Previous Session (0.3.0)
