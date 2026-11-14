@@ -162,45 +162,54 @@ def _tolerate_missing_device_zone() -> None:
     with _zone_fallback_lock:
         if _zone_fallback_done:
             return
-        _zone_fallback_done = True
         try:
-            time_module = importlib.import_module("kasa.iot.modules.time")
-            Time = time_module.Time
-        except Exception:  # missing or unexpected python-kasa: leave it
-            logger.debug("Kasa time zone fallback not applied", exc_info=True)
-            return
-        if _time_module_falls_back(time_module):
-            return
-        original = vars(Time).get("_post_update_hook")
-        if not callable(original) or "_timezone" not in vars(Time):
-            logger.debug(
-                "Kasa time zone fallback not applied: python-kasa's Time "
-                "module doesn't look as expected"
+            _install_zone_fallback()
+        finally:
+            # Only now: a caller seeing the flag (without the lock) must
+            # find the patch in place, or decided against.
+            _zone_fallback_done = True
+
+
+def _install_zone_fallback() -> None:
+    """The work of _tolerate_missing_device_zone, under its lock."""
+    try:
+        time_module = importlib.import_module("kasa.iot.modules.time")
+        Time = time_module.Time
+    except Exception:  # missing or unexpected python-kasa: leave it
+        logger.debug("Kasa time zone fallback not applied", exc_info=True)
+        return
+    if _time_module_falls_back(time_module):
+        return
+    original = vars(Time).get("_post_update_hook")
+    if not callable(original) or "_timezone" not in vars(Time):
+        logger.debug(
+            "Kasa time zone fallback not applied: python-kasa's Time "
+            "module doesn't look as expected"
+        )
+        return
+
+    @wraps(original)
+    async def _post_update_hook(self, *args, **kwargs):
+        try:
+            await original(self, *args, **kwargs)
+        except zoneinfo.ZoneInfoNotFoundError as e:
+            self._timezone = timezone.utc
+            detail = _zone_detail(e)
+            host = getattr(getattr(self, "_device", None), "host", "?")
+            with _zone_fallback_lock:  # once per device and zone
+                first = (host, detail) not in _zones_reported
+                _zones_reported.add((host, detail))
+            (logger.info if first else logger.debug)(
+                "Kasa device %s: its time zone can't be loaded on this "
+                "host (%s); using UTC for the device's clock, which "
+                "labctl doesn't use (installing tzdata gives it the "
+                "zone)",
+                host,
+                detail,
             )
-            return
 
-        @wraps(original)
-        async def _post_update_hook(self):
-            try:
-                await original(self)
-            except zoneinfo.ZoneInfoNotFoundError as e:
-                self._timezone = timezone.utc
-                detail = _zone_detail(e)
-                host = getattr(getattr(self, "_device", None), "host", "?")
-                with _zone_fallback_lock:
-                    first = detail not in _zones_reported
-                    _zones_reported.add(detail)
-                (logger.info if first else logger.debug)(
-                    "Kasa device %s: its time zone can't be loaded on this "
-                    "host (%s); using UTC for the device's clock, which "
-                    "labctl doesn't use (installing tzdata gives it the "
-                    "zone)",
-                    host,
-                    detail,
-                )
-
-        _post_update_hook._labctl_original = original
-        Time._post_update_hook = _post_update_hook
+    _post_update_hook._labctl_original = original
+    Time._post_update_hook = _post_update_hook
 
 
 def _undo_zone_fallback() -> None:

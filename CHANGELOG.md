@@ -50,18 +50,19 @@ labctl that shares it together, and reconnect stdio MCP agents.
   legacy name such as `PST8PDT`; on hosts whose system time zone database
   no longer has those names (Ubuntu 24.04+ moved them to `tzdata-legacy`,
   as GitHub's runners did), every Kasa call failed with
-  `ZoneInfoNotFoundError`. `scripts/update.sh` reinstalls with the extra,
-  which brings it; other existing 3.10 installs need `pip install tzdata`
-  in labctl's environment (`pipx inject embedded-lab-control tzdata`).
-  A missing zone that still reaches labctl fails at once with a message
-  saying so, instead of after three attempts with a bare
-  `ZoneInfoNotFoundError`.
+  `ZoneInfoNotFoundError` (with #76 below, plugs and strips now work
+  without it, so `tzdata` only gives the device's clock its real zone).
+  `scripts/update.sh` reinstalls with the extra, which brings it; other
+  existing 3.10 installs can add it with `pip install tzdata` in labctl's
+  environment (`pipx inject embedded-lab-control tzdata`). A missing zone
+  that still reaches labctl fails at once with a message saying so,
+  instead of after three attempts with a bare `ZoneInfoNotFoundError`.
 - Kasa plugs and strips work on a host without data for the device's
   time zone (#76): python-kasa before 0.11 (0.7.7 is what Python 3.10
   gets) failed every refresh of a plug or strip when it couldn't load the
   device's zone. labctl now gives its IOT `Time` module the fallback
   0.11 and later have, taking the device's clock as UTC (labctl never
-  reads it), logged once per zone. Before, every call failed, and the
+  reads it), logged once per device and zone. Before, every call failed, and the
   monitor handshook with a strip once per outlet per cycle only to fail.
   A python-kasa that already falls back is left alone.
 - The dead-session sweep no longer releases a claim twice when two
