@@ -602,6 +602,15 @@ def no_system_zones():
 
 
 class TestKasaMissingTimeZone:
+    @pytest.fixture(autouse=True)
+    def _clear_caches(self):
+        """A missing zone is remembered process-wide (#76)."""
+        from labctl.power import kasa as kasa_module
+
+        kasa_module._clear_kasa_caches()
+        yield
+        kasa_module._clear_kasa_caches()
+
     @pytest.mark.parametrize("in_loop", [False, True], ids=["cli", "event-loop"])
     def test_reported_at_once_naming_tzdata(self, in_loop):
         """A host without the zone (an install from before the [kasa] extra
@@ -655,6 +664,157 @@ class TestKasaMissingTimeZone:
         assert "pipx inject embedded-lab-control tzdata" in message
         # Never a reinstall of labctl itself (it would replace a checkout).
         assert "embedded-lab-control[" not in message
+
+
+class TestKasaMissingZoneRemembered:
+    """#76: a device whose zone this host lacks fails every call the same
+    way; after the first, calls fail at once without contacting it (no
+    handshake per outlet per monitor cycle) and the error is logged once."""
+
+    HOST = "192.168.1.100"
+    # A zone no host has, so the real local check says it's still missing
+    # (a dev machine may well have PST8PDT).
+    ZONE = "Mars/Olympus_Mons"
+    ERROR = f"No time zone found with key {ZONE}"
+
+    @pytest.fixture(autouse=True)
+    def _clear_caches(self):
+        from labctl.power import kasa as kasa_module
+
+        kasa_module._clear_kasa_caches()
+        yield
+        kasa_module._clear_kasa_caches()
+
+    def _controller(self, host=None, plug_index=1):
+        from labctl.power.kasa import KasaController
+
+        return KasaController(host or self.HOST, plug_index=plug_index)
+
+    def _device(self, fail=True, error=None):
+        """A coro factory standing in for a device call; ``calls`` counts
+        the times the device was contacted."""
+        import zoneinfo
+
+        calls = []
+
+        def factory():
+            async def go():
+                calls.append(1)
+                if fail:
+                    raise zoneinfo.ZoneInfoNotFoundError(error or self.ERROR)
+                return "ok"
+
+            return go()
+
+        return factory, calls
+
+    def _fail(self, controller, factory, action="get_state"):
+        with pytest.raises(RuntimeError) as exc:
+            controller._run_async(factory, action)
+        return str(exc.value)
+
+    def test_later_calls_fail_at_once_and_log_once(self, caplog):
+        factory, calls = self._device()
+        with caplog.at_level(logging.DEBUG, logger="labctl.power.kasa"):
+            first = self._fail(self._controller(), factory)
+            second = self._fail(self._controller(plug_index=2), factory, "power_on")
+            third = self._fail(self._controller(plug_index=3), factory)
+        assert len(calls) == 1  # one device contact, not three
+        assert self.ZONE in first and "tzdata" in first
+        assert self.ZONE in second and second.startswith("Kasa power_on failed")
+        assert first == third
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert len(errors) == 1
+        repeats = [r for r in caplog.records if r.levelno == logging.DEBUG]
+        assert sum(self.ZONE in r.getMessage() for r in repeats) == 2
+
+    def test_other_devices_unaffected(self):
+        failing, _ = self._device()
+        self._fail(self._controller(), failing)
+        working, calls = self._device(fail=False)
+        assert self._controller("192.168.1.101")._run_async(working, "x") == "ok"
+        assert len(calls) == 1
+
+    def test_contacted_again_once_the_zone_loads(self, caplog):
+        """tzdata installed meanwhile: no restart needed."""
+        factory, calls = self._device()
+        self._fail(self._controller(), factory)
+        working, ok_calls = self._device(fail=False)
+        with (
+            patch("labctl.power.kasa._zone_loads", return_value=True) as loads,
+            caplog.at_level(logging.INFO, logger="labctl.power.kasa"),
+        ):
+            assert self._controller()._run_async(working, "get_state") == "ok"
+        loads.assert_called_once_with(self.ZONE)
+        assert len(ok_calls) == 1
+        assert f"{self.ZONE} loads now" in caplog.text
+
+    def test_zone_check_is_real(self):
+        """The local check loads the zone the device asked for."""
+        import zoneinfo
+
+        from labctl.power import kasa as kasa_module
+
+        assert not kasa_module._zone_loads(self.ZONE)
+        if "UTC" in zoneinfo.available_timezones():  # some time zone data
+            assert kasa_module._zone_loads("UTC")
+
+    def test_recheck_contacts_the_device_once(self):
+        """Every MISSING_ZONE_RECHECK_SECONDS one call goes to the device
+        (its zone setting may have changed); the others still fail at once."""
+        from labctl.power import kasa as kasa_module
+
+        factory, calls = self._device()
+        self._fail(self._controller(), factory)
+        kasa_module._missing_zones[self.HOST][2] -= (
+            kasa_module.MISSING_ZONE_RECHECK_SECONDS + 1
+        )
+        self._fail(self._controller(), factory)  # the recheck
+        self._fail(self._controller(), factory)  # within the new window
+        assert len(calls) == 2
+
+    def test_recheck_finds_it_fixed(self, caplog):
+        """The device's zone was changed to one the host has."""
+        from labctl.power import kasa as kasa_module
+
+        factory, _ = self._device()
+        self._fail(self._controller(), factory)
+        kasa_module._missing_zones[self.HOST][2] -= (
+            kasa_module.MISSING_ZONE_RECHECK_SECONDS + 1
+        )
+        working, calls = self._device(fail=False)
+        with caplog.at_level(logging.INFO, logger="labctl.power.kasa"):
+            assert self._controller()._run_async(working, "get_state") == "ok"
+            assert self._controller()._run_async(working, "get_state") == "ok"
+        assert len(calls) == 2
+        assert "works again" in caplog.text
+        assert self.HOST not in kasa_module._missing_zones
+
+    def test_unreadable_error_still_remembered(self):
+        """No zone name to check locally: only the periodic recheck."""
+        from labctl.power import kasa as kasa_module
+
+        factory, calls = self._device(error="something else")
+        with patch("labctl.power.kasa._zone_loads") as loads:
+            self._fail(self._controller(), factory)
+            self._fail(self._controller(), factory)
+        loads.assert_not_called()
+        assert len(calls) == 1
+        assert kasa_module._missing_zones[self.HOST][0] is None
+
+    def test_another_zone_logged_again(self, caplog):
+        """A recheck that finds a different missing zone is news."""
+        from labctl.power import kasa as kasa_module
+
+        factory, _ = self._device()
+        self._fail(self._controller(), factory)
+        kasa_module._missing_zones[self.HOST][2] -= (
+            kasa_module.MISSING_ZONE_RECHECK_SECONDS + 1
+        )
+        other, _ = self._device(error="No time zone found with key Mars/Tharsis")
+        with caplog.at_level(logging.ERROR, logger="labctl.power.kasa"):
+            self._fail(self._controller(), other)
+        assert "Mars/Tharsis" in caplog.text
 
 
 class TestKasaStripDiscoveredAsPlug:
@@ -740,6 +900,38 @@ class TestKasaStripDiscoveredAsPlug:
         controller, protocol = self._controller(plug_index=1)
         assert controller.get_state() == PowerState.OFF  # as recorded
         assert protocol.requests, "answered from a cache, not the device"
+
+    @pytest.mark.skipif(
+        sys.version_info >= (3, 11),
+        reason="python-kasa 0.7.7 (Python 3.10) loads the device's zone",
+    )
+    @pytest.mark.usefixtures("no_system_zones")
+    def test_missing_zone_contacts_the_strip_once(self, caplog):
+        """#76 through python-kasa's real lookup: with no time zone data
+        at all (no system database, tzdata not importable), the first
+        outlet's read reaches the strip and fails; the other outlets'
+        reads fail at once without contacting it, and one ERROR is logged."""
+        from labctl.power.kasa import KasaController
+
+        with (
+            patch.dict(sys.modules, {"tzdata": None}),  # as if not installed
+            caplog.at_level(logging.DEBUG, logger="labctl.power.kasa"),
+        ):
+            controller, protocol = self._controller(plug_index=1)
+            with pytest.raises(RuntimeError, match="PST8PDT"):
+                controller.get_state()
+            contacted = len(protocol.requests)
+            assert contacted
+            for outlet in range(2, 7):
+                other = KasaController("192.168.1.100", plug_index=outlet)
+                with (
+                    patch.object(other, "_load_credentials", return_value=None),
+                    pytest.raises(RuntimeError, match="PST8PDT"),
+                ):
+                    other.get_state()
+        assert len(protocol.requests) == contacted
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert len(errors) == 1
 
     def test_reads_every_outlet_state(self):
         controller, protocol = self._controller(plug_index=1)

@@ -16,10 +16,14 @@
 
 ## Last Session
 
-- **Date**: 2026-11-08 to 2026-11-09
-- **Branch**: `worktree-bridge-cse_014Q9aryST1Z35mUkKKvydup`, PR #74 (open,
-  rebased onto #75, three review rounds, CI green)
+- **Date**: 2026-11-08 to 2026-11-13
+- **Branch**: #73 and #75 merged (PRs #74, #75); #76 on
+  `fix/kasa-missing-zone-76` (not committed yet)
 - **Completed**:
+  - #76: a Kasa device whose time zone the host lacks is remembered;
+    later calls fail at once without contacting it, the error is logged
+    once, the zone is rechecked locally on every call and the device
+    every 10 minutes
   - #73: claims held for an MCP session (`claim_sbc(hold="session")`,
     schema v15 `claims.hold`, `claims.session_timeout_minutes`);
     `claim_status` / `claim_warnings` as a second content block in MCP
@@ -30,8 +34,8 @@
     (GitHub's runners dropped the legacy `PST8PDT` zone and main's 3.10
     CI had gone red); a missing zone fails at once naming the install
     command. Follow-up #76 (remember a missing zone)
-- **Next**: merge #74; deploy (schema v15), then reconnect stdio MCP
-  agents and run `labctl skill install --force` in agent projects
+- **Next**: commit and PR #76; deploy (schema v15), then reconnect stdio
+  MCP agents and run `labctl skill install --force` in agent projects
 
 ## Previous Session (0.3.0)
 
