@@ -663,20 +663,29 @@ class TestKasaZoneFallback:
 
     @staticmethod
     def _time_module(*, catches=False, timezone_attr=True, hook=None):
-        """A stand-in for kasa.iot.modules.time: a release that catches the
-        error itself (0.11+) imports ZoneInfoNotFoundError; 0.7.7 and
-        0.10.x don't."""
+        """A stand-in for kasa.iot.modules.time. With ``catches``, its hook
+        catches the error itself (0.11+); without, it raises it (0.7.7,
+        0.10.x). The module imports ZoneInfoNotFoundError either way: what
+        counts is the hook."""
         import zoneinfo
         from datetime import timezone
 
         module = types.ModuleType("kasa.iot.modules.time")
-        if catches:
-            module.ZoneInfoNotFoundError = zoneinfo.ZoneInfoNotFoundError
+        module.ZoneInfoNotFoundError = zoneinfo.ZoneInfoNotFoundError
 
-        async def missing_zone(self):
+        async def lookup():  # python-kasa's get_timezone, for a missing zone
             raise zoneinfo.ZoneInfoNotFoundError("No time zone found with key X")
 
-        attrs = {"_post_update_hook": hook or missing_zone}
+        async def missing_zone(self):  # 0.7.7, 0.10.x: the lookup raises
+            self._timezone = await lookup()
+
+        async def falls_back(self):  # what 0.11+ does, in short
+            try:
+                self._timezone = await lookup()
+            except zoneinfo.ZoneInfoNotFoundError:
+                self._timezone = timezone.utc
+
+        attrs = {"_post_update_hook": hook or (falls_back if catches else missing_zone)}
         if timezone_attr:
             attrs["_timezone"] = timezone.utc
         module.Time = type("Time", (), attrs)
@@ -755,6 +764,20 @@ class TestKasaZoneFallback:
         module = self._time_module(catches=True)
         before = module.Time._post_update_hook
         assert self._apply(kasa_module, module)._post_update_hook is before
+
+    def test_module_importing_the_error_still_patched(self, kasa_module):
+        """The module importing ZoneInfoNotFoundError (for another use)
+        doesn't count: its hook still raises it, so it gets the fallback."""
+        module = self._time_module()
+        assert "ZoneInfoNotFoundError" in vars(module)
+        before = module.Time._post_update_hook
+        assert self._apply(kasa_module, module)._post_update_hook is not before
+
+    def test_clear_caches_forgets_reported_zones(self, kasa_module):
+        """The strip tests rely on it to see a zone's first (INFO) note."""
+        kasa_module._zones_reported.add(("192.168.1.100", "x"))
+        kasa_module._clear_kasa_caches()
+        assert not kasa_module._zones_reported
 
     def test_unexpected_shape_untouched(self, kasa_module):
         """No ``_timezone`` to set: don't patch blindly."""

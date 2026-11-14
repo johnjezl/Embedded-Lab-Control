@@ -142,13 +142,17 @@ def _zone_detail(error: Exception) -> str:
     return str(error.args[0]) if error.args else str(error)
 
 
-def _time_module_falls_back(time_module) -> bool:
-    """Whether python-kasa's IOT Time module handles a missing zone itself:
-    the releases that do (0.11+) import ZoneInfoNotFoundError to catch it;
-    0.7.7 and 0.10.x don't. Misjudging one that does only wraps a step that
-    never raises it."""
-    caught = vars(time_module).get("ZoneInfoNotFoundError")
-    return caught is zoneinfo.ZoneInfoNotFoundError
+def _hook_falls_back(hook) -> bool:
+    """Whether python-kasa's IOT Time post-update hook handles a missing
+    zone itself: in the releases that do (0.11+) its code refers to
+    ZoneInfoNotFoundError (the names its bytecode looks up, so no source
+    is needed); in 0.7.7 and 0.10.x it doesn't. The hook itself, not its
+    module, which could import the name for something else. (A hook that
+    named the error only to raise it would count too; python-kasa's get
+    it from the lookup they call.) Misjudging a hook that does catch it
+    only wraps a step that never raises it."""
+    code = getattr(hook, "__code__", None)
+    return code is not None and "ZoneInfoNotFoundError" in code.co_names
 
 
 def _tolerate_missing_device_zone() -> None:
@@ -178,14 +182,14 @@ def _install_zone_fallback() -> None:
     except Exception:  # missing or unexpected python-kasa: leave it
         logger.debug("Kasa time zone fallback not applied", exc_info=True)
         return
-    if _time_module_falls_back(time_module):
-        return
     original = vars(Time).get("_post_update_hook")
     if not callable(original) or "_timezone" not in vars(Time):
         logger.debug(
             "Kasa time zone fallback not applied: python-kasa's Time "
             "module doesn't look as expected"
         )
+        return
+    if _hook_falls_back(original):
         return
 
     @wraps(original)
