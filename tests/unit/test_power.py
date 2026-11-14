@@ -708,6 +708,49 @@ class TestKasaZoneFallback:
         assert device_time._timezone is timezone.utc
         assert "192.168.1.100" in caplog.text and "(No time zone" in caplog.text
 
+    def test_done_only_once_the_patch_is_in(self, kasa_module):
+        """A caller that sees the flag (without the lock) must find the
+        patch installed: the flag isn't set while it's being installed."""
+        module = self._time_module()
+        seen = []
+
+        def import_module(name):
+            seen.append(kasa_module._zone_fallback_done)
+            return module
+
+        with patch("labctl.power.kasa.importlib.import_module", import_module):
+            kasa_module._tolerate_missing_device_zone()
+        assert seen == [False]
+        assert kasa_module._zone_fallback_done
+        assert hasattr(module.Time._post_update_hook, "_labctl_original")
+
+    def test_hook_arguments_passed_through(self, kasa_module):
+        """Whatever the hook takes, the wrapper forwards it."""
+        import asyncio
+
+        got = []
+
+        async def hook(self, update_children=False, *, extra=None):
+            got.append((update_children, extra))
+
+        Time = self._apply(kasa_module, self._time_module(hook=hook))
+        asyncio.run(Time._post_update_hook(Time(), True, extra=1))
+        assert got == [(True, 1)]
+
+    def test_logged_once_per_device(self, kasa_module, caplog):
+        """Two strips in the same zone are both named, each once."""
+        import asyncio
+
+        Time = self._apply(kasa_module, self._time_module())
+        with caplog.at_level(logging.DEBUG, logger="labctl.power.kasa"):
+            for host in ("192.168.1.100", "192.168.1.101", "192.168.1.100"):
+                device_time = Time()
+                device_time._device = Mock(host=host)
+                asyncio.run(Time._post_update_hook(device_time))
+        infos = [r.getMessage() for r in caplog.records if r.levelno == logging.INFO]
+        assert len(infos) == 2
+        assert "192.168.1.100" in infos[0] and "192.168.1.101" in infos[1]
+
     def test_release_with_fallback_untouched(self, kasa_module):
         module = self._time_module(catches=True)
         before = module.Time._post_update_hook

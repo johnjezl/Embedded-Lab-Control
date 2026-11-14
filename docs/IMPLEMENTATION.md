@@ -953,7 +953,7 @@ First public version: 0.2.0 (then 0.2.1, 0.3.0). Release process: `docs/RELEASIN
 - ✅ #76 python-kasa's IOT `Time` refresh falls back to UTC when the
   device's zone can't be loaded, for releases that don't themselves
   (before 0.11; detected, not by version), so Kasa control works without
-  the zone's data; logged once per zone
+  the zone's data; logged once per device and zone
 - ✅ #73 Claims kept for an MCP session (schema v15 `claims.hold`):
   `claim_sbc(hold="session")`, heartbeated by the stdio server process
   (stopped once the client is gone) or by each HTTP tool call, expiring
