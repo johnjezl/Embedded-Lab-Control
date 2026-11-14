@@ -913,8 +913,16 @@ class TestKasaStripDiscoveredAsPlug:
         reads fail at once without contacting it, and one ERROR is logged."""
         from labctl.power.kasa import KasaController
 
+        # As if tzdata weren't installed: hide the package and every
+        # submodule an earlier test may have imported (zoneinfo finds an
+        # imported tzdata.zoneinfo in sys.modules even with tzdata hidden).
+        hidden = {
+            name: None
+            for name in [*sys.modules, "tzdata", "tzdata.zoneinfo"]
+            if name == "tzdata" or name.startswith("tzdata.")
+        }
         with (
-            patch.dict(sys.modules, {"tzdata": None}),  # as if not installed
+            patch.dict(sys.modules, hidden),
             caplog.at_level(logging.DEBUG, logger="labctl.power.kasa"),
         ):
             controller, protocol = self._controller(plug_index=1)
