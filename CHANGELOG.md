@@ -55,6 +55,14 @@ labctl that shares it together, and reconnect stdio MCP agents.
   in labctl's environment (`pipx inject embedded-lab-control tzdata`).
   Until then, Kasa calls now fail at once with a message saying so,
   instead of after three attempts with a bare `ZoneInfoNotFoundError`.
+- A Kasa device whose time zone the host lacks is remembered (#76): after
+  the first failure, calls to it fail at once without contacting it, so
+  the monitor no longer handshakes with a strip once per outlet per cycle
+  (six times for an HS300), and the error is logged once instead of on
+  every call. Each call first checks locally whether the zone loads now,
+  so installing `tzdata` takes effect without a restart, and every 10
+  minutes one call contacts the device anyway, in case its time zone
+  setting was changed. Other devices are unaffected.
 - The dead-session sweep no longer releases a claim twice when two
   sweeps race.
 
