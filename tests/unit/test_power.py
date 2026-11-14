@@ -657,6 +657,69 @@ class TestKasaMissingTimeZone:
         assert "embedded-lab-control[" not in message
 
 
+class TestKasaZoneFallback:
+    """labctl gives python-kasa 0.7.x the time zone fallback later releases
+    have (#76): only there, only once."""
+
+    @pytest.fixture
+    def fresh(self, monkeypatch):
+        """As if the fallback hadn't been considered in this process; the
+        Time class is restored afterwards."""
+        from labctl.power import kasa as kasa_module
+
+        monkeypatch.setattr(kasa_module, "_zone_fallback_done", False)
+        try:
+            from kasa.iot.modules.time import Time
+        except ImportError:
+            yield kasa_module, None
+            return
+        monkeypatch.setattr(Time, "_post_update_hook", Time._post_update_hook)
+        yield kasa_module, Time
+
+    @pytest.mark.skipif(
+        sys.version_info < (3, 11), reason="python-kasa >= 0.12 on 3.11+"
+    )
+    def test_later_python_kasa_untouched(self, fresh):
+        kasa_module, Time = fresh
+        before = Time._post_update_hook
+        kasa_module._tolerate_missing_device_zone()
+        assert Time._post_update_hook is before
+
+    @pytest.mark.skipif(
+        sys.version_info >= (3, 11), reason="python-kasa 0.7.7 on Python 3.10"
+    )
+    def test_applied_once(self, fresh):
+        kasa_module, Time = fresh
+        before = Time._post_update_hook
+        kasa_module._tolerate_missing_device_zone()
+        wrapped = Time._post_update_hook
+        assert wrapped is not before
+        kasa_module._tolerate_missing_device_zone()
+        assert Time._post_update_hook is wrapped
+
+    @pytest.mark.skipif(
+        sys.version_info >= (3, 11), reason="python-kasa 0.7.7 on Python 3.10"
+    )
+    def test_other_errors_not_swallowed(self, fresh):
+        """Only a missing zone is tolerated."""
+        import asyncio
+
+        kasa_module, Time = fresh
+
+        async def broken(self):
+            raise ValueError("bad data")
+
+        Time._post_update_hook = broken
+        kasa_module._tolerate_missing_device_zone()
+        with pytest.raises(ValueError, match="bad data"):
+            asyncio.run(Time._post_update_hook(Mock()))
+
+    def test_without_python_kasa(self, fresh, absent_packages):
+        kasa_module, _ = fresh
+        absent_packages("kasa")
+        kasa_module._tolerate_missing_device_zone()  # no error
+
+
 class TestKasaStripDiscoveredAsPlug:
     """KLAP discovery types an HS300 as IotPlug; its outlets must survive.
 
@@ -740,6 +803,35 @@ class TestKasaStripDiscoveredAsPlug:
         controller, protocol = self._controller(plug_index=1)
         assert controller.get_state() == PowerState.OFF  # as recorded
         assert protocol.requests, "answered from a cache, not the device"
+
+    @pytest.mark.skipif(
+        sys.version_info >= (3, 11),
+        reason="python-kasa 0.7.7 (Python 3.10) loads the device's zone",
+    )
+    @pytest.mark.usefixtures("no_system_zones")
+    def test_missing_zone_doesnt_stop_control(self, absent_packages, caplog):
+        """#76: with no data for the strip's zone (no system database, no
+        tzdata), python-kasa 0.7.7's refresh used to fail every call; with
+        labctl's fallback the outlets are read and switched, the device's
+        clock taken as UTC, and that is logged once."""
+        absent_packages("tzdata")
+        with caplog.at_level(logging.DEBUG, logger="labctl.power.kasa"):
+            controller, protocol = self._controller(plug_index=1)
+            assert controller.get_state() == PowerState.OFF  # as recorded
+            from labctl.power.kasa import KasaController
+
+            other = KasaController("192.168.1.100", plug_index=2)
+            with patch.object(other, "_load_credentials", return_value=None):
+                assert other.power_on() is True
+        writes = [r for r in protocol.requests if "set_relay_state" in str(r)]
+        assert len(writes) == 1
+        notes = [
+            r for r in caplog.records if "time zone can't be loaded" in r.getMessage()
+        ]
+        assert notes and "PST8PDT" in notes[0].getMessage()
+        assert [r.levelno for r in notes][0] == logging.INFO
+        assert all(r.levelno == logging.DEBUG for r in notes[1:])
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
 
     def test_reads_every_outlet_state(self):
         controller, protocol = self._controller(plug_index=1)

@@ -948,6 +948,11 @@ First public version: 0.2.0 (then 0.2.1, 0.3.0). Release process: `docs/RELEASIN
   refused, `ports --all`, unused proxy/health keys removed, no-terminal
   prompts need `--yes`, group-writable `/var/lib/labctl/db`, REST power
   400 for a bad `action`
+- ✅ #75 `kasa` extra installs `tzdata` on Python 3.10; a missing time
+  zone fails at once naming the install command
+- ✅ #76 python-kasa 0.7.x's IOT `Time` refresh falls back to UTC when
+  the device's zone can't be loaded (as later releases do), so Kasa
+  control works without the zone's data; logged once per zone
 - ✅ #73 Claims kept for an MCP session (schema v15 `claims.hold`):
   `claim_sbc(hold="session")`, heartbeated by the stdio server process
   (stopped once the client is gone) or by each HTTP tool call, expiring

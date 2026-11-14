@@ -16,10 +16,15 @@
 
 ## Last Session
 
-- **Date**: 2026-11-08 to 2026-11-09
-- **Branch**: `worktree-bridge-cse_014Q9aryST1Z35mUkKKvydup`, PR #74 (open,
-  rebased onto #75, three review rounds, CI green)
+- **Date**: 2026-11-08 to 2026-11-13
+- **Branch**: #73 and #75 merged (PRs #74, #75); #76 in a PR
+  from `fix/kasa-missing-zone-76`
 - **Completed**:
+  - #76: python-kasa 0.7.x (Python 3.10) no longer fails a refresh when
+    the device's time zone can't be loaded: labctl gives its IOT `Time`
+    module the fallback later releases have (device clock as UTC; labctl
+    never reads it). A first version remembered the failure per device;
+    review found the root cause could be fixed instead
   - #73: claims held for an MCP session (`claim_sbc(hold="session")`,
     schema v15 `claims.hold`, `claims.session_timeout_minutes`);
     `claim_status` / `claim_warnings` as a second content block in MCP
@@ -29,9 +34,9 @@
   - #75 (merged): the `kasa` extra installs `tzdata` on Python 3.10
     (GitHub's runners dropped the legacy `PST8PDT` zone and main's 3.10
     CI had gone red); a missing zone fails at once naming the install
-    command. Follow-up #76 (remember a missing zone)
-- **Next**: merge #74; deploy (schema v15), then reconnect stdio MCP
-  agents and run `labctl skill install --force` in agent projects
+    command. Follow-up #76
+- **Next**: review and merge the #76 PR; deploy (schema v15), then reconnect stdio
+  MCP agents and run `labctl skill install --force` in agent projects
 
 ## Previous Session (0.3.0)
 
