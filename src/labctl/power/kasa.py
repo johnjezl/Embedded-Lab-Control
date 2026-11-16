@@ -206,10 +206,12 @@ def _install_zone_fallback() -> None:
             (logger.info if first else logger.debug)(
                 "Kasa device %s: its time zone can't be loaded on this "
                 "host (%s); using UTC for the device's clock, which "
-                "labctl doesn't use (installing tzdata gives it the "
-                "zone)",
+                "labctl doesn't use. To give it the zone, install the "
+                "Python tzdata package (%s -m pip install tzdata) or, on "
+                "Debian/Ubuntu, the system package tzdata-legacy",
                 host,
                 detail,
+                sys.executable or "python3",
             )
 
     _post_update_hook._labctl_original = original

@@ -716,6 +716,11 @@ class TestKasaZoneFallback:
             asyncio.run(Time._post_update_hook(device_time))  # no error
         assert device_time._timezone is timezone.utc
         assert "192.168.1.100" in caplog.text and "(No time zone" in caplog.text
+        # The exact fix: the Python package for this interpreter, or the
+        # Debian/Ubuntu package with the legacy names (not "tzdata", which
+        # is also the name of the system package already installed).
+        assert f"{sys.executable} -m pip install tzdata" in caplog.text
+        assert "tzdata-legacy" in caplog.text
 
     def test_done_only_once_the_patch_is_in(self, kasa_module):
         """A caller that sees the flag (without the lock) must find the
