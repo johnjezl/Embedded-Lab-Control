@@ -10,7 +10,7 @@ two-step confirmation for destructive tools.
 
 | Class | Meaning |
 |---|---|
-| read | No persistent writes (apart from a first-run DB schema setup). The MCP `sdwire_ls`/`sdwire_cat`/`sdwire_info` tools are read even though they may switch the SD card to the host and back; their notes say when |
+| read | No persistent writes (apart from a first-run DB schema setup). The MCP `sdwire_ls`/`sdwire_cat`/`sdwire_hash`/`sdwire_info` tools are read even though they may switch the SD card to the host and back; their notes say when |
 | db-write | Writes only the labctl database (SBCs, claims, bindings, audit rows) |
 | shared-resource | Holds a lab resource someone else may be using (a ser2net console session, a relay's serial port) for as long as it runs, without changing persistent state |
 | system-write | Writes system files or restarts system services |
@@ -73,6 +73,7 @@ the tool and its exact arguments. Configure with `mcp.confirm_destructive`
 | `sdwire_assign` | db-write |  |  |
 | `sdwire_cat` | read |  | As sdwire_ls |
 | `sdwire_discover` | read |  |  |
+| `sdwire_hash` | read |  | As sdwire_ls |
 | `sdwire_info` | read |  | As sdwire_ls |
 | `sdwire_ls` | read |  | Reads in place if the card is already on the host (left there); else switches to the host and back to the board only when the plug reports OFF, and refuses otherwise (no plug, unreadable or unknown state) |
 | `sdwire_remove` | destructive | yes |  |
@@ -127,7 +128,7 @@ failed one. (`boot-test` needs a plug anyway, so it has no such flag.)
 
 **Claims (D013):** commands that change a board refuse when another user
 has claimed it, naming the holder: those that operate it (`power
-on/off/cycle`, `power-all`, `sdwire dut/host/flash/update/ls/cat/info`,
+on/off/cycle`, `power-all`, `sdwire dut/host/flash/update/ls/cat/hash/info`,
 `serial send`, `bindings actuate/release/press`,
 `enter-/exit-recovery`, `boot-test`), those that change its records
 (`edit`, `remove`, `port`/`plug`/`network` assign/set/remove,
@@ -251,6 +252,7 @@ exactly like the commands they stand for.
 | `sdwire discover` | read |  |  |
 | `sdwire dut` | hardware |  |  |
 | `sdwire flash` | destructive | yes | Overwrites the whole SD card; `--dry-run`; powers the board off first, refusing a board with no plug unless `--no-plug-ok` |
+| `sdwire hash` | hardware |  | As `sdwire cat` |
 | `sdwire host` | destructive | yes | Pulls the card from the board; only when the plug reports it off (no plug or an unreadable plug refuses too); `--force` skips the power check |
 | `sdwire info` | hardware |  | As `sdwire cat` |
 | `sdwire list` | read |  |  |
@@ -283,10 +285,10 @@ exactly like the commands they stand for.
 | `user verify` | read |  |  |
 | `web` | server |  | Long-running web UI/API |
 
-**SD card power check:** `sdwire host`, `sdwire ls`/`cat`/`info` and
-the MCP `sdwire_to_host`/`sdwire_ls`/`cat`/`info` take the card from the
+**SD card power check:** `sdwire host`, `sdwire ls`/`cat`/`hash`/`info` and
+the MCP `sdwire_to_host`/`sdwire_ls`/`cat`/`hash`/`info` take the card from the
 board only when its plug reports it OFF: no power plug, a plug that can't
-be read, or an unknown state refuse too. `--force` on all four CLI
+be read, or an unknown state refuse too. `--force` on all five CLI
 commands (MCP `sdwire_to_host(force=true)`) skips the check; use it once
 you've made sure the board is off, e.g. on a board with no plug. The read
 commands (CLI and MCP) read a card that is already on the host in place

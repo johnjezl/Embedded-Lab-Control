@@ -367,6 +367,11 @@ class KasaConfig:
 # SD-card image of a typical embedded Linux build.
 DEFAULT_MAX_UPLOAD_MB = 8192
 
+# The most one sdwire_cat call returns (mcp.max_read_mb), before encoding:
+# one tool result of several MiB has dropped the client's MCP connection
+# (#78). Larger files are read in parts or compared with sdwire_hash.
+DEFAULT_MAX_READ_MB = 4
+
 ROLE_OPERATOR = "operator"
 ROLE_AGENT = "agent"
 ROLES = (ROLE_OPERATOR, ROLE_AGENT)
@@ -565,6 +570,9 @@ class McpConfig:
     be inside ``allowed_read_paths`` so tools can use what's uploaded.
     ``max_upload_mb`` caps one upload's size (D014).
 
+    ``max_read_mb`` caps what one ``sdwire_cat`` call may return
+    (``max_bytes``, before encoding; #78).
+
     ``cert_file`` / ``key_file`` serve the HTTP transport over TLS (both or
     neither; ``labctl mcp --cert/--key`` take precedence).
     """
@@ -578,6 +586,7 @@ class McpConfig:
     allowed_origins: list[str] = field(default_factory=list)
     upload_dir: str = ""
     max_upload_mb: int = DEFAULT_MAX_UPLOAD_MB
+    max_read_mb: int = DEFAULT_MAX_READ_MB
     cert_file: str = ""
     key_file: str = ""
 
@@ -728,6 +737,7 @@ class Config:
             max_upload_mb=_positive_int(
                 mcp_data, "max_upload_mb", DEFAULT_MAX_UPLOAD_MB
             ),
+            max_read_mb=_positive_int(mcp_data, "max_read_mb", DEFAULT_MAX_READ_MB),
             cert_file=_abs_path(mcp_data, "cert_file"),
             key_file=_abs_path(mcp_data, "key_file"),
         )
@@ -828,6 +838,7 @@ class Config:
                 "allowed_origins": list(self.mcp.allowed_origins),
                 "upload_dir": self.mcp.upload_dir,
                 "max_upload_mb": self.mcp.max_upload_mb,
+                "max_read_mb": self.mcp.max_read_mb,
                 "cert_file": self.mcp.cert_file,
                 "key_file": self.mcp.key_file,
             },

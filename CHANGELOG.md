@@ -34,9 +34,24 @@ labctl that shares it together, and reconnect stdio MCP agents.
   board since: on every call about that board, and once elsewhere.
   `get_claim` shows such a lapse. Callers who never claim see no change.
   REST renewal of a session claim says the duration wasn't applied.
+- `sdwire_hash` MCP tool and `labctl sdwire hash` (#78): hash a file on
+  an SD card partition, or a byte range of it, on the lab host (sha256,
+  sha1, sha512, md5 or crc32), reading it in chunks, so a file of any size
+  can be compared without reading it through `sdwire_cat`. Same card
+  handling and claim rules as the other read tools.
+- `offset` / `length` on `sdwire_cat` (`--offset` / `--length` on `labctl
+  sdwire cat`) read part of a file (#78). Results also carry `offset` and
+  `bytes_read`; `truncated` is now true when the file goes on past what
+  was returned. Bad ranges are refused before the card is switched.
 
 ### Changed
 
+- `sdwire_cat` refuses a `max_bytes` over the new `mcp.max_read_mb`
+  (default 4 MiB) with `max_bytes_too_large`, before switching the card
+  (#78). Raising `max_bytes` to read an 8 MiB file whole returned one
+  ~11 MB tool result, which dropped Claude Code's MCP connection until it
+  was reconnected by hand. `size_limit_exceeded` now suggests ranges or
+  `sdwire_hash`. The CLI has no such limit.
 - With `claims.require_claim` on (the strict mode #73 asked for), the
   refusal of a caller whose own claim lapsed (in the last 24 hours) names
   that claim and how it ended, on MCP (with `lapsed_claim`) and REST.

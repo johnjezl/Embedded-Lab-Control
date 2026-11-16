@@ -962,6 +962,11 @@ First public version: 0.2.0 (then 0.2.1, 0.3.0). Release process: `docs/RELEASIN
   within 10 min, lapses within 24 h); `require_claim` refusals name the caller's lapsed claim; CLI,
   web and skill updated. Renew on use was already in place
   (`check_claim` heartbeats the holder's claim)
+- ✅ #78 Large SD card files: `sdwire_cat` `offset`/`length` (CLI
+  `--offset`/`--length`), new `sdwire_hash` / `labctl sdwire hash`
+  (sha256, sha1, sha512, md5, crc32; whole file or a range, chunked on the
+  host), and `mcp.max_read_mb` (default 4 MiB) capping one `sdwire_cat`
+  result, refused before the card is switched
 - ☐ #2 Long calls keep the caller's claim alive (not merged yet):
   `ClaimKeepalive` (`labctl/core/claim_keepalive.py`) heartbeats a claim
   the caller already holds during MCP `boot_test`, `serial_capture`,

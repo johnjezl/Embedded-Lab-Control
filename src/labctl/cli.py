@@ -31,6 +31,7 @@ from labctl.core.models import (
 )
 from labctl.extras import is_missing, missing_extra_message
 from labctl.power import PowerController, PowerState
+from labctl.sdwire.controller import HASH_ALGORITHMS
 from labctl.serial.ser2net import (
     Ser2NetPort,
     check_ser2net_config_writable,
@@ -2433,7 +2434,7 @@ def sdwire_ls_cmd(
     type=int,
     default=1024 * 1024,
     show_default=True,
-    help="Maximum bytes to read",
+    help="Refuse to print more than this many bytes",
 )
 @click.option(
     "--encoding",
@@ -2441,6 +2442,19 @@ def sdwire_ls_cmd(
     default="text",
     show_default=True,
     help="Output encoding",
+)
+@click.option(
+    "--offset",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Byte to start reading at",
+)
+@click.option(
+    "--length",
+    type=int,
+    default=None,
+    help="Bytes to read from --offset (default: to the end; at most " "--max-bytes)",
 )
 @click.option(
     "--force",
@@ -2456,17 +2470,31 @@ def sdwire_cat_cmd(
     target_path: str,
     max_bytes: int,
     encoding: str,
+    offset: int,
+    length: int | None,
     force: bool,
 ) -> None:
-    """Read a file from an SBC SD card partition.
+    """Read a file, or part of one, from an SBC SD card partition.
 
     Switches the card to the host, reads it, and switches it back to the
     SBC, only when the SBC's plug reports it off (no plug or an unreadable
     plug refuses too; --force skips the check). A card already on the host
-    is read in place and left there. Prints JSON.
+    is read in place and left there. Prints JSON; "truncated" is true when
+    the file goes on past what was printed.
     """
-    from labctl.sdwire.controller import SDWireController, SDWireSymlinkError
+    from labctl.sdwire.controller import (
+        SDWireArgumentError,
+        SDWireController,
+        SDWireSymlinkError,
+        validate_read_args,
+    )
 
+    # Arguments are checked before the card is touched.
+    try:
+        validate_read_args(max_bytes, encoding, offset, length)
+    except (SDWireArgumentError, RuntimeError) as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
     manager = _get_manager(ctx)
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
@@ -2492,6 +2520,8 @@ def sdwire_cat_cmd(
             path=target_path,
             max_bytes=max_bytes,
             encoding=encoding,
+            offset=offset,
+            length=length,
         )
         output = json.dumps(
             {
@@ -2511,6 +2541,9 @@ def sdwire_cat_cmd(
     except IsADirectoryError:
         click.echo(f"Error: Not a file: {target_path}", err=True)
         sys.exit(1)
+    except SDWireArgumentError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
     except ValueError as e:
         if str(e) == "binary_content":
             click.echo(
@@ -2520,6 +2553,146 @@ def sdwire_cat_cmd(
             )
         else:
             click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    except SDWireSymlinkError as e:
+        click.echo(
+            f"Error: Refusing to follow symlink: {target_path} -> {e.target}",
+            err=True,
+        )
+        sys.exit(1)
+    except RuntimeError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    finally:
+        if host_switched:
+            try:
+                ctrl.switch_to_dut()
+            except RuntimeError as e:
+                cleanup_error = e
+
+    if cleanup_error:
+        click.echo(
+            f"Error: Failed to restore SD card to DUT mode: {cleanup_error}",
+            err=True,
+        )
+        sys.exit(1)
+    click.echo(output)
+
+
+@sdwire_group.command("hash")
+@claim_checked()
+@click.argument("sbc_name")
+@click.option(
+    "--partition",
+    "-p",
+    type=int,
+    required=True,
+    help="Partition number (e.g., 1 for first partition)",
+)
+@click.option("--path", "target_path", required=True, help="Absolute file path")
+@click.option(
+    "--algorithm",
+    "-a",
+    type=click.Choice(list(HASH_ALGORITHMS)),
+    default="sha256",
+    show_default=True,
+    help="Hash algorithm",
+)
+@click.option(
+    "--offset",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Byte to start hashing at",
+)
+@click.option(
+    "--length",
+    type=int,
+    default=None,
+    help="Bytes to hash from --offset (default: to the end)",
+)
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Skip the power-off check when the card must be switched from the "
+    "board (risks SD card corruption if it runs)",
+)
+@click.pass_context
+def sdwire_hash_cmd(
+    ctx: click.Context,
+    sbc_name: str,
+    partition: int,
+    target_path: str,
+    algorithm: str,
+    offset: int,
+    length: int | None,
+    force: bool,
+) -> None:
+    """Hash a file, or a byte range of one, on an SBC SD card partition.
+
+    Hashed on this host in chunks, so any size of file works. Card
+    handling as `sdwire cat`. Prints JSON with "digest" (lowercase hex)
+    and "bytes_hashed".
+    """
+    from labctl.sdwire.controller import (
+        SDWireArgumentError,
+        SDWireController,
+        SDWireSymlinkError,
+        validate_hash_args,
+    )
+
+    try:
+        validate_hash_args(algorithm, offset, length)
+    except SDWireArgumentError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    manager = _get_manager(ctx)
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        click.echo(f"Error: SBC '{sbc_name}' not found", err=True)
+        sys.exit(1)
+    if not sbc.sdwire:
+        click.echo(f"Error: No SDWire assigned to '{sbc_name}'", err=True)
+        sys.exit(1)
+    # A read: not recorded (its host round trip restores the card).
+    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    needs_switch = _sdwire_read_needs_switch(sbc_name, sbc, ctrl, force)
+    host_switched = False
+    cleanup_error: RuntimeError | None = None
+    output: str
+
+    try:
+        if needs_switch:
+            ctrl.switch_to_host()
+            host_switched = True
+            time.sleep(2)
+        result = ctrl.hash_file(
+            partition=partition,
+            path=target_path,
+            algorithm=algorithm,
+            offset=offset,
+            length=length,
+        )
+        output = json.dumps(
+            {
+                "sbc_name": sbc_name,
+                "partition": partition,
+                "path": target_path,
+                **result,
+            },
+            indent=2,
+        )
+    except FileNotFoundError:
+        click.echo(f"Error: Path not found: {target_path}", err=True)
+        sys.exit(1)
+    except PermissionError:
+        click.echo(f"Error: Permission denied: {target_path}", err=True)
+        sys.exit(1)
+    except IsADirectoryError:
+        click.echo(f"Error: Not a file: {target_path}", err=True)
+        sys.exit(1)
+    except SDWireArgumentError as e:
+        click.echo(f"Error: {e}", err=True)
         sys.exit(1)
     except SDWireSymlinkError as e:
         click.echo(

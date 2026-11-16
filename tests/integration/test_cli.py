@@ -2622,3 +2622,120 @@ class TestSer2netGenerateClaims:
             self._install(runner, cfg)
         assert check.call_count >= 2
         assert {c.args[1] for c in check.call_args_list} >= {"held"}
+
+
+class TestSdwireLargeFiles:
+    """`sdwire cat --offset/--length` and `sdwire hash` (#78)."""
+
+    @pytest.fixture
+    def power(self):
+        """The board's plug; reports OFF unless a test changes it."""
+        from labctl.power.base import PowerState
+
+        power = MagicMock()
+        power.get_state.return_value = PowerState.OFF
+        return power
+
+    @pytest.fixture
+    def ctrl(self, power):
+        """A board on the DUT side; yields the mocked SDWireController."""
+        sbc = MagicMock()
+        sbc.name = "test-sbc-1"
+        sbc.sdwire.serial_number = "bdgrd_sdwirec_001"
+        sbc.sdwire.device_type = "sdwirec"
+        manager = MagicMock()
+        manager.get_sbc_by_name.return_value = sbc
+        ctrl = MagicMock()
+        ctrl.card_on_host.return_value = False
+        with (
+            patch("labctl.cli._get_manager", return_value=manager),
+            patch("labctl.power.PowerController.from_plug", return_value=power),
+            patch("labctl.sdwire.controller.SDWireController", return_value=ctrl),
+            patch("time.sleep"),
+        ):
+            yield ctrl
+
+    def _run(self, runner, *args):
+        return runner.invoke(
+            main, ["sdwire", *args, "test-sbc-1", "-p", "1", "--path", "/f"]
+        )
+
+    def test_cat_range(self, runner, ctrl):
+        ctrl.read_file.return_value = {"content": "234", "truncated": True}
+
+        result = self._run(runner, "cat", "--offset", "2", "--length", "3")
+
+        assert result.exit_code == 0, result.output
+        assert ctrl.read_file.call_args.kwargs["offset"] == 2
+        assert ctrl.read_file.call_args.kwargs["length"] == 3
+        assert '"truncated": true' in result.output
+        ctrl.switch_to_dut.assert_called_once()
+
+    @pytest.mark.parametrize(
+        "args, message",
+        [
+            (("--offset", "-1"), "offset"),
+            (("--length", "2000000"), "length exceeds max_bytes"),
+        ],
+    )
+    def test_cat_bad_range_refused_before_switching(self, runner, ctrl, args, message):
+        result = self._run(runner, "cat", *args)
+
+        assert result.exit_code == 1
+        assert message in result.output
+        ctrl.switch_to_host.assert_not_called()
+
+    def test_hash(self, runner, ctrl):
+        ctrl.hash_file.return_value = {
+            "algorithm": "crc32",
+            "digest": "0000abcd",
+            "bytes_hashed": 10,
+        }
+
+        result = self._run(
+            runner, "hash", "-a", "crc32", "--offset", "4", "--length", "10"
+        )
+
+        assert result.exit_code == 0, result.output
+        ctrl.hash_file.assert_called_once_with(
+            partition=1, path="/f", algorithm="crc32", offset=4, length=10
+        )
+        assert '"digest": "0000abcd"' in result.output
+        ctrl.switch_to_dut.assert_called_once()
+
+    def test_hash_unknown_algorithm_rejected(self, runner, ctrl):
+        result = self._run(runner, "hash", "-a", "sha3")
+
+        assert result.exit_code != 0
+        ctrl.switch_to_host.assert_not_called()
+
+    def test_hash_negative_offset_refused_before_switching(self, runner, ctrl):
+        result = self._run(runner, "hash", "--offset", "-1")
+
+        assert result.exit_code == 1
+        assert "offset" in result.output
+        ctrl.switch_to_host.assert_not_called()
+
+    def test_hash_offset_past_end(self, runner, ctrl):
+        from labctl.sdwire.controller import SDWireArgumentError
+
+        ctrl.hash_file.side_effect = SDWireArgumentError(
+            "offset_out_of_range", "offset 99 is past the end of the file (3 bytes)"
+        )
+
+        result = self._run(runner, "hash", "--offset", "99")
+
+        assert result.exit_code == 1
+        assert "past the end" in result.output
+        ctrl.switch_to_dut.assert_called_once()
+
+    def test_hash_refuses_powered_on_board(self, runner, ctrl, power):
+        from labctl.power.base import PowerState
+
+        power.get_state.return_value = PowerState.ON
+
+        result = self._run(runner, "hash")
+
+        assert result.exit_code != 0
+        assert "powered on" in result.output
+        ctrl.switch_to_host.assert_not_called()

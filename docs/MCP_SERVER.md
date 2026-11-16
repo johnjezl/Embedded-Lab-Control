@@ -389,7 +389,8 @@ call. `power_on` and `power_cycle` also check and set those boards'
 | `sdwire_to_host` | `sbc_name`, `force` (default false) | Switch SD card to host (for flashing). Proceeds only when the SBC's plug reports it off: refuses when it reports on, when the SBC has no plug, or when its state can't be read; `force=true` overrides (risks SD card corruption) |
 | `sdwire_update` | `sbc_name`, `partition`, `copies`, `renames`, `deletes`, `reboot`, `no_plug_ok` | Copy, rename, or delete files on SD card partition (atomic: power off, mount, operate, unmount, back to DUT). Host `copies` sources must be allowlisted |
 | `sdwire_ls` | `sbc_name`, `partition`, `path` (default `/`), `recursive` (default false), `max_entries` (default 1000) | List directory contents on an SD card partition using a read-only mount |
-| `sdwire_cat` | `sbc_name`, `partition`, `path`, `max_bytes` (default 1 MiB), `encoding` (`text` default, `base64`, `hex`) | Read a file from an SD card partition with size and encoding guards; symlinks are not followed |
+| `sdwire_cat` | `sbc_name`, `partition`, `path`, `max_bytes` (default 1 MiB, at most `mcp.max_read_mb`), `encoding` (`text` default, `base64`, `hex`), `offset` (default 0), `length` (default: to the end) | Read a file, or a byte range of one, from an SD card partition with size and encoding guards; symlinks are not followed. See [Large files on the card](#large-files-on-the-card) |
+| `sdwire_hash` | `sbc_name`, `partition`, `path`, `algorithm` (`sha256` default, `sha1`, `sha512`, `md5`, `crc32`), `offset` (default 0), `length` (default: to the end) | Hash a file, or a byte range of one, on an SD card partition, computed on the lab host: compare a file of any size without reading it |
 | `sdwire_info` | `sbc_name` | Return partition-table and filesystem metadata for the SD card |
 | `sdwire_add` | `name`, `serial_number`, `device_type` | Register an SDWire device |
 | `sdwire_remove` | `name` | Unregister an SDWire device |
@@ -411,7 +412,7 @@ with `reboot=true` leave the board off if the claim was lost meanwhile
 or someone else has claimed the board or a board sharing its hardware
 (see [Claims](#claims-exclusive-access-coordination)).
 
-`sdwire_ls`, `sdwire_cat` and `sdwire_info` don't change the card or the
+`sdwire_ls`, `sdwire_cat`, `sdwire_hash` and `sdwire_info` don't change the card or the
 board's power. A card already on the host is read in place and left there.
 A card on the DUT is switched to the host and back only when the SBC is
 known to be off; otherwise they refuse with `"error": "powered_on"` or
@@ -427,6 +428,31 @@ board's claim while you work (see [Known limits](#security-considerations)).
 They return JSON; errors carry `error` and `message`
 (e.g. `path_not_found`, `size_limit_exceeded`, `binary_content`: retry with
 `encoding="base64"`).
+
+#### Large files on the card
+
+One `sdwire_cat` call returns at most `max_bytes` (1 MiB by default), and
+`max_bytes` can't go past `mcp.max_read_mb` (4 MiB by default; error
+`max_bytes_too_large`): a tool result of several MiB has dropped Claude
+Code's MCP connection, which then had to be reconnected by hand with
+`/mcp` (#78). The limit counts the file's bytes, before encoding:
+`base64` returns a third more, `hex` twice as much.
+
+- To read a larger file, read it in parts: `offset` and `length` (at most
+  `max_bytes`). The result's `size` is the whole file's, `bytes_read` is
+  how much came back (less than `length` at the end of the file), and
+  `truncated` is true while there is more after it. A range that starts
+  or ends inside a UTF-8 character needs `encoding="base64"`.
+- To check that a file didn't change, hash it instead of reading it:
+  `sdwire_hash` reads the file on the lab host in chunks, so any size
+  works, and returns `digest` (lowercase hex; `crc32` as 8 digits) and
+  `bytes_hashed`. It takes the same `offset` and `length`, and handles the
+  card exactly as the other read tools do.
+
+```yaml
+mcp:
+  # max_read_mb: 4    # per sdwire_cat call
+```
 
 ### Images
 
@@ -725,6 +751,7 @@ decisions: D011, D012, D014 in [`DECISIONS.md`](DECISIONS.md).
 | [Host header checks](#host-header-checks) | Rejects unexpected `Host`/`Origin` (DNS rebinding) | loopback names | `mcp.allowed_hosts`, `mcp.allowed_origins` |
 | [Destructive confirmation](#confirmation-for-destructive-tools) | 24 destructive tools act only on a second call with a single-use token | on | `mcp.confirm_destructive`, `mcp.confirm_exempt` |
 | [Host file allowlist](#host-file-access-allowlist) | Tools may only read/write host files under listed directories, opened without following symlinks | deny all | `mcp.allowed_read_paths`, `mcp.allowed_write_paths` |
+| [SD card reads](#large-files-on-the-card) | One `sdwire_cat` call returns at most this much (before encoding); larger files are read in parts or hashed | 4 MiB | `mcp.max_read_mb` |
 | [Image uploads](#uploading-images) | `PUT /images/<name>` into one directory: bare names, size and free-space limits, atomic replace, only the uploader or an operator replaces or deletes | off | `mcp.upload_dir`, `mcp.max_upload_mb` |
 | Privileged actuator tools | `actuator_add/remove/set` (raw actuator access, bypassing bindings) | off | `mcp.allow_admin_actuator_ops` |
 | Claims | An agent's claim on a board blocks other agents' calls that operate or reconfigure it; only operators may force-release; optionally, changing a board requires claiming it | on (`require_claim` off) | `claims.*`, `auth.users[].role` |

@@ -566,6 +566,19 @@ class TestConfig:
         assert mcp.max_upload_mb == 8192
         assert "max_upload_mb" in caplog.text
 
+    def test_max_read_mb(self):
+        # sdwire_cat's per-call limit (#78)
+        assert Config.from_dict({}).mcp.max_read_mb == 4
+        config = Config.from_dict({"mcp": {"max_read_mb": 16}})
+        assert config.mcp.max_read_mb == 16
+        assert Config.from_dict(config.to_dict()).mcp.max_read_mb == 16
+
+    @pytest.mark.parametrize("value", [0, -1, "8", 1.5, True])
+    def test_bad_max_read_keeps_default(self, value, caplog):
+        mcp = Config.from_dict({"mcp": {"max_read_mb": value}}).mcp
+        assert mcp.max_read_mb == 4
+        assert "max_read_mb" in caplog.text
+
 
 # ---------------------------------------------------------------------------
 # MCP: tools, bare names, the HTTP route

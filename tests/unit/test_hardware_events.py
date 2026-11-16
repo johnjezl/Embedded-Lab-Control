@@ -390,9 +390,11 @@ class TestFrontEndsPassTheBoard:
     READS = {
         "sdwire_ls",
         "sdwire_cat",
+        "sdwire_hash",
         "sdwire_info",
         "sdwire_ls_cmd",
         "sdwire_cat_cmd",
+        "sdwire_hash_cmd",
         "sdwire_info_cmd",
     }
 
