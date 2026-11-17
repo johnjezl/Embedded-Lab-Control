@@ -2492,7 +2492,7 @@ def sdwire_cat_cmd(
     # Arguments are checked before the card is touched.
     try:
         validate_read_args(max_bytes, encoding, offset, length)
-    except (SDWireArgumentError, RuntimeError) as e:
+    except SDWireArgumentError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
     manager = _get_manager(ctx)

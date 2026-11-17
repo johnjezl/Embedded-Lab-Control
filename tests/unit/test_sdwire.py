@@ -1263,8 +1263,9 @@ class TestReadAccess:
             yield _MountedPartition(str(root))
 
         with patch.object(ctrl, "host_mount", fake_mount):
-            with pytest.raises(RuntimeError, match="exceeds max_bytes"):
+            with pytest.raises(ValueError, match="File exceeds max_bytes") as e:
                 ctrl.read_file(partition=1, path="/large.bin", max_bytes=4)
+        assert e.value.code == "size_limit_exceeded"
 
     def test_read_file_rejects_symlink(self, tmp_path):
         ctrl = SDWireController("test_serial")
@@ -1438,15 +1439,36 @@ class TestRangeReadAndHash:
         ctrl, root = card
         (root / "f.bin").write_bytes(b"0123456789")
 
-        with pytest.raises(RuntimeError, match="exceeds max_bytes"):
+        with pytest.raises(ValueError, match=r"offset 5 exceeds max_bytes \(5 > 4\)"):
             ctrl.read_file(partition=1, path="/f.bin", max_bytes=4, offset=5)
+
+    def test_growth_after_stat_counts_from_offset(self, card):
+        # The file grew between the stat and the read: the message counts
+        # the bytes from the offset, not the offset plus them.
+        ctrl, root = card
+        (root / "f.bin").write_bytes(b"0123")  # 4 at stat time
+        real_open = ctrl._open_regular_file
+
+        def open_then_grow(mount, path):
+            opened = real_open(mount, path)
+            (root / "f.bin").write_bytes(b"x" * 100)
+            return opened
+
+        with patch.object(ctrl, "_open_regular_file", open_then_grow):
+            with pytest.raises(
+                ValueError, match=r"offset 2 exceeds max_bytes \(5 > 4\)"
+            ):
+                ctrl.read_file(partition=1, path="/f.bin", max_bytes=4, offset=2)
 
     def test_length_over_max_bytes_refused(self, card):
         ctrl, root = card
         (root / "f.bin").write_bytes(b"0123456789")
 
-        with pytest.raises(RuntimeError, match="length exceeds max_bytes"):
+        from labctl.sdwire.controller import SDWireArgumentError
+
+        with pytest.raises(SDWireArgumentError, match="length exceeds max_bytes") as e:
             ctrl.read_file(partition=1, path="/f.bin", max_bytes=4, length=5)
+        assert e.value.code == "size_limit_exceeded"
 
     def test_whole_file_read_unchanged(self, card):
         ctrl, root = card
@@ -1564,6 +1586,26 @@ class TestRangeReadAndHash:
 
         with pytest.raises(SDWireArgumentError, match="algorithm"):
             ctrl.hash_file(partition=1, path="/f.bin", algorithm="sha3")
+
+    def test_hash_algorithm_blocked_by_host(self, card):
+        # e.g. md5 on a FIPS-mode host whose Python refuses it
+        from labctl.sdwire.controller import SDWireArgumentError, validate_hash_args
+
+        with patch("hashlib.new", side_effect=ValueError("unsupported hash type")):
+            with pytest.raises(SDWireArgumentError) as e:
+                validate_hash_args("md5")
+        assert e.value.code == "algorithm_unavailable"
+        assert "sha256" in str(e.value)
+
+    def test_md5_is_not_a_security_use(self, card):
+        import hashlib
+
+        ctrl, root = card
+        (root / "f.bin").write_bytes(b"abc")
+
+        with patch("hashlib.new", wraps=hashlib.new) as new:
+            ctrl.hash_file(partition=1, path="/f.bin", algorithm="md5")
+        assert new.call_args.kwargs == {"usedforsecurity": False}
 
     def test_hash_rejects_symlink_directory_and_missing(self, card):
         from labctl.sdwire.controller import SDWireSymlinkError

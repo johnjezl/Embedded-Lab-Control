@@ -1283,6 +1283,48 @@ _SDWIRE_LARGE_FILE_HINT = (
     "Read the file in parts with offset and length, or compare it with "
     "sdwire_hash instead of reading it"
 )
+# Room for sdwire_cat's metadata (names, path, claim advisory) on top of
+# mcp.max_read_mb of content.
+_SDWIRE_RESULT_SLACK = 64 * 1024
+
+
+def _sdwire_max_read_bytes(encoding: str, result_limit: int) -> int:
+    """The most file bytes one sdwire_cat call may read with ``encoding``
+    so that the content stays within ``result_limit`` (mcp.max_read_mb):
+    hex doubles, base64 adds a third. Text is checked on the result,
+    since JSON escaping depends on the characters."""
+    if encoding == "hex":
+        return result_limit // 2
+    if encoding == "base64":
+        return result_limit // 4 * 3
+    return result_limit
+
+
+def _sdwire_size_error(
+    message: str, encoding: str, result_limit: int, length: int | None
+) -> str:
+    """sdwire_cat's size_limit_exceeded: what to do next depends on
+    whether the caller already asked for a range."""
+    cap = _sdwire_max_read_bytes(encoding, result_limit)
+    if length is not None and length <= cap:
+        suggestion = (
+            f"Pass max_bytes={length} with this length (max_bytes can be up "
+            f"to {cap} with encoding='{encoding}')"
+        )
+    elif length is not None:
+        suggestion = (
+            f"Read at most {cap} bytes per call with encoding='{encoding}' "
+            "(smaller length, more calls), or compare the file with sdwire_hash"
+        )
+    else:
+        suggestion = (
+            f"Raise max_bytes (up to {cap} with encoding='{encoding}'), read "
+            "the file in parts with offset and length, or compare it with "
+            "sdwire_hash"
+        )
+    return _sdwire_read_error(
+        "size_limit_exceeded", message, max_read_bytes=cap, suggestion=suggestion
+    )
 
 
 def _sdwire_read_error(error: str, message: str, **extra) -> str:
@@ -2697,10 +2739,13 @@ def sdwire_cat(
     "power_unknown" (no power plug, or its state can't be read) and
     nothing is switched.
 
-    One call returns at most max_bytes, and max_bytes can't be raised past
-    the server's limit (mcp.max_read_mb, 4 MiB by default; error
-    "max_bytes_too_large"). Read a larger file in parts with offset and
-    length, or compare it with sdwire_hash instead of reading it.
+    One call reads at most max_bytes, and the content it returns can't go
+    past the server's limit (mcp.max_read_mb, 4 MiB by default): max_bytes
+    can be up to that with "text", 3/4 of it with "base64" and half with
+    "hex" (error "max_bytes_too_large"), and text that JSON-escapes past it
+    is refused ("result_too_large"). Read a larger file in parts with
+    offset and length, or compare it with sdwire_hash instead of reading
+    it.
 
     Returns JSON with "content", "encoding", file metadata ("size" is the
     whole file's), "offset", "bytes_read", and "truncated" (true when the
@@ -2713,8 +2758,8 @@ def sdwire_cat(
         sbc_name: Name of the SBC with an assigned SDWire device
         partition: Partition number (e.g., 1 for the first partition)
         path: File on the partition
-        max_bytes: Refuse to return more than this (default: 1048576,
-            1 MiB; at most mcp.max_read_mb)
+        max_bytes: Refuse to read more than this (default: 1048576,
+            1 MiB; at most mcp.max_read_mb, less with base64 or hex)
         encoding: "text" (UTF-8, the default), "base64" or "hex"
         offset: Byte to start at (default: 0)
         length: Bytes to read from offset (default: to the end of the
@@ -2732,24 +2777,21 @@ def sdwire_cat(
     if claim_err:
         return claim_err
     # Arguments are checked before the card is touched.
-    read_limit = _get_config().mcp.max_read_mb << 20
-    if max_bytes > read_limit:
-        return _sdwire_read_error(
-            "max_bytes_too_large",
-            f"max_bytes {max_bytes} is over this server's limit of "
-            f"{read_limit} bytes (mcp.max_read_mb)",
-            max_read_bytes=read_limit,
-            suggestion=_SDWIRE_LARGE_FILE_HINT,
-        )
+    result_limit = _get_config().mcp.max_read_mb << 20
     try:
         validate_read_args(max_bytes, encoding, offset, length)
     except SDWireArgumentError as e:
-        return _sdwire_read_error(e.code, str(e))
-    except RuntimeError as e:  # length over max_bytes
+        if e.code != "size_limit_exceeded":
+            return _sdwire_read_error(e.code, str(e))
+        return _sdwire_size_error(str(e), encoding, result_limit, length)
+    cap = _sdwire_max_read_bytes(encoding, result_limit)
+    if max_bytes > cap:
         return _sdwire_read_error(
-            "size_limit_exceeded",
-            str(e),
-            max_read_bytes=read_limit,
+            "max_bytes_too_large",
+            f"max_bytes {max_bytes} is over this server's limit of {cap} "
+            f"bytes with encoding='{encoding}' (mcp.max_read_mb: "
+            f"{result_limit} bytes of content per call)",
+            max_read_bytes=cap,
             suggestion=_SDWIRE_LARGE_FILE_HINT,
         )
     sbc = manager.get_sbc_by_name(sbc_name)
@@ -2788,7 +2830,18 @@ def sdwire_cat(
                 **result,
             }
         )
-        response = payload
+        if len(payload) > result_limit + _SDWIRE_RESULT_SLACK:
+            # Text JSON-escapes (non-ASCII as \uXXXX, control characters):
+            # up to 6x what was read.
+            response = _sdwire_read_error(
+                "result_too_large",
+                f"The result is {len(payload)} bytes as JSON, over this "
+                f"server's limit of {result_limit} (mcp.max_read_mb): the "
+                "text escapes to more than it reads",
+                suggestion="Retry with encoding='base64', or a smaller length",
+            )
+        else:
+            response = payload
     except FileNotFoundError:
         response = _sdwire_read_error("path_not_found", f"Path not found: {path}")
     except PermissionError:
@@ -2796,7 +2849,10 @@ def sdwire_cat(
     except IsADirectoryError:
         response = _sdwire_read_error("not_a_file", f"Not a file: {path}")
     except SDWireArgumentError as e:
-        response = _sdwire_read_error(e.code, str(e))
+        if e.code == "size_limit_exceeded":
+            response = _sdwire_size_error(str(e), encoding, result_limit, length)
+        else:
+            response = _sdwire_read_error(e.code, str(e))
     except ValueError as e:
         if str(e) == "binary_content":
             response = _sdwire_read_error(
@@ -2814,14 +2870,7 @@ def sdwire_cat(
         )
     except RuntimeError as e:
         msg = str(e)
-        if "exceeds max_bytes" in msg:
-            response = _sdwire_read_error(
-                "size_limit_exceeded",
-                msg,
-                max_read_bytes=read_limit,
-                suggestion=_SDWIRE_LARGE_FILE_HINT,
-            )
-        elif "Failed to mount" in msg:
+        if "Failed to mount" in msg:
             response = _sdwire_read_error("fs_unsupported", msg)
         else:
             response = _sdwire_read_error("read_failed", msg)
@@ -2865,7 +2914,9 @@ def sdwire_hash(
     Returns JSON with "algorithm", "digest" (lowercase hex; crc32 as 8
     digits), "offset", "bytes_hashed" (fewer than length when the file
     ends first) and file metadata ("size", "mtime", "mode"). Errors are
-    JSON with "error" and "message".
+    JSON with "error" and "message" ("algorithm_unavailable": the host's
+    Python can't compute it, e.g. md5 in FIPS mode; use sha256). Your
+    claim on the board is kept alive while it runs.
 
     Args:
         sbc_name: Name of the SBC with an assigned SDWire device
@@ -2910,13 +2961,16 @@ def sdwire_hash(
             ctrl.switch_to_host()
             host_switched = True
             ctrl.wait_for_host()
-        result = ctrl.hash_file(
-            partition=partition,
-            path=path,
-            algorithm=algorithm,
-            offset=offset,
-            length=length,
-        )
+        # A large file can take minutes: keep the caller's claim alive
+        # meanwhile, as for the other long calls.
+        with _claim_keepalive(manager, sbc_name):
+            result = ctrl.hash_file(
+                partition=partition,
+                path=path,
+                algorithm=algorithm,
+                offset=offset,
+                length=length,
+            )
         response = json.dumps(
             {
                 "sbc_name": sbc_name,

@@ -431,12 +431,15 @@ They return JSON; errors carry `error` and `message`
 
 #### Large files on the card
 
-One `sdwire_cat` call returns at most `max_bytes` (1 MiB by default), and
-`max_bytes` can't go past `mcp.max_read_mb` (4 MiB by default; error
-`max_bytes_too_large`): a tool result of several MiB has dropped Claude
-Code's MCP connection, which then had to be reconnected by hand with
-`/mcp` (#78). The limit counts the file's bytes, before encoding:
-`base64` returns a third more, `hex` twice as much.
+One `sdwire_cat` call reads at most `max_bytes` (1 MiB by default), and
+the content it returns can't go past `mcp.max_read_mb` (4 MiB by
+default): a tool result of several MiB has dropped Claude Code's MCP
+connection, which then had to be reconnected by hand with `/mcp` (#78).
+The limit counts the content as returned, so `max_bytes` can be up to
+4 MiB with `text`, 3 MiB with `base64` and 2 MiB with `hex` (error
+`max_bytes_too_large`, with the most allowed in `max_read_bytes`), and
+text that JSON-escapes past it (mostly non-ASCII or control characters)
+is refused with `result_too_large`: retry with `base64`.
 
 - To read a larger file, read it in parts: `offset` and `length` (at most
   `max_bytes`). The result's `size` is the whole file's, `bytes_read` is
@@ -446,8 +449,11 @@ Code's MCP connection, which then had to be reconnected by hand with
 - To check that a file didn't change, hash it instead of reading it:
   `sdwire_hash` reads the file on the lab host in chunks, so any size
   works, and returns `digest` (lowercase hex; `crc32` as 8 digits) and
-  `bytes_hashed`. It takes the same `offset` and `length`, and handles the
-  card exactly as the other read tools do.
+  `bytes_hashed`. It takes the same `offset` and `length`, handles the
+  card exactly as the other read tools do, and keeps the caller's claim
+  alive while it runs. md5 and sha1 are computed as non-security hashes,
+  so they work on FIPS-mode hosts whose Python allows that; where it
+  doesn't, the error is `algorithm_unavailable`.
 
 ```yaml
 mcp:
@@ -751,7 +757,7 @@ decisions: D011, D012, D014 in [`DECISIONS.md`](DECISIONS.md).
 | [Host header checks](#host-header-checks) | Rejects unexpected `Host`/`Origin` (DNS rebinding) | loopback names | `mcp.allowed_hosts`, `mcp.allowed_origins` |
 | [Destructive confirmation](#confirmation-for-destructive-tools) | 24 destructive tools act only on a second call with a single-use token | on | `mcp.confirm_destructive`, `mcp.confirm_exempt` |
 | [Host file allowlist](#host-file-access-allowlist) | Tools may only read/write host files under listed directories, opened without following symlinks | deny all | `mcp.allowed_read_paths`, `mcp.allowed_write_paths` |
-| [SD card reads](#large-files-on-the-card) | One `sdwire_cat` call returns at most this much (before encoding); larger files are read in parts or hashed | 4 MiB | `mcp.max_read_mb` |
+| [SD card reads](#large-files-on-the-card) | One `sdwire_cat` call returns at most this much content, as encoded; larger files are read in parts or hashed | 4 MiB | `mcp.max_read_mb` |
 | [Image uploads](#uploading-images) | `PUT /images/<name>` into one directory: bare names, size and free-space limits, atomic replace, only the uploader or an operator replaces or deletes | off | `mcp.upload_dir`, `mcp.max_upload_mb` |
 | Privileged actuator tools | `actuator_add/remove/set` (raw actuator access, bypassing bindings) | off | `mcp.allow_admin_actuator_ops` |
 | Claims | An agent's claim on a board blocks other agents' calls that operate or reconfigure it; only operators may force-release; optionally, changing a board requires claiming it | on (`require_claim` off) | `claims.*`, `auth.users[].role` |

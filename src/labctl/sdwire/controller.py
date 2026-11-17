@@ -73,19 +73,51 @@ def validate_read_args(
         )
     validate_range(offset, length)
     if length is not None and length > max_bytes:
-        raise RuntimeError(f"length exceeds max_bytes ({length} > {max_bytes})")
+        raise SDWireArgumentError(
+            "size_limit_exceeded",
+            f"length exceeds max_bytes ({length} > {max_bytes})",
+        )
+
+
+def _too_big(offset: int, nbytes: int, max_bytes: int) -> SDWireArgumentError:
+    """The refusal for ``nbytes`` from ``offset`` to the end of a file being
+    over ``max_bytes``."""
+    what = "File" if offset == 0 else f"Rest of file from offset {offset}"
+    return SDWireArgumentError(
+        "size_limit_exceeded",
+        f"{what} exceeds max_bytes ({nbytes} > {max_bytes})",
+    )
+
+
+def _new_hasher(algorithm: str):
+    """A hashlib object for ``algorithm`` (None for crc32). Not used for
+    security, which lets md5/sha1 work on a FIPS-mode host where the
+    Python build allows it; where it doesn't, refused as unavailable."""
+    import hashlib
+
+    if algorithm == "crc32":
+        return None
+    try:
+        return hashlib.new(algorithm, usedforsecurity=False)
+    except ValueError as e:
+        raise SDWireArgumentError(
+            "algorithm_unavailable",
+            f"{algorithm} is not available on this host ({e}); use sha256",
+        ) from e
 
 
 def validate_hash_args(
     algorithm: str, offset: int = 0, length: Optional[int] = None
 ) -> None:
-    """Check the ``hash_file`` arguments that don't depend on the file."""
+    """Check the ``hash_file`` arguments that don't depend on the file,
+    including that this host's Python can compute ``algorithm``."""
     if algorithm not in HASH_ALGORITHMS:
         raise SDWireArgumentError(
             "invalid_argument",
             f"algorithm must be one of: {', '.join(HASH_ALGORITHMS)}",
         )
     validate_range(offset, length)
+    _new_hasher(algorithm)
 
 
 def _range_span(size: int, offset: int, length: Optional[int]) -> int:
@@ -732,10 +764,10 @@ class SDWireController:
         """Read a file, or ``length`` bytes from ``offset`` (to the end
         without ``length``), from a partition with size and encoding guards.
 
-        More than ``max_bytes`` to return is refused ("exceeds max_bytes"),
-        never cut short. ``bytes_read`` is how much was returned (less than
-        ``length`` when the file ends first); ``truncated`` says the file
-        goes on past it.
+        More than ``max_bytes`` to return is refused (SDWireArgumentError
+        "size_limit_exceeded"), never cut short. ``bytes_read`` is how much
+        was returned (less than ``length`` when the file ends first);
+        ``truncated`` says the file goes on past it.
         """
         validate_read_args(max_bytes, encoding, offset, length)
 
@@ -743,15 +775,7 @@ class SDWireController:
             target, stat_result = self._open_regular_file(mount, path)
             span = _range_span(stat_result.st_size, offset, length)
             if length is None and span > max_bytes:
-                if offset == 0:
-                    raise RuntimeError(
-                        f"File exceeds max_bytes ({stat_result.st_size} > "
-                        f"{max_bytes})"
-                    )
-                raise RuntimeError(
-                    f"Rest of file from offset {offset} exceeds max_bytes "
-                    f"({span} > {max_bytes})"
-                )
+                raise _too_big(offset, span, max_bytes)
 
             try:
                 with open(target, "rb") as f:
@@ -763,9 +787,9 @@ class SDWireController:
                 raise PermissionError(path) from e
 
             if len(data) > max_bytes:
-                raise RuntimeError(
-                    f"File exceeds max_bytes ({offset + len(data)} > {max_bytes})"
-                )
+                # Grew since the stat: len(data) is max_bytes + 1, a lower
+                # bound on what is now there from the offset.
+                raise _too_big(offset, len(data), max_bytes)
 
             metadata = _serialize_stat(stat_result, owner_mount=False)
 
@@ -805,7 +829,6 @@ class SDWireController:
         ``digest`` is lowercase hex (crc32: 8 digits). ``bytes_hashed`` is
         how much was hashed, less than ``length`` when the file ends first.
         """
-        import hashlib
         import zlib
 
         validate_hash_args(algorithm, offset, length)
@@ -815,7 +838,7 @@ class SDWireController:
             span = _range_span(stat_result.st_size, offset, length)
 
             crc = 0
-            hasher = None if algorithm == "crc32" else hashlib.new(algorithm)
+            hasher = _new_hasher(algorithm)
             hashed = 0
             try:
                 with open(target, "rb") as f:

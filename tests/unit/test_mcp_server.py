@@ -5806,10 +5806,12 @@ class TestSdwireLargeFiles:
         ctrl.card_on_host.return_value = False  # card on DUT side
         claim_check = MagicMock(return_value=None)
         config = {"value": Config.from_dict({})}
+        self.keepalive = MagicMock()
 
         with (
             patch("labctl.mcp_server._get_manager", return_value=manager),
             patch("labctl.mcp_server._check_claim", claim_check),
+            patch("labctl.mcp_server._claim_keepalive", self.keepalive),
             patch("labctl.mcp_server._get_config", lambda: config["value"]),
             patch("labctl.sdwire.SDWireController", return_value=ctrl),
             patch("time.sleep"),
@@ -5839,6 +5841,33 @@ class TestSdwireLargeFiles:
         assert "sdwire_hash" in result["suggestion"]
         ctrl.switch_to_host.assert_not_called()
         ctrl.read_file.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "encoding, cap", [("text", 4 << 20), ("base64", 3 << 20), ("hex", 2 << 20)]
+    )
+    def test_limit_counts_encoded_content(self, env, encoding, cap):
+        # 4 MiB of hex would be 8 MiB in the result (#79 review).
+        ctrl, _, _ = env
+        ctrl.read_file.return_value = {"content": "", "encoding": encoding}
+
+        refused = self._cat(path="/f", encoding=encoding, max_bytes=cap + 1)
+        allowed = self._cat(path="/f", encoding=encoding, max_bytes=cap)
+
+        assert refused["error"] == "max_bytes_too_large"
+        assert refused["max_read_bytes"] == cap
+        assert "error" not in allowed
+
+    def test_text_that_escapes_past_limit_refused(self, env):
+        ctrl, _, set_config = env
+        set_config({"mcp": {"max_read_mb": 1}})
+        # 512 KiB of control characters: each becomes \u00XX (6 bytes).
+        ctrl.read_file.return_value = {"content": "\x01" * (512 * 1024)}
+
+        result = self._cat(path="/f", max_bytes=512 * 1024)
+
+        assert result["error"] == "result_too_large"
+        assert "base64" in result["suggestion"]
+        ctrl.switch_to_dut.assert_called_once()
 
     def test_limit_follows_config(self, env):
         ctrl, _, set_config = env
@@ -5882,6 +5911,7 @@ class TestSdwireLargeFiles:
             ({"length": -5}, "invalid_argument"),
             ({"encoding": "utf16"}, "invalid_argument"),
             ({"length": 2 * 1024 * 1024}, "size_limit_exceeded"),
+            ({"length": 8 * 1024 * 1024}, "size_limit_exceeded"),
         ],
     )
     def test_bad_arguments_refused_before_switching(self, env, kwargs, error):
@@ -5893,17 +5923,39 @@ class TestSdwireLargeFiles:
         ctrl.switch_to_host.assert_not_called()
 
     def test_file_too_large_points_at_ranges_and_hash(self, env):
+        from labctl.sdwire.controller import SDWireArgumentError
+
         ctrl, _, _ = env
-        ctrl.read_file.side_effect = RuntimeError(
-            "File exceeds max_bytes (8388608 > 1048576)"
+        ctrl.read_file.side_effect = SDWireArgumentError(
+            "size_limit_exceeded", "File exceeds max_bytes (8388608 > 1048576)"
         )
 
         result = self._cat(path="/files.lfs")
 
         assert result["error"] == "size_limit_exceeded"
+        assert "max_bytes" in result["suggestion"]
         assert "offset" in result["suggestion"]
         assert "sdwire_hash" in result["suggestion"]
         ctrl.switch_to_dut.assert_called_once()
+
+    def test_length_over_max_bytes_says_raise_max_bytes(self, env):
+        # The caller is already reading a range: the fix is max_bytes.
+        ctrl, _, _ = env
+
+        result = self._cat(path="/f", offset=0, length=2 * 1024 * 1024)
+
+        assert result["error"] == "size_limit_exceeded"
+        assert "max_bytes=2097152" in result["suggestion"]
+        ctrl.switch_to_host.assert_not_called()
+
+    def test_length_over_server_limit_says_read_less(self, env):
+        ctrl, _, _ = env
+
+        result = self._cat(path="/f", encoding="hex", length=3 * 1024 * 1024)
+
+        assert result["error"] == "size_limit_exceeded"
+        assert "at most 2097152 bytes per call" in result["suggestion"]
+        assert result["max_read_bytes"] == 2 * 1024 * 1024
 
     def test_offset_past_end(self, env):
         from labctl.sdwire.controller import SDWireArgumentError
@@ -5943,6 +5995,30 @@ class TestSdwireLargeFiles:
         claim_check.assert_called_once_with(ANY, "test-sbc-1", mutating=True)
         ctrl.switch_to_host.assert_called_once()
         ctrl.switch_to_dut.assert_called_once()
+
+    def test_hash_keeps_claim_alive_while_hashing(self, env):
+        ctrl, _, _ = env
+        cm = self.keepalive.return_value
+        seen = []
+        ctrl.hash_file.side_effect = lambda **kw: (
+            seen.append(cm.__exit__.called) or {"digest": "00"}
+        )
+
+        self._hash(path="/f")
+
+        self.keepalive.assert_called_once_with(ANY, "test-sbc-1")
+        cm.__enter__.assert_called_once()
+        assert seen == [False]  # still held while hash_file ran
+        cm.__exit__.assert_called_once()
+
+    def test_hash_algorithm_unavailable_refused_before_switching(self, env):
+        ctrl, _, _ = env
+
+        with patch("hashlib.new", side_effect=ValueError("unsupported hash type")):
+            result = self._hash(path="/f", algorithm="md5")
+
+        assert result["error"] == "algorithm_unavailable"
+        ctrl.switch_to_host.assert_not_called()
 
     @pytest.mark.parametrize(
         "kwargs", [{"algorithm": "sha3"}, {"offset": -1}, {"length": -1}]

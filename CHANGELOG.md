@@ -46,9 +46,11 @@ labctl that shares it together, and reconnect stdio MCP agents.
 
 ### Changed
 
-- `sdwire_cat` refuses a `max_bytes` over the new `mcp.max_read_mb`
-  (default 4 MiB) with `max_bytes_too_large`, before switching the card
-  (#78). Raising `max_bytes` to read an 8 MiB file whole returned one
+- `sdwire_cat` limits what one call returns to the new `mcp.max_read_mb`
+  (default 4 MiB of content as encoded: `max_bytes` up to 4 MiB with
+  text, 3 MiB with base64, 2 MiB with hex), refusing a larger `max_bytes`
+  with `max_bytes_too_large` before switching the card, and text that
+  JSON-escapes past it with `result_too_large` (#78). Raising `max_bytes` to read an 8 MiB file whole returned one
   ~11 MB tool result, which dropped Claude Code's MCP connection until it
   was reconnected by hand. `size_limit_exceeded` now suggests ranges or
   `sdwire_hash`. The CLI has no such limit.
