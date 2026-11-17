@@ -2563,6 +2563,9 @@ def sdwire_cat_cmd(
     except RuntimeError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
+    except OSError as e:  # e.g. EIO from the card reader
+        click.echo(f"Error: Read failed: {target_path}: {e}", err=True)
+        sys.exit(1)
     finally:
         if host_switched:
             try:
@@ -2702,6 +2705,9 @@ def sdwire_hash_cmd(
         sys.exit(1)
     except RuntimeError as e:
         click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+    except OSError as e:  # e.g. EIO from the card reader
+        click.echo(f"Error: Read failed: {target_path}: {e}", err=True)
         sys.exit(1)
     finally:
         if host_switched:

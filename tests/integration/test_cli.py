@@ -2729,6 +2729,20 @@ class TestSdwireLargeFiles:
         assert "past the end" in result.output
         ctrl.switch_to_dut.assert_called_once()
 
+    @pytest.mark.parametrize("command", ["cat", "hash"])
+    def test_card_reader_io_error(self, runner, ctrl, command):
+        import errno
+
+        err = OSError(errno.EIO, "Input/output error")
+        ctrl.read_file.side_effect = err
+        ctrl.hash_file.side_effect = err
+
+        result = self._run(runner, command)
+
+        assert result.exit_code == 1
+        assert "Error: Read failed: /f" in result.output
+        ctrl.switch_to_dut.assert_called_once()
+
     def test_hash_refuses_powered_on_board(self, runner, ctrl, power):
         from labctl.power.base import PowerState
 

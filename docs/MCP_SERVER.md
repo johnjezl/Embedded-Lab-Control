@@ -431,15 +431,18 @@ They return JSON; errors carry `error` and `message`
 
 #### Large files on the card
 
-One `sdwire_cat` call reads at most `max_bytes` (1 MiB by default), and
-the content it returns can't go past `mcp.max_read_mb` (4 MiB by
-default): a tool result of several MiB has dropped Claude Code's MCP
-connection, which then had to be reconnected by hand with `/mcp` (#78).
-The limit counts the content as returned, so `max_bytes` can be up to
-4 MiB with `text`, 3 MiB with `base64` and 2 MiB with `hex` (error
-`max_bytes_too_large`, with the most allowed in `max_read_bytes`), and
-text that JSON-escapes past it (mostly non-ASCII or control characters)
-is refused with `result_too_large`: retry with `base64`.
+One `sdwire_cat` call reads at most `max_bytes`, and the content it
+returns can't go past `mcp.max_read_mb` (4 MiB by default): a tool
+result of several MiB has dropped Claude Code's MCP connection, which
+then had to be reconnected by hand with `/mcp` (#78). The limit counts
+the content as returned, so `max_bytes` can be up to 3/4 of it with
+`text` or `base64` (3 MiB by default; text keeps the margin for JSON
+escapes such as a newline's `\n`) and half with `hex` (2 MiB); a larger
+one is refused with `max_bytes_too_large`, with the most allowed in
+`max_read_bytes`. Left out, `max_bytes` is 1 MiB, or that limit when it
+is lower. Text that still JSON-escapes past the limit (mostly non-ASCII
+or control characters) is refused with `result_too_large`: retry with
+`base64`. An I/O error from the card reader is `read_failed`.
 
 - To read a larger file, read it in parts: `offset` and `length` (at most
   `max_bytes`). The result's `size` is the whole file's, `bytes_read` is
@@ -531,7 +534,7 @@ it has none. The result names the board it came from.
 **Claim enforcement:** every tool that changes a board checks its claim:
 operating it (`power_on/off/cycle`, `serial_send`, `serial_capture`
 (it holds the console's connection), `sdwire_to_host/dut`,
-`sdwire_update`, `sdwire_ls/cat/info`, `flash_image`, `boot_test`,
+`sdwire_update`, `sdwire_ls/cat/hash/info`, `flash_image`, `boot_test`,
 `actuate`/`release`/`press`, `enter_recovery`/`exit_recovery`) and changing
 its configuration (`update_sbc`, `remove_sbc`, `assign_serial_port`,
 `assign_power_plug`, `set_network_address`, the matching `remove_*` tools,
@@ -802,13 +805,13 @@ system-write / hardware / destructive) in
   `/var/lib/labctl` can be tricked into (#19).
 - The SD card mux position can't be read back from the SDWire; labctl
   infers it from whether the card reader sees media (a forced probe, via
-  `sudo -n dd`). The read tools `sdwire_ls`/`cat`/`info` and their CLI
+  `sudo -n dd`). The read tools `sdwire_ls`/`cat`/`hash`/`info` and their CLI
   counterparts use it to decide whether to read the card in place or
   borrow it; when the first probe finds no card they probe again 1 s
   later, since a card switched moments ago may still be initialising.
   After switching a card to the host, the MCP tools and `sdwire host` wait
   for it to become readable, probing every 0.5 s for up to 10 s; the CLI
-  `ls`/`cat`/`info` wait a fixed 2 s. When a probe can't tell (no sudo
+  `ls`/`cat`/`hash`/`info` wait a fixed 2 s. When a probe can't tell (no sudo
   rule for `dd`, a timeout), labctl falls back to the kernel's cached
   size, which is only refreshed when the kernel next checks the reader:
   every couple of seconds if removable-disk polling is on, otherwise not

@@ -1288,23 +1288,30 @@ _SDWIRE_LARGE_FILE_HINT = (
 _SDWIRE_RESULT_SLACK = 64 * 1024
 
 
+_SDWIRE_DEFAULT_MAX_BYTES = 1024 * 1024
+
+
 def _sdwire_max_read_bytes(encoding: str, result_limit: int) -> int:
     """The most file bytes one sdwire_cat call may read with ``encoding``
     so that the content stays within ``result_limit`` (mcp.max_read_mb):
-    hex doubles, base64 adds a third. Text is checked on the result,
-    since JSON escaping depends on the characters."""
+    hex doubles, base64 adds a third. Text gets the same 3/4 as base64,
+    leaving room for JSON escapes (a newline or tab takes 2 bytes); text
+    that escapes past the limit anyway is refused on the result."""
     if encoding == "hex":
         return result_limit // 2
-    if encoding == "base64":
-        return result_limit // 4 * 3
-    return result_limit
+    return result_limit // 4 * 3
 
 
 def _sdwire_size_error(
-    message: str, encoding: str, result_limit: int, length: int | None
+    message: str,
+    encoding: str,
+    result_limit: int,
+    length: int | None,
+    max_bytes: int,
 ) -> str:
     """sdwire_cat's size_limit_exceeded: what to do next depends on
-    whether the caller already asked for a range."""
+    whether the caller already asked for a range, and on whether
+    max_bytes can still go up."""
     cap = _sdwire_max_read_bytes(encoding, result_limit)
     if length is not None and length <= cap:
         suggestion = (
@@ -1316,11 +1323,17 @@ def _sdwire_size_error(
             f"Read at most {cap} bytes per call with encoding='{encoding}' "
             "(smaller length, more calls), or compare the file with sdwire_hash"
         )
-    else:
+    elif max_bytes < cap:
         suggestion = (
             f"Raise max_bytes (up to {cap} with encoding='{encoding}'), read "
             "the file in parts with offset and length, or compare it with "
             "sdwire_hash"
+        )
+    else:
+        suggestion = (
+            f"max_bytes is already this server's limit ({cap} with "
+            f"encoding='{encoding}'): read the file in parts with offset and "
+            f"length (at most {cap} per call), or compare it with sdwire_hash"
         )
     return _sdwire_read_error(
         "size_limit_exceeded", message, max_read_bytes=cap, suggestion=suggestion
@@ -2725,7 +2738,7 @@ def sdwire_cat(
     sbc_name: str,
     partition: int,
     path: str,
-    max_bytes: int = 1024 * 1024,
+    max_bytes: int | None = None,
     encoding: str = "text",
     offset: int = 0,
     length: int | None = None,
@@ -2741,9 +2754,11 @@ def sdwire_cat(
 
     One call reads at most max_bytes, and the content it returns can't go
     past the server's limit (mcp.max_read_mb, 4 MiB by default): max_bytes
-    can be up to that with "text", 3/4 of it with "base64" and half with
-    "hex" (error "max_bytes_too_large"), and text that JSON-escapes past it
-    is refused ("result_too_large"). Read a larger file in parts with
+    can be up to 3/4 of it with "text" or "base64" (3 MiB by default) and
+    half with "hex" (error "max_bytes_too_large", with the most allowed in
+    "max_read_bytes"), and text that JSON-escapes past the limit anyway
+    (mostly non-ASCII or control characters) is refused
+    ("result_too_large"). Read a larger file in parts with
     offset and length, or compare it with sdwire_hash instead of reading
     it.
 
@@ -2758,8 +2773,8 @@ def sdwire_cat(
         sbc_name: Name of the SBC with an assigned SDWire device
         partition: Partition number (e.g., 1 for the first partition)
         path: File on the partition
-        max_bytes: Refuse to read more than this (default: 1048576,
-            1 MiB; at most mcp.max_read_mb, less with base64 or hex)
+        max_bytes: Refuse to read more than this (default: 1 MiB, or the
+            server's limit for the encoding when that is lower)
         encoding: "text" (UTF-8, the default), "base64" or "hex"
         offset: Byte to start at (default: 0)
         length: Bytes to read from offset (default: to the end of the
@@ -2778,13 +2793,16 @@ def sdwire_cat(
         return claim_err
     # Arguments are checked before the card is touched.
     result_limit = _get_config().mcp.max_read_mb << 20
+    cap = _sdwire_max_read_bytes(encoding, result_limit)
+    if max_bytes is None:
+        # The default never trips the limit, however low it is set.
+        max_bytes = min(_SDWIRE_DEFAULT_MAX_BYTES, cap)
     try:
         validate_read_args(max_bytes, encoding, offset, length)
     except SDWireArgumentError as e:
         if e.code != "size_limit_exceeded":
             return _sdwire_read_error(e.code, str(e))
-        return _sdwire_size_error(str(e), encoding, result_limit, length)
-    cap = _sdwire_max_read_bytes(encoding, result_limit)
+        return _sdwire_size_error(str(e), encoding, result_limit, length, max_bytes)
     if max_bytes > cap:
         return _sdwire_read_error(
             "max_bytes_too_large",
@@ -2838,7 +2856,11 @@ def sdwire_cat(
                 f"The result is {len(payload)} bytes as JSON, over this "
                 f"server's limit of {result_limit} (mcp.max_read_mb): the "
                 "text escapes to more than it reads",
-                suggestion="Retry with encoding='base64', or a smaller length",
+                suggestion=(
+                    "Retry with encoding='base64' (max_bytes up to "
+                    f"{_sdwire_max_read_bytes('base64', result_limit)}), or "
+                    "read less at a time with offset and length"
+                ),
             )
         else:
             response = payload
@@ -2850,7 +2872,9 @@ def sdwire_cat(
         response = _sdwire_read_error("not_a_file", f"Not a file: {path}")
     except SDWireArgumentError as e:
         if e.code == "size_limit_exceeded":
-            response = _sdwire_size_error(str(e), encoding, result_limit, length)
+            response = _sdwire_size_error(
+                str(e), encoding, result_limit, length, max_bytes
+            )
         else:
             response = _sdwire_read_error(e.code, str(e))
     except ValueError as e:
@@ -2874,6 +2898,8 @@ def sdwire_cat(
             response = _sdwire_read_error("fs_unsupported", msg)
         else:
             response = _sdwire_read_error("read_failed", msg)
+    except OSError as e:  # e.g. EIO from the card reader
+        response = _sdwire_read_error("read_failed", f"Read failed: {path}: {e}")
     finally:
         if host_switched:
             try:
@@ -3000,6 +3026,8 @@ def sdwire_hash(
             response = _sdwire_read_error("fs_unsupported", msg)
         else:
             response = _sdwire_read_error("read_failed", msg)
+    except OSError as e:  # e.g. EIO from the card reader
+        response = _sdwire_read_error("read_failed", f"Read failed: {path}: {e}")
     finally:
         if host_switched:
             try:

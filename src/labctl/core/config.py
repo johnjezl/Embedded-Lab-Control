@@ -367,7 +367,7 @@ class KasaConfig:
 # SD-card image of a typical embedded Linux build.
 DEFAULT_MAX_UPLOAD_MB = 8192
 
-# The most one sdwire_cat call returns (mcp.max_read_mb), before encoding:
+# The most content one sdwire_cat call returns (mcp.max_read_mb), encoded:
 # one tool result of several MiB has dropped the client's MCP connection
 # (#78). Larger files are read in parts or compared with sdwire_hash.
 DEFAULT_MAX_READ_MB = 4
@@ -571,7 +571,7 @@ class McpConfig:
     ``max_upload_mb`` caps one upload's size (D014).
 
     ``max_read_mb`` caps what one ``sdwire_cat`` call may return
-    (``max_bytes``, before encoding; #78).
+    (its content as encoded; #78).
 
     ``cert_file`` / ``key_file`` serve the HTTP transport over TLS (both or
     neither; ``labctl mcp --cert/--key`` take precedence).

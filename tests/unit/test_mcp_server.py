@@ -5836,14 +5836,14 @@ class TestSdwireLargeFiles:
         result = self._cat(path="/files.lfs", max_bytes=8 * 1024 * 1024)
 
         assert result["error"] == "max_bytes_too_large"
-        assert result["max_read_bytes"] == 4 * 1024 * 1024
+        assert result["max_read_bytes"] == 3 * 1024 * 1024
         assert "mcp.max_read_mb" in result["message"]
         assert "sdwire_hash" in result["suggestion"]
         ctrl.switch_to_host.assert_not_called()
         ctrl.read_file.assert_not_called()
 
     @pytest.mark.parametrize(
-        "encoding, cap", [("text", 4 << 20), ("base64", 3 << 20), ("hex", 2 << 20)]
+        "encoding, cap", [("text", 3 << 20), ("base64", 3 << 20), ("hex", 2 << 20)]
     )
     def test_limit_counts_encoded_content(self, env, encoding, cap):
         # 4 MiB of hex would be 8 MiB in the result (#79 review).
@@ -5866,16 +5866,41 @@ class TestSdwireLargeFiles:
         result = self._cat(path="/f", max_bytes=512 * 1024)
 
         assert result["error"] == "result_too_large"
-        assert "base64" in result["suggestion"]
+        assert "encoding='base64' (max_bytes up to 786432)" in result["suggestion"]
         ctrl.switch_to_dut.assert_called_once()
+
+    @pytest.mark.parametrize("encoding, cap", [("hex", 524288), ("base64", 786432)])
+    def test_default_max_bytes_fits_a_low_limit(self, env, encoding, cap):
+        # With max_read_mb: 1, the 1 MiB default is over the hex and base64
+        # limits: left out, it shrinks to them instead of refusing.
+        ctrl, _, set_config = env
+        set_config({"mcp": {"max_read_mb": 1}})
+        ctrl.read_file.return_value = {"content": "AAEC", "encoding": encoding}
+
+        result = self._cat(path="/f", encoding=encoding, offset=4096, length=3)
+
+        assert "error" not in result
+        assert ctrl.read_file.call_args.kwargs["max_bytes"] == cap
+
+    def test_ordinary_text_at_the_limit_fits(self, env):
+        # Newlines escape to 2 bytes; 40-character lines at the text limit
+        # stay within mcp.max_read_mb.
+        ctrl, _, set_config = env
+        set_config({"mcp": {"max_read_mb": 1}})
+        text = ("a" * 39 + "\n") * (786432 // 40)
+        ctrl.read_file.return_value = {"content": text, "encoding": "text"}
+
+        result = self._cat(path="/log", max_bytes=786432)
+
+        assert result["content"] == text
 
     def test_limit_follows_config(self, env):
         ctrl, _, set_config = env
         set_config({"mcp": {"max_read_mb": 1}})
         ctrl.read_file.return_value = {"content": "x", "encoding": "text"}
 
-        refused = self._cat(path="/f", max_bytes=(1 << 20) + 1)
-        allowed = self._cat(path="/f", max_bytes=1 << 20)
+        refused = self._cat(path="/f", max_bytes=786432 + 1)
+        allowed = self._cat(path="/f", max_bytes=786432)  # 3/4 MiB
 
         assert refused["error"] == "max_bytes_too_large"
         assert allowed["content"] == "x"
@@ -5936,6 +5961,34 @@ class TestSdwireLargeFiles:
         assert "max_bytes" in result["suggestion"]
         assert "offset" in result["suggestion"]
         assert "sdwire_hash" in result["suggestion"]
+        ctrl.switch_to_dut.assert_called_once()
+
+    def test_size_error_at_the_limit_does_not_say_raise_max_bytes(self, env):
+        from labctl.sdwire.controller import SDWireArgumentError
+
+        ctrl, _, _ = env
+        ctrl.read_file.side_effect = SDWireArgumentError(
+            "size_limit_exceeded", "File exceeds max_bytes (10485760 > 3145728)"
+        )
+
+        result = self._cat(path="/big", encoding="base64", max_bytes=3 << 20)
+
+        assert "already this server's limit" in result["suggestion"]
+        assert "Raise max_bytes" not in result["suggestion"]
+
+    @pytest.mark.parametrize("tool", ["cat", "hash"])
+    def test_card_reader_io_error_is_read_failed(self, env, tool):
+        import errno
+
+        ctrl, _, _ = env
+        err = OSError(errno.EIO, "Input/output error")
+        ctrl.read_file.side_effect = err
+        ctrl.hash_file.side_effect = err
+
+        result = getattr(self, "_" + tool)(path="/rootfs.img")
+
+        assert result["error"] == "read_failed"
+        assert "Input/output error" in result["message"]
         ctrl.switch_to_dut.assert_called_once()
 
     def test_length_over_max_bytes_says_raise_max_bytes(self, env):
