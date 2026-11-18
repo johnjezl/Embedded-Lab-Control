@@ -32,6 +32,110 @@ class SDWireSymlinkError(RuntimeError):
         self.target = target
 
 
+class SDWireArgumentError(ValueError):
+    """A read or hash request the file can't satisfy (bad offset, length,
+    encoding or algorithm). ``code`` is the error name the front ends
+    report: ``invalid_argument``, ``offset_out_of_range``,
+    ``size_limit_exceeded`` (more than max_bytes to return) or
+    ``algorithm_unavailable`` (the host's Python can't compute it, e.g.
+    md5 in FIPS mode)."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+# sdwire hash / sdwire_hash: hashlib names, plus crc32 (zlib), which is
+# what many boot loaders and firmware tools print.
+HASH_ALGORITHMS = ("sha256", "sha1", "sha512", "md5", "crc32")
+READ_ENCODINGS = ("text", "base64", "hex")
+_HASH_CHUNK = 1024 * 1024
+
+
+def validate_range(offset: int, length: Optional[int]) -> None:
+    """Refuse a negative ``offset`` or ``length``."""
+    if offset < 0:
+        raise SDWireArgumentError("invalid_argument", "offset must be 0 or more")
+    if length is not None and length < 0:
+        raise SDWireArgumentError("invalid_argument", "length must be 0 or more")
+
+
+def validate_read_args(
+    max_bytes: int, encoding: str, offset: int = 0, length: Optional[int] = None
+) -> None:
+    """Check the ``read_file`` arguments that don't depend on the file, so
+    the front ends can refuse before switching the card."""
+    if max_bytes <= 0:
+        raise SDWireArgumentError(
+            "invalid_argument", "max_bytes must be greater than 0"
+        )
+    if encoding not in READ_ENCODINGS:
+        raise SDWireArgumentError(
+            "invalid_argument",
+            f"encoding must be one of: {', '.join(READ_ENCODINGS)}",
+        )
+    validate_range(offset, length)
+    if length is not None and length > max_bytes:
+        raise SDWireArgumentError(
+            "size_limit_exceeded",
+            f"length exceeds max_bytes ({length} > {max_bytes})",
+        )
+
+
+def _too_big(offset: int, nbytes: int, max_bytes: int) -> SDWireArgumentError:
+    """The refusal for ``nbytes`` from ``offset`` to the end of a file being
+    over ``max_bytes``."""
+    what = "File" if offset == 0 else f"Rest of file from offset {offset}"
+    return SDWireArgumentError(
+        "size_limit_exceeded",
+        f"{what} exceeds max_bytes ({nbytes} > {max_bytes})",
+    )
+
+
+def _new_hasher(algorithm: str):
+    """A hashlib object for ``algorithm`` (None for crc32). Not used for
+    security, which lets md5/sha1 work on a FIPS-mode host where the
+    Python build allows it; where it doesn't, refused as unavailable."""
+    import hashlib
+
+    if algorithm == "crc32":
+        return None
+    try:
+        return hashlib.new(algorithm, usedforsecurity=False)
+    except ValueError as e:
+        raise SDWireArgumentError(
+            "algorithm_unavailable",
+            f"{algorithm} is not available on this host ({e}); use sha256",
+        ) from e
+
+
+def validate_hash_args(
+    algorithm: str, offset: int = 0, length: Optional[int] = None
+) -> None:
+    """Check the ``hash_file`` arguments that don't depend on the file,
+    including that this host's Python can compute ``algorithm``."""
+    if algorithm not in HASH_ALGORITHMS:
+        raise SDWireArgumentError(
+            "invalid_argument",
+            f"algorithm must be one of: {', '.join(HASH_ALGORITHMS)}",
+        )
+    validate_range(offset, length)
+    _new_hasher(algorithm)
+
+
+def _range_span(size: int, offset: int, length: Optional[int]) -> int:
+    """Bytes of a ``size``-byte file in [offset, offset+length), or to the
+    end without ``length``. An offset at the end is an empty range; one
+    past it is refused."""
+    if offset > size:
+        raise SDWireArgumentError(
+            "offset_out_of_range",
+            f"offset {offset} is past the end of the file ({size} bytes)",
+        )
+    remaining = size - offset
+    return remaining if length is None else min(length, remaining)
+
+
 class SDWireController:
     """Controls an SDWire SD card multiplexer."""
 
@@ -639,44 +743,70 @@ class SDWireController:
                 "_truncated": truncated,
             }
 
+    def _open_regular_file(self, mount, path: str):
+        """Resolve ``path`` on a mounted partition to a regular file (no
+        symlinks); return (host path, stat)."""
+        target = mount.resolve_path(path)
+        if not os.path.lexists(target):
+            raise FileNotFoundError(path)
+        if os.path.islink(target):
+            raise SDWireSymlinkError(path, os.readlink(target))
+        if not os.path.isfile(target):
+            raise IsADirectoryError(path)
+        return target, os.stat(target)
+
     def read_file(
         self,
         partition: int,
         path: str,
         max_bytes: int = 1024 * 1024,
         encoding: str = "text",
+        offset: int = 0,
+        length: Optional[int] = None,
     ) -> dict:
-        """Read a file from a partition with size and encoding guards."""
-        if max_bytes <= 0:
-            raise RuntimeError("max_bytes must be greater than 0")
-        if encoding not in {"text", "base64", "hex"}:
-            raise RuntimeError("encoding must be one of: text, base64, hex")
+        """Read a file, or ``length`` bytes from ``offset`` (to the end
+        without ``length``), from a partition with size and encoding guards.
+
+        More than ``max_bytes`` to return is refused (SDWireArgumentError
+        "size_limit_exceeded"), never cut short. ``bytes_read`` is how much
+        was returned (less than ``length`` when the file ends first);
+        ``truncated`` says the file goes on past it.
+        """
+        validate_read_args(max_bytes, encoding, offset, length)
 
         with self.host_mount(partition, mode="ro") as mount:
-            target = mount.resolve_path(path)
-            if not os.path.lexists(target):
-                raise FileNotFoundError(path)
-            if os.path.islink(target):
-                raise SDWireSymlinkError(path, os.readlink(target))
-            if not os.path.isfile(target):
-                raise IsADirectoryError(path)
-
-            stat_result = os.stat(target)
-            if stat_result.st_size > max_bytes:
-                raise RuntimeError(
-                    f"File exceeds max_bytes ({stat_result.st_size} > {max_bytes})"
-                )
+            target, stat_result = self._open_regular_file(mount, path)
+            span = _range_span(stat_result.st_size, offset, length)
+            if length is None and span > max_bytes:
+                raise _too_big(offset, span, max_bytes)
 
             try:
                 with open(target, "rb") as f:
-                    data = f.read(max_bytes + 1)
+                    f.seek(offset)
+                    # Ask only for what the file holds: max_bytes and
+                    # length can be far larger than the file (the CLI
+                    # doesn't cap them) and read() allocates what it is
+                    # asked for. Without a length, one byte past the stat
+                    # catches a file that grew since; then read on up to
+                    # one byte past max_bytes to tell whether it still fits.
+                    if length is not None:
+                        data = f.read(span)
+                    else:
+                        data = f.read(span + 1)
+                        if len(data) > span:
+                            data += f.read(max_bytes + 1 - len(data))
+                    # The file can change between the stat and the read:
+                    # "truncated" and the metadata describe the file as
+                    # read, not as stat'ed.
+                    more = f.read(1) != b""
+                    stat_result = os.fstat(f.fileno())
             except PermissionError as e:
                 raise PermissionError(path) from e
 
             if len(data) > max_bytes:
-                raise RuntimeError(
-                    f"File exceeds max_bytes ({len(data)} > {max_bytes})"
-                )
+                # Grew since the stat: len(data) is max_bytes + 1, a lower
+                # bound on what is now there from the offset.
+                raise _too_big(offset, len(data), max_bytes)
 
             metadata = _serialize_stat(stat_result, owner_mount=False)
 
@@ -696,7 +826,58 @@ class SDWireController:
                 "content": content,
                 "encoding": encoding,
                 **metadata,
-                "truncated": False,
+                "offset": offset,
+                "bytes_read": len(data),
+                "truncated": more,
+            }
+
+    def hash_file(
+        self,
+        partition: int,
+        path: str,
+        algorithm: str = "sha256",
+        offset: int = 0,
+        length: Optional[int] = None,
+    ) -> dict:
+        """Hash a file, or ``length`` bytes from ``offset`` (to the end
+        without ``length``), on a partition. Reads in chunks, so a file of
+        any size is hashed without holding it in memory.
+
+        ``digest`` is lowercase hex (crc32: 8 digits). ``bytes_hashed`` is
+        how much was hashed, less than ``length`` when the file ends first.
+        """
+        import zlib
+
+        validate_hash_args(algorithm, offset, length)
+
+        with self.host_mount(partition, mode="ro") as mount:
+            target, stat_result = self._open_regular_file(mount, path)
+            span = _range_span(stat_result.st_size, offset, length)
+
+            crc = 0
+            hasher = _new_hasher(algorithm)
+            hashed = 0
+            try:
+                with open(target, "rb") as f:
+                    f.seek(offset)
+                    while hashed < span:
+                        chunk = f.read(min(_HASH_CHUNK, span - hashed))
+                        if not chunk:
+                            break  # the file shrank since the stat
+                        if hasher is None:
+                            crc = zlib.crc32(chunk, crc)
+                        else:
+                            hasher.update(chunk)
+                        hashed += len(chunk)
+            except PermissionError as e:
+                raise PermissionError(path) from e
+
+            return {
+                "algorithm": algorithm,
+                "digest": f"{crc:08x}" if hasher is None else hasher.hexdigest(),
+                **_serialize_stat(stat_result, owner_mount=False),
+                "offset": offset,
+                "bytes_hashed": hashed,
             }
 
     def get_disk_info(self) -> dict:

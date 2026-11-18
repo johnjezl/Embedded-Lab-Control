@@ -1263,8 +1263,9 @@ class TestReadAccess:
             yield _MountedPartition(str(root))
 
         with patch.object(ctrl, "host_mount", fake_mount):
-            with pytest.raises(RuntimeError, match="exceeds max_bytes"):
+            with pytest.raises(ValueError, match="File exceeds max_bytes") as e:
                 ctrl.read_file(partition=1, path="/large.bin", max_bytes=4)
+        assert e.value.code == "size_limit_exceeded"
 
     def test_read_file_rejects_symlink(self, tmp_path):
         ctrl = SDWireController("test_serial")
@@ -1379,3 +1380,304 @@ class TestReadAccess:
                     RuntimeError, match="Failed to read partition table"
                 ):
                     ctrl.get_disk_info()
+
+
+class TestRangeReadAndHash:
+    """read_file offset/length and hash_file (#78)."""
+
+    @pytest.fixture
+    def card(self, tmp_path):
+        """A controller whose partition is tmp_path/mount; yields (ctrl, root)."""
+        from labctl.sdwire.controller import _MountedPartition
+
+        ctrl = SDWireController("test_serial")
+        root = tmp_path / "mount"
+        root.mkdir()
+
+        @contextmanager
+        def fake_mount(*args, **kwargs):
+            yield _MountedPartition(str(root))
+
+        with patch.object(ctrl, "host_mount", fake_mount):
+            yield ctrl, root
+
+    def test_range_read(self, card):
+        ctrl, root = card
+        (root / "f.bin").write_bytes(b"0123456789")
+
+        result = ctrl.read_file(partition=1, path="/f.bin", offset=2, length=3)
+
+        assert result["content"] == "234"
+        assert result["offset"] == 2
+        assert result["bytes_read"] == 3
+        assert result["size"] == 10  # the whole file's
+        assert result["truncated"] is True
+
+    def test_range_in_file_bigger_than_max_bytes(self, card):
+        # Only what's returned counts against max_bytes, not the file size.
+        ctrl, root = card
+        (root / "f.bin").write_bytes(b"x" * 100)
+
+        result = ctrl.read_file(
+            partition=1, path="/f.bin", max_bytes=10, offset=95, length=10
+        )
+
+        assert result["content"] == "xxxxx"
+        assert result["bytes_read"] == 5
+        assert result["truncated"] is False
+
+    def test_rest_of_file_from_offset(self, card):
+        ctrl, root = card
+        (root / "f.bin").write_bytes(b"0123456789")
+
+        result = ctrl.read_file(partition=1, path="/f.bin", max_bytes=4, offset=6)
+
+        assert result["content"] == "6789"
+        assert result["truncated"] is False
+
+    def test_rest_of_file_over_max_bytes_refused(self, card):
+        ctrl, root = card
+        (root / "f.bin").write_bytes(b"0123456789")
+
+        with pytest.raises(ValueError, match=r"offset 5 exceeds max_bytes \(5 > 4\)"):
+            ctrl.read_file(partition=1, path="/f.bin", max_bytes=4, offset=5)
+
+    def test_growth_after_stat_counts_from_offset(self, card):
+        # The file grew between the stat and the read: the message counts
+        # the bytes from the offset, not the offset plus them.
+        ctrl, root = card
+        (root / "f.bin").write_bytes(b"0123")  # 4 at stat time
+        real_open = ctrl._open_regular_file
+
+        def open_then_grow(mount, path):
+            opened = real_open(mount, path)
+            (root / "f.bin").write_bytes(b"x" * 100)
+            return opened
+
+        with patch.object(ctrl, "_open_regular_file", open_then_grow):
+            with pytest.raises(
+                ValueError, match=r"offset 2 exceeds max_bytes \(5 > 4\)"
+            ):
+                ctrl.read_file(partition=1, path="/f.bin", max_bytes=4, offset=2)
+
+    def test_growth_that_still_fits_is_read(self, card):
+        ctrl, root = card
+        (root / "f.bin").write_bytes(b"0123")
+        real_open = ctrl._open_regular_file
+
+        def open_then_grow(mount, path):
+            opened = real_open(mount, path)
+            (root / "f.bin").write_bytes(b"0123456")
+            return opened
+
+        with patch.object(ctrl, "_open_regular_file", open_then_grow):
+            result = ctrl.read_file(partition=1, path="/f.bin", max_bytes=10)
+
+        assert result["content"] == "0123456"
+        assert result["bytes_read"] == 7
+
+    @pytest.mark.parametrize("length", [None, 1 << 62])
+    def test_huge_max_bytes_reads_only_the_file(self, card, length):
+        # read() allocates what it is asked for: a huge max_bytes or
+        # length from the CLI must not reach it (#79 review 3).
+        ctrl, root = card
+        (root / "f.bin").write_bytes(b"abc")
+
+        result = ctrl.read_file(
+            partition=1, path="/f.bin", max_bytes=1 << 62, length=length
+        )
+
+        assert result["content"] == "abc"
+        assert result["truncated"] is False
+
+    def test_shrink_after_stat_is_not_truncated(self, card):
+        # The file shrank between the stat and the read: everything left
+        # came back, so truncated is false and size is the file's now
+        # (#79 review 4).
+        ctrl, root = card
+        (root / "f.bin").write_bytes(b"0123456789")
+        real_open = ctrl._open_regular_file
+
+        def open_then_shrink(mount, path):
+            opened = real_open(mount, path)
+            (root / "f.bin").write_bytes(b"0123")
+            return opened
+
+        with patch.object(ctrl, "_open_regular_file", open_then_shrink):
+            result = ctrl.read_file(partition=1, path="/f.bin", max_bytes=100)
+
+        assert result["content"] == "0123"
+        assert result["truncated"] is False
+        assert result["size"] == 4
+
+    def test_range_before_the_end_is_truncated(self, card):
+        ctrl, root = card
+        (root / "f.bin").write_bytes(b"0123456789")
+
+        part = ctrl.read_file(partition=1, path="/f.bin", offset=2, length=3)
+        last = ctrl.read_file(partition=1, path="/f.bin", offset=7, length=3)
+
+        assert (part["content"], part["truncated"]) == ("234", True)
+        assert (last["content"], last["truncated"]) == ("789", False)
+
+    def test_length_over_max_bytes_refused(self, card):
+        ctrl, root = card
+        (root / "f.bin").write_bytes(b"0123456789")
+
+        from labctl.sdwire.controller import SDWireArgumentError
+
+        with pytest.raises(SDWireArgumentError, match="length exceeds max_bytes") as e:
+            ctrl.read_file(partition=1, path="/f.bin", max_bytes=4, length=5)
+        assert e.value.code == "size_limit_exceeded"
+
+    def test_whole_file_read_unchanged(self, card):
+        ctrl, root = card
+        (root / "f.txt").write_text("abc")
+
+        result = ctrl.read_file(partition=1, path="/f.txt")
+
+        assert result["content"] == "abc"
+        assert result["offset"] == 0
+        assert result["bytes_read"] == 3
+        assert result["truncated"] is False
+
+    def test_offset_at_end_is_empty(self, card):
+        ctrl, root = card
+        (root / "f.bin").write_bytes(b"abc")
+
+        result = ctrl.read_file(partition=1, path="/f.bin", offset=3)
+
+        assert result["content"] == ""
+        assert result["bytes_read"] == 0
+        assert result["truncated"] is False
+
+    @pytest.mark.parametrize("method", ["read_file", "hash_file"])
+    def test_offset_past_end_refused(self, card, method):
+        from labctl.sdwire.controller import SDWireArgumentError
+
+        ctrl, root = card
+        (root / "f.bin").write_bytes(b"abc")
+
+        with pytest.raises(SDWireArgumentError) as e:
+            getattr(ctrl, method)(partition=1, path="/f.bin", offset=4)
+        assert e.value.code == "offset_out_of_range"
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [{"offset": -1}, {"length": -1}, {"max_bytes": 0}, {"encoding": "utf16"}],
+    )
+    def test_bad_read_arguments(self, card, kwargs):
+        from labctl.sdwire.controller import SDWireArgumentError
+
+        ctrl, root = card
+        (root / "f.bin").write_bytes(b"abc")
+
+        with pytest.raises(SDWireArgumentError) as e:
+            ctrl.read_file(partition=1, path="/f.bin", **kwargs)
+        assert e.value.code == "invalid_argument"
+
+    def test_range_inside_utf8_character_is_binary(self, card):
+        ctrl, root = card
+        (root / "f.txt").write_text("é", encoding="utf-8")  # 2 bytes
+
+        with pytest.raises(ValueError, match="binary_content"):
+            ctrl.read_file(partition=1, path="/f.txt", length=1)
+
+    @pytest.mark.parametrize("algorithm", ["sha256", "sha1", "sha512", "md5"])
+    def test_hash_whole_file(self, card, algorithm):
+        import hashlib
+
+        ctrl, root = card
+        data = bytes(range(256)) * 10
+        (root / "f.bin").write_bytes(data)
+
+        result = ctrl.hash_file(partition=1, path="/f.bin", algorithm=algorithm)
+
+        assert result["digest"] == hashlib.new(algorithm, data).hexdigest()
+        assert result["algorithm"] == algorithm
+        assert result["bytes_hashed"] == len(data)
+        assert result["offset"] == 0
+        assert result["size"] == len(data)
+
+    def test_hash_crc32(self, card):
+        import zlib
+
+        ctrl, root = card
+        data = b"\x00\x01"
+        (root / "f.bin").write_bytes(data)
+
+        result = ctrl.hash_file(partition=1, path="/f.bin", algorithm="crc32")
+
+        assert result["digest"] == format(zlib.crc32(data), "08x")
+        assert len(result["digest"]) == 8
+
+    def test_hash_range_spanning_chunks(self, card):
+        # Several read chunks, so the loop and the range end both count.
+        import hashlib
+
+        from labctl.sdwire import controller
+
+        ctrl, root = card
+        data = bytes(range(256)) * 20
+        (root / "f.bin").write_bytes(data)
+
+        with patch.object(controller, "_HASH_CHUNK", 1000):
+            result = ctrl.hash_file(partition=1, path="/f.bin", offset=7, length=3001)
+
+        assert result["digest"] == hashlib.sha256(data[7:3008]).hexdigest()
+        assert result["bytes_hashed"] == 3001
+
+    def test_hash_length_past_end_hashes_to_end(self, card):
+        import hashlib
+
+        ctrl, root = card
+        (root / "f.bin").write_bytes(b"abcdef")
+
+        result = ctrl.hash_file(partition=1, path="/f.bin", offset=4, length=100)
+
+        assert result["digest"] == hashlib.sha256(b"ef").hexdigest()
+        assert result["bytes_hashed"] == 2
+
+    def test_hash_unknown_algorithm(self, card):
+        from labctl.sdwire.controller import SDWireArgumentError
+
+        ctrl, root = card
+        (root / "f.bin").write_bytes(b"abc")
+
+        with pytest.raises(SDWireArgumentError, match="algorithm"):
+            ctrl.hash_file(partition=1, path="/f.bin", algorithm="sha3")
+
+    def test_hash_algorithm_blocked_by_host(self, card):
+        # e.g. md5 on a FIPS-mode host whose Python refuses it
+        from labctl.sdwire.controller import SDWireArgumentError, validate_hash_args
+
+        with patch("hashlib.new", side_effect=ValueError("unsupported hash type")):
+            with pytest.raises(SDWireArgumentError) as e:
+                validate_hash_args("md5")
+        assert e.value.code == "algorithm_unavailable"
+        assert "sha256" in str(e.value)
+
+    def test_md5_is_not_a_security_use(self, card):
+        import hashlib
+
+        ctrl, root = card
+        (root / "f.bin").write_bytes(b"abc")
+
+        with patch("hashlib.new", wraps=hashlib.new) as new:
+            ctrl.hash_file(partition=1, path="/f.bin", algorithm="md5")
+        assert new.call_args.kwargs == {"usedforsecurity": False}
+
+    def test_hash_rejects_symlink_directory_and_missing(self, card):
+        from labctl.sdwire.controller import SDWireSymlinkError
+
+        ctrl, root = card
+        (root / "target").write_bytes(b"abc")
+        (root / "link").symlink_to(root / "target")
+        (root / "dir").mkdir()
+
+        with pytest.raises(SDWireSymlinkError):
+            ctrl.hash_file(partition=1, path="/link")
+        with pytest.raises(IsADirectoryError):
+            ctrl.hash_file(partition=1, path="/dir")
+        with pytest.raises(FileNotFoundError):
+            ctrl.hash_file(partition=1, path="/missing")

@@ -245,7 +245,7 @@ password) and `boot_test` (runs and passes; `error` if it stopped early).
 Boards sharing a plug outlet get the power event too, with `via` naming
 the board that was switched. A failure is recorded with `result` `error`
 and the message, and an action cut short (Ctrl+C) as `interrupted`. Reads
-(serial capture, `sdwire ls`/`cat`/`info`) are not recorded.
+(serial capture, `sdwire ls`/`cat`/`hash`/`info`) are not recorded.
 
 A call refused over a claim is recorded as `claim_refused` with result
 `forbidden` (`--result forbidden`): who holds it, the board it is on (if a
@@ -294,7 +294,8 @@ rate; claim it for the whole test.
 | `labctl sdwire flash <sbc> <image>` | Power off, flash full image to SD card, power-cycle (`--no-reboot` leaves the SBC off). A board with no power plug is refused unless `--no-plug-ok` (you've made sure it is off) |
 | `labctl sdwire update <sbc> -p N -c src:dest -r old:new -d file` | Power off, then copy, rename, or delete files on a partition (`--reboot` to power-cycle; without it the SBC is left off). No plug: as `flash` (`--no-plug-ok`) |
 | `labctl sdwire ls <sbc> -p N [--path /] [--recursive] [--force]` | List directory contents on a partition. A card already on the host is read in place; otherwise the board must be confirmed off, as for `sdwire host` (`--force` skips the check) |
-| `labctl sdwire cat <sbc> -p N --path /file [--encoding text|base64|hex] [--force]` | Read a file from a partition (as `ls`) |
+| `labctl sdwire cat <sbc> -p N --path /file [--encoding text|base64|hex] [--max-bytes N] [--offset N] [--length N] [--force]` | Read a file, or `--length` bytes from `--offset`, from a partition (as `ls`); refuses more than `--max-bytes` (default 1 MiB) |
+| `labctl sdwire hash <sbc> -p N --path /file [-a sha256|sha1|sha512|md5|crc32] [--offset N] [--length N] [--force]` | Hash a file, or a byte range of it, on this host in chunks, so any size works (as `ls`) |
 | `labctl sdwire info <sbc> [--force]` | Show partition table and filesystem metadata (as `ls`) |
 
 Partition numbers are 1-based (e.g., `-p 1` for the first partition, which maps to `/dev/sdb1`).

@@ -163,6 +163,10 @@ mcp:
   # name. Keep it inside allowed_read_paths. Empty = uploads off.
   upload_dir: /var/lib/labctl/images
   # max_upload_mb: 8192
+  # Most content one sdwire_cat call returns, in MiB, as encoded: it
+  # reads up to 3/4 of this as text or base64, half as hex. Larger
+  # files: offset/length, or sdwire_hash.
+  # max_read_mb: 4
   # HTTPS for the HTTP transport (or labctl mcp --cert/--key); the web
   # server's certificate can be reused.
   # cert_file: /etc/labctl/tls/cert.pem

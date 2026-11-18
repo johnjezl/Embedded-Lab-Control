@@ -16,6 +16,21 @@
 
 ## Last Session
 
+- **Date**: 2026-11-17
+- **Branch**: `feat/sdwire-large-files-78` (#78), PR #79 open (three
+  review rounds fixed); review follow-ups filed as #80 (shared SD read
+  round trip) and #81 (CLI `--length` needs `--max-bytes`)
+- **Completed**:
+  - #78: `sdwire_cat` `offset`/`length` (CLI `--offset`/`--length`);
+    new `sdwire_hash` MCP tool and `labctl sdwire hash` (sha256, sha1,
+    sha512, md5, crc32; whole file or a range, chunked on the host);
+    `mcp.max_read_mb` (default 4 MiB) caps one `sdwire_cat` result (a
+    larger `max_bytes` is lowered to it). Reading an 8 MiB file whole had
+    dropped Claude Code's MCP connection (manual `/mcp` reconnect)
+- **Next**: review, PR, merge; deploy with #73/#76
+
+## Previous Session
+
 - **Date**: 2026-11-08 to 2026-11-13
 - **Branch**: #73 and #75 merged (PRs #74, #75); #76 in a PR
   from `fix/kasa-missing-zone-76`

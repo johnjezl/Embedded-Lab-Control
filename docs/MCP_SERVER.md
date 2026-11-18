@@ -389,7 +389,8 @@ call. `power_on` and `power_cycle` also check and set those boards'
 | `sdwire_to_host` | `sbc_name`, `force` (default false) | Switch SD card to host (for flashing). Proceeds only when the SBC's plug reports it off: refuses when it reports on, when the SBC has no plug, or when its state can't be read; `force=true` overrides (risks SD card corruption) |
 | `sdwire_update` | `sbc_name`, `partition`, `copies`, `renames`, `deletes`, `reboot`, `no_plug_ok` | Copy, rename, or delete files on SD card partition (atomic: power off, mount, operate, unmount, back to DUT). Host `copies` sources must be allowlisted |
 | `sdwire_ls` | `sbc_name`, `partition`, `path` (default `/`), `recursive` (default false), `max_entries` (default 1000) | List directory contents on an SD card partition using a read-only mount |
-| `sdwire_cat` | `sbc_name`, `partition`, `path`, `max_bytes` (default 1 MiB), `encoding` (`text` default, `base64`, `hex`) | Read a file from an SD card partition with size and encoding guards; symlinks are not followed |
+| `sdwire_cat` | `sbc_name`, `partition`, `path`, `max_bytes` (default 1 MiB; at most 3/4 of `mcp.max_read_mb` with `text`/`base64`, 1/2 with `hex`, and lowered to that), `encoding` (`text` default, `base64`, `hex`), `offset` (default 0), `length` (default: to the end) | Read a file, or a byte range of one, from an SD card partition with size and encoding guards; symlinks are not followed. See [Large files on the card](#large-files-on-the-card) |
+| `sdwire_hash` | `sbc_name`, `partition`, `path`, `algorithm` (`sha256` default, `sha1`, `sha512`, `md5`, `crc32`), `offset` (default 0), `length` (default: to the end) | Hash a file, or a byte range of one, on an SD card partition, computed on the lab host: compare a file of any size without reading it |
 | `sdwire_info` | `sbc_name` | Return partition-table and filesystem metadata for the SD card |
 | `sdwire_add` | `name`, `serial_number`, `device_type` | Register an SDWire device |
 | `sdwire_remove` | `name` | Unregister an SDWire device |
@@ -411,7 +412,7 @@ with `reboot=true` leave the board off if the claim was lost meanwhile
 or someone else has claimed the board or a board sharing its hardware
 (see [Claims](#claims-exclusive-access-coordination)).
 
-`sdwire_ls`, `sdwire_cat` and `sdwire_info` don't change the card or the
+`sdwire_ls`, `sdwire_cat`, `sdwire_hash` and `sdwire_info` don't change the card or the
 board's power. A card already on the host is read in place and left there.
 A card on the DUT is switched to the host and back only when the SBC is
 known to be off; otherwise they refuse with `"error": "powered_on"` or
@@ -427,6 +428,50 @@ board's claim while you work (see [Known limits](#security-considerations)).
 They return JSON; errors carry `error` and `message`
 (e.g. `path_not_found`, `size_limit_exceeded`, `binary_content`: retry with
 `encoding="base64"`).
+
+#### Large files on the card
+
+One `sdwire_cat` call reads at most `max_bytes`, and the content it
+returns can't go past `mcp.max_read_mb` (4 MiB by default): a tool
+result of several MiB has dropped Claude Code's MCP connection, which
+then had to be reconnected by hand with `/mcp` (#78). The limit counts
+the content as returned, so `max_bytes` goes up to 3/4 of it with
+`text` or `base64` (3 MiB by default; text keeps the margin for JSON
+escapes such as a newline's `\n`) and half with `hex` (2 MiB). A larger
+`max_bytes` is lowered to that, so a generous one still reads a file
+that fits; a file or `length` that doesn't is refused with
+`size_limit_exceeded`, with the most allowed in `max_read_bytes`. Left
+out, `max_bytes` is 1 MiB, or that limit when it is lower. Text that still escapes past the limit as sent (mostly
+non-ASCII or control characters; the result's JSON is escaped again
+inside the JSON-RPC message) is refused with `result_too_large`: retry
+with `base64`. An I/O error from the card reader is `read_failed`.
+
+The limit counts one copy of the result. The SDK sends a tool result as
+text and again as structured content, so a message on the wire can be
+about twice `mcp.max_read_mb`: still well under the 8 MiB read that
+dropped the connection, which went out at over 20 MB.
+
+- To read a larger file, read it in parts: `offset` and `length` (at most
+  `max_bytes`). The result's `size` is the whole file's, `bytes_read` is
+  how much came back (less than `length` at the end of the file), and
+  `truncated` is true while there is more after it. Read a text file in
+  parts with `encoding="base64"`: a part that starts or ends inside a
+  UTF-8 character fails as `binary_content` (the refusals that suggest
+  parts say so for text).
+- To check that a file didn't change, hash it instead of reading it:
+  `sdwire_hash` reads the file on the lab host in chunks, so any size
+  works, and returns `digest` (lowercase hex; `crc32` as 8 digits) and
+  `bytes_hashed`. It takes the same `offset` and `length`, handles the
+  card exactly as the other read tools do, and keeps the caller's claim
+  alive from the switch to the host until the card is back (as
+  `sdwire_cat` does). md5 and sha1 are computed as non-security hashes,
+  so they work on FIPS-mode hosts whose Python allows that; where it
+  doesn't, the error is `algorithm_unavailable`.
+
+```yaml
+mcp:
+  # max_read_mb: 4    # per sdwire_cat call
+```
 
 ### Images
 
@@ -499,7 +544,7 @@ it has none. The result names the board it came from.
 **Claim enforcement:** every tool that changes a board checks its claim:
 operating it (`power_on/off/cycle`, `serial_send`, `serial_capture`
 (it holds the console's connection), `sdwire_to_host/dut`,
-`sdwire_update`, `sdwire_ls/cat/info`, `flash_image`, `boot_test`,
+`sdwire_update`, `sdwire_ls/cat/hash/info`, `flash_image`, `boot_test`,
 `actuate`/`release`/`press`, `enter_recovery`/`exit_recovery`) and changing
 its configuration (`update_sbc`, `remove_sbc`, `assign_serial_port`,
 `assign_power_plug`, `set_network_address`, the matching `remove_*` tools,
@@ -725,6 +770,7 @@ decisions: D011, D012, D014 in [`DECISIONS.md`](DECISIONS.md).
 | [Host header checks](#host-header-checks) | Rejects unexpected `Host`/`Origin` (DNS rebinding) | loopback names | `mcp.allowed_hosts`, `mcp.allowed_origins` |
 | [Destructive confirmation](#confirmation-for-destructive-tools) | 24 destructive tools act only on a second call with a single-use token | on | `mcp.confirm_destructive`, `mcp.confirm_exempt` |
 | [Host file allowlist](#host-file-access-allowlist) | Tools may only read/write host files under listed directories, opened without following symlinks | deny all | `mcp.allowed_read_paths`, `mcp.allowed_write_paths` |
+| [SD card reads](#large-files-on-the-card) | One `sdwire_cat` call returns at most this much content, as encoded; larger files are read in parts or hashed | 4 MiB | `mcp.max_read_mb` |
 | [Image uploads](#uploading-images) | `PUT /images/<name>` into one directory: bare names, size and free-space limits, atomic replace, only the uploader or an operator replaces or deletes | off | `mcp.upload_dir`, `mcp.max_upload_mb` |
 | Privileged actuator tools | `actuator_add/remove/set` (raw actuator access, bypassing bindings) | off | `mcp.allow_admin_actuator_ops` |
 | Claims | An agent's claim on a board blocks other agents' calls that operate or reconfigure it; only operators may force-release; optionally, changing a board requires claiming it | on (`require_claim` off) | `claims.*`, `auth.users[].role` |
@@ -769,13 +815,13 @@ system-write / hardware / destructive) in
   `/var/lib/labctl` can be tricked into (#19).
 - The SD card mux position can't be read back from the SDWire; labctl
   infers it from whether the card reader sees media (a forced probe, via
-  `sudo -n dd`). The read tools `sdwire_ls`/`cat`/`info` and their CLI
+  `sudo -n dd`). The read tools `sdwire_ls`/`cat`/`hash`/`info` and their CLI
   counterparts use it to decide whether to read the card in place or
   borrow it; when the first probe finds no card they probe again 1 s
   later, since a card switched moments ago may still be initialising.
   After switching a card to the host, the MCP tools and `sdwire host` wait
   for it to become readable, probing every 0.5 s for up to 10 s; the CLI
-  `ls`/`cat`/`info` wait a fixed 2 s. When a probe can't tell (no sudo
+  `ls`/`cat`/`hash`/`info` wait a fixed 2 s. When a probe can't tell (no sudo
   rule for `dd`, a timeout), labctl falls back to the kernel's cached
   size, which is only refreshed when the kernel next checks the reader:
   every couple of seconds if removable-disk polling is on, otherwise not

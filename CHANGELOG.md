@@ -34,9 +34,35 @@ labctl that shares it together, and reconnect stdio MCP agents.
   board since: on every call about that board, and once elsewhere.
   `get_claim` shows such a lapse. Callers who never claim see no change.
   REST renewal of a session claim says the duration wasn't applied.
+- `sdwire_hash` MCP tool and `labctl sdwire hash` (#78): hash a file on
+  an SD card partition, or a byte range of it, on the lab host (sha256,
+  sha1, sha512, md5 or crc32), reading it in chunks, so a file of any size
+  can be compared without reading it through `sdwire_cat`. Same card
+  handling and claim rules as the other read tools.
+- `offset` / `length` on `sdwire_cat` (`--offset` / `--length` on `labctl
+  sdwire cat`) read part of a file (#78). Results also carry `offset` and
+  `bytes_read`; `truncated` is now true when the file goes on past what
+  was returned. Bad ranges are refused before the card is switched.
 
 ### Changed
 
+- `sdwire_cat` limits what one call returns to the new `mcp.max_read_mb`
+  (default 4 MiB of content as encoded: `max_bytes` up to 3 MiB with
+  text or base64, 2 MiB with hex; a larger `max_bytes` is lowered to
+  that, and a `length` over it refused before switching the card), and
+  refuses text that JSON-escapes past it with `result_too_large` (#78).
+  It keeps the caller's claim alive across the card switch, and
+  `truncated` and `size` describe the file as read. Left out,
+  `max_bytes` is 1 MiB or that limit, whichever is lower. An I/O error
+  from the card reader is now `read_failed` (MCP) / `Error: Read
+  failed` (CLI) instead of an unhandled exception. Raising `max_bytes`
+  to read an 8 MiB file whole returned one ~11 MB tool result (sent
+  twice, as text and structured content), which dropped Claude Code's
+  MCP connection until it was reconnected by hand. The limit counts one
+  copy as sent, escapes included. `size_limit_exceeded` now suggests
+  ranges (with base64 for text, which a part can split mid-character) or
+  `sdwire_hash`. The CLI has no such limit, and reads only what the file
+  holds whatever `--max-bytes` says.
 - With `claims.require_claim` on (the strict mode #73 asked for), the
   refusal of a caller whose own claim lapsed (in the last 24 hours) names
   that claim and how it ended, on MCP (with `lapsed_claim`) and REST.

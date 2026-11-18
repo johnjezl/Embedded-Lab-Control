@@ -114,7 +114,7 @@ _TOOL_ANNOTATION_TABLE: dict[str, tuple[str, bool, bool, bool, bool]] = {
     # Discovery (USB scans)
     "sdwire_discover": ("Discover SDWire devices", True, False, True, True),
     "serial_discover": ("Discover USB-serial adapters", True, False, True, True),
-    # SD card mux / contents. sdwire_ls/cat/info are read-only by
+    # SD card mux / contents. sdwire_ls/cat/hash/info are read-only by
     # construction (_sdwire_read_access): a card already on the host is read
     # in place and left there; a card on the DUT is switched to host and back
     # only when the board is known to be OFF, otherwise they refuse.
@@ -123,6 +123,7 @@ _TOOL_ANNOTATION_TABLE: dict[str, tuple[str, bool, bool, bool, bool]] = {
     "sdwire_update": ("Update files on SD card", False, True, False, True),
     "sdwire_ls": ("List SD card directory", True, False, True, True),
     "sdwire_cat": ("Read file from SD card", True, False, True, True),
+    "sdwire_hash": ("Hash file on SD card", True, False, True, True),
     "sdwire_info": ("SD card partition info", True, False, True, True),
     "flash_image": ("Flash image to SD card", False, True, False, True),
     # Serial console
@@ -1276,6 +1277,80 @@ def _plan_quietly(name: str, arguments: dict):
         return _current_plan(name, arguments)
     finally:
         _RECORD_REFUSALS.reset(token)
+
+
+# A part of a text file can start or end inside a UTF-8 character, which
+# fails as binary_content.
+_SDWIRE_TEXT_PARTS_HINT = (
+    "; read a text file in parts with encoding='base64', since a part can "
+    "start or end inside a UTF-8 character"
+)
+
+
+def _sdwire_parts_hint(suggestion: str, encoding: str) -> str:
+    """``suggestion`` (advice to read in parts), plus the base64 advice
+    when the caller is reading text."""
+    return suggestion + (_SDWIRE_TEXT_PARTS_HINT if encoding == "text" else "")
+
+
+# Room for sdwire_cat's metadata (names, path, claim advisory) on top of
+# mcp.max_read_mb of content.
+_SDWIRE_RESULT_SLACK = 64 * 1024
+
+
+_SDWIRE_DEFAULT_MAX_BYTES = 1024 * 1024
+
+
+def _sdwire_max_read_bytes(encoding: str, result_limit: int) -> int:
+    """The most file bytes one sdwire_cat call may read with ``encoding``
+    so that the content stays within ``result_limit`` (mcp.max_read_mb):
+    hex doubles, base64 adds a third. Text gets the same 3/4 as base64,
+    leaving room for JSON escapes (a newline or tab takes 2 bytes); text
+    that escapes past the limit anyway is refused on the result."""
+    if encoding == "hex":
+        return result_limit // 2
+    return result_limit // 4 * 3
+
+
+def _sdwire_size_error(
+    message: str,
+    encoding: str,
+    result_limit: int,
+    length: int | None,
+    max_bytes: int,
+) -> str:
+    """sdwire_cat's size_limit_exceeded: what to do next depends on
+    whether the caller already asked for a range, and on whether
+    max_bytes can still go up."""
+    cap = _sdwire_max_read_bytes(encoding, result_limit)
+    if length is not None and length <= cap:
+        suggestion = (
+            f"Pass max_bytes={length} with this length (max_bytes can be up "
+            f"to {cap} with encoding='{encoding}')"
+        )
+    elif length is not None:
+        suggestion = (
+            f"Read at most {cap} bytes per call with encoding='{encoding}' "
+            "(smaller length, more calls), or compare the file with sdwire_hash"
+        )
+    elif max_bytes < cap:
+        suggestion = (
+            f"Raise max_bytes (up to {cap} with encoding='{encoding}'), read "
+            "the file in parts with offset and length, or compare it with "
+            "sdwire_hash"
+        )
+    else:
+        suggestion = (
+            f"max_bytes is already this server's limit ({cap} with "
+            f"encoding='{encoding}'): read the file in parts with offset and "
+            f"length (at most {cap} per call), or compare it with sdwire_hash"
+        )
+    return _sdwire_read_error(
+        "size_limit_exceeded",
+        message,
+        max_read_bytes=cap,
+        suggestion=_sdwire_parts_hint(suggestion, encoding),
+    )
 
 
 def _sdwire_read_error(error: str, message: str, **extra) -> str:
@@ -2676,10 +2751,12 @@ def sdwire_cat(
     sbc_name: str,
     partition: int,
     path: str,
-    max_bytes: int = 1024 * 1024,
+    max_bytes: int | None = None,
     encoding: str = "text",
+    offset: int = 0,
+    length: int | None = None,
 ) -> str:
-    """Read a file from an SBC SD card partition.
+    """Read a file, or part of one, from an SBC SD card partition.
 
     The partition is mounted read-only and symlinks are not followed. A
     card already on the host is read in place and left there. A card on
@@ -2688,24 +2765,60 @@ def sdwire_cat(
     "power_unknown" (no power plug, or its state can't be read) and
     nothing is switched.
 
-    Returns JSON with "content", "encoding" and file metadata; errors are
-    JSON with "error" and "message" (e.g. "size_limit_exceeded",
-    "binary_content": retry with encoding="base64").
+    One call reads at most max_bytes, and the content it returns can't go
+    past the server's limit (mcp.max_read_mb, 4 MiB by default): a
+    max_bytes over 3/4 of it with "text" or "base64" (3 MiB by default),
+    or half with "hex", is lowered to that, and text that JSON-escapes
+    past the limit anyway (mostly non-ASCII or control characters) is
+    refused ("result_too_large"). Read a larger file in parts with offset
+    and length, or compare it with sdwire_hash instead of reading it.
+
+    Returns JSON with "content", "encoding", file metadata ("size" is the
+    whole file's), "offset", "bytes_read", and "truncated" (true when the
+    file goes on past what was returned). Errors are JSON with "error" and
+    "message" (e.g. "size_limit_exceeded", "offset_out_of_range",
+    "binary_content": retry with encoding="base64", which a range starting
+    or ending inside a UTF-8 character also needs).
 
     Args:
         sbc_name: Name of the SBC with an assigned SDWire device
         partition: Partition number (e.g., 1 for the first partition)
         path: File on the partition
-        max_bytes: Refuse files larger than this (default: 1048576, 1 MiB)
+        max_bytes: Refuse to read more than this (default: 1 MiB, or the
+            server's limit for the encoding when that is lower)
         encoding: "text" (UTF-8, the default), "base64" or "hex"
+        offset: Byte to start at (default: 0)
+        length: Bytes to read from offset (default: to the end of the
+            file); at most max_bytes, fewer when the file ends first
     """
     from labctl.sdwire import SDWireController
-    from labctl.sdwire.controller import SDWireSymlinkError
+    from labctl.sdwire.controller import (
+        SDWireArgumentError,
+        SDWireSymlinkError,
+        validate_read_args,
+    )
 
     manager = _get_manager()
     claim_err = _check_claim(manager, sbc_name, mutating=True)
     if claim_err:
         return claim_err
+    # Arguments are checked before the card is touched.
+    result_limit = _get_config().mcp.max_read_mb << 20
+    cap = _sdwire_max_read_bytes(encoding, result_limit)
+    if max_bytes is None:
+        # The default never trips the limit, however low it is set.
+        max_bytes = min(_SDWIRE_DEFAULT_MAX_BYTES, cap)
+    elif max_bytes > cap:
+        # A ceiling, not a request: lowering it keeps a generous max_bytes
+        # working for files that fit (#79 review 4). One that doesn't is
+        # refused with size_limit_exceeded, which names the limit.
+        max_bytes = cap
+    try:
+        validate_read_args(max_bytes, encoding, offset, length)
+    except SDWireArgumentError as e:
+        if e.code != "size_limit_exceeded":
+            return _sdwire_read_error(e.code, str(e))
+        return _sdwire_size_error(str(e), encoding, result_limit, length, max_bytes)
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return _sdwire_read_error("sbc_not_found", f"SBC '{sbc_name}' not found")
@@ -2719,6 +2832,9 @@ def sdwire_cat(
     host_switched = False
     cleanup_error: RuntimeError | None = None
     response: str
+    # Waiting for the card can take long: keep the caller's claim alive
+    # from the switch until the card is back, as sdwire_hash does.
+    keepalive = _claim_keepalive(manager, sbc_name).start()
 
     try:
         if needs_switch:
@@ -2730,6 +2846,8 @@ def sdwire_cat(
             path=path,
             max_bytes=max_bytes,
             encoding=encoding,
+            offset=offset,
+            length=length,
         )
         payload = json.dumps(
             {
@@ -2740,13 +2858,39 @@ def sdwire_cat(
                 **result,
             }
         )
-        response = payload
+        # Measured as sent: the result string is itself a JSON string in
+        # the JSON-RPC message, so its quotes and backslashes (every
+        # escape from the first encoding) are escaped again there.
+        sent = len(json.dumps(payload))
+        if sent > result_limit + _SDWIRE_RESULT_SLACK:
+            # Text JSON-escapes (non-ASCII as \uXXXX, control characters):
+            # up to 7x what was read once sent.
+            response = _sdwire_read_error(
+                "result_too_large",
+                f"The result is {sent} bytes as sent, over this server's "
+                f"limit of {result_limit} (mcp.max_read_mb): the text "
+                "escapes to more than it reads",
+                suggestion=(
+                    "Retry with encoding='base64' (max_bytes up to "
+                    f"{_sdwire_max_read_bytes('base64', result_limit)}), or "
+                    "read less at a time with offset and length"
+                ),
+            )
+        else:
+            response = payload
     except FileNotFoundError:
         response = _sdwire_read_error("path_not_found", f"Path not found: {path}")
     except PermissionError:
         response = _sdwire_read_error("permission_denied", f"Permission denied: {path}")
     except IsADirectoryError:
         response = _sdwire_read_error("not_a_file", f"Not a file: {path}")
+    except SDWireArgumentError as e:
+        if e.code == "size_limit_exceeded":
+            response = _sdwire_size_error(
+                str(e), encoding, result_limit, length, max_bytes
+            )
+        else:
+            response = _sdwire_read_error(e.code, str(e))
     except ValueError as e:
         if str(e) == "binary_content":
             response = _sdwire_read_error(
@@ -2764,18 +2908,150 @@ def sdwire_cat(
         )
     except RuntimeError as e:
         msg = str(e)
-        if "exceeds max_bytes" in msg:
-            response = _sdwire_read_error("size_limit_exceeded", msg)
-        elif "Failed to mount" in msg:
+        if "Failed to mount" in msg:
             response = _sdwire_read_error("fs_unsupported", msg)
         else:
             response = _sdwire_read_error("read_failed", msg)
+    except OSError as e:  # e.g. EIO from the card reader
+        response = _sdwire_read_error("read_failed", f"Read failed: {path}: {e}")
     finally:
         if host_switched:
             try:
                 ctrl.switch_to_dut()
             except RuntimeError as e:
                 cleanup_error = e
+        keepalive.stop()
+
+    if cleanup_error:
+        return _sdwire_read_error(
+            "cleanup_failed",
+            f"Failed to restore SD card to DUT mode: {cleanup_error}",
+            prior_response=json.loads(response),
+        )
+    return response
+
+
+@mcp.tool(annotations=TOOL_ANNOTATIONS["sdwire_hash"])
+@_with_mcp_activity
+def sdwire_hash(
+    sbc_name: str,
+    partition: int,
+    path: str,
+    algorithm: str = "sha256",
+    offset: int = 0,
+    length: int | None = None,
+) -> str:
+    """Hash a file, or a byte range of one, on an SBC SD card partition.
+
+    Computed on the lab host, so a file of any size can be compared (e.g.
+    before and after a test, to show it didn't change) without reading it
+    through sdwire_cat. Same card handling as sdwire_cat: the partition is
+    mounted read-only, symlinks are not followed, a card already on the
+    host is hashed in place and left there, and a card on the DUT is
+    switched to the host and back only when the SBC is known to be powered
+    off; otherwise the call refuses with error "powered_on" or
+    "power_unknown" and nothing is switched.
+
+    Returns JSON with "algorithm", "digest" (lowercase hex; crc32 as 8
+    digits), "offset", "bytes_hashed" (fewer than length when the file
+    ends first) and file metadata ("size", "mtime", "mode"). Errors are
+    JSON with "error" and "message" ("algorithm_unavailable": the host's
+    Python can't compute it, e.g. md5 in FIPS mode; use sha256). Your
+    claim on the board is kept alive while it runs.
+
+    Args:
+        sbc_name: Name of the SBC with an assigned SDWire device
+        partition: Partition number (e.g., 1 for the first partition)
+        path: File on the partition
+        algorithm: "sha256" (the default), "sha1", "sha512", "md5" or
+            "crc32"
+        offset: Byte to start at (default: 0)
+        length: Bytes to hash from offset (default: to the end of the file)
+    """
+    from labctl.sdwire import SDWireController
+    from labctl.sdwire.controller import (
+        SDWireArgumentError,
+        SDWireSymlinkError,
+        validate_hash_args,
+    )
+
+    manager = _get_manager()
+    claim_err = _check_claim(manager, sbc_name, mutating=True)
+    if claim_err:
+        return claim_err
+    try:
+        validate_hash_args(algorithm, offset, length)
+    except SDWireArgumentError as e:
+        return _sdwire_read_error(e.code, str(e))
+    sbc = manager.get_sbc_by_name(sbc_name)
+    if not sbc:
+        return _sdwire_read_error("sbc_not_found", f"SBC '{sbc_name}' not found")
+    if not sbc.sdwire:
+        return _sdwire_read_error("no_sdwire", f"No SDWire assigned to '{sbc_name}'")
+    # A read: not recorded (its host round trip restores the card).
+    ctrl = SDWireController(sbc.sdwire.serial_number, sbc.sdwire.device_type)
+    needs_switch, refusal = _sdwire_read_access(sbc_name, sbc, ctrl)
+    if refusal:
+        return refusal
+    host_switched = False
+    cleanup_error: RuntimeError | None = None
+    response: str
+    # A large file can take minutes, and the wait for the card more: keep
+    # the caller's claim alive from the switch until the card is back. A
+    # claim that lapses anyway doesn't void the digest; the claim
+    # warnings in the result report it.
+    keepalive = _claim_keepalive(manager, sbc_name).start()
+
+    try:
+        if needs_switch:
+            ctrl.switch_to_host()
+            host_switched = True
+            ctrl.wait_for_host()
+        result = ctrl.hash_file(
+            partition=partition,
+            path=path,
+            algorithm=algorithm,
+            offset=offset,
+            length=length,
+        )
+        response = json.dumps(
+            {
+                "sbc_name": sbc_name,
+                "partition": partition,
+                "path": path,
+                "claim_advisory": _structured_claim_advisory(manager, sbc_name),
+                **result,
+            }
+        )
+    except FileNotFoundError:
+        response = _sdwire_read_error("path_not_found", f"Path not found: {path}")
+    except PermissionError:
+        response = _sdwire_read_error("permission_denied", f"Permission denied: {path}")
+    except IsADirectoryError:
+        response = _sdwire_read_error("not_a_file", f"Not a file: {path}")
+    except SDWireArgumentError as e:
+        response = _sdwire_read_error(e.code, str(e))
+    except SDWireSymlinkError as e:
+        response = _sdwire_read_error(
+            "not_a_file",
+            f"Refusing to follow symlink: {path}",
+            symlink_target=e.target,
+        )
+    except RuntimeError as e:
+        msg = str(e)
+        if "Failed to mount" in msg:
+            response = _sdwire_read_error("fs_unsupported", msg)
+        else:
+            response = _sdwire_read_error("read_failed", msg)
+    except OSError as e:  # e.g. EIO from the card reader
+        response = _sdwire_read_error("read_failed", f"Read failed: {path}: {e}")
+    finally:
+        if host_switched:
+            try:
+                ctrl.switch_to_dut()
+            except RuntimeError as e:
+                cleanup_error = e
+        keepalive.stop()
 
     if cleanup_error:
         return _sdwire_read_error(
