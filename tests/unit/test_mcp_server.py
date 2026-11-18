@@ -5857,6 +5857,41 @@ class TestSdwireLargeFiles:
         assert refused["max_read_bytes"] == cap
         assert "error" not in allowed
 
+    def test_limit_measured_as_sent(self, env):
+        # 500,000 newlines: 1,000,000 bytes as the result's JSON (under
+        # 1 MiB + slack), 1,500,000 once that string is escaped again in
+        # the JSON-RPC message (#79 review 3).
+        ctrl, _, set_config = env
+        set_config({"mcp": {"max_read_mb": 1}})
+        ctrl.read_file.return_value = {"content": "\n" * 500_000}
+
+        result = self._cat(path="/f", max_bytes=500_000)
+
+        assert result["error"] == "result_too_large"
+        assert "as sent" in result["message"]
+
+    def test_text_paging_hints_suggest_base64(self, env):
+        # A part of a text file can end inside a UTF-8 character.
+        text = self._cat(path="/f", max_bytes=8 << 20)
+        b64 = self._cat(path="/f", max_bytes=8 << 20, encoding="base64")
+
+        assert "encoding='base64'" in text["suggestion"]
+        assert "UTF-8" in text["suggestion"]
+        assert "UTF-8" not in b64["suggestion"]
+
+    def test_text_size_error_suggests_base64_for_parts(self, env):
+        from labctl.sdwire.controller import SDWireArgumentError
+
+        ctrl, _, _ = env
+        ctrl.read_file.side_effect = SDWireArgumentError(
+            "size_limit_exceeded", "File exceeds max_bytes (10485760 > 1048576)"
+        )
+
+        result = self._cat(path="/big")
+
+        assert result["error"] == "size_limit_exceeded"
+        assert "UTF-8" in result["suggestion"]
+
     def test_text_that_escapes_past_limit_refused(self, env):
         ctrl, _, set_config = env
         set_config({"mcp": {"max_read_mb": 1}})
@@ -6049,20 +6084,44 @@ class TestSdwireLargeFiles:
         ctrl.switch_to_host.assert_called_once()
         ctrl.switch_to_dut.assert_called_once()
 
-    def test_hash_keeps_claim_alive_while_hashing(self, env):
+    def test_hash_keeps_claim_alive_from_switch_to_restore(self, env):
+        # The wait for the card can take long too (#79 review 3).
         ctrl, _, _ = env
-        cm = self.keepalive.return_value
+        started = self.keepalive.return_value.start
+        stop = started.return_value.stop
         seen = []
-        ctrl.hash_file.side_effect = lambda **kw: (
-            seen.append(cm.__exit__.called) or {"digest": "00"}
-        )
+
+        def note(step):
+            def record(*args, **kwargs):
+                seen.append((step, started.called, stop.called))
+                return {"digest": "00"}
+
+            return record
+
+        ctrl.switch_to_host.side_effect = note("host")
+        ctrl.wait_for_host.side_effect = note("wait")
+        ctrl.hash_file.side_effect = note("hash")
+        ctrl.switch_to_dut.side_effect = note("dut")
 
         self._hash(path="/f")
 
         self.keepalive.assert_called_once_with(ANY, "test-sbc-1")
-        cm.__enter__.assert_called_once()
-        assert seen == [False]  # still held while hash_file ran
-        cm.__exit__.assert_called_once()
+        assert seen == [
+            ("host", True, False),
+            ("wait", True, False),
+            ("hash", True, False),
+            ("dut", True, False),
+        ]
+        stop.assert_called_once()
+
+    def test_hash_stops_keepalive_on_error(self, env):
+        ctrl, _, _ = env
+        ctrl.hash_file.side_effect = FileNotFoundError("/f")
+
+        result = self._hash(path="/f")
+
+        assert result["error"] == "path_not_found"
+        self.keepalive.return_value.start.return_value.stop.assert_called_once()
 
     def test_hash_algorithm_unavailable_refused_before_switching(self, env):
         ctrl, _, _ = env

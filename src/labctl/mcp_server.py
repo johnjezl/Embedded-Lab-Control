@@ -1283,6 +1283,20 @@ _SDWIRE_LARGE_FILE_HINT = (
     "Read the file in parts with offset and length, or compare it with "
     "sdwire_hash instead of reading it"
 )
+# A part of a text file can start or end inside a UTF-8 character, which
+# fails as binary_content.
+_SDWIRE_TEXT_PARTS_HINT = (
+    "; read a text file in parts with encoding='base64', since a part can "
+    "start or end inside a UTF-8 character"
+)
+
+
+def _sdwire_parts_hint(suggestion: str, encoding: str) -> str:
+    """``suggestion`` (advice to read in parts), plus the base64 advice
+    when the caller is reading text."""
+    return suggestion + (_SDWIRE_TEXT_PARTS_HINT if encoding == "text" else "")
+
+
 # Room for sdwire_cat's metadata (names, path, claim advisory) on top of
 # mcp.max_read_mb of content.
 _SDWIRE_RESULT_SLACK = 64 * 1024
@@ -1336,7 +1350,10 @@ def _sdwire_size_error(
             f"length (at most {cap} per call), or compare it with sdwire_hash"
         )
     return _sdwire_read_error(
-        "size_limit_exceeded", message, max_read_bytes=cap, suggestion=suggestion
+        "size_limit_exceeded",
+        message,
+        max_read_bytes=cap,
+        suggestion=_sdwire_parts_hint(suggestion, encoding),
     )
 
 
@@ -2810,7 +2827,7 @@ def sdwire_cat(
             f"bytes with encoding='{encoding}' (mcp.max_read_mb: "
             f"{result_limit} bytes of content per call)",
             max_read_bytes=cap,
-            suggestion=_SDWIRE_LARGE_FILE_HINT,
+            suggestion=_sdwire_parts_hint(_SDWIRE_LARGE_FILE_HINT, encoding),
         )
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
@@ -2848,14 +2865,18 @@ def sdwire_cat(
                 **result,
             }
         )
-        if len(payload) > result_limit + _SDWIRE_RESULT_SLACK:
+        # Measured as sent: the result string is itself a JSON string in
+        # the JSON-RPC message, so its quotes and backslashes (every
+        # escape from the first encoding) are escaped again there.
+        sent = len(json.dumps(payload))
+        if sent > result_limit + _SDWIRE_RESULT_SLACK:
             # Text JSON-escapes (non-ASCII as \uXXXX, control characters):
-            # up to 6x what was read.
+            # up to 7x what was read once sent.
             response = _sdwire_read_error(
                 "result_too_large",
-                f"The result is {len(payload)} bytes as JSON, over this "
-                f"server's limit of {result_limit} (mcp.max_read_mb): the "
-                "text escapes to more than it reads",
+                f"The result is {sent} bytes as sent, over this server's "
+                f"limit of {result_limit} (mcp.max_read_mb): the text "
+                "escapes to more than it reads",
                 suggestion=(
                     "Retry with encoding='base64' (max_bytes up to "
                     f"{_sdwire_max_read_bytes('base64', result_limit)}), or "
@@ -2981,22 +3002,24 @@ def sdwire_hash(
     host_switched = False
     cleanup_error: RuntimeError | None = None
     response: str
+    # A large file can take minutes, and the wait for the card more: keep
+    # the caller's claim alive from the switch until the card is back. A
+    # claim that lapses anyway doesn't void the digest; the claim
+    # warnings in the result report it.
+    keepalive = _claim_keepalive(manager, sbc_name).start()
 
     try:
         if needs_switch:
             ctrl.switch_to_host()
             host_switched = True
             ctrl.wait_for_host()
-        # A large file can take minutes: keep the caller's claim alive
-        # meanwhile, as for the other long calls.
-        with _claim_keepalive(manager, sbc_name):
-            result = ctrl.hash_file(
-                partition=partition,
-                path=path,
-                algorithm=algorithm,
-                offset=offset,
-                length=length,
-            )
+        result = ctrl.hash_file(
+            partition=partition,
+            path=path,
+            algorithm=algorithm,
+            offset=offset,
+            length=length,
+        )
         response = json.dumps(
             {
                 "sbc_name": sbc_name,
@@ -3034,6 +3057,7 @@ def sdwire_hash(
                 ctrl.switch_to_dut()
             except RuntimeError as e:
                 cleanup_error = e
+        keepalive.stop()
 
     if cleanup_error:
         return _sdwire_read_error(

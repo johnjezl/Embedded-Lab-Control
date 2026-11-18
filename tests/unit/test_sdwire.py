@@ -1460,6 +1460,36 @@ class TestRangeReadAndHash:
             ):
                 ctrl.read_file(partition=1, path="/f.bin", max_bytes=4, offset=2)
 
+    def test_growth_that_still_fits_is_read(self, card):
+        ctrl, root = card
+        (root / "f.bin").write_bytes(b"0123")
+        real_open = ctrl._open_regular_file
+
+        def open_then_grow(mount, path):
+            opened = real_open(mount, path)
+            (root / "f.bin").write_bytes(b"0123456")
+            return opened
+
+        with patch.object(ctrl, "_open_regular_file", open_then_grow):
+            result = ctrl.read_file(partition=1, path="/f.bin", max_bytes=10)
+
+        assert result["content"] == "0123456"
+        assert result["bytes_read"] == 7
+
+    @pytest.mark.parametrize("length", [None, 1 << 62])
+    def test_huge_max_bytes_reads_only_the_file(self, card, length):
+        # read() allocates what it is asked for: a huge max_bytes or
+        # length from the CLI must not reach it (#79 review 3).
+        ctrl, root = card
+        (root / "f.bin").write_bytes(b"abc")
+
+        result = ctrl.read_file(
+            partition=1, path="/f.bin", max_bytes=1 << 62, length=length
+        )
+
+        assert result["content"] == "abc"
+        assert result["truncated"] is False
+
     def test_length_over_max_bytes_refused(self, card):
         ctrl, root = card
         (root / "f.bin").write_bytes(b"0123456789")

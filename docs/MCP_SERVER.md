@@ -440,21 +440,29 @@ the content as returned, so `max_bytes` can be up to 3/4 of it with
 escapes such as a newline's `\n`) and half with `hex` (2 MiB); a larger
 one is refused with `max_bytes_too_large`, with the most allowed in
 `max_read_bytes`. Left out, `max_bytes` is 1 MiB, or that limit when it
-is lower. Text that still JSON-escapes past the limit (mostly non-ASCII
-or control characters) is refused with `result_too_large`: retry with
-`base64`. An I/O error from the card reader is `read_failed`.
+is lower. Text that still escapes past the limit as sent (mostly
+non-ASCII or control characters; the result's JSON is escaped again
+inside the JSON-RPC message) is refused with `result_too_large`: retry
+with `base64`. An I/O error from the card reader is `read_failed`.
+
+The limit counts one copy of the result. The SDK sends a tool result as
+text and again as structured content, so a message on the wire can be
+about twice `mcp.max_read_mb`: still well under the 8 MiB read that
+dropped the connection, which went out at over 20 MB.
 
 - To read a larger file, read it in parts: `offset` and `length` (at most
   `max_bytes`). The result's `size` is the whole file's, `bytes_read` is
   how much came back (less than `length` at the end of the file), and
-  `truncated` is true while there is more after it. A range that starts
-  or ends inside a UTF-8 character needs `encoding="base64"`.
+  `truncated` is true while there is more after it. Read a text file in
+  parts with `encoding="base64"`: a part that starts or ends inside a
+  UTF-8 character fails as `binary_content` (the refusals that suggest
+  parts say so for text).
 - To check that a file didn't change, hash it instead of reading it:
   `sdwire_hash` reads the file on the lab host in chunks, so any size
   works, and returns `digest` (lowercase hex; `crc32` as 8 digits) and
   `bytes_hashed`. It takes the same `offset` and `length`, handles the
   card exactly as the other read tools do, and keeps the caller's claim
-  alive while it runs. md5 and sha1 are computed as non-security hashes,
+  alive from the switch to the host until the card is back. md5 and sha1 are computed as non-security hashes,
   so they work on FIPS-mode hosts whose Python allows that; where it
   doesn't, the error is `algorithm_unavailable`.
 

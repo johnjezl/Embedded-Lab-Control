@@ -53,10 +53,14 @@ labctl that shares it together, and reconnect stdio MCP agents.
   JSON-escapes past it with `result_too_large` (#78). Left out,
   `max_bytes` is 1 MiB or that limit, whichever is lower. An I/O error
   from the card reader is now `read_failed` (MCP) / `Error: Read
-  failed` (CLI) instead of an unhandled exception. Raising `max_bytes` to read an 8 MiB file whole returned one
-  ~11 MB tool result, which dropped Claude Code's MCP connection until it
-  was reconnected by hand. `size_limit_exceeded` now suggests ranges or
-  `sdwire_hash`. The CLI has no such limit.
+  failed` (CLI) instead of an unhandled exception. Raising `max_bytes`
+  to read an 8 MiB file whole returned one ~11 MB tool result (sent
+  twice, as text and structured content), which dropped Claude Code's
+  MCP connection until it was reconnected by hand. The limit counts one
+  copy as sent, escapes included. `size_limit_exceeded` now suggests
+  ranges (with base64 for text, which a part can split mid-character) or
+  `sdwire_hash`. The CLI has no such limit, and reads only what the file
+  holds whatever `--max-bytes` says.
 - With `claims.require_claim` on (the strict mode #73 asked for), the
   refusal of a caller whose own claim lapsed (in the last 24 hours) names
   that claim and how it ended, on MCP (with `lapsed_claim`) and REST.

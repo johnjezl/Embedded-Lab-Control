@@ -35,7 +35,10 @@ class SDWireSymlinkError(RuntimeError):
 class SDWireArgumentError(ValueError):
     """A read or hash request the file can't satisfy (bad offset, length,
     encoding or algorithm). ``code`` is the error name the front ends
-    report (``invalid_argument`` or ``offset_out_of_range``)."""
+    report: ``invalid_argument``, ``offset_out_of_range``,
+    ``size_limit_exceeded`` (more than max_bytes to return) or
+    ``algorithm_unavailable`` (the host's Python can't compute it, e.g.
+    md5 in FIPS mode)."""
 
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -780,9 +783,18 @@ class SDWireController:
             try:
                 with open(target, "rb") as f:
                     f.seek(offset)
-                    # Without a length, one byte more than allowed catches
-                    # a file that grew since the stat.
-                    data = f.read(max_bytes + 1 if length is None else length)
+                    # Ask only for what the file holds: max_bytes and
+                    # length can be far larger than the file (the CLI
+                    # doesn't cap them) and read() allocates what it is
+                    # asked for. Without a length, one byte past the stat
+                    # catches a file that grew since; then read on up to
+                    # one byte past max_bytes to tell whether it still fits.
+                    if length is not None:
+                        data = f.read(span)
+                    else:
+                        data = f.read(span + 1)
+                        if len(data) > span:
+                            data += f.read(max_bytes + 1 - len(data))
             except PermissionError as e:
                 raise PermissionError(path) from e
 

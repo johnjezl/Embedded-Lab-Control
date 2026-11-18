@@ -16,10 +16,10 @@
 
 ## Last Session
 
-- **Date**: 2026-11-16
-- **Branch**: `feat/sdwire-large-files-78` (#78), PR #79 open; review
-  follow-ups filed as #80 (shared SD read round trip) and #81 (CLI
-  `--length` needs `--max-bytes`)
+- **Date**: 2026-11-17
+- **Branch**: `feat/sdwire-large-files-78` (#78), PR #79 open (three
+  review rounds fixed); review follow-ups filed as #80 (shared SD read
+  round trip) and #81 (CLI `--length` needs `--max-bytes`)
 - **Completed**:
   - #78: `sdwire_cat` `offset`/`length` (CLI `--offset`/`--length`);
     new `sdwire_hash` MCP tool and `labctl sdwire hash` (sha256, sha1,
