@@ -389,7 +389,7 @@ call. `power_on` and `power_cycle` also check and set those boards'
 | `sdwire_to_host` | `sbc_name`, `force` (default false) | Switch SD card to host (for flashing). Proceeds only when the SBC's plug reports it off: refuses when it reports on, when the SBC has no plug, or when its state can't be read; `force=true` overrides (risks SD card corruption) |
 | `sdwire_update` | `sbc_name`, `partition`, `copies`, `renames`, `deletes`, `reboot`, `no_plug_ok` | Copy, rename, or delete files on SD card partition (atomic: power off, mount, operate, unmount, back to DUT). Host `copies` sources must be allowlisted |
 | `sdwire_ls` | `sbc_name`, `partition`, `path` (default `/`), `recursive` (default false), `max_entries` (default 1000) | List directory contents on an SD card partition using a read-only mount |
-| `sdwire_cat` | `sbc_name`, `partition`, `path`, `max_bytes` (default 1 MiB, at most `mcp.max_read_mb`), `encoding` (`text` default, `base64`, `hex`), `offset` (default 0), `length` (default: to the end) | Read a file, or a byte range of one, from an SD card partition with size and encoding guards; symlinks are not followed. See [Large files on the card](#large-files-on-the-card) |
+| `sdwire_cat` | `sbc_name`, `partition`, `path`, `max_bytes` (default 1 MiB; at most 3/4 of `mcp.max_read_mb` with `text`/`base64`, 1/2 with `hex`, and lowered to that), `encoding` (`text` default, `base64`, `hex`), `offset` (default 0), `length` (default: to the end) | Read a file, or a byte range of one, from an SD card partition with size and encoding guards; symlinks are not followed. See [Large files on the card](#large-files-on-the-card) |
 | `sdwire_hash` | `sbc_name`, `partition`, `path`, `algorithm` (`sha256` default, `sha1`, `sha512`, `md5`, `crc32`), `offset` (default 0), `length` (default: to the end) | Hash a file, or a byte range of one, on an SD card partition, computed on the lab host: compare a file of any size without reading it |
 | `sdwire_info` | `sbc_name` | Return partition-table and filesystem metadata for the SD card |
 | `sdwire_add` | `name`, `serial_number`, `device_type` | Register an SDWire device |
@@ -435,12 +435,13 @@ One `sdwire_cat` call reads at most `max_bytes`, and the content it
 returns can't go past `mcp.max_read_mb` (4 MiB by default): a tool
 result of several MiB has dropped Claude Code's MCP connection, which
 then had to be reconnected by hand with `/mcp` (#78). The limit counts
-the content as returned, so `max_bytes` can be up to 3/4 of it with
+the content as returned, so `max_bytes` goes up to 3/4 of it with
 `text` or `base64` (3 MiB by default; text keeps the margin for JSON
-escapes such as a newline's `\n`) and half with `hex` (2 MiB); a larger
-one is refused with `max_bytes_too_large`, with the most allowed in
-`max_read_bytes`. Left out, `max_bytes` is 1 MiB, or that limit when it
-is lower. Text that still escapes past the limit as sent (mostly
+escapes such as a newline's `\n`) and half with `hex` (2 MiB). A larger
+`max_bytes` is lowered to that, so a generous one still reads a file
+that fits; a file or `length` that doesn't is refused with
+`size_limit_exceeded`, with the most allowed in `max_read_bytes`. Left
+out, `max_bytes` is 1 MiB, or that limit when it is lower. Text that still escapes past the limit as sent (mostly
 non-ASCII or control characters; the result's JSON is escaped again
 inside the JSON-RPC message) is refused with `result_too_large`: retry
 with `base64`. An I/O error from the card reader is `read_failed`.
@@ -462,7 +463,8 @@ dropped the connection, which went out at over 20 MB.
   works, and returns `digest` (lowercase hex; `crc32` as 8 digits) and
   `bytes_hashed`. It takes the same `offset` and `length`, handles the
   card exactly as the other read tools do, and keeps the caller's claim
-  alive from the switch to the host until the card is back. md5 and sha1 are computed as non-security hashes,
+  alive from the switch to the host until the card is back (as
+  `sdwire_cat` does). md5 and sha1 are computed as non-security hashes,
   so they work on FIPS-mode hosts whose Python allows that; where it
   doesn't, the error is `algorithm_unavailable`.
 

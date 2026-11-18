@@ -1490,6 +1490,36 @@ class TestRangeReadAndHash:
         assert result["content"] == "abc"
         assert result["truncated"] is False
 
+    def test_shrink_after_stat_is_not_truncated(self, card):
+        # The file shrank between the stat and the read: everything left
+        # came back, so truncated is false and size is the file's now
+        # (#79 review 4).
+        ctrl, root = card
+        (root / "f.bin").write_bytes(b"0123456789")
+        real_open = ctrl._open_regular_file
+
+        def open_then_shrink(mount, path):
+            opened = real_open(mount, path)
+            (root / "f.bin").write_bytes(b"0123")
+            return opened
+
+        with patch.object(ctrl, "_open_regular_file", open_then_shrink):
+            result = ctrl.read_file(partition=1, path="/f.bin", max_bytes=100)
+
+        assert result["content"] == "0123"
+        assert result["truncated"] is False
+        assert result["size"] == 4
+
+    def test_range_before_the_end_is_truncated(self, card):
+        ctrl, root = card
+        (root / "f.bin").write_bytes(b"0123456789")
+
+        part = ctrl.read_file(partition=1, path="/f.bin", offset=2, length=3)
+        last = ctrl.read_file(partition=1, path="/f.bin", offset=7, length=3)
+
+        assert (part["content"], part["truncated"]) == ("234", True)
+        assert (last["content"], last["truncated"]) == ("789", False)
+
     def test_length_over_max_bytes_refused(self, card):
         ctrl, root = card
         (root / "f.bin").write_bytes(b"0123456789")

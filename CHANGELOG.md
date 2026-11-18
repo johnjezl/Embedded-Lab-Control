@@ -48,9 +48,11 @@ labctl that shares it together, and reconnect stdio MCP agents.
 
 - `sdwire_cat` limits what one call returns to the new `mcp.max_read_mb`
   (default 4 MiB of content as encoded: `max_bytes` up to 3 MiB with
-  text or base64, 2 MiB with hex), refusing a larger `max_bytes` with
-  `max_bytes_too_large` before switching the card, and text that
-  JSON-escapes past it with `result_too_large` (#78). Left out,
+  text or base64, 2 MiB with hex; a larger `max_bytes` is lowered to
+  that, and a `length` over it refused before switching the card), and
+  refuses text that JSON-escapes past it with `result_too_large` (#78).
+  It keeps the caller's claim alive across the card switch, and
+  `truncated` and `size` describe the file as read. Left out,
   `max_bytes` is 1 MiB or that limit, whichever is lower. An I/O error
   from the card reader is now `read_failed` (MCP) / `Error: Read
   failed` (CLI) instead of an unhandled exception. Raising `max_bytes`

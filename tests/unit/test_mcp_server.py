@@ -5830,15 +5830,27 @@ class TestSdwireLargeFiles:
 
         return json.loads(sdwire_hash("test-sbc-1", partition=1, **kwargs))
 
-    def test_max_bytes_over_default_limit_refused_before_switching(self, env):
+    def test_max_bytes_over_limit_lowered_for_a_small_file(self, env):
+        # A generous max_bytes is a ceiling: a small file still reads
+        # (#79 review 4).
+        ctrl, _, _ = env
+        ctrl.read_file.return_value = {"content": "x=1", "encoding": "text"}
+
+        result = self._cat(path="/config.txt", max_bytes=10 * 1024 * 1024)
+
+        assert result["content"] == "x=1"
+        assert ctrl.read_file.call_args.kwargs["max_bytes"] == 3 * 1024 * 1024
+
+    def test_length_over_limit_refused_before_switching(self, env):
         ctrl, _, _ = env
 
-        result = self._cat(path="/files.lfs", max_bytes=8 * 1024 * 1024)
+        result = self._cat(
+            path="/files.lfs", max_bytes=8 << 20, offset=0, length=4 << 20
+        )
 
-        assert result["error"] == "max_bytes_too_large"
-        assert result["max_read_bytes"] == 3 * 1024 * 1024
-        assert "mcp.max_read_mb" in result["message"]
-        assert "sdwire_hash" in result["suggestion"]
+        assert result["error"] == "size_limit_exceeded"
+        assert result["max_read_bytes"] == 3 << 20
+        assert "Read at most 3145728 bytes" in result["suggestion"]
         ctrl.switch_to_host.assert_not_called()
         ctrl.read_file.assert_not_called()
 
@@ -5850,12 +5862,13 @@ class TestSdwireLargeFiles:
         ctrl, _, _ = env
         ctrl.read_file.return_value = {"content": "", "encoding": encoding}
 
-        refused = self._cat(path="/f", encoding=encoding, max_bytes=cap + 1)
-        allowed = self._cat(path="/f", encoding=encoding, max_bytes=cap)
+        self._cat(path="/f", encoding=encoding, max_bytes=cap + 1)
+        lowered = ctrl.read_file.call_args.kwargs["max_bytes"]
+        self._cat(path="/f", encoding=encoding, max_bytes=cap)
+        kept = ctrl.read_file.call_args.kwargs["max_bytes"]
 
-        assert refused["error"] == "max_bytes_too_large"
-        assert refused["max_read_bytes"] == cap
-        assert "error" not in allowed
+        assert lowered == cap
+        assert kept == cap
 
     def test_limit_measured_as_sent(self, env):
         # 500,000 newlines: 1,000,000 bytes as the result's JSON (under
@@ -5872,8 +5885,8 @@ class TestSdwireLargeFiles:
 
     def test_text_paging_hints_suggest_base64(self, env):
         # A part of a text file can end inside a UTF-8 character.
-        text = self._cat(path="/f", max_bytes=8 << 20)
-        b64 = self._cat(path="/f", max_bytes=8 << 20, encoding="base64")
+        text = self._cat(path="/f", length=8 << 20)
+        b64 = self._cat(path="/f", length=8 << 20, encoding="base64")
 
         assert "encoding='base64'" in text["suggestion"]
         assert "UTF-8" in text["suggestion"]
@@ -5934,11 +5947,11 @@ class TestSdwireLargeFiles:
         set_config({"mcp": {"max_read_mb": 1}})
         ctrl.read_file.return_value = {"content": "x", "encoding": "text"}
 
-        refused = self._cat(path="/f", max_bytes=786432 + 1)
-        allowed = self._cat(path="/f", max_bytes=786432)  # 3/4 MiB
+        result = self._cat(path="/f", max_bytes=1 << 20)
 
-        assert refused["error"] == "max_bytes_too_large"
-        assert allowed["content"] == "x"
+        assert result["content"] == "x"
+        # Lowered to 3/4 MiB, the text limit for max_read_mb: 1.
+        assert ctrl.read_file.call_args.kwargs["max_bytes"] == 786432
 
     def test_offset_and_length_forwarded(self, env):
         ctrl, _, _ = env
@@ -6112,6 +6125,30 @@ class TestSdwireLargeFiles:
             ("hash", True, False),
             ("dut", True, False),
         ]
+        stop.assert_called_once()
+
+    def test_cat_keeps_claim_alive_from_switch_to_restore(self, env):
+        ctrl, _, _ = env
+        started = self.keepalive.return_value.start
+        stop = started.return_value.stop
+        seen = []
+
+        def note(step):
+            def record(*args, **kwargs):
+                seen.append((step, started.called, stop.called))
+                return {"content": "x", "encoding": "text"}
+
+            return record
+
+        ctrl.switch_to_host.side_effect = note("host")
+        ctrl.wait_for_host.side_effect = note("wait")
+        ctrl.read_file.side_effect = note("read")
+        ctrl.switch_to_dut.side_effect = note("dut")
+
+        self._cat(path="/f")
+
+        self.keepalive.assert_called_once_with(ANY, "test-sbc-1")
+        assert [s[1:] for s in seen] == [(True, False)] * 4
         stop.assert_called_once()
 
     def test_hash_stops_keepalive_on_error(self, env):

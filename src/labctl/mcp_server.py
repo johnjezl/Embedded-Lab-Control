@@ -1279,10 +1279,6 @@ def _plan_quietly(name: str, arguments: dict):
         _RECORD_REFUSALS.reset(token)
 
 
-_SDWIRE_LARGE_FILE_HINT = (
-    "Read the file in parts with offset and length, or compare it with "
-    "sdwire_hash instead of reading it"
-)
 # A part of a text file can start or end inside a UTF-8 character, which
 # fails as binary_content.
 _SDWIRE_TEXT_PARTS_HINT = (
@@ -2770,14 +2766,12 @@ def sdwire_cat(
     nothing is switched.
 
     One call reads at most max_bytes, and the content it returns can't go
-    past the server's limit (mcp.max_read_mb, 4 MiB by default): max_bytes
-    can be up to 3/4 of it with "text" or "base64" (3 MiB by default) and
-    half with "hex" (error "max_bytes_too_large", with the most allowed in
-    "max_read_bytes"), and text that JSON-escapes past the limit anyway
-    (mostly non-ASCII or control characters) is refused
-    ("result_too_large"). Read a larger file in parts with
-    offset and length, or compare it with sdwire_hash instead of reading
-    it.
+    past the server's limit (mcp.max_read_mb, 4 MiB by default): a
+    max_bytes over 3/4 of it with "text" or "base64" (3 MiB by default),
+    or half with "hex", is lowered to that, and text that JSON-escapes
+    past the limit anyway (mostly non-ASCII or control characters) is
+    refused ("result_too_large"). Read a larger file in parts with offset
+    and length, or compare it with sdwire_hash instead of reading it.
 
     Returns JSON with "content", "encoding", file metadata ("size" is the
     whole file's), "offset", "bytes_read", and "truncated" (true when the
@@ -2814,21 +2808,17 @@ def sdwire_cat(
     if max_bytes is None:
         # The default never trips the limit, however low it is set.
         max_bytes = min(_SDWIRE_DEFAULT_MAX_BYTES, cap)
+    elif max_bytes > cap:
+        # A ceiling, not a request: lowering it keeps a generous max_bytes
+        # working for files that fit (#79 review 4). One that doesn't is
+        # refused with size_limit_exceeded, which names the limit.
+        max_bytes = cap
     try:
         validate_read_args(max_bytes, encoding, offset, length)
     except SDWireArgumentError as e:
         if e.code != "size_limit_exceeded":
             return _sdwire_read_error(e.code, str(e))
         return _sdwire_size_error(str(e), encoding, result_limit, length, max_bytes)
-    if max_bytes > cap:
-        return _sdwire_read_error(
-            "max_bytes_too_large",
-            f"max_bytes {max_bytes} is over this server's limit of {cap} "
-            f"bytes with encoding='{encoding}' (mcp.max_read_mb: "
-            f"{result_limit} bytes of content per call)",
-            max_read_bytes=cap,
-            suggestion=_sdwire_parts_hint(_SDWIRE_LARGE_FILE_HINT, encoding),
-        )
     sbc = manager.get_sbc_by_name(sbc_name)
     if not sbc:
         return _sdwire_read_error("sbc_not_found", f"SBC '{sbc_name}' not found")
@@ -2842,6 +2832,9 @@ def sdwire_cat(
     host_switched = False
     cleanup_error: RuntimeError | None = None
     response: str
+    # Waiting for the card can take long: keep the caller's claim alive
+    # from the switch until the card is back, as sdwire_hash does.
+    keepalive = _claim_keepalive(manager, sbc_name).start()
 
     try:
         if needs_switch:
@@ -2927,6 +2920,7 @@ def sdwire_cat(
                 ctrl.switch_to_dut()
             except RuntimeError as e:
                 cleanup_error = e
+        keepalive.stop()
 
     if cleanup_error:
         return _sdwire_read_error(

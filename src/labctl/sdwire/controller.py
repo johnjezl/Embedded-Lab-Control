@@ -795,6 +795,11 @@ class SDWireController:
                         data = f.read(span + 1)
                         if len(data) > span:
                             data += f.read(max_bytes + 1 - len(data))
+                    # The file can change between the stat and the read:
+                    # "truncated" and the metadata describe the file as
+                    # read, not as stat'ed.
+                    more = f.read(1) != b""
+                    stat_result = os.fstat(f.fileno())
             except PermissionError as e:
                 raise PermissionError(path) from e
 
@@ -823,7 +828,7 @@ class SDWireController:
                 **metadata,
                 "offset": offset,
                 "bytes_read": len(data),
-                "truncated": offset + len(data) < stat_result.st_size,
+                "truncated": more,
             }
 
     def hash_file(
